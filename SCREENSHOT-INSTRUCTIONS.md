@@ -23,9 +23,9 @@ All screenshots in this project must be **1490x900 pixels at 1x DPR**. This is t
 
 ---
 
-## Architecture: Two Approaches
+## Architecture: Three Approaches
 
-There are two fundamentally different approaches. Know which one you need:
+There are three fundamentally different approaches. Know which one you need:
 
 ### Approach A: Programmatic Data (chrome-devtools-mcp)
 
@@ -73,11 +73,11 @@ brew install node       # if not installed
 npm install -g ws       # WebSocket library for CDP
 ```
 
-When running CDP scripts: `NODE_PATH=$(npm root -g) node script.mjs`
+When running CDP scripts: `NODE_PATH=$(npm root -g) node script.cjs`
 
-### Optional: Screen Recording permission (only for `screencapture` fallback)
+### Screen Recording permission
 
-The **recommended CDP approach (Section 4, Method 1) needs no macOS permissions**. Only set up Screen Recording if you need the `screencapture` fallback.
+**Required for combined page+DevTools screenshots** (Section 4, Method 3) — this is the most common use case when you need to show the page and a DevTools panel together. **Optional for CDP-only DevTools captures** (Method 1), which need no macOS permissions.
 
 macOS requires Screen Recording permission for any process that captures screen content. The `node` binary (which runs Claude Code) is a command-line tool without an app bundle, so macOS won't list it in the privacy panel. You need to create a minimal `.app` wrapper.
 
@@ -121,7 +121,7 @@ echo "Created $APP_DIR"
 4. Paste: `~/Applications/`
 5. Select **Node.app** → click **Open**
 6. Toggle it **ON**
-7. **Restart your terminal / Claude Code** — permissions take effect on next process launch
+7. **Fully quit your terminal (Cmd+Q) and relaunch. A new tab is NOT sufficient** — macOS Screen Recording permissions take effect only when the parent process is freshly launched. Opening a new tab reuses the existing process tree and will not pick up the permission grant.
 
 #### Step 3: Verify it works
 
@@ -149,7 +149,11 @@ The CDP approach requires the `ws` WebSocket library:
 npm install -g ws
 ```
 
-When running CDP scripts, use: `NODE_PATH=$(npm root -g) node script.mjs`
+When running CDP scripts, use: `NODE_PATH=$(npm root -g) node script.cjs`
+
+### Chrome profile for screenshots
+
+These instructions use a **dedicated** Chrome profile directory at `~/.cache/chrome-screenshot/chrome-profile`. This MUST be separate from the `chrome-devtools-mcp` profile used by the MCP server. Chrome can only bind one process to a given `--user-data-dir` — if both the MCP server and the screenshot workflow use the same profile, one will fail with a lock error. Keep them separate.
 
 ### Chrome path
 
@@ -176,7 +180,7 @@ DevTools stores column visibility in the Chrome profile. Edit this **before laun
 **Preferences file location:**
 
 ```
-~/.cache/chrome-devtools-mcp/chrome-profile/Default/Preferences
+~/.cache/chrome-screenshot/chrome-profile/Default/Preferences
 ```
 
 For standard Chrome (non-MCP):
@@ -247,7 +251,7 @@ For standard Chrome (non-MCP):
 ```python
 import json, os
 
-PREFS_PATH = "~/.cache/chrome-devtools-mcp/chrome-profile/Default/Preferences"
+PREFS_PATH = "~/.cache/chrome-screenshot/chrome-profile/Default/Preferences"
 # For standard Chrome:
 # PREFS_PATH = "~/Library/Application Support/Google/Chrome/Default/Preferences"
 
@@ -285,7 +289,7 @@ print("Columns updated. Restart Chrome for changes to take effect.")
 # Enable domain and remote-address columns (add to existing)
 python3 -c "
 import json, os
-p = os.path.expanduser('~/.cache/chrome-devtools-mcp/chrome-profile/Default/Preferences')
+p = os.path.expanduser('~/.cache/chrome-screenshot/chrome-profile/Default/Preferences')
 d = json.load(open(p))
 cols = json.loads(d['devtools']['preferences']['network-log-columns'])
 for c in ['domain', 'remote-address', 'waterfall']:
@@ -328,7 +332,7 @@ Set the `network-text-filter` preference:
 ```bash
 python3 -c "
 import json, os
-p = os.path.expanduser('~/.cache/chrome-devtools-mcp/chrome-profile/Default/Preferences')
+p = os.path.expanduser('~/.cache/chrome-screenshot/chrome-profile/Default/Preferences')
 d = json.load(open(p))
 d['devtools']['preferences']['network-text-filter'] = '\"method:POST domain:api.example.com\"'
 json.dump(d, open(p, 'w'))
@@ -431,7 +435,7 @@ Available resource types: `document`, `stylesheet`, `image`, `media`, `font`, `s
 ```bash
 python3 -c "
 import json, os
-p = os.path.expanduser('~/.cache/chrome-devtools-mcp/chrome-profile/Default/Preferences')
+p = os.path.expanduser('~/.cache/chrome-screenshot/chrome-profile/Default/Preferences')
 d = json.load(open(p))
 d['devtools']['preferences']['panel-selected-tab'] = '\"network\"'  # or: elements, console, sources, etc.
 json.dump(d, open(p, 'w'))
@@ -444,7 +448,7 @@ json.dump(d, open(p, 'w'))
 # Options: "right", "bottom", "undocked"
 python3 -c "
 import json, os
-p = os.path.expanduser('~/.cache/chrome-devtools-mcp/chrome-profile/Default/Preferences')
+p = os.path.expanduser('~/.cache/chrome-screenshot/chrome-profile/Default/Preferences')
 d = json.load(open(p))
 d['devtools']['preferences']['currentDockState'] = '\"undocked\"'
 json.dump(d, open(p, 'w'))
@@ -472,9 +476,9 @@ for t in json.load(sys.stdin):
 ")
 
 # 2. Capture screenshot via CDP
-cat > /tmp/cdp-screenshot.mjs << 'JSEOF'
-import { WebSocket } from 'ws';
-import { writeFileSync } from 'fs';
+cat > /tmp/cdp-screenshot.cjs << 'JSEOF'
+const { WebSocket } = require('ws');
+const { writeFileSync } = require('fs');
 
 const wsUrl = process.argv[2];
 const outputPath = process.argv[3] || 'devtools-screenshot.png';
@@ -505,7 +509,7 @@ ws.on('message', (data) => {
 setTimeout(() => { ws.close(); process.exit(1); }, 10000);
 JSEOF
 
-NODE_PATH=$(npm root -g) node /tmp/cdp-screenshot.mjs "$DEVTOOLS_WS" "devtools-screenshot.png"
+NODE_PATH=$(npm root -g) node /tmp/cdp-screenshot.cjs "$DEVTOOLS_WS" "devtools-screenshot.png"
 ```
 
 **After capture, resize to the standard 1490x900:**
@@ -583,6 +587,57 @@ macOS dynamically re-evaluates Screen Recording permissions. It may work initial
 
 **This is why the CDP approach (Method 1) is strongly recommended.**
 
+### Method 3: Combined Page + DevTools Screenshot (`screencapture -l`)
+
+CDP can only screenshot one target at a time — either the page or the DevTools UI, not both together. To capture a screenshot showing the page **and** docked DevTools side-by-side (e.g., page on the left, Network panel on the right), use macOS `screencapture` on the Chrome window.
+
+**Requires:** Screen Recording permission (see Prerequisites).
+
+**Workflow:**
+
+1. **Set dock state in preferences** — set `currentDockState` to `"right"` (or `"bottom"`) in the Chrome profile Preferences file (Section 3). Do NOT use `"undocked"`.
+
+2. **Launch Chrome** with `--auto-open-devtools-for-tabs` and `--remote-debugging-port=9222` (for any CDP interaction you need before capture).
+
+3. **Find the Chrome window ID** using Swift:
+
+   ```bash
+   CHROME_WID=$(swift -e '
+   import CoreGraphics
+   if let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] {
+       for w in list {
+           let owner = w["kCGWindowOwnerName"] as? String ?? ""
+           let name = w["kCGWindowName"] as? String ?? ""
+           let id = w["kCGWindowNumber"] as? Int ?? 0
+           let layer = w["kCGWindowLayer"] as? Int ?? -1
+           let bounds = w["kCGWindowBounds"] as? [String: Any] ?? [:]
+           let width = bounds["Width"] as? Int ?? 0
+           let height = bounds["Height"] as? Int ?? 0
+           if owner.contains("Chrome") && layer == 0 && width > 100 && height > 100 {
+               if !name.contains("DevTools") && !name.contains("Developer Tools") {
+                   print(id)
+               }
+           }
+       }
+   }
+   ' 2>/dev/null | head -1)
+   ```
+
+4. **Capture the window** (includes both page and docked DevTools):
+
+   ```bash
+   /usr/sbin/screencapture -l "$CHROME_WID" -o -x /tmp/combined-screenshot.png
+   ```
+
+5. **Resize to standard dimensions:**
+
+   ```bash
+   sips -z 900 1490 /tmp/combined-screenshot.png --out docs/images/combined-screenshot.png
+   sips -g pixelWidth -g pixelHeight docs/images/combined-screenshot.png
+   ```
+
+**Note:** On Retina displays, `screencapture` captures at 2x resolution. The `sips -z 900 1490` resize handles this automatically.
+
 ---
 
 ## 5. DevTools Interaction via CDP (NO Accessibility Permissions Needed)
@@ -604,7 +659,11 @@ for t in json.load(sys.stdin):
 
 ### Open the Command Menu (Cmd+Shift+P) via CDP
 
-Use `Runtime.evaluate` to dispatch a keyboard event directly into the DevTools DOM:
+> **WARNING:** `document.dispatchEvent(new KeyboardEvent(...))` does **NOT** reliably open the DevTools Command Menu. DevTools keyboard shortcuts are handled above the DOM event layer — synthetic DOM events are ignored by the shortcut system. This approach may appear to work in some Chrome versions but fails silently in others.
+>
+> **Preferred approach:** Set the desired panel via the `panel-selected-tab` preference (see Section 3) before launching Chrome. This is deterministic and always works.
+
+The following is documented for reference but should be considered a **best-effort fallback**, not a primary approach:
 
 ```javascript
 // Send via WebSocket to the DevTools target
@@ -644,12 +703,12 @@ Use `Input.dispatchKeyEvent`:
 }
 ```
 
-### Complete Node.js helper script (VERIFIED ✅)
+### Complete Node.js helper script
 
-Save this and run with `NODE_PATH=$(npm root -g) node devtools-interact.mjs`:
+Save this as `devtools-interact.cjs` and run with `NODE_PATH=$(npm root -g) node devtools-interact.cjs`:
 
 ```javascript
-import { WebSocket } from 'ws';
+const { WebSocket } = require('ws');
 
 const DEVTOOLS_WS = process.argv[2]; // Pass WebSocket URL as argument
 
@@ -668,6 +727,11 @@ async function sendCDP(ws, method, params) {
     });
 }
 
+// WARNING: document.dispatchEvent(KeyboardEvent) does NOT reliably open
+// the DevTools Command Menu. DevTools keyboard shortcuts are handled above
+// the DOM event layer and synthetic DOM events are ignored. Prefer setting
+// the panel via the `panel-selected-tab` preference (see Section 3) and
+// restarting Chrome. Use this function only as a best-effort fallback.
 async function openCommandMenu(ws) {
     await sendCDP(ws, 'Runtime.evaluate', {
         expression: `document.dispatchEvent(new KeyboardEvent('keydown', {
@@ -729,7 +793,7 @@ Always include `--remote-debugging-port=9222` when launching Chrome for CDP inte
 
 ```bash
 /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
-  --user-data-dir="$HOME/.cache/chrome-devtools-mcp/chrome-profile" \
+  --user-data-dir="$HOME/.cache/chrome-screenshot/chrome-profile" \
   --auto-open-devtools-for-tabs \
   --remote-debugging-port=9222 \
   --no-first-run \
@@ -844,7 +908,7 @@ For `key code` in AppleScript:
 
 ## 8. Complete Workflow Examples
 
-### Example A: Pre-configure + CDP screenshot (RECOMMENDED, VERIFIED ✅)
+### Example A: Pre-configure + CDP screenshot (RECOMMENDED)
 
 Zero macOS permissions needed. Kill Chrome, configure preferences, relaunch with CDP, screenshot via CDP.
 
@@ -854,7 +918,7 @@ set -e
 
 TARGET_URL="${1:-https://example.com}"
 OUTPUT="${2:-devtools-screenshot.png}"
-PREFS="$HOME/.cache/chrome-devtools-mcp/chrome-profile/Default/Preferences"
+PREFS="$HOME/.cache/chrome-screenshot/chrome-profile/Default/Preferences"
 
 # 1. Kill Chrome completely (MUST be dead before editing preferences)
 pkill -9 -f "Google Chrome" 2>/dev/null || true
@@ -865,7 +929,7 @@ pgrep -f "Google Chrome" && { echo "ERROR: Chrome still running"; exit 1; }
 python3 << 'PYEOF'
 import json, os
 
-prefs_path = os.path.expanduser("~/.cache/chrome-devtools-mcp/chrome-profile/Default/Preferences")
+prefs_path = os.path.expanduser("~/.cache/chrome-screenshot/chrome-profile/Default/Preferences")
 with open(prefs_path) as f:
     prefs = json.load(f)
 
@@ -892,7 +956,7 @@ PYEOF
 
 # 3. Relaunch Chrome with auto-open-devtools and remote debugging
 /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
-  --user-data-dir="$HOME/.cache/chrome-devtools-mcp/chrome-profile" \
+  --user-data-dir="$HOME/.cache/chrome-screenshot/chrome-profile" \
   --auto-open-devtools-for-tabs \
   --remote-debugging-port=9222 \
   --no-first-run \
@@ -920,9 +984,9 @@ if [ -z "$DEVTOOLS_WS" ]; then
     exit 1
 fi
 
-cat > /tmp/cdp-screenshot.mjs << 'JSEOF'
-import { WebSocket } from 'ws';
-import { writeFileSync } from 'fs';
+cat > /tmp/cdp-screenshot.cjs << 'JSEOF'
+const { WebSocket } = require('ws');
+const { writeFileSync } = require('fs');
 
 const wsUrl = process.argv[2];
 const outputPath = process.argv[3];
@@ -953,7 +1017,7 @@ ws.on('message', (data) => {
 setTimeout(() => { console.error('Timeout'); ws.close(); process.exit(1); }, 10000);
 JSEOF
 
-NODE_PATH=$(npm root -g) node /tmp/cdp-screenshot.mjs "$DEVTOOLS_WS" "$OUTPUT"
+NODE_PATH=$(npm root -g) node /tmp/cdp-screenshot.cjs "$DEVTOOLS_WS" "$OUTPUT"
 
 # 6. Resize to standard 1490x900
 sips -z 900 1490 "$OUTPUT" --out "$OUTPUT"
@@ -961,7 +1025,37 @@ echo "Final dimensions:"
 sips -g pixelWidth -g pixelHeight "$OUTPUT"
 ```
 
-### Example B: Live CDP interaction — switch panel, set filter, screenshot (VERIFIED ✅)
+### Dismissing Juice Shop modals on fresh Chrome profiles
+
+When using a fresh Chrome profile (as recommended), Juice Shop displays a welcome modal and a cookie consent banner on first load. These must be dismissed before taking screenshots.
+
+**Automated dismissal via CDP** (add after page load, before screenshot):
+
+```javascript
+// Dismiss the welcome modal (close button)
+await sendCDP(ws, 'Runtime.evaluate', {
+    expression: `(function() {
+        var btn = document.querySelector('.close-dialog, [aria-label="Close Welcome Banner"]');
+        if (btn) btn.click();
+    })();`,
+    returnByValue: true
+});
+await new Promise(r => setTimeout(r, 500));
+
+// Dismiss the cookie consent banner
+await sendCDP(ws, 'Runtime.evaluate', {
+    expression: `(function() {
+        var btn = document.querySelector('.cc-dismiss, [aria-label="dismiss cookie message"]');
+        if (btn) btn.click();
+    })();`,
+    returnByValue: true
+});
+await new Promise(r => setTimeout(r, 500));
+```
+
+In the Example A workflow, add these CDP calls to the **page target** (not the DevTools target) after navigating to the Juice Shop URL and before taking the screenshot. Find the page target by looking for a target whose URL does NOT contain `devtools_app.html`.
+
+### Example B: Live CDP interaction — switch panel, set filter, screenshot
 
 Use when Chrome is already running with `--remote-debugging-port=9222` and you need to change panels/filters dynamically. **No macOS permissions needed.**
 
@@ -987,9 +1081,9 @@ if [ -z "$DEVTOOLS_WS" ]; then
 fi
 
 # 2. Send command via CDP, then screenshot
-cat > /tmp/cdp-interact.mjs << 'JSEOF'
-import { WebSocket } from 'ws';
-import { writeFileSync } from 'fs';
+cat > /tmp/cdp-interact.cjs << 'JSEOF'
+const { WebSocket } = require('ws');
+const { writeFileSync } = require('fs');
 
 const wsUrl = process.argv[2];
 const command = process.argv[3];
@@ -1051,7 +1145,7 @@ ws.on('error', (e) => { console.error(e.message); process.exit(1); });
 setTimeout(() => { ws.close(); process.exit(1); }, 15000);
 JSEOF
 
-NODE_PATH=$(npm root -g) node /tmp/cdp-interact.mjs "$DEVTOOLS_WS" "$COMMAND" "$OUTPUT"
+NODE_PATH=$(npm root -g) node /tmp/cdp-interact.cjs "$DEVTOOLS_WS" "$COMMAND" "$OUTPUT"
 ```
 
 **Usage examples:**
@@ -1096,7 +1190,7 @@ sleep 0.5
 **Fix:**
 1. Create the Node.app wrapper (see Prerequisites, Step 1)
 2. Add it to Screen Recording (see Prerequisites, Step 2)
-3. **Restart your terminal / Claude Code process** — permissions only take effect on new processes
+3. **Fully quit your terminal (Cmd+Q) and relaunch** — a new tab is NOT sufficient. macOS permissions only take effect on freshly launched processes.
 
 If the permission prompt appeared but Node.app doesn't show in the list, this is a known macOS issue with CLI binaries. The `.app` wrapper in the Prerequisites section solves this.
 
@@ -1133,8 +1227,10 @@ Use the full path: `/usr/sbin/screencapture` — it's not in the default `$PATH`
 
 ### CDP keystrokes not reaching DevTools
 
-- Use `Runtime.evaluate` with `document.dispatchEvent(new KeyboardEvent(...))` on the **DevTools page target** (URL contains `devtools_app.html`), not the regular page target
-- `Input.dispatchKeyEvent` alone may not trigger DevTools shortcuts — the DOM dispatch approach works reliably
+- `document.dispatchEvent(new KeyboardEvent(...))` does **NOT** reliably open the Command Menu or trigger DevTools shortcuts. DevTools handles shortcuts above the DOM event layer — synthetic DOM events are ignored.
+- `Input.dispatchKeyEvent` alone also may not trigger DevTools shortcuts.
+- **Preferred approach:** Set the desired panel via `panel-selected-tab` in the Chrome profile Preferences file (Section 3) before launching Chrome. This is deterministic and always works.
+- The Command Menu dispatch is documented in Section 5 as a best-effort fallback only.
 
 ### Wrong window captured
 
@@ -1161,14 +1257,28 @@ if let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) a
 
 ## 10. First-Time Setup Checklist
 
-For new users setting up on a fresh Mac:
+For new users setting up on a fresh Mac. Follow in order — Phase 2 ends with a mandatory terminal restart.
+
+### Phase 1: Install
 
 ```bash
-# 1. Install dependencies
+# 1. Install Node.js
 brew install node  # if not already installed
-npm install -g ws  # WebSocket library for CDP interaction
 
-# 2. Create Node.app wrapper for Screen Recording permission
+# 2. Install ws (WebSocket library for CDP interaction)
+npm install -g ws
+
+# 3. Verify ws is accessible
+NODE_PATH=$(npm root -g) node -e "require('ws'); console.log('ws OK')"
+
+# 4. Create the screenshot Chrome profile directory
+mkdir -p "$HOME/.cache/chrome-screenshot/chrome-profile"
+```
+
+### Phase 2: Permissions
+
+```bash
+# 5. Create Node.app wrapper for Screen Recording permission
 APP_DIR="$HOME/Applications/Node.app"
 mkdir -p "$APP_DIR/Contents/MacOS"
 cat > "$APP_DIR/Contents/Info.plist" << 'PLIST'
@@ -1190,18 +1300,37 @@ cat > "$APP_DIR/Contents/Info.plist" << 'PLIST'
 </plist>
 PLIST
 ln -sf "$(which node)" "$APP_DIR/Contents/MacOS/node"
-echo "✅ Created Node.app wrapper"
+echo "Created Node.app wrapper"
 
-# 3. Grant Screen Recording permission
+# 6. Grant Screen Recording permission
 open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
-echo "➡️  Click + → Cmd+Shift+G → ~/Applications/ → select Node.app → toggle ON"
-echo "➡️  Then restart your terminal"
+echo "Click + -> Cmd+Shift+G -> ~/Applications/ -> select Node.app -> toggle ON"
+```
 
-# 4. Verify Chrome is installed
-ls "/Applications/Google Chrome.app" > /dev/null 2>&1 && echo "✅ Chrome found" || echo "❌ Install Google Chrome"
+**STOP: Fully quit your terminal (Cmd+Q) and relaunch.** A new tab is NOT sufficient — macOS permissions take effect only when the parent process is freshly launched.
 
-# 5. Verify screencapture works (run AFTER restarting terminal)
-/usr/sbin/screencapture -x /tmp/test.png && echo "✅ Screen capture works" || echo "❌ Check Screen Recording permission"
+### Phase 3: Verify (after terminal restart)
+
+```bash
+# 7. Verify screencapture works
+/usr/sbin/screencapture -x /tmp/test-screenshot.png && echo "Screen capture OK" || echo "FAILED - check Screen Recording permission"
+
+# 8. Verify Chrome is installed
+ls "/Applications/Google Chrome.app" > /dev/null 2>&1 && echo "Chrome found" || echo "Install Google Chrome"
+
+# 9. Smoke test: launch Chrome with CDP and verify connection
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+  --user-data-dir="$HOME/.cache/chrome-screenshot/chrome-profile" \
+  --remote-debugging-port=9222 \
+  --no-first-run \
+  "about:blank" &>/dev/null &
+sleep 4
+curl -sf http://localhost:9222/json/version && echo "CDP connection OK" || echo "FAILED - Chrome CDP not responding"
+pkill -f "Google Chrome" 2>/dev/null || true
+
+# 10. Note on Retina displays
+echo "On Retina displays, CDP captures at native resolution (e.g., ~2824x1636)."
+echo "Always resize after capture: sips -z 900 1490 <input> --out docs/images/<name>.png"
 ```
 
 ---
@@ -1212,14 +1341,14 @@ Screenshots can be annotated with colored badge labels to highlight specific ele
 
 This uses an HTML/CSS overlay approach: the screenshot becomes the background of an HTML page, badges are positioned with absolute CSS, and the result is captured via CDP at exact pixel dimensions. **No image editing tools needed.**
 
-### Annotation tool: `scripts/annotate-screenshot.mjs`
+### Annotation tool: `scripts/annotate-screenshot.cjs`
 
-Saved in the project at `scripts/annotate-screenshot.mjs` with its HTML template at `scripts/annotate-template.html`.
+Saved in the project at `scripts/annotate-screenshot.cjs` with its HTML template at `scripts/annotate-template.html`.
 
 **Usage:**
 
 ```bash
-NODE_PATH=$(npm root -g) node scripts/annotate-screenshot.mjs \
+NODE_PATH=$(npm root -g) node scripts/annotate-screenshot.cjs \
   <input-screenshot> \
   <output-path> \
   <width> <height> \
@@ -1274,7 +1403,7 @@ Use `centerY` for new annotations. Open the raw screenshot in Preview, hover ove
 # ... screenshot saved as docs/images/raw-devtools-elements.png
 
 # 2. Annotate it with badges (using centerY for vertical centering)
-NODE_PATH=$(npm root -g) node scripts/annotate-screenshot.mjs \
+NODE_PATH=$(npm root -g) node scripts/annotate-screenshot.cjs \
   docs/images/raw-devtools-elements.png \
   docs/images/csd-injected-scripts.png \
   1490 900 \
@@ -1318,7 +1447,7 @@ Or use inline styles in the badge JSON:
 
 1. **All screenshots must be 1490x900 at 1x DPR.** For page screenshots, use `emulate` with viewport `"1490x900x1"`. For DevTools screenshots, capture via CDP and resize with `sips -z 900 1490`. Always verify with `sips -g pixelWidth -g pixelHeight`.
 
-2. **Use CDP for everything.** The CDP approach (Sections 4-5) requires zero macOS permissions. Use `Page.captureScreenshot` for screenshots and `Runtime.evaluate` + `document.dispatchEvent(KeyboardEvent)` for interaction. Never rely on `screencapture` or `osascript` keystrokes as the primary approach.
+2. **Use CDP when capturing a single target.** The CDP approach (Sections 4-5) requires zero macOS permissions and works well for isolated DevTools or page screenshots. However, CDP can only screenshot one target at a time. For **combined page+DevTools screenshots** (the most common use case), you must use `screencapture -l` (Method 3), which requires Screen Recording permission.
 
 3. **The recommended workflow:**
    - Kill Chrome → edit preferences (columns, filters, dock state, panel) → relaunch with `--remote-debugging-port=9222 --auto-open-devtools-for-tabs`
@@ -1344,4 +1473,4 @@ Or use inline styles in the badge JSON:
 
 10. **Wait for CDP readiness after launch.** Chrome takes a few seconds to start. Poll `curl -s http://localhost:9222/json/version` in a loop before attempting CDP connections.
 
-11. **`npm install -g ws` is required.** Run CDP scripts with `NODE_PATH=$(npm root -g) node script.mjs` to find the global module.
+11. **`npm install -g ws` is required.** Run CDP scripts with `NODE_PATH=$(npm root -g) node script.cjs` to find the global module.

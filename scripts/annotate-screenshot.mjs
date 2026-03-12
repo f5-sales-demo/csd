@@ -20,7 +20,7 @@ const badges = JSON.parse(badgesJson);
 let template = readFileSync('scripts/annotate-template.html', 'utf8');
 template = template.replace('BODY_WIDTH', w);
 template = template.replace('BODY_HEIGHT', h);
-template = template.replace('SCREENSHOT_PATH', 'file://' + resolve(screenshotPath));
+template = template.replace('SCREENSHOT_PATH', `file://${resolve(screenshotPath)}`);
 
 const badgeHtml = badges
   .map((b) => {
@@ -76,7 +76,7 @@ ws.on('open', async () => {
     });
 
     // Navigate
-    await send('Page.navigate', { url: 'file://' + tmpHtml });
+    await send('Page.navigate', { url: `file://${tmpHtml}` });
     await new Promise((r) => setTimeout(r, 2000));
 
     // Capture

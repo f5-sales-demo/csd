@@ -79,7 +79,7 @@ When running CDP scripts: `NODE_PATH=$(npm root -g) node script.mjs`
 
 The **recommended CDP approach (Section 4, Method 1) needs no macOS permissions**. Only set up Screen Recording if you need the `screencapture` fallback.
 
-macOS requires Screen Recording permission for any process that captures screen content. The `node` binary (which runs Claude Code) is a CLI tool without an app bundle, so macOS won't list it in the privacy panel. You need to create a minimal `.app` wrapper.
+macOS requires Screen Recording permission for any process that captures screen content. The `node` binary (which runs Claude Code) is a command-line tool without an app bundle, so macOS won't list it in the privacy panel. You need to create a minimal `.app` wrapper.
 
 #### Step 1: Create the Node.app wrapper
 
@@ -375,7 +375,7 @@ end tell'
 | Filter | Matches |
 | --- | --- |
 | `example.com` | URL contains "example.com" |
-| `/api\/v[0-9]+/` | Regex match on URL |
+| `/api\/v[0-9]+/` | Regular expression match on URL |
 | `method:GET` | HTTP method is GET |
 | `method:POST` | HTTP method is POST |
 | `status-code:200` | Status code is 200 |
@@ -682,7 +682,7 @@ async function typeText(ws, text) {
     await sendCDP(ws, 'Input.insertText', { text });
 }
 
-async function pressEnter(ws) {
+async function sendEnterKey(ws) {
     await sendCDP(ws, 'Input.dispatchKeyEvent', {
         type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13
     });
@@ -705,7 +705,7 @@ async function runCommand(ws, command) {
     await new Promise(r => setTimeout(r, 300));
     await typeText(ws, command);
     await new Promise(r => setTimeout(r, 300));
-    await pressEnter(ws);
+    await sendEnterKey(ws);
     await new Promise(r => setTimeout(r, 500));
 }
 

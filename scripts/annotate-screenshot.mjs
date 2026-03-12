@@ -12,8 +12,8 @@ if (!screenshotPath || !outputPath || !badgesJson) {
   process.exit(1);
 }
 
-const w = parseInt(width) || 1490;
-const h = parseInt(height) || 900;
+const w = parseInt(width, 10) || 1490;
+const h = parseInt(height, 10) || 900;
 const badges = JSON.parse(badgesJson);
 
 // Build HTML

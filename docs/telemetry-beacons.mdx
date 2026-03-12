@@ -7,12 +7,12 @@ sidebar:
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-After the `common.js` scripts initialize, they periodically send telemetry back to F5 XC via network requests known as **beacons**. These beacons are POST requests sent to `/common.js`-prefixed endpoints on the same load-balancer origin — the same domain that served the page. Because they are same-origin requests, they do not trigger CORS preflight checks and blend into normal application traffic.
+CSD telemetry operates in two phases. First, the `common.js` scripts load from the application origin via standard **GET** requests — these are the instrumentation layer that injects CSD's monitoring code into the page. Once initialized, the scripts periodically send telemetry back to F5 via **POST** requests known as **beacons**. These beacons are sent to F5-operated signal collection domains (`*.zeronaught.com`), not to the application origin.
 
 | Property | Value |
 | --- | --- |
-| Endpoint pattern | `POST /common.js?<parameters>` on the load-balancer origin |
-| HTTP method | POST |
+| Script loads | `GET /common.js?single`, `GET /common.js?async`, `GET /common.js?async&seed=...` on the application origin |
+| Beacon destinations | `POST` to F5 signal collection infrastructure (e.g., `us.gimp.zeronaught.com`, `csd.zeronaught.com`) |
 | Payload format | Encoded binary — not human-readable JSON |
 | Frequency | Periodic during page lifetime; additional beacons fire on specific events (form field access, new script load) |
 
@@ -30,16 +30,16 @@ Beacons do **not** send the values users type into form fields. Field names and 
 
 <Steps>
 1. Open Chrome DevTools (**F12**) and switch to the **Network** tab
-2. In the filter bar, type `common.js` to isolate CSD traffic
-3. Set the method filter to **POST** (or look at the Method column) to distinguish beacons from the initial script loads (which are GET requests)
-4. Browse the application or interact with form fields — new POST entries appear as beacons fire
-5. Click a beacon request to inspect its headers and payload; note that the request body is encoded and not human-readable
+2. Browse the application or interact with form fields to generate traffic
+3. Filter to `common.js` to see the **script loads** — these are GET requests that deliver the CSD instrumentation code
+4. Remove the filter and look for POST requests to `zeronaught.com` domains — these are the **telemetry beacons** carrying signal data back to F5
+5. Click a beacon to inspect its headers and payload; note that the request body is encoded binary, not human-readable JSON
 </Steps>
 
-![DevTools Network tab filtered to common.js POST beacons](/csd/images/devtools-beacons.png)
+![DevTools Network tab showing POST beacons to zeronaught.com domains](/csd/images/devtools-beacons.png)
 
 <Aside type="tip" title="CSD beacons vs attack exfiltration">
-CSD telemetry beacons are **same-origin** POST requests to `/common.js` endpoints on the F5 XC load balancer. A malicious formjacking script, by contrast, exfiltrates stolen data **cross-origin** — typically via `fetch()`, `XMLHttpRequest`, or image beacon (`new Image().src`) to an attacker-controlled domain.
+CSD telemetry beacons are POST requests sent to **F5-operated infrastructure** (`*.zeronaught.com` domains). A malicious formjacking script, by contrast, exfiltrates stolen data to an **attacker-controlled domain** — typically via `fetch()`, `XMLHttpRequest`, or image beacon (`new Image().src`).
 
-The key difference: CSD beacons report **metadata about script behavior** to F5 XC, while exfiltration sends **user-entered data** to an external server. This distinction is central to how CSD detects attacks — see [CSD Capabilities — Detection Boundaries](/csd/capabilities/#detection-boundaries) for what CSD can and cannot observe.
+Both CSD beacons and attack exfiltration are cross-origin requests, but the key differences are **destination** and **content**: CSD sends **script behavior metadata** to known F5 infrastructure, while exfiltration sends **user-entered data** (passwords, card numbers) to an attacker's server. This distinction is central to how CSD detects attacks — see [CSD Capabilities — Detection Boundaries](/csd/capabilities/#detection-boundaries) for what CSD can and cannot observe.
 </Aside>

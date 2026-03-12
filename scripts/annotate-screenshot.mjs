@@ -1,21 +1,14 @@
-import { WebSocket } from "ws";
-import { writeFileSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { WebSocket } from 'ws';
+import { writeFileSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 // Parse args: node annotate-screenshot.mjs <screenshot> <output> <width> <height> <badges-json>
-const [, , screenshotPath, outputPath, width, height, badgesJson] =
-  process.argv;
+const [, , screenshotPath, outputPath, width, height, badgesJson] = process.argv;
 
 if (!screenshotPath || !outputPath || !badgesJson) {
-  console.error(
-    `Usage: node annotate-screenshot.mjs <screenshot> <output> <width> <height> '<badges-json>'`,
-  );
-  console.error(
-    `  badges-json: [{"text":"Label","class":"badge-csd","centerY":110,"left":500}, ...]`,
-  );
-  console.error(
-    `  Available classes: badge-csd, badge-thirdparty, badge-info, badge-warning, badge-success`,
-  );
+  console.error(`Usage: node annotate-screenshot.mjs <screenshot> <output> <width> <height> '<badges-json>'`);
+  console.error(`  badges-json: [{"text":"Label","class":"badge-csd","centerY":110,"left":500}, ...]`);
+  console.error(`  Available classes: badge-csd, badge-thirdparty, badge-info, badge-warning, badge-success`);
   process.exit(1);
 }
 
@@ -24,40 +17,32 @@ const h = parseInt(height) || 900;
 const badges = JSON.parse(badgesJson);
 
 // Build HTML
-let template = readFileSync("scripts/annotate-template.html", "utf8");
-template = template.replace("BODY_WIDTH", w);
-template = template.replace("BODY_HEIGHT", h);
-template = template.replace(
-  "SCREENSHOT_PATH",
-  "file://" + resolve(screenshotPath),
-);
+let template = readFileSync('scripts/annotate-template.html', 'utf8');
+template = template.replace('BODY_WIDTH', w);
+template = template.replace('BODY_HEIGHT', h);
+template = template.replace('SCREENSHOT_PATH', 'file://' + resolve(screenshotPath));
 
 const badgeHtml = badges
   .map((b) => {
-    const cls = b.class || "badge-thirdparty";
+    const cls = b.class || 'badge-thirdparty';
     const useCenterY = b.centerY != null;
     const yValue = useCenterY ? b.centerY : b.top;
-    const centerCls = useCenterY ? " badge-centered" : "";
-    const style =
-      `top: ${yValue}px; left: ${b.left}px;` + (b.style || "");
+    const centerCls = useCenterY ? ' badge-centered' : '';
+    const style = `top: ${yValue}px; left: ${b.left}px;` + (b.style || '');
     return `  <div class="badge ${cls}${centerCls}" style="${style}">${b.text}</div>`;
   })
-  .join("\n");
+  .join('\n');
 
-template = template.replace("<!-- BADGES_PLACEHOLDER -->", badgeHtml);
+template = template.replace('<!-- BADGES_PLACEHOLDER -->', badgeHtml);
 
-const tmpHtml = "/tmp/annotate-render.html";
+const tmpHtml = '/tmp/annotate-render.html';
 writeFileSync(tmpHtml, template);
 
 // Connect to Chrome CDP and render
-const targets = await fetch("http://localhost:9222/json").then((r) =>
-  r.json(),
-);
-const target = targets.find(
-  (t) => t.type === "page" && !t.url.includes("devtools"),
-);
+const targets = await fetch('http://localhost:9222/json').then((r) => r.json());
+const target = targets.find((t) => t.type === 'page' && !t.url.includes('devtools'));
 if (!target) {
-  console.error("No page target found");
+  console.error('No page target found');
   process.exit(1);
 }
 
@@ -70,20 +55,20 @@ function send(method, params) {
     const handler = (data) => {
       const msg = JSON.parse(data.toString());
       if (msg.id === msgId) {
-        ws.removeListener("message", handler);
+        ws.removeListener('message', handler);
         resolve(msg.result);
       }
     };
-    ws.on("message", handler);
+    ws.on('message', handler);
     ws.send(JSON.stringify({ id: msgId, method, params }));
-    setTimeout(() => reject(new Error("Timeout")), 10000);
+    setTimeout(() => reject(new Error('Timeout')), 10000);
   });
 }
 
-ws.on("open", async () => {
+ws.on('open', async () => {
   try {
     // Set viewport
-    await send("Emulation.setDeviceMetricsOverride", {
+    await send('Emulation.setDeviceMetricsOverride', {
       width: w,
       height: h,
       deviceScaleFactor: 1,
@@ -91,22 +76,22 @@ ws.on("open", async () => {
     });
 
     // Navigate
-    await send("Page.navigate", { url: "file://" + tmpHtml });
+    await send('Page.navigate', { url: 'file://' + tmpHtml });
     await new Promise((r) => setTimeout(r, 2000));
 
     // Capture
-    const result = await send("Page.captureScreenshot", {
-      format: "png",
+    const result = await send('Page.captureScreenshot', {
+      format: 'png',
       clip: { x: 0, y: 0, width: w, height: h, scale: 1 },
     });
 
     if (result && result.data) {
-      writeFileSync(outputPath, Buffer.from(result.data, "base64"));
+      writeFileSync(outputPath, Buffer.from(result.data, 'base64'));
       console.log(`Annotated screenshot saved: ${outputPath} (${w}x${h})`);
     }
 
     // Reset viewport
-    await send("Emulation.clearDeviceMetricsOverride", {});
+    await send('Emulation.clearDeviceMetricsOverride', {});
   } catch (e) {
     console.error(e.message);
   }
@@ -115,7 +100,7 @@ ws.on("open", async () => {
   process.exit(0);
 });
 
-ws.on("error", (e) => {
+ws.on('error', (e) => {
   console.error(e.message);
   process.exit(1);
 });

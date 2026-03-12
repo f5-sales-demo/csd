@@ -255,14 +255,39 @@ PREFS_PATH = "~/.cache/chrome-screenshot/chrome-profile/Default/Preferences"
 # For standard Chrome:
 # PREFS_PATH = "~/Library/Application Support/Google/Chrome/Default/Preferences"
 
+# Full column schema — used to seed fresh profiles that have no network-log-columns yet
+DEFAULT_COLUMNS = {
+    "name": {"visible": True, "title": "Name"},
+    "method": {"visible": False, "title": "Method"},
+    "status": {"visible": True, "title": "Status"},
+    "protocol": {"visible": False, "title": "Protocol"},
+    "scheme": {"visible": False, "title": "Scheme"},
+    "domain": {"visible": False, "title": "Domain"},
+    "remote-address": {"visible": False, "title": "Remote Address"},
+    "remote-address-space": {"visible": False, "title": "Remote Address Space"},
+    "type": {"visible": True, "title": "Type"},
+    "initiator": {"visible": True, "title": "Initiator"},
+    "initiator-address-space": {"visible": False, "title": "Initiator Address Space"},
+    "cookies": {"visible": False, "title": "Cookies"},
+    "set-cookies": {"visible": False, "title": "Set-Cookies"},
+    "size": {"visible": True, "title": "Size"},
+    "time": {"visible": True, "title": "Time"},
+    "priority": {"visible": False, "title": "Priority"},
+    "connection-id": {"visible": False, "title": "Connection ID"},
+    "cache-control": {"visible": False, "title": "Cache-Control"},
+    "waterfall": {"visible": False, "title": "Waterfall"},
+}
+
 prefs_path = os.path.expanduser(PREFS_PATH)
 
 with open(prefs_path) as f:
     prefs = json.load(f)
 
-# Get current columns config
+# Get current columns config (seed defaults on fresh profiles)
 devtools_prefs = prefs.setdefault("devtools", {}).setdefault("preferences", {})
 cols = json.loads(devtools_prefs.get("network-log-columns", "{}"))
+if not cols:
+    cols = DEFAULT_COLUMNS
 
 # Define which columns you want visible
 DESIRED_VISIBLE = [
@@ -286,16 +311,40 @@ print("Columns updated. Restart Chrome for changes to take effect.")
 ### Bash one-liner to enable specific columns
 
 ```bash
-# Enable domain and remote-address columns (add to existing)
+# Enable domain and remote-address columns (add to existing, seed defaults on fresh profiles)
 python3 -c "
 import json, os
+DEFAULT_COLUMNS = {
+    'name': {'visible': True, 'title': 'Name'},
+    'method': {'visible': False, 'title': 'Method'},
+    'status': {'visible': True, 'title': 'Status'},
+    'protocol': {'visible': False, 'title': 'Protocol'},
+    'scheme': {'visible': False, 'title': 'Scheme'},
+    'domain': {'visible': False, 'title': 'Domain'},
+    'remote-address': {'visible': False, 'title': 'Remote Address'},
+    'remote-address-space': {'visible': False, 'title': 'Remote Address Space'},
+    'type': {'visible': True, 'title': 'Type'},
+    'initiator': {'visible': True, 'title': 'Initiator'},
+    'initiator-address-space': {'visible': False, 'title': 'Initiator Address Space'},
+    'cookies': {'visible': False, 'title': 'Cookies'},
+    'set-cookies': {'visible': False, 'title': 'Set-Cookies'},
+    'size': {'visible': True, 'title': 'Size'},
+    'time': {'visible': True, 'title': 'Time'},
+    'priority': {'visible': False, 'title': 'Priority'},
+    'connection-id': {'visible': False, 'title': 'Connection ID'},
+    'cache-control': {'visible': False, 'title': 'Cache-Control'},
+    'waterfall': {'visible': False, 'title': 'Waterfall'},
+}
 p = os.path.expanduser('~/.cache/chrome-screenshot/chrome-profile/Default/Preferences')
 d = json.load(open(p))
-cols = json.loads(d['devtools']['preferences']['network-log-columns'])
+dp = d.setdefault('devtools', {}).setdefault('preferences', {})
+cols = json.loads(dp.get('network-log-columns', '{}'))
+if not cols:
+    cols = DEFAULT_COLUMNS
 for c in ['domain', 'remote-address', 'waterfall']:
     if c in cols:
         cols[c]['visible'] = True
-d['devtools']['preferences']['network-log-columns'] = json.dumps(cols)
+dp['network-log-columns'] = json.dumps(cols)
 json.dump(d, open(p, 'w'))
 print('Done')
 "
@@ -935,8 +984,33 @@ with open(prefs_path) as f:
 
 dp = prefs.setdefault("devtools", {}).setdefault("preferences", {})
 
-# Set desired columns
+# Full column schema — seed defaults on fresh profiles
+DEFAULT_COLUMNS = {
+    "name": {"visible": True, "title": "Name"},
+    "method": {"visible": False, "title": "Method"},
+    "status": {"visible": True, "title": "Status"},
+    "protocol": {"visible": False, "title": "Protocol"},
+    "scheme": {"visible": False, "title": "Scheme"},
+    "domain": {"visible": False, "title": "Domain"},
+    "remote-address": {"visible": False, "title": "Remote Address"},
+    "remote-address-space": {"visible": False, "title": "Remote Address Space"},
+    "type": {"visible": True, "title": "Type"},
+    "initiator": {"visible": True, "title": "Initiator"},
+    "initiator-address-space": {"visible": False, "title": "Initiator Address Space"},
+    "cookies": {"visible": False, "title": "Cookies"},
+    "set-cookies": {"visible": False, "title": "Set-Cookies"},
+    "size": {"visible": True, "title": "Size"},
+    "time": {"visible": True, "title": "Time"},
+    "priority": {"visible": False, "title": "Priority"},
+    "connection-id": {"visible": False, "title": "Connection ID"},
+    "cache-control": {"visible": False, "title": "Cache-Control"},
+    "waterfall": {"visible": False, "title": "Waterfall"},
+}
+
+# Set desired columns (seed defaults on fresh profiles)
 cols = json.loads(dp.get("network-log-columns", "{}"))
+if not cols:
+    cols = DEFAULT_COLUMNS
 desired = ["name", "method", "status", "domain", "type", "remote-address", "size", "time", "waterfall"]
 for col in cols:
     cols[col]["visible"] = col in desired

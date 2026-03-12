@@ -1,6 +1,6 @@
-import { WebSocket } from 'ws';
-import { writeFileSync, readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { WebSocket } from 'ws';
 
 // Parse args: node annotate-screenshot.mjs <screenshot> <output> <width> <height> <badges-json>
 const [, , screenshotPath, outputPath, width, height, badgesJson] = process.argv;
@@ -28,7 +28,7 @@ const badgeHtml = badges
     const useCenterY = b.centerY != null;
     const yValue = useCenterY ? b.centerY : b.top;
     const centerCls = useCenterY ? ' badge-centered' : '';
-    const style = `top: ${yValue}px; left: ${b.left}px;` + (b.style || '');
+    const style = `top: ${yValue}px; left: ${b.left}px;${b.style || ''}`;
     return `  <div class="badge ${cls}${centerCls}" style="${style}">${b.text}</div>`;
   })
   .join('\n');
@@ -85,7 +85,7 @@ ws.on('open', async () => {
       clip: { x: 0, y: 0, width: w, height: h, scale: 1 },
     });
 
-    if (result && result.data) {
+    if (result?.data) {
       writeFileSync(outputPath, Buffer.from(result.data, 'base64'));
       console.log(`Annotated screenshot saved: ${outputPath} (${w}x${h})`);
     }

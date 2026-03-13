@@ -14,6 +14,7 @@ All screenshots in this project must be **1490x900 pixels at 1x DPR**. This is t
 | Device pixel ratio | 1x |
 | Format | PNG |
 | Location | `docs/images/` |
+| Naming convention | `<name>-light.png` / `<name>-dark.png` for theme variants |
 
 **How this applies to each approach:**
 
@@ -47,6 +48,7 @@ Use this when you need the **data** (network requests, console logs, performance
 
 1. Set exact viewport: `emulate` with viewport `"1490x900x1"` (the `x1` suffix forces deviceScaleFactor=1 — `resize_page` alone does NOT work on Retina displays)
 2. Navigate and interact with the page as needed
+   - **For theme variants**: call `emulate` with `colorScheme: "light"` before the light capture, then `colorScheme: "dark"` before the dark capture. See Section 13 for full details.
 3. Call `take_screenshot` with a `filePath` to save directly to `docs/images/`
 4. Use descriptive filenames matching the image alt text (e.g., `csd-lb-csd-settings.png`)
 5. Verify: `sips -g pixelWidth -g pixelHeight docs/images/<name>.png` — must be exactly 1490x900
@@ -1548,3 +1550,116 @@ Or use inline styles in the badge JSON:
 10. **Wait for CDP readiness after launch.** Chrome takes a few seconds to start. Poll `curl -s http://localhost:9222/json/version` in a loop before attempting CDP connections.
 
 11. **`npm install -g ws` is required.** Run CDP scripts with `NODE_PATH=$(npm root -g) node script.cjs` to find the global module.
+
+12. **Capture light and dark variants when possible.** Use `emulate` with `colorScheme: "light"` and `colorScheme: "dark"` to take both variants. Save with `-light.png` / `-dark.png` suffixes. Use the `Screenshot` component in MDX instead of Markdown `![]()` syntax. For sites without dark mode (F5 XC console), capture light only and use `<Screenshot light="..." alt="..." />`.
+
+---
+
+## 13. Light and Dark Mode Screenshots
+
+### Overview
+
+The docs-theme ships a `Screenshot` Astro component that auto-switches images based on the reader's selected theme. Authors should capture both light and dark variants when the target UI supports `prefers-color-scheme`. Some UIs (like the F5 XC console) are light-only — use a single-variant `Screenshot` for these.
+
+### File naming convention
+
+Use the `-light` / `-dark` suffix pattern:
+
+- `<name>-light.png` — light mode variant
+- `<name>-dark.png` — dark mode variant
+
+Both go in `docs/images/`. Example: `csd-dashboard-light.png`, `csd-dashboard-dark.png`.
+
+### MDX usage: the `Screenshot` component
+
+Import the component and pass light/dark image paths:
+
+```mdx
+import Screenshot from '@f5xc-salesdemos/docs-theme/components/Screenshot.astro';
+
+{/* Both variants */}
+<Screenshot
+  light="/images/csd-dashboard-light.png"
+  dark="/images/csd-dashboard-dark.png"
+  alt="CSD Dashboard showing summary cards and domain table"
+/>
+
+{/* Single variant — light only (site does not support dark mode) */}
+<Screenshot
+  light="/images/csd-lb-csd-settings.png"
+  alt="CSD toggle and settings within the HTTP Load Balancer configuration"
+/>
+
+{/* Single variant — dark only */}
+<Screenshot
+  dark="/images/devtools-beacons-dark.png"
+  alt="DevTools Network tab filtered to zeronaught"
+/>
+```
+
+**Props:**
+
+| Prop | Type | Required | Description |
+| --- | --- | --- | --- |
+| `light` | `string` | No\* | Path to light-mode image |
+| `dark` | `string` | No\* | Path to dark-mode image |
+| `alt` | `string` | Yes | Alt text for accessibility |
+| `width` | `number` | No | Image width in pixels |
+| `height` | `number` | No | Image height in pixels |
+
+\*At least one of `light` or `dark` must be provided. When only one variant is provided, that image renders in both themes without swapping.
+
+### Capturing light and dark page screenshots (chrome-devtools-mcp)
+
+Use the `emulate` tool's `colorScheme` parameter to control `prefers-color-scheme`:
+
+1. Set viewport: `emulate` with viewport `"1490x900x1"`
+2. Navigate to the target page
+3. **Light capture**: `emulate` with `colorScheme: "light"` then `take_screenshot` — save as `<name>-light.png`
+4. **Dark capture**: `emulate` with `colorScheme: "dark"` then `take_screenshot` — save as `<name>-dark.png`
+5. **Reset**: `emulate` with `colorScheme: "auto"` and viewport `"0x0x0"`
+
+Sites that respect the `prefers-color-scheme` media query will switch their UI automatically. Sites that don't (like the F5 XC console) will look the same regardless — capture only a light variant for these.
+
+### Capturing light and dark DevTools screenshots (CDP)
+
+DevTools theme is controlled by the `uiTheme` preference in the Chrome profile:
+
+```python
+# Light DevTools theme
+dp["uiTheme"] = '"default"'     # "default" = light theme
+
+# Dark DevTools theme
+dp["uiTheme"] = '"dark"'
+```
+
+**Workflow for both variants:**
+
+1. Kill Chrome
+2. Set `uiTheme` to `"default"` in preferences, launch Chrome, capture DevTools screenshot, save as `<name>-light.png`
+3. Kill Chrome
+4. Set `uiTheme` to `"dark"` in preferences, launch Chrome, capture DevTools screenshot, save as `<name>-dark.png`
+5. Resize both to 1490x900 with `sips -z 900 1490`
+
+### Combined page+DevTools screenshots in both themes
+
+For combined screenshots (page + docked DevTools), both the page color scheme AND the DevTools theme need to match:
+
+1. Kill Chrome
+2. Set preferences: `uiTheme` = `"default"`, `currentDockState` = `"right"`
+3. Launch Chrome, set page `colorScheme: "light"` via `emulate` or CDP
+4. Capture with `screencapture -l` — save as `<name>-light.png`
+5. Kill Chrome
+6. Set preferences: `uiTheme` = `"dark"`, `currentDockState` = `"right"`
+7. Launch Chrome, set page `colorScheme: "dark"` via `emulate` or CDP
+8. Capture with `screencapture -l` — save as `<name>-dark.png`
+
+### Decision guide: when to capture both variants
+
+| Target UI | Dark mode support | Capture strategy |
+| --- | --- | --- |
+| Web apps respecting `prefers-color-scheme` | Yes | Both light + dark |
+| F5 XC console | No | Light only |
+| Chrome DevTools (standalone) | Yes | Both light + dark |
+| Page + docked DevTools | Yes (both) | Both light + dark |
+| Page (no dark) + docked DevTools | Mixed | Light only (DevTools dark would not match page) |

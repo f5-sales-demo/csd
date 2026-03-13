@@ -1957,7 +1957,9 @@ When you need to capture a screenshot showing script execution output in the Dev
 
 ### Why `prompt.appendCommand()` instead of `Runtime.evaluate`
 
-`Runtime.evaluate` on the page target from an external CDP session does **not** produce visible `console.log` output in the DevTools Console panel. The output goes to the CDP session's response, not the DevTools UI. Using `prompt.appendCommand()` on the DevTools target routes the evaluation through the Console panel's own pipeline, so `console.log` output appears exactly as if the user pasted and ran the script.
+`Runtime.evaluate` on the page target from an external CDP session does **not** produce visible `console.log` output in the DevTools Console panel.
+The output goes to the CDP session's response, not the DevTools UI.
+Using `prompt.appendCommand()` on the DevTools target routes the evaluation through the Console panel's own pipeline, so `console.log` output appears exactly as if the user pasted and ran the script.
 
 ### DevTools Console API surface
 

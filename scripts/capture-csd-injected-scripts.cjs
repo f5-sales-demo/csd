@@ -39,21 +39,6 @@ function sendCDP(ws, method, params) {
   });
 }
 
-async function pollFor(ws, expression, { maxAttempts = 30, intervalMs = 300 } = {}) {
-  for (let i = 0; i < maxAttempts; i++) {
-    const result = await sendCDP(ws, 'Runtime.evaluate', {
-      expression,
-      returnByValue: true,
-      awaitPromise: true,
-    });
-    if (result?.result?.value) {
-      return result.result.value;
-    }
-    await new Promise((r) => setTimeout(r, intervalMs));
-  }
-  return null;
-}
-
 async function closeDrawer(ws) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const h = await sendCDP(ws, 'Runtime.evaluate', {
@@ -66,12 +51,18 @@ async function closeDrawer(ws) {
     });
     if ((h?.result?.value || 0) <= 5) break;
     await sendCDP(ws, 'Input.dispatchKeyEvent', {
-      type: 'keyDown', key: 'Escape', code: 'Escape',
-      windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27,
+      type: 'keyDown',
+      key: 'Escape',
+      code: 'Escape',
+      windowsVirtualKeyCode: 27,
+      nativeVirtualKeyCode: 27,
     });
     await sendCDP(ws, 'Input.dispatchKeyEvent', {
-      type: 'keyUp', key: 'Escape', code: 'Escape',
-      windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27,
+      type: 'keyUp',
+      key: 'Escape',
+      code: 'Escape',
+      windowsVirtualKeyCode: 27,
+      nativeVirtualKeyCode: 27,
     });
     await new Promise((r) => setTimeout(r, 300));
   }
@@ -82,16 +73,20 @@ ws.on('open', async () => {
   try {
     // 1. Set viewport to 1280x720 at 1x DPR
     await sendCDP(ws, 'Emulation.setDeviceMetricsOverride', {
-      width: 1280, height: 720, deviceScaleFactor: 1, mobile: false,
+      width: 1280,
+      height: 720,
+      deviceScaleFactor: 1,
+      mobile: false,
     });
 
     // 2. Force theme via class on <html> element
-    const themeExpr = theme === 'dark'
-      ? `(function() {
+    const themeExpr =
+      theme === 'dark'
+        ? `(function() {
           document.documentElement.classList.add('theme-with-dark-background');
           return document.documentElement.className;
         })()`
-      : `(function() {
+        : `(function() {
           document.documentElement.classList.remove('theme-with-dark-background');
           return document.documentElement.className;
         })()`;

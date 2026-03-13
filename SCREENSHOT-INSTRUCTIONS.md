@@ -36,7 +36,7 @@ The `<Screenshot>` component supports `light` and `dark` attributes. Whether you
 
 | Source | Has dark mode? | `<Screenshot>` pattern | Example |
 | --- | --- | --- | --- |
-| **F5 XC Console** (`csd-*` screenshots) | No — XC Console is light-only | `light="..." ` (no `dark=`) | `<Screenshot light="/images/csd-dashboard.png" alt="..." />` |
+| **F5 XC Console** (`csd-*` screenshots) | No — XC Console is light-only | `light="..."` (no `dark=`) | `<Screenshot light="/images/csd-dashboard.png" alt="..." />` |
 | **Juice Shop / overlay** (demo app screenshots) | Fixed dark theme — same image for both modes | `light="..." dark="..."` with **identical paths** | `<Screenshot light="/images/demo-app-home.png" dark="/images/demo-app-home.png" alt="..." />` |
 | **Chrome DevTools** (console, network, elements) | Yes — proper light/dark pairs | `light="...-light.png" dark="...-dark.png"` | `<Screenshot light="/images/devtools-console-light.png" dark="/images/devtools-console-dark.png" alt="..." />` |
 

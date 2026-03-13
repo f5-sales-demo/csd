@@ -30,6 +30,22 @@ This project uses a **dual-resolution standard** — both 16:9 aspect ratio, at 
 
 ---
 
+## Dark Mode Conventions
+
+The `<Screenshot>` component supports `light` and `dark` attributes. Whether you provide both depends on the screenshot source:
+
+| Source | Has dark mode? | `<Screenshot>` pattern | Example |
+| --- | --- | --- | --- |
+| **F5 XC Console** (`csd-*` screenshots) | No — XC Console is light-only | `light="..." ` (no `dark=`) | `<Screenshot light="/images/csd-dashboard.png" alt="..." />` |
+| **Juice Shop / overlay** (demo app screenshots) | Fixed dark theme — same image for both modes | `light="..." dark="..."` with **identical paths** | `<Screenshot light="/images/demo-app-home.png" dark="/images/demo-app-home.png" alt="..." />` |
+| **Chrome DevTools** (console, network, elements) | Yes — proper light/dark pairs | `light="...-light.png" dark="...-dark.png"` | `<Screenshot light="/images/devtools-console-light.png" dark="/images/devtools-console-dark.png" alt="..." />` |
+
+**Why Juice Shop uses identical paths:** Juice Shop has a fixed dark purple/grey theme that does not change between light and dark browser settings. Providing the same image for both `light` and `dark` prevents the docs theme from showing a blank placeholder when the reader switches to dark mode.
+
+**Why XC Console screenshots omit `dark=`:** The F5 XC Console does not offer a dark mode. There is no dark variant to capture, so `dark=` is intentionally omitted. The `<Screenshot>` component handles this gracefully.
+
+---
+
 ## Architecture: Three Approaches
 
 There are three fundamentally different approaches. Know which one you need:

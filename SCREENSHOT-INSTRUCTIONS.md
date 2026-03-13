@@ -143,9 +143,11 @@ echo "Created $APP_DIR"
 #### Step 2: Grant Screen Recording permission
 
 1. Open System Settings:
+
    ```bash
    open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
    ```
+
 2. Click the **+** button
 3. Press **Cmd+Shift+G** in the file dialog to open "Go to Folder"
 4. Paste: `~/Applications/`
@@ -208,13 +210,15 @@ curl -sf http://localhost:9222/json/version > /dev/null 2>&1 || { echo "ERROR: C
 ### Chrome path
 
 These instructions assume Chrome is installed at the default location:
-```
+
+```text
 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
 ```
 
 ### `screencapture` path
 
 On macOS, `screencapture` lives at `/usr/sbin/screencapture` which is **not** in the default `$PATH`. Always use the full path:
+
 ```bash
 /usr/sbin/screencapture -l "$WID" -o -x output.png
 ```
@@ -234,7 +238,8 @@ DevTools stores column visibility in the Chrome profile. Edit this **before laun
 ```
 
 For standard Chrome (non-MCP):
-```
+
+```text
 ~/Library/Application Support/Google/Chrome/Default/Preferences
 ```
 
@@ -592,6 +597,7 @@ mv devtools-screenshot.png docs/images/devtools-screenshot.png
 ```
 
 **Why this is better than screencapture:**
+
 - No Screen Recording permission needed
 - No `.app` wrapper needed
 - Works reliably across process restarts (no TCC flakiness)
@@ -1197,6 +1203,7 @@ sleep 0.5
 **Cause:** Screen Recording permission not granted for the process running `screencapture`.
 
 **Fix:**
+
 1. Create the Node.app wrapper (see Prerequisites, Step 1)
 2. Add it to Screen Recording (see Prerequisites, Step 2)
 3. **Fully quit your terminal (Cmd+Q) and relaunch** — a new tab is NOT sufficient. macOS permissions only take effect on freshly launched processes.
@@ -1208,6 +1215,7 @@ If the permission prompt appeared but Node.app doesn't show in the list, this is
 **Cause:** Accessibility permission not granted. **Recommendation:** Use the CDP approach (Section 5) instead — it doesn't need Accessibility permissions at all.
 
 If you still need osascript keystrokes:
+
 1. Open Accessibility settings: `open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"`
 2. Add your terminal app (Terminal.app, iTerm2, etc.)
 3. If running via `node`, add `Node.app` (same wrapper from Prerequisites)
@@ -1401,6 +1409,7 @@ NODE_PATH=$(npm root -g) node scripts/annotate-screenshot.cjs \
 ```
 
 Each badge has:
+
 - `text` — label text
 - `class` — one of the badge classes above (or use `style` for custom CSS)
 - `centerY` — **(preferred)** Y coordinate of the vertical center of the target row. Badge auto-centers via `translateY(-50%)`.
@@ -1493,6 +1502,7 @@ Or use inline styles in the badge JSON:
 4. **Kill Chrome before editing preferences.** Chrome overwrites preferences on exit. The correct order is: kill → edit → relaunch. Never edit while Chrome is running.
 
 5. **Double-encoding in preferences:** Values in `devtools.preferences` are JSON strings containing JSON. When setting `network-text-filter`, the Python code is:
+
    ```python
    dp["network-text-filter"] = '"method:POST"'  # Note: outer quotes are Python, inner quotes are the JSON string value
    ```

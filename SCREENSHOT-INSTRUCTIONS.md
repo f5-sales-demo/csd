@@ -72,6 +72,28 @@ For **visual screenshots of the DevTools UI** — showing filters, columns, pane
 
 ---
 
+## Reproducibility Requirements
+
+For identical screenshot outputs across different machines and sessions, the following must be true:
+
+**Required for determinism:**
+
+- macOS (any version with Chrome DevTools Protocol support)
+- Google Chrome installed at `/Applications/Google Chrome.app`
+- Node.js + globally-installed `ws` module
+- Dedicated Chrome profile at `~/.cache/chrome-screenshot/chrome-profile` (fresh or reset before each session)
+- No other Chrome instance using the same profile or debugging port
+- Screen Recording permission granted (only for combined page+DevTools screenshots — Method 3)
+- English locale (AppleScript window title detection depends on "DevTools"/"Developer Tools")
+
+**Does NOT affect determinism:**
+
+- Display resolution — `Emulation.setDeviceMetricsOverride` forces exact pixel dimensions regardless of physical display
+- Window position — CDP screenshots capture the page target, not the screen
+- macOS version — CDP interaction is OS-independent
+
+---
+
 ## Prerequisites
 
 ### Required: Node.js + ws module
@@ -162,6 +184,26 @@ When running CDP scripts, use: `NODE_PATH=$(npm root -g) node script.cjs`
 ### Chrome profile for screenshots
 
 These instructions use a **dedicated** Chrome profile directory at `~/.cache/chrome-screenshot/chrome-profile`. This MUST be separate from the `chrome-devtools-mcp` profile used by the MCP server. Chrome can only bind one process to a given `--user-data-dir` — if both the MCP server and the screenshot workflow use the same profile, one will fail with a lock error. Keep them separate.
+
+**Reset to clean state** — use before any screenshot session where you need guaranteed-clean state (a stale profile with different DevTools settings will produce different screenshots):
+
+```bash
+rm -rf "$HOME/.cache/chrome-screenshot/chrome-profile"
+mkdir -p "$HOME/.cache/chrome-screenshot/chrome-profile"
+```
+
+### CDP readiness polling (reusable pattern)
+
+After launching Chrome, poll for CDP readiness before attempting any WebSocket connections. Use this canonical pattern everywhere:
+
+```bash
+# Poll for CDP readiness (max 30s)
+for i in $(seq 1 30); do
+    curl -sf http://localhost:9222/json/version > /dev/null 2>&1 && break
+    sleep 1
+done
+curl -sf http://localhost:9222/json/version > /dev/null 2>&1 || { echo "ERROR: CDP not ready after 30s"; exit 1; }
+```
 
 ### Chrome path
 
@@ -365,10 +407,13 @@ Chrome writes preferences to disk on exit. If you edit the file while Chrome is 
 ```bash
 # 1. Kill Chrome completely
 pkill -9 -f "Google Chrome"
-sleep 3
 
-# 2. Verify it's dead
-pgrep -f "Google Chrome" && echo "Still running!" || echo "Ready to edit"
+# 2. Poll until Chrome is fully terminated (max 10s)
+for i in $(seq 1 10); do
+    pgrep -f "Google Chrome" > /dev/null 2>&1 || break
+    sleep 1
+done
+pgrep -f "Google Chrome" && echo "Still running - wait longer" || echo "Ready to edit"
 
 # 3. NOW edit preferences (they won't be overwritten)
 python3 -c "..."
@@ -532,55 +577,8 @@ for t in json.load(sys.stdin):
         break
 ")
 
-# 2. Capture screenshot via CDP
-cat > /tmp/cdp-screenshot.cjs << 'JSEOF'
-const { WebSocket } = require('ws');
-const { writeFileSync } = require('fs');
-
-const wsUrl = process.argv[2];
-const outputPath = process.argv[3] || 'devtools-screenshot.png';
-
-const ws = new WebSocket(wsUrl);
-ws.on('open', () => {
-    // Force DevTools viewport to exact 1280x720 at 1x DPR
-    ws.send(JSON.stringify({
-        id: 1,
-        method: 'Emulation.setDeviceMetricsOverride',
-        params: { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false }
-    }));
-});
-
-ws.on('message', (data) => {
-    const msg = JSON.parse(data.toString());
-    if (msg.id === 1) {
-        if (msg.error) {
-            console.error('Emulation override failed (expected on devtools:// targets):', JSON.stringify(msg.error));
-            console.error('Fallback: use AppleScript window bounds + --force-device-scale-factor=1');
-            ws.close();
-            process.exit(1);
-        }
-        // Override applied — capture
-        ws.send(JSON.stringify({
-            id: 2,
-            method: 'Page.captureScreenshot',
-            params: { format: 'png' }
-        }));
-    } else if (msg.id === 2 && msg.result && msg.result.data) {
-        writeFileSync(outputPath, Buffer.from(msg.result.data, 'base64'));
-        console.log(`Screenshot saved: ${outputPath}`);
-        ws.close();
-        process.exit(0);
-    } else if (msg.id === 2) {
-        console.error('Screenshot error:', JSON.stringify(msg));
-        ws.close();
-        process.exit(1);
-    }
-});
-
-setTimeout(() => { ws.close(); process.exit(1); }, 10000);
-JSEOF
-
-NODE_PATH=$(npm root -g) node /tmp/cdp-screenshot.cjs "$DEVTOOLS_WS" "devtools-screenshot.png"
+# 2. Capture screenshot via CDP (script committed at scripts/cdp-screenshot.cjs)
+NODE_PATH=$(npm root -g) node scripts/cdp-screenshot.cjs "$DEVTOOLS_WS" "devtools-screenshot.png"
 ```
 
 **After capture, verify dimensions (no resize needed — Emulation override produces exact 1280x720):**
@@ -981,7 +979,7 @@ For `key code` in AppleScript:
 
 ### Example A: Pre-configure + CDP screenshot (RECOMMENDED)
 
-Zero macOS permissions needed. Kill Chrome, configure preferences, relaunch with CDP, screenshot via CDP.
+Zero macOS permissions needed (captures DevTools only via CDP). Kill Chrome, configure preferences, relaunch with CDP, screenshot via CDP.
 
 ```bash
 #!/bin/bash
@@ -993,8 +991,12 @@ PREFS="$HOME/.cache/chrome-screenshot/chrome-profile/Default/Preferences"
 
 # 1. Kill Chrome completely (MUST be dead before editing preferences)
 pkill -9 -f "Google Chrome" 2>/dev/null || true
-sleep 3
-pgrep -f "Google Chrome" && { echo "ERROR: Chrome still running"; exit 1; }
+# Poll until Chrome is fully terminated (max 10s)
+for i in $(seq 1 10); do
+    pgrep -f "Google Chrome" > /dev/null 2>&1 || break
+    sleep 1
+done
+pgrep -f "Google Chrome" > /dev/null 2>&1 && { echo "ERROR: Chrome still running after 10s"; exit 1; }
 
 # 2. Configure preferences
 python3 << 'PYEOF'
@@ -1058,13 +1060,13 @@ PYEOF
   --no-first-run \
   "$TARGET_URL" &>/dev/null &
 disown
-sleep 6
 
-# 4. Wait for CDP to be ready
-for i in $(seq 1 10); do
-    curl -s http://localhost:9222/json/version > /dev/null 2>&1 && break
+# 4. Wait for CDP to be ready (canonical polling pattern — see Prerequisites)
+for i in $(seq 1 30); do
+    curl -sf http://localhost:9222/json/version > /dev/null 2>&1 && break
     sleep 1
 done
+curl -sf http://localhost:9222/json/version > /dev/null 2>&1 || { echo "ERROR: CDP not ready after 30s"; exit 1; }
 
 # 5. Screenshot DevTools via CDP (no permissions needed)
 DEVTOOLS_WS=$(curl -s http://localhost:9222/json | python3 -c "
@@ -1080,53 +1082,8 @@ if [ -z "$DEVTOOLS_WS" ]; then
     exit 1
 fi
 
-cat > /tmp/cdp-screenshot.cjs << 'JSEOF'
-const { WebSocket } = require('ws');
-const { writeFileSync } = require('fs');
-
-const wsUrl = process.argv[2];
-const outputPath = process.argv[3];
-
-const ws = new WebSocket(wsUrl);
-ws.on('open', () => {
-    // Force DevTools viewport to exact 1280x720 at 1x DPR
-    ws.send(JSON.stringify({
-        id: 1,
-        method: 'Emulation.setDeviceMetricsOverride',
-        params: { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false }
-    }));
-});
-
-ws.on('message', (data) => {
-    const msg = JSON.parse(data.toString());
-    if (msg.id === 1) {
-        if (msg.error) {
-            console.error('Emulation override failed:', JSON.stringify(msg.error));
-            ws.close();
-            process.exit(1);
-        }
-        // Override applied — capture
-        ws.send(JSON.stringify({
-            id: 2,
-            method: 'Page.captureScreenshot',
-            params: { format: 'png' }
-        }));
-    } else if (msg.id === 2 && msg.result && msg.result.data) {
-        writeFileSync(outputPath, Buffer.from(msg.result.data, 'base64'));
-        console.log(`Screenshot saved: ${outputPath}`);
-        ws.close();
-        process.exit(0);
-    } else if (msg.id === 2) {
-        console.error('Screenshot error:', JSON.stringify(msg));
-        ws.close();
-        process.exit(1);
-    }
-});
-
-setTimeout(() => { console.error('Timeout'); ws.close(); process.exit(1); }, 10000);
-JSEOF
-
-NODE_PATH=$(npm root -g) node /tmp/cdp-screenshot.cjs "$DEVTOOLS_WS" "$OUTPUT"
+# Screenshot via committed script (scripts/cdp-screenshot.cjs)
+NODE_PATH=$(npm root -g) node scripts/cdp-screenshot.cjs "$DEVTOOLS_WS" "$OUTPUT"
 
 # 6. Verify dimensions (no resize needed — Emulation override produces exact 1280x720)
 echo "Final dimensions:"
@@ -1167,6 +1124,8 @@ In the Example A workflow, add these CDP calls to the **page target** (not the D
 
 Use when Chrome is already running with `--remote-debugging-port=9222` and you need to change panels/filters dynamically. **No macOS permissions needed.**
 
+This script sets `Emulation.setDeviceMetricsOverride` to 1280x720 at 1x DPR and replaces hardcoded `setTimeout` delays with polling for the command palette element.
+
 ```bash
 #!/bin/bash
 set -e
@@ -1188,72 +1147,8 @@ if [ -z "$DEVTOOLS_WS" ]; then
     exit 1
 fi
 
-# 2. Send command via CDP, then screenshot
-cat > /tmp/cdp-interact.cjs << 'JSEOF'
-const { WebSocket } = require('ws');
-const { writeFileSync } = require('fs');
-
-const wsUrl = process.argv[2];
-const command = process.argv[3];
-const outputPath = process.argv[4];
-
-let nextId = 1;
-function sendCDP(ws, method, params) {
-    const id = nextId++;
-    return new Promise((resolve) => {
-        const handler = (data) => {
-            const msg = JSON.parse(data.toString());
-            if (msg.id === id) {
-                ws.removeListener('message', handler);
-                resolve(msg.result);
-            }
-        };
-        ws.on('message', handler);
-        ws.send(JSON.stringify({ id, method, params }));
-    });
-}
-
-const ws = new WebSocket(wsUrl);
-ws.on('open', async () => {
-    // Open Command Menu (Cmd+Shift+P)
-    await sendCDP(ws, 'Runtime.evaluate', {
-        expression: `document.dispatchEvent(new KeyboardEvent('keydown', {
-            key: 'P', code: 'KeyP', metaKey: true, shiftKey: true,
-            bubbles: true, cancelable: true
-        }));`,
-        returnByValue: true
-    });
-    await new Promise(r => setTimeout(r, 500));
-
-    // Type the command
-    await sendCDP(ws, 'Input.insertText', { text: command });
-    await new Promise(r => setTimeout(r, 500));
-
-    // Press Enter
-    await sendCDP(ws, 'Input.dispatchKeyEvent', {
-        type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13
-    });
-    await sendCDP(ws, 'Input.dispatchKeyEvent', {
-        type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13
-    });
-    await new Promise(r => setTimeout(r, 1000));
-
-    // Take screenshot
-    const result = await sendCDP(ws, 'Page.captureScreenshot', { format: 'png' });
-    if (result && result.data) {
-        writeFileSync(outputPath, Buffer.from(result.data, 'base64'));
-        console.log(`Screenshot saved: ${outputPath}`);
-    }
-
-    ws.close();
-    process.exit(0);
-});
-
-ws.on('error', (e) => { console.error(e.message); process.exit(1); });
-setTimeout(() => { ws.close(); process.exit(1); }, 15000);
-JSEOF
-
-NODE_PATH=$(npm root -g) node /tmp/cdp-interact.cjs "$DEVTOOLS_WS" "$COMMAND" "$OUTPUT"
+# 2. Send command via CDP, then screenshot (script committed at scripts/cdp-interact.cjs)
+NODE_PATH=$(npm root -g) node scripts/cdp-interact.cjs "$DEVTOOLS_WS" "$COMMAND" "$OUTPUT"
 ```
 
 **Usage examples:**
@@ -1271,8 +1166,10 @@ NODE_PATH=$(npm root -g) node /tmp/cdp-interact.cjs "$DEVTOOLS_WS" "$COMMAND" "$
 
 ### Example C: Resize DevTools window before screenshot
 
+**Note:** This AppleScript approach matches window names using English strings ("DevTools", "Developer Tools"). It only works with English locale. For a locale-independent alternative, use CDP `Emulation.setDeviceMetricsOverride` to control the capture viewport directly — no window resizing needed.
+
 ```bash
-# Set DevTools window to specific dimensions (uses AppleScript, no special permissions)
+# Set DevTools window to specific dimensions (uses AppleScript, English locale only)
 osascript -e '
 tell application "Google Chrome"
   repeat with w in every window
@@ -1284,7 +1181,9 @@ tell application "Google Chrome"
 end tell'
 sleep 0.5
 
-# Then screenshot via CDP (no need to resize for CDP screenshots — they capture at native resolution)
+# CDP alternative (locale-independent): use Emulation.setDeviceMetricsOverride
+# to force exact viewport dimensions regardless of physical window size.
+# Then screenshot via CDP — no window resizing needed.
 ```
 
 ---
@@ -1432,7 +1331,11 @@ ls "/Applications/Google Chrome.app" > /dev/null 2>&1 && echo "Chrome found" || 
   --remote-debugging-port=9222 \
   --no-first-run \
   "about:blank" &>/dev/null &
-sleep 4
+# Poll for CDP readiness (canonical pattern — see Prerequisites)
+for i in $(seq 1 30); do
+    curl -sf http://localhost:9222/json/version > /dev/null 2>&1 && break
+    sleep 1
+done
 curl -sf http://localhost:9222/json/version && echo "CDP connection OK" || echo "FAILED - Chrome CDP not responding"
 pkill -f "Google Chrome" 2>/dev/null || true
 
@@ -1524,6 +1427,8 @@ NODE_PATH=$(npm root -g) node scripts/annotate-screenshot.cjs \
   ]'
 ```
 
+> **Note:** The `centerY` and `left` values above are specific to the screenshot they were derived from. If you retake the source screenshot, re-measure all coordinates before re-annotating. See "Annotation coordinate fragility" below.
+
 ### Tips for positioning badges
 
 1. **Take the screenshot first**, then open it in Preview or a browser to find the pixel coordinates for badge placement.
@@ -1531,6 +1436,24 @@ NODE_PATH=$(npm root -g) node scripts/annotate-screenshot.cjs \
 3. **Coordinates are relative to the output dimensions** (e.g., 1280x720 for DevTools, 1600x900 for pages), not the source image's native resolution. The annotation tool scales the source image to fit.
 4. **Place badges inline with the code/content they annotate** — typically to the right of the element, vertically centered on the line.
 5. **Use `sips -g pixelWidth -g pixelHeight`** to verify the final annotated image is the correct dimensions.
+
+### Annotation coordinate fragility
+
+Badge coordinates are **per-capture, not universal**. Any change to the underlying screenshot invalidates all annotation positions. You must re-derive coordinates after retaking any source screenshot.
+
+**Why coordinates break:**
+
+- **SPA frameworks** (Angular, React, Vue) inject dynamic `<style>` elements at runtime. The number and order of these elements varies between page loads, changing the Elements panel tree layout between captures.
+- **Browser updates** can shift DevTools rendering — font metrics, padding, row height, and scrollbar behavior all change across Chrome versions.
+- **Target application updates** add, remove, or reorder DOM nodes, shifting everything below the change point in the Elements tree.
+- **DevTools panel state** — different sidebar widths, drawer heights, or zoom levels change the coordinate space.
+
+**Recommendations:**
+
+- **Always re-measure after retake** — never reuse coordinates from a previous capture session.
+- **Verify periodically** — even without retaking, spot-check that annotations still align after Chrome or target app updates.
+- **Store raw screenshots** — keep un-annotated source images in the repo (or locally) so you can re-annotate without re-capturing.
+- **Document coordinate derivation** — when annotating, note the Chrome version and capture date in a comment so future maintainers know when coordinates were last validated.
 
 ### Customizing badge styles
 
@@ -1563,7 +1486,7 @@ Or use inline styles in the badge JSON:
    - For runtime interaction: CDP to open Command Menu, type commands, press Enter
    - Screenshot via CDP `Page.captureScreenshot` on the DevTools page target
    - `Emulation.setDeviceMetricsOverride` captures at exact 1280x720 — no resize needed
-   - **No macOS permissions needed for any of this**
+   - **No macOS permissions needed for any of this (DevTools-only captures)**
 
 4. **Kill Chrome before editing preferences.** Chrome overwrites preferences on exit. The correct order is: kill → edit → relaunch. Never edit while Chrome is running.
 
@@ -1696,3 +1619,311 @@ For combined screenshots (page + docked DevTools), both the page color scheme AN
 | Chrome DevTools (standalone) | Yes | Both light + dark |
 | Page + docked DevTools | Yes (both) | Both light + dark |
 | Page (no dark) + docked DevTools | Mixed | Light only (DevTools dark would not match page) |
+
+---
+
+## 14. Collapsing DevTools Panels for Screenshots
+
+When capturing Elements panel screenshots, the Styles sidebar and console drawer consume significant viewport space. Collapsing them gives the DOM tree the full width, producing cleaner screenshots. This section documents the techniques discovered and validated in commits `63bf891` and `0f656f4`.
+
+### Why CSS hiding doesn't work
+
+DevTools uses internal JavaScript sizing for its split panels. Setting `display: none` or `flex` overrides on sidebar/drawer elements via `Runtime.evaluate` leaves the main pane at its original pixel size — it does **not** expand to fill the freed space. The layout is controlled by `SplitWidget` internals, not CSS flow.
+
+### SplitWidget API — collapsing the Styles sidebar
+
+The correct approach uses the internal DevTools `SplitWidget` API, evaluated on the DevTools page target (`devtools_app.html`) via `Runtime.evaluate`:
+
+```javascript
+// Hide the Styles/Computed sidebar — DOM tree expands to full width
+UI.panels.elements.splitWidget.hideSidebar();
+```
+
+This properly recalculates the internal layout so the DOM tree pane fills the entire viewport width.
+
+To restore the sidebar:
+
+```javascript
+UI.panels.elements.splitWidget.showBoth();
+```
+
+**Important:** This must be evaluated on the DevTools target itself (the `devtools_app.html` page), not on the inspected web page. Use the DevTools WebSocket target identified by its `devtools://` or `chrome-devtools://` URL.
+
+### Console drawer — close with Escape via CDP
+
+The console drawer at the bottom of DevTools is toggled by the Escape key. Close it by dispatching key events via CDP `Input.dispatchKeyEvent` on the DevTools target:
+
+```javascript
+// Both keyDown and keyUp events are required
+await sendCDP(ws, 'Input.dispatchKeyEvent', {
+    type: 'keyDown', key: 'Escape', code: 'Escape',
+    windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27
+});
+await sendCDP(ws, 'Input.dispatchKeyEvent', {
+    type: 'keyUp', key: 'Escape', code: 'Escape',
+    windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27
+});
+```
+
+### Re-hiding after Elements panel search
+
+When using Cmd+F to search in the Elements panel, pressing Escape to close the search bar can re-open the console drawer. Always re-apply panel collapsing after search operations:
+
+```javascript
+// After Cmd+F search → type query → Enter → Escape to close search:
+// 1. Re-hide the sidebar (search may have restored it)
+await evalOnDevTools(ws, 'UI.panels.elements.splitWidget.hideSidebar();');
+
+// 2. Check if the drawer re-opened and press Escape again if needed
+const drawerCheck = await evalOnDevTools(ws, `(function() {
+    var d = document.querySelector('.drawer-tabbed-pane');
+    if (d) { var r = d.getBoundingClientRect(); return 'h=' + Math.round(r.height); }
+    return 'none';
+})()`);
+// If height > 5, press Escape again to close the drawer
+```
+
+### Verifying the drawer is closed
+
+Use this snippet to check drawer visibility on the DevTools target:
+
+```javascript
+(function() {
+    var d = document.querySelector('.drawer-tabbed-pane');
+    if (d) {
+        var r = d.getBoundingClientRect();
+        return 'drawer h=' + Math.round(r.height);
+    }
+    return 'no drawer';
+})()
+```
+
+- `no drawer` or `h=0` — drawer is closed
+- `h=` greater than 5 — drawer is still visible, press Escape again
+
+### Complete Elements panel screenshot workflow
+
+This is the recommended sequence for capturing a clean Elements panel screenshot (references Section 4 for viewport setup and Section 5 for CDP interaction):
+
+1. **Connect** to the DevTools WebSocket target (`devtools_app.html`)
+2. **Set viewport**: `Emulation.setDeviceMetricsOverride` — 1280x720 at 1x DPR
+3. **Force theme**: add/remove `theme-with-dark-background` class on the DevTools `<html>` element (see Section 13)
+4. **Hide sidebar**: `UI.panels.elements.splitWidget.hideSidebar()`
+5. **Close drawer**: dispatch Escape key events
+6. **Search for target elements** (if needed): Cmd+F → type query → Enter → Escape. For a programmatic alternative that expands and selects specific DOM nodes without Cmd+F, see Section 15.
+7. **Re-hide sidebar**: search may have restored it — call `hideSidebar()` again
+8. **Re-check drawer**: verify height, press Escape again if visible
+9. **Optional**: hide intermediate DOM nodes between search targets for a focused view. See Section 15 for the full DOM navigation technique (query selectors, tree expansion, scrolling).
+10. **Capture**: `Page.captureScreenshot` with `format: 'png'`
+11. **Verify dimensions**: `sips -g pixelWidth -g pixelHeight <output>` — confirm exactly 1280x720
+12. **Verify content**: Open the PNG and confirm the sidebar/drawer are collapsed
+
+**Drawer retry loop** — use this pattern when the drawer state is uncertain:
+
+```javascript
+// Retry closing the drawer up to 3 times
+for (let attempt = 0; attempt < 3; attempt++) {
+    const check = await evalOnDevTools(ws, `(function() {
+        var d = document.querySelector('.drawer-tabbed-pane');
+        if (d) { var r = d.getBoundingClientRect(); return Math.round(r.height); }
+        return 0;
+    })()`);
+    if (check <= 5) break;
+    // Press Escape to close
+    await sendCDP(ws, 'Input.dispatchKeyEvent', {
+        type: 'keyDown', key: 'Escape', code: 'Escape',
+        windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27
+    });
+    await sendCDP(ws, 'Input.dispatchKeyEvent', {
+        type: 'keyUp', key: 'Escape', code: 'Escape',
+        windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27
+    });
+    await new Promise(r => setTimeout(r, 300));
+}
+```
+
+---
+
+## 15. Elements Panel DOM Navigation
+
+Programmatically navigating to specific DOM nodes in the Elements panel — expanding parent nodes, selecting elements, and scrolling the tree — requires DevTools-internal APIs evaluated on the `devtools_app.html` target. Standard CDP DOM methods do not control the Elements panel tree.
+
+### 15.1 Why standard DOM inspection fails
+
+Several approaches that seem like they should work do **not** reliably expand and select nodes in the Elements panel tree:
+
+- **`SDK` is not a global in Chrome 145+.** Older examples using `SDK.DOMModel` or `SDK.DOMModel.requestDocument()` will throw `ReferenceError`. The `SDK` namespace was removed from the global scope.
+- **`DOM.setInspectedNode`** on the page target sets `$0` in the Console but does **not** expand the Elements tree to show the node.
+- **`inspect()` via `Runtime.evaluate`** on the page target opens the Elements panel but does **not** reliably expand the tree to reveal the inspected node.
+- **`DOM.querySelector`** on the page target returns node IDs usable for data extraction but has no effect on the Elements panel UI.
+
+The correct approach is to use the DevTools-internal `UI.panels.elements` API, evaluated on the DevTools page target (`devtools_app.html`) via `Runtime.evaluate`.
+
+### 15.2 Accessing the DOM model (Chrome 145+)
+
+The Elements panel exposes its tree outline and DOM model through internal APIs. Evaluate these on the DevTools target:
+
+```javascript
+// Get the tree outline and DOM model
+const to = UI.panels.elements.getTreeOutlineForTesting();
+const rootNode = to.rootDOMNodeInternal;
+const dm = rootNode.domModel();
+
+// Request the document root (async — returns a Promise)
+const doc = await dm.requestDocument();
+
+// Query for specific nodes by CSS selector
+const nodeIds = await dm.querySelectorAll(doc.id, 'head > script[id]');
+```
+
+**Key objects:**
+
+| Object | Access path | Description |
+| --- | --- | --- |
+| Tree outline | `UI.panels.elements.getTreeOutlineForTesting()` | Controls the visible DOM tree in the Elements panel |
+| Root DOM node | `to.rootDOMNodeInternal` | The root of the inspected document's DOM model |
+| DOM model | `rootNode.domModel()` | Provides `requestDocument()`, `querySelectorAll()`, `querySelector()` |
+| Document node | `await dm.requestDocument()` | The `#document` node — pass its `id` to query methods |
+
+### 15.3 Selecting and revealing DOM nodes
+
+After obtaining node IDs from `querySelectorAll`, resolve them to DOM node objects and use the Elements panel API to select and reveal:
+
+```javascript
+// Resolve a nodeId to a DOMNode object
+const node = dm.nodeForId(nodeId);
+
+// Select the node — highlights it in the tree, sets == $0
+UI.panels.elements.selectDOMNode(node, true);
+
+// Reveal and select — expands all ancestor nodes, scrolls into view
+const to = UI.panels.elements.getTreeOutlineForTesting();
+await to.revealAndSelectNode(node, true);
+```
+
+**Behavior:**
+
+- `selectDOMNode(node, true)` — selects the node and sets it as `$0` in the Console. The second parameter (`true`) means "focus the node".
+- `revealAndSelectNode(node, true)` — expands all parent nodes (`<html>`, `<head>`, `<body>`, etc.) automatically, then scrolls the tree to bring the node into view. This is the most reliable way to make a specific node visible.
+
+### 15.4 Scrolling the Elements tree (shadow DOM)
+
+The Elements panel tree renders `<li>` elements inside a shadow DOM. Standard `document.querySelector` won't find them — you must query through the tree outline's shadow root:
+
+```javascript
+// Get all tree items via the shadow root
+const to = UI.panels.elements.getTreeOutlineForTesting();
+const items = to.shadowRoot.querySelectorAll('li');
+
+// getBoundingClientRect() returns accurate viewport-relative positions
+const rect = items[n].getBoundingClientRect();
+
+// Scroll a specific item to the top of the visible tree area
+items[n].scrollIntoView({ block: 'start', behavior: 'instant' });
+```
+
+**Tips:**
+
+- Use `behavior: 'instant'` (not `'smooth'`) for deterministic positioning in screenshots.
+- `getBoundingClientRect()` returns accurate viewport-relative coordinates even within shadow DOM.
+- After scrolling, add a brief delay (100-200ms) before capturing to let the tree re-render.
+
+### 15.5 Complete working example
+
+This example connects to the DevTools target, queries for specific DOM nodes, selects and reveals them, collapses panels (Section 14), scrolls the tree, and captures a screenshot:
+
+```javascript
+// Run on the DevTools target (devtools_app.html) via Runtime.evaluate
+// Assumes sendCDP() helper from scripts/cdp-interact.cjs
+
+async function navigateAndCapture(ws) {
+    // 1. Get the DOM model and query for target nodes
+    const setupResult = await sendCDP(ws, 'Runtime.evaluate', {
+        expression: `(async function() {
+            const to = UI.panels.elements.getTreeOutlineForTesting();
+            const rootNode = to.rootDOMNodeInternal;
+            const dm = rootNode.domModel();
+            const doc = await dm.requestDocument();
+
+            // Example: find all <script> elements with an id attribute in <head>
+            const nodeIds = await dm.querySelectorAll(doc.id, 'head > script[id]');
+            return JSON.stringify(nodeIds);
+        })()`,
+        returnByValue: true,
+        awaitPromise: true
+    });
+    const nodeIds = JSON.parse(setupResult.result.value);
+
+    // 2. Select and reveal the first matching node
+    await sendCDP(ws, 'Runtime.evaluate', {
+        expression: `(async function() {
+            const to = UI.panels.elements.getTreeOutlineForTesting();
+            const dm = to.rootDOMNodeInternal.domModel();
+            const node = dm.nodeForId(${nodeIds[0]});
+            await to.revealAndSelectNode(node, true);
+        })()`,
+        returnByValue: true,
+        awaitPromise: true
+    });
+
+    // 3. Collapse sidebar and drawer (Section 14)
+    await sendCDP(ws, 'Runtime.evaluate', {
+        expression: 'UI.panels.elements.splitWidget.hideSidebar();',
+        returnByValue: true
+    });
+
+    // Close drawer via Escape
+    await sendCDP(ws, 'Input.dispatchKeyEvent', {
+        type: 'keyDown', key: 'Escape', code: 'Escape',
+        windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27
+    });
+    await sendCDP(ws, 'Input.dispatchKeyEvent', {
+        type: 'keyUp', key: 'Escape', code: 'Escape',
+        windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27
+    });
+
+    // 4. Scroll the tree to position the target node at the top
+    await sendCDP(ws, 'Runtime.evaluate', {
+        expression: `(function() {
+            const to = UI.panels.elements.getTreeOutlineForTesting();
+            const items = Array.from(to.shadowRoot.querySelectorAll('li.selected'));
+            if (items.length > 0) {
+                items[0].scrollIntoView({ block: 'start', behavior: 'instant' });
+            }
+        })()`,
+        returnByValue: true
+    });
+
+    // Brief delay for tree re-render
+    await new Promise(r => setTimeout(r, 200));
+
+    // 5. Capture screenshot
+    await sendCDP(ws, 'Emulation.setDeviceMetricsOverride', {
+        width: 1280, height: 720, deviceScaleFactor: 1, mobile: false
+    });
+    const screenshot = await sendCDP(ws, 'Page.captureScreenshot', { format: 'png' });
+    return screenshot.data; // base64 PNG
+}
+```
+
+**Usage with the CDP helper scripts:**
+
+```bash
+# 1. Find the DevTools target
+DEVTOOLS_WS=$(curl -s http://localhost:9222/json | python3 -c "
+import json, sys
+for t in json.load(sys.stdin):
+    if 'devtools_app.html' in t.get('url', ''):
+        print(t['webSocketDebuggerUrl'])
+        break
+")
+
+# 2. Run the navigation + capture (integrate into a .cjs script)
+NODE_PATH=$(npm root -g) node your-dom-nav-script.cjs "$DEVTOOLS_WS" output.png
+```
+
+**Cross-references:**
+
+- Section 14 — collapsing sidebar and drawer before capture
+- Section 4, Method 1 — CDP screenshot fundamentals
+- Section 5 — DevTools target discovery and CDP helpers

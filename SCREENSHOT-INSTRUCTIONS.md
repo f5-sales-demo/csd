@@ -1989,13 +1989,61 @@ prompt.text();
 prompt.clear();
 ```
 
+### Console error suppression
+
+The demo site fires error-level console messages from two sources: `common.js` runtime errors and Bot Defense WebSocket reconnection failures (`wss://botdemo.sales-demo.f5demos.com/socket.io/...`). Additionally, injected CDN scripts from the attack simulation produce Chrome Issues (CORS, ES module errors). These create visible noise in Console screenshots:
+
+- Red error messages in the Console panel
+- An error counter badge (red square with count) in the top DevTools toolbar
+- An "Issues" counter in both the top toolbar and Console toolbar
+
+**Suppression strategy (three layers):**
+
+1. **Message level filter** — The Console panel has a `messageLevelFiltersSetting` that controls which log levels are visible. Setting `error` and `warning` to `false` before clearing the console and executing scripts prevents error-level messages from ever registering. After execution, resetting to defaults restores the toolbar label from "Info only" to "Default levels".
+
+```javascript
+// Suppress errors and warnings (on DevTools target)
+var f = UI.panels.console.view.filter;
+f.messageLevelFiltersSetting.set({verbose: false, info: true, warning: false, error: false});
+
+// ... clear console, execute script, wait ...
+
+// Restore defaults (toolbar shows "Default levels" again)
+f.messageLevelFiltersSetting.set({verbose: false, info: true, warning: true, error: true});
+```
+
+The preference key is `message-level-filters` (stored as JSON in Chrome Preferences). Default value: `{"verbose":false,"info":true,"warning":true,"error":true}`.
+
+2. **Issue counter hiding** — The `devtools-issue-counter` custom element appears in both the Console toolbar and the main DevTools toolbar (inside the shadow DOM of `.main-tabbed-pane`). Hide both via `display: none`:
+
+```javascript
+// Hide issue counter in Console toolbar
+var ci = document.querySelector('devtools-issue-counter');
+if (ci) ci.style.display = 'none';
+
+// Hide counters in the main toolbar (inside shadow DOM)
+var pane = document.querySelector('.main-tabbed-pane');
+var rt = pane.shadowRoot.querySelector('.tabbed-pane-right-toolbar');
+var ic = rt.querySelector('devtools-issue-counter');
+if (ic) ic.style.display = 'none';
+```
+
+3. **Error counter badge hiding** — The red error count badge is an `icon-button` element inside the same shadow DOM toolbar:
+
+```javascript
+var ib = rt.querySelector('icon-button');
+if (ib) ib.style.display = 'none';
+```
+
+The attack script uses only `console.log` (info level), so all its output passes through the filter unaffected.
+
 ### Console drawer behavior
 
 When the Console panel is the active panel (not a drawer), it shows a drawer bar at the bottom with tabs ("Console", "AI assistance", etc.). This bar appears in captures and cannot be hidden without switching to a different panel. Pressing Escape while the Console panel is active closes any sub-drawer but does not remove the tab bar itself.
 
 ### Complete Console panel screenshot workflow
 
-This is the recommended sequence for capturing Console output screenshots. The committed script `scripts/capture-console-output.cjs` implements this workflow (see Section 17).
+This is the recommended sequence for capturing Console output screenshots. The committed script `scripts/capture-console-output.cjs` implements this workflow (see Section 17). Pass `""` as the script-file argument to capture a clean (empty) Console panel.
 
 1. **Kill Chrome** — ensure clean state
 2. **Set preferences** — `panel-selected-tab` = `console`, `currentDockState` = `undocked`, `uiTheme` = `"default"` or `"dark"` (Section 3)
@@ -2007,13 +2055,16 @@ This is the recommended sequence for capturing Console output screenshots. The c
 6. **Page target: fill credentials** — populate email/password fields so the page is in a realistic state
 7. **DevTools target: set viewport** — `Emulation.setDeviceMetricsOverride` at 1280x720, 1x DPR
 8. **DevTools target: force theme** — add/remove `theme-with-dark-background` class (Section 13)
-9. **DevTools target: clear console** — `UI.panels.console.view.clearConsole()`
-10. **DevTools target: execute script** — `UI.panels.console.view.prompt.appendCommand(script, true)`
-11. **Wait for async callbacks** — 5-6 seconds for network requests, dynamic script loads, and fetch completions
-12. **DevTools target: close drawer** — press Escape via `Input.dispatchKeyEvent` to close any sub-drawer
-13. **DevTools target: scroll to bottom** — `UI.panels.console.view.immediatelyScrollToBottom()`
-14. **Capture** — `Page.captureScreenshot` with `format: 'png'` on the DevTools target
-15. **Verify** — confirm 1280x720 dimensions and visible console output
+9. **DevTools target: suppress errors** — set `messageLevelFiltersSetting` to hide error/warning levels
+10. **DevTools target: clear console** — `UI.panels.console.view.clearConsole()`
+11. **DevTools target: execute script** (if provided) — `UI.panels.console.view.prompt.appendCommand(script, true)`
+12. **Wait for async callbacks** — 5-6 seconds for network requests, dynamic script loads, and fetch completions
+13. **DevTools target: restore default filters** — reset `messageLevelFiltersSetting` to defaults
+14. **DevTools target: close drawer** — press Escape via `Input.dispatchKeyEvent` to close any sub-drawer
+15. **DevTools target: scroll to bottom** — `UI.panels.console.view.immediatelyScrollToBottom()`
+16. **DevTools target: hide error/issue badges** — hide `icon-button` and `devtools-issue-counter` in both toolbars
+17. **Capture** — `Page.captureScreenshot` with `format: 'png'` on the DevTools target
+18. **Verify** — confirm 1280x720 dimensions and visible console output
 
 **Cross-references:**
 
@@ -2156,15 +2207,20 @@ NODE_PATH=$(npm root -g) node scripts/capture-csd-injected-scripts.cjs \
 
 **Cross-references:** Section 14 (sidebar/drawer collapsing), Section 15 (DOM navigation APIs)
 
-### 17.5 `capture-console-output.cjs` — Console panel script execution
+### 17.5 `capture-console-output.cjs` — Console panel screenshot
 
-**Purpose:** Execute an attack/demo script via the Console panel's prompt API and capture the resulting console output as a screenshot.
+**Purpose:** Capture a Console panel screenshot, optionally executing an attack/demo script via the Console prompt API first. Includes error suppression to hide demo site noise.
 
 **Usage:**
 
 ```bash
+# With script execution
 NODE_PATH=$(npm root -g) node scripts/capture-console-output.cjs \
   <page-ws> <devtools-ws> <script-file> <output-path> [light|dark]
+
+# Clean console (no script)
+NODE_PATH=$(npm root -g) node scripts/capture-console-output.cjs \
+  <page-ws> <devtools-ws> "" <output-path> [light|dark]
 ```
 
 **Parameters:**
@@ -2173,7 +2229,7 @@ NODE_PATH=$(npm root -g) node scripts/capture-console-output.cjs \
 | --- | --- | --- |
 | `page-ws` | Yes | WebSocket URL of the page target |
 | `devtools-ws` | Yes | WebSocket URL of the DevTools target |
-| `script-file` | Yes | Path to the JavaScript file to execute |
+| `script-file` | Yes | Path to JS file to execute, or `""` for clean console |
 | `output-path` | No | Output PNG path (default: `/tmp/console-output.png`) |
 | `light\|dark` | No | Theme (default: `light`) |
 
@@ -2186,15 +2242,18 @@ NODE_PATH=$(npm root -g) node scripts/capture-console-output.cjs \
 3. Page target: fills email and password fields
 4. DevTools target: sets viewport to 1280x720 at 1x DPR
 5. DevTools target: forces theme
-6. DevTools target: clears console via `UI.panels.console.view.clearConsole()`
-7. DevTools target: executes script via `UI.panels.console.view.prompt.appendCommand(script, true)`
-8. Waits 6 seconds for async callbacks (network requests, dynamic script loads)
-9. DevTools target: closes drawer via Escape
-10. DevTools target: scrolls to bottom via `UI.panels.console.view.immediatelyScrollToBottom()`
-11. Captures screenshot on DevTools target
+6. DevTools target: suppresses error/warning levels via `messageLevelFiltersSetting`
+7. DevTools target: clears console via `UI.panels.console.view.clearConsole()`
+8. DevTools target: executes script (if provided) via `prompt.appendCommand(script, true)`
+9. Waits 6 seconds for async callbacks (network requests, dynamic script loads)
+10. DevTools target: restores default level filters
+11. DevTools target: closes drawer via Escape
+12. DevTools target: scrolls to bottom via `view.immediatelyScrollToBottom()`
+13. DevTools target: hides error/issue badges via DOM manipulation (shadow DOM)
+14. Captures screenshot on DevTools target
 
-**DevTools APIs used:** `UI.panels.console.view`, `view.clearConsole()`, `view.immediatelyScrollToBottom()`, `view.prompt`, `prompt.appendCommand()`.
+**DevTools APIs used:** `UI.panels.console.view`, `view.clearConsole()`, `view.immediatelyScrollToBottom()`, `view.filter.messageLevelFiltersSetting`, `view.prompt`, `prompt.appendCommand()`.
 
 **Prerequisites:** Chrome with the target page loaded, DevTools open to Console panel (set via preferences — Section 3). The script file should contain the JavaScript to execute (e.g., a CDN injection attack script).
 
-**Cross-references:** Section 16 (Console panel workflow), Section 3 (Chrome preferences), Section 13 (theme switching)
+**Cross-references:** Section 16 (Console panel workflow, error suppression), Section 3 (Chrome preferences), Section 13 (theme switching)

@@ -1,8 +1,10 @@
-// Capture console output screenshot — runs attack script via DevTools Console
-// prompt API, then captures the Console panel screenshot.
+// Capture Console panel screenshot — optionally runs an attack script via the
+// DevTools Console prompt API before capturing.
 //
 // Usage: NODE_PATH=$(npm root -g) node scripts/capture-console-output.cjs \
-//          <page-ws-url> <devtools-ws-url> <script-file> <output-path> [theme]
+//          <page-ws-url> <devtools-ws-url> <script-file|""> <output-path> [theme]
+//
+// Pass "" as <script-file> to capture a clean (empty) Console panel.
 
 const { WebSocket } = require('ws');
 const { writeFileSync, readFileSync } = require('node:fs');
@@ -13,14 +15,14 @@ const scriptFile = process.argv[4];
 const outputPath = process.argv[5] || '/tmp/console-output.png';
 const theme = process.argv[6] || 'light';
 
-if (!pageWsUrl || !devtoolsWsUrl || !scriptFile) {
+if (!pageWsUrl || !devtoolsWsUrl) {
   console.error(
-    'Usage: node capture-console-output.cjs <page-ws> <devtools-ws> <script-file> <output-path> [light|dark]',
+    'Usage: node capture-console-output.cjs <page-ws> <devtools-ws> <script-file|""> <output-path> [light|dark]',
   );
   process.exit(1);
 }
 
-const attackScript = readFileSync(scriptFile, 'utf8');
+const attackScript = scriptFile ? readFileSync(scriptFile, 'utf8') : null;
 
 function createCDP(wsUrl, label) {
   let nextId = 1;
@@ -104,7 +106,22 @@ async function sleep(ms) {
         : `document.documentElement.classList.remove('theme-with-dark-background')`;
     await dt.sendCDP('Runtime.evaluate', { expression: themeExpr, returnByValue: true });
 
-    // --- DevTools target: clear console ---
+    // --- DevTools target: suppress errors and clear console ---
+    // The demo site fires error-level messages (common.js runtime errors,
+    // Bot Defense WebSocket reconnection failures) that pollute Console
+    // screenshots. Temporarily hiding error/warning levels before clearing
+    // ensures any late-arriving errors are suppressed, then resetting the
+    // filter restores the toolbar to "Default levels" with 0 hidden.
+    console.log('Suppressing error/warning levels...');
+    await dt.sendCDP('Runtime.evaluate', {
+      expression: `(function() {
+        var f = UI.panels.console.view.filter;
+        f.messageLevelFiltersSetting.set({verbose: false, info: true, warning: false, error: false});
+        return 'errors suppressed';
+      })()`,
+      returnByValue: true,
+    });
+
     console.log('Clearing console...');
     await dt.sendCDP('Runtime.evaluate', {
       expression: 'UI.panels.console.view.clearConsole()',
@@ -112,29 +129,47 @@ async function sleep(ms) {
     });
     await sleep(500);
 
-    // --- DevTools target: execute attack script via prompt.appendCommand ---
-    console.log('Executing attack script via Console prompt...');
-    const escapedScript = JSON.stringify(attackScript);
-    const evalResult = await dt.sendCDP('Runtime.evaluate', {
+    // --- DevTools target: execute attack script (if provided) ---
+    // Keep error/warning filter active during execution so errors from
+    // injected CDN scripts never register as visible messages.
+    if (attackScript) {
+      console.log('Executing attack script via Console prompt...');
+      const escapedScript = JSON.stringify(attackScript);
+      const evalResult = await dt.sendCDP('Runtime.evaluate', {
+        expression: `(function() {
+          var prompt = UI.panels.console.view.prompt;
+          prompt.appendCommand(${escapedScript}, true);
+          return 'command submitted';
+        })()`,
+        returnByValue: true,
+      });
+      console.log('Eval result:', evalResult?.result?.value);
+
+      // Wait for script execution + async callbacks (script loads, fetches)
+      console.log('Waiting for async callbacks...');
+      await sleep(6000);
+
+      // --- Check message count ---
+      const msgCount = await dt.sendCDP('Runtime.evaluate', {
+        expression: `document.querySelectorAll('.console-message-wrapper').length`,
+        returnByValue: true,
+      });
+      console.log('Visible console messages:', msgCount?.result?.value);
+    } else {
+      console.log('No script file — capturing clean console.');
+    }
+
+    // Restore default level filters now that errors have been suppressed.
+    // This resets the toolbar label from "Info only" to "Default levels".
+    console.log('Restoring default level filters...');
+    await dt.sendCDP('Runtime.evaluate', {
       expression: `(function() {
-        var prompt = UI.panels.console.view.prompt;
-        prompt.appendCommand(${escapedScript}, true);
-        return 'command submitted';
+        var f = UI.panels.console.view.filter;
+        f.messageLevelFiltersSetting.set({verbose: false, info: true, warning: true, error: true});
+        return 'filters restored';
       })()`,
       returnByValue: true,
     });
-    console.log('Eval result:', evalResult?.result?.value);
-
-    // Wait for script execution + async callbacks (script loads, fetches)
-    console.log('Waiting for async callbacks...');
-    await sleep(6000);
-
-    // --- Check message count ---
-    const msgCount = await dt.sendCDP('Runtime.evaluate', {
-      expression: `document.querySelectorAll('.console-message-wrapper').length`,
-      returnByValue: true,
-    });
-    console.log('Visible console messages:', msgCount?.result?.value);
 
     // --- DevTools target: close Console drawer if open ---
     // Press Escape to close the drawer
@@ -159,6 +194,34 @@ async function sleep(ms) {
       returnByValue: true,
     });
     await sleep(500);
+
+    // --- DevTools target: hide error/issue badges ---
+    // The demo site and injected CDN scripts trigger Chrome Issues (CORS,
+    // module errors) that produce counters in both the main toolbar and
+    // the Console toolbar. These are separate from Console message levels
+    // and must be hidden via DOM manipulation.
+    console.log('Hiding error/issue badges...');
+    await dt.sendCDP('Runtime.evaluate', {
+      expression: `(function() {
+        var hidden = [];
+        // Hide counters in the main toolbar (inside shadow DOM)
+        var pane = document.querySelector('.main-tabbed-pane');
+        if (pane && pane.shadowRoot) {
+          var rt = pane.shadowRoot.querySelector('.tabbed-pane-right-toolbar');
+          if (rt) {
+            var ib = rt.querySelector('icon-button');
+            if (ib) { ib.style.display = 'none'; hidden.push('error-counter'); }
+            var ic = rt.querySelector('devtools-issue-counter');
+            if (ic) { ic.style.display = 'none'; hidden.push('issue-counter-top'); }
+          }
+        }
+        // Hide issue counter in the Console toolbar
+        var ci = document.querySelector('devtools-issue-counter');
+        if (ci) { ci.style.display = 'none'; hidden.push('issue-counter-console'); }
+        return hidden.join(',');
+      })()`,
+      returnByValue: true,
+    });
 
     // --- Capture ---
     console.log('Capturing screenshot...');

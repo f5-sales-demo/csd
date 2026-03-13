@@ -6,11 +6,11 @@ Instructions for programmatically configuring, interacting with, and screenshott
 
 ## Screenshot Dimensions Standard
 
-All screenshots in this project must be **1490x900 pixels at 1x DPR**. This is the de facto standard across existing documentation images and produces tighter, more focused captures of the XC console UI than 1920x1080.
+All screenshots in this project must be **1600x900 pixels at 1x DPR (16:9)**. This is the industry-standard documentation aspect ratio and produces clean, focused captures of the XC console UI.
 
 | Property | Value |
 | --- | --- |
-| Target dimensions | 1490 x 900 px |
+| Target dimensions | 1600 x 900 px (16:9) |
 | Device pixel ratio | 1x |
 | Format | PNG |
 | Location | `docs/images/` |
@@ -18,8 +18,8 @@ All screenshots in this project must be **1490x900 pixels at 1x DPR**. This is t
 
 **How this applies to each approach:**
 
-- **Page screenshots** (chrome-devtools-mcp): Use `emulate` with viewport `"1490x900x1"` before capture — this forces exact pixel dimensions at 1x DPR. Verify with `sips -g pixelWidth -g pixelHeight`.
-- **DevTools screenshots** (CDP `Page.captureScreenshot`): Captures at native resolution (e.g., ~2824x1636 on Retina). Resize after capture with `sips -z 900 1490 <input> --out docs/images/<name>.png`. Verify with `sips -g pixelWidth -g pixelHeight`.
+- **Page screenshots** (chrome-devtools-mcp): Use `emulate` with viewport `"1600x900x1"` before capture — this forces exact pixel dimensions at 1x DPR. Verify with `sips -g pixelWidth -g pixelHeight`.
+- **DevTools screenshots** (CDP): Use `Emulation.setDeviceMetricsOverride` with `width: 1600, height: 900, deviceScaleFactor: 1` before `Page.captureScreenshot` — captures at exact 1600x900. No post-capture resize needed. Verify with `sips -g pixelWidth -g pixelHeight`.
 - **After all page captures**: Reset emulation with `emulate` viewport `"0x0x0"` to restore defaults.
 
 ---
@@ -46,12 +46,12 @@ Use this when you need the **data** (network requests, console logs, performance
 
 **Page screenshot workflow (chrome-devtools-mcp):**
 
-1. Set exact viewport: `emulate` with viewport `"1490x900x1"` (the `x1` suffix forces deviceScaleFactor=1 — `resize_page` alone does NOT work on Retina displays)
+1. Set exact viewport: `emulate` with viewport `"1600x900x1"` (the `x1` suffix forces deviceScaleFactor=1 — `resize_page` alone does NOT work on Retina displays)
 2. Navigate and interact with the page as needed
    - **For theme variants**: call `emulate` with `colorScheme: "light"` before the light capture, then `colorScheme: "dark"` before the dark capture. See Section 13 for full details.
 3. Call `take_screenshot` with a `filePath` to save directly to `docs/images/`
 4. Use descriptive filenames matching the image alt text (e.g., `csd-lb-csd-settings.png`)
-5. Verify: `sips -g pixelWidth -g pixelHeight docs/images/<name>.png` — must be exactly 1490x900
+5. Verify: `sips -g pixelWidth -g pixelHeight docs/images/<name>.png` — must be exactly 1600x900
 6. After all captures, reset: `emulate` with viewport `"0x0x0"` to restore defaults
 
 ### Approach B: System-Level UI Automation (osascript + screencapture)
@@ -536,22 +536,36 @@ const outputPath = process.argv[3] || 'devtools-screenshot.png';
 
 const ws = new WebSocket(wsUrl);
 ws.on('open', () => {
+    // Force DevTools viewport to exact 1600x900 at 1x DPR
     ws.send(JSON.stringify({
         id: 1,
-        method: 'Page.captureScreenshot',
-        params: { format: 'png' }
+        method: 'Emulation.setDeviceMetricsOverride',
+        params: { width: 1600, height: 900, deviceScaleFactor: 1, mobile: false }
     }));
 });
 
 ws.on('message', (data) => {
     const msg = JSON.parse(data.toString());
-    if (msg.id === 1 && msg.result && msg.result.data) {
+    if (msg.id === 1) {
+        if (msg.error) {
+            console.error('Emulation override failed (expected on devtools:// targets):', JSON.stringify(msg.error));
+            console.error('Fallback: use AppleScript window bounds + --force-device-scale-factor=1');
+            ws.close();
+            process.exit(1);
+        }
+        // Override applied — capture
+        ws.send(JSON.stringify({
+            id: 2,
+            method: 'Page.captureScreenshot',
+            params: { format: 'png' }
+        }));
+    } else if (msg.id === 2 && msg.result && msg.result.data) {
         writeFileSync(outputPath, Buffer.from(msg.result.data, 'base64'));
         console.log(`Screenshot saved: ${outputPath}`);
         ws.close();
         process.exit(0);
-    } else if (msg.id === 1) {
-        console.error('Error:', JSON.stringify(msg));
+    } else if (msg.id === 2) {
+        console.error('Screenshot error:', JSON.stringify(msg));
         ws.close();
         process.exit(1);
     }
@@ -563,12 +577,12 @@ JSEOF
 NODE_PATH=$(npm root -g) node /tmp/cdp-screenshot.cjs "$DEVTOOLS_WS" "devtools-screenshot.png"
 ```
 
-**After capture, resize to the standard 1490x900:**
+**After capture, verify dimensions (no resize needed — Emulation override produces exact 1600x900):**
 
 ```bash
-sips -z 900 1490 devtools-screenshot.png --out docs/images/devtools-screenshot.png
-# Verify dimensions
-sips -g pixelWidth -g pixelHeight docs/images/devtools-screenshot.png
+sips -g pixelWidth -g pixelHeight devtools-screenshot.png
+# Move to docs/images/ if correct
+mv devtools-screenshot.png docs/images/devtools-screenshot.png
 ```
 
 **Why this is better than screencapture:**
@@ -576,7 +590,7 @@ sips -g pixelWidth -g pixelHeight docs/images/devtools-screenshot.png
 - No `.app` wrapper needed
 - Works reliably across process restarts (no TCC flakiness)
 - Works headless (no window needs to be visible)
-- Captures at the DevTools' native resolution (resize to 1490x900 after capture)
+- `Emulation.setDeviceMetricsOverride` captures at exact 1600x900 — no post-capture resize, no aspect ratio distortion
 
 ### Method 2: screencapture (Fallback)
 
@@ -683,11 +697,11 @@ CDP can only screenshot one target at a time — either the page or the DevTools
 5. **Resize to standard dimensions:**
 
    ```bash
-   sips -z 900 1490 /tmp/combined-screenshot.png --out docs/images/combined-screenshot.png
+   sips -z 900 1600 /tmp/combined-screenshot.png --out docs/images/combined-screenshot.png
    sips -g pixelWidth -g pixelHeight docs/images/combined-screenshot.png
    ```
 
-**Note:** On Retina displays, `screencapture` captures at 2x resolution. The `sips -z 900 1490` resize handles this automatically.
+**Note:** On Retina displays, `screencapture` captures at 2x resolution. The `sips -z 900 1600` resize handles this automatically.
 
 ---
 
@@ -1069,22 +1083,35 @@ const outputPath = process.argv[3];
 
 const ws = new WebSocket(wsUrl);
 ws.on('open', () => {
+    // Force DevTools viewport to exact 1600x900 at 1x DPR
     ws.send(JSON.stringify({
         id: 1,
-        method: 'Page.captureScreenshot',
-        params: { format: 'png' }
+        method: 'Emulation.setDeviceMetricsOverride',
+        params: { width: 1600, height: 900, deviceScaleFactor: 1, mobile: false }
     }));
 });
 
 ws.on('message', (data) => {
     const msg = JSON.parse(data.toString());
-    if (msg.id === 1 && msg.result && msg.result.data) {
+    if (msg.id === 1) {
+        if (msg.error) {
+            console.error('Emulation override failed:', JSON.stringify(msg.error));
+            ws.close();
+            process.exit(1);
+        }
+        // Override applied — capture
+        ws.send(JSON.stringify({
+            id: 2,
+            method: 'Page.captureScreenshot',
+            params: { format: 'png' }
+        }));
+    } else if (msg.id === 2 && msg.result && msg.result.data) {
         writeFileSync(outputPath, Buffer.from(msg.result.data, 'base64'));
         console.log(`Screenshot saved: ${outputPath}`);
         ws.close();
         process.exit(0);
-    } else if (msg.id === 1) {
-        console.error('Error:', JSON.stringify(msg));
+    } else if (msg.id === 2) {
+        console.error('Screenshot error:', JSON.stringify(msg));
         ws.close();
         process.exit(1);
     }
@@ -1095,8 +1122,7 @@ JSEOF
 
 NODE_PATH=$(npm root -g) node /tmp/cdp-screenshot.cjs "$DEVTOOLS_WS" "$OUTPUT"
 
-# 6. Resize to standard 1490x900
-sips -z 900 1490 "$OUTPUT" --out "$OUTPUT"
+# 6. Verify dimensions (no resize needed — Emulation override produces exact 1600x900)
 echo "Final dimensions:"
 sips -g pixelWidth -g pixelHeight "$OUTPUT"
 ```
@@ -1406,7 +1432,8 @@ pkill -f "Google Chrome" 2>/dev/null || true
 
 # 10. Note on Retina displays
 echo "On Retina displays, CDP captures at native resolution (e.g., ~2824x1636)."
-echo "Always resize after capture: sips -z 900 1490 <input> --out docs/images/<name>.png"
+echo "DevTools: Emulation.setDeviceMetricsOverride captures at exact 1600x900 — no resize needed."
+echo "screencapture: Resize 2x captures with sips -z 900 1600 <input> --out docs/images/<name>.png"
 ```
 
 ---
@@ -1482,7 +1509,7 @@ Use `centerY` for new annotations. Open the raw screenshot in Preview, hover ove
 NODE_PATH=$(npm root -g) node scripts/annotate-screenshot.cjs \
   docs/images/raw-devtools-elements.png \
   docs/images/csd-injected-scripts.png \
-  1490 900 \
+  1600 900 \
   '[
     {"text":"CSD Telemetry (sync)","class":"badge-csd","centerY":135,"left":420},
     {"text":"Third-party","class":"badge-thirdparty","centerY":300,"left":850},
@@ -1495,7 +1522,7 @@ NODE_PATH=$(npm root -g) node scripts/annotate-screenshot.cjs \
 
 1. **Take the screenshot first**, then open it in Preview or a browser to find the pixel coordinates for badge placement.
 2. **Use `centerY` for vertical positioning.** Open the raw screenshot in Preview. Hover over the vertical center of the target row — the Y coordinate is your `centerY` value. No offset math needed.
-3. **Coordinates are relative to the output dimensions** (e.g., 1490x900), not the source image's native resolution. The annotation tool scales the source image to fit.
+3. **Coordinates are relative to the output dimensions** (e.g., 1600x900), not the source image's native resolution. The annotation tool scales the source image to fit.
 4. **Place badges inline with the code/content they annotate** — typically to the right of the element, vertically centered on the line.
 5. **Use `sips -g pixelWidth -g pixelHeight`** to verify the final annotated image is the correct dimensions.
 
@@ -1521,7 +1548,7 @@ Or use inline styles in the badge JSON:
 
 ## 12. Tips for AI Agents
 
-1. **All screenshots must be 1490x900 at 1x DPR.** For page screenshots, use `emulate` with viewport `"1490x900x1"`. For DevTools screenshots, capture via CDP and resize with `sips -z 900 1490`. Always verify with `sips -g pixelWidth -g pixelHeight`.
+1. **All screenshots must be 1600x900 at 1x DPR (16:9).** For page screenshots, use `emulate` with viewport `"1600x900x1"`. For DevTools screenshots, use `Emulation.setDeviceMetricsOverride` with `width: 1600, height: 900, deviceScaleFactor: 1` before `Page.captureScreenshot` — no post-capture resize needed. Always verify with `sips -g pixelWidth -g pixelHeight`.
 
 2. **Use CDP when capturing a single target.** The CDP approach (Sections 4-5) requires zero macOS permissions and works well for isolated DevTools or page screenshots. However, CDP can only screenshot one target at a time. For **combined page+DevTools screenshots** (the most common use case), you must use `screencapture -l` (Method 3), which requires Screen Recording permission.
 
@@ -1529,7 +1556,7 @@ Or use inline styles in the badge JSON:
    - Kill Chrome → edit preferences (columns, filters, dock state, panel) → relaunch with `--remote-debugging-port=9222 --auto-open-devtools-for-tabs`
    - For runtime interaction: CDP to open Command Menu, type commands, press Enter
    - Screenshot via CDP `Page.captureScreenshot` on the DevTools page target
-   - Resize to 1490x900 with `sips -z 900 1490`
+   - `Emulation.setDeviceMetricsOverride` captures at exact 1600x900 — no resize needed
    - **No macOS permissions needed for any of this**
 
 4. **Kill Chrome before editing preferences.** Chrome overwrites preferences on exit. The correct order is: kill → edit → relaunch. Never edit while Chrome is running.
@@ -1613,7 +1640,7 @@ import Screenshot from '@f5xc-salesdemos/docs-theme/components/Screenshot.astro'
 
 Use the `emulate` tool's `colorScheme` parameter to control `prefers-color-scheme`:
 
-1. Set viewport: `emulate` with viewport `"1490x900x1"`
+1. Set viewport: `emulate` with viewport `"1600x900x1"`
 2. Navigate to the target page
 3. **Light capture**: `emulate` with `colorScheme: "light"` then `take_screenshot` — save as `<name>-light.png`
 4. **Dark capture**: `emulate` with `colorScheme: "dark"` then `take_screenshot` — save as `<name>-dark.png`
@@ -1639,7 +1666,7 @@ dp["uiTheme"] = '"dark"'
 2. Set `uiTheme` to `"default"` in preferences, launch Chrome, capture DevTools screenshot, save as `<name>-light.png`
 3. Kill Chrome
 4. Set `uiTheme` to `"dark"` in preferences, launch Chrome, capture DevTools screenshot, save as `<name>-dark.png`
-5. Resize both to 1490x900 with `sips -z 900 1490`
+5. Verify both are 1600x900 with `sips -g pixelWidth -g pixelHeight` (no resize needed with Emulation override)
 
 ### Combined page+DevTools screenshots in both themes
 

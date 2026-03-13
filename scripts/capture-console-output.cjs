@@ -75,19 +75,68 @@ async function sleep(ms) {
     });
     await sleep(500);
 
+    // --- Page target: wait for Angular form to render ---
+    // Juice Shop is an Angular SPA — on cold starts the form fields may not
+    // exist in the DOM for several seconds after initial page load.
+    console.log('Waiting for Angular form fields...');
+    for (let attempt = 0; attempt < 15; attempt++) {
+      const check = await page.sendCDP('Runtime.evaluate', {
+        expression: `document.querySelectorAll('input').length`,
+        returnByValue: true,
+      });
+      if (check?.result?.value >= 2) {
+        console.log(`Found ${check.result.value} input fields after ${attempt + 1} attempts`);
+        break;
+      }
+      await sleep(1000);
+    }
+    await sleep(1000);
+
     // --- Page target: fill credentials ---
+    // Juice Shop uses Angular Material inputs at /#/login. Angular intercepts
+    // the native input value setter, so we must use Object.getOwnPropertyDescriptor
+    // on HTMLInputElement.prototype to bypass Angular's wrapper and set the real
+    // DOM value. Then dispatch 'input' to trigger Angular's change detection.
+    // Selectors: Angular Material generates auto-IDs like mat-input-0/1; we
+    // match by iterating all inputs and checking type/name/placeholder.
     console.log('Filling credentials...');
-    await page.sendCDP('Runtime.evaluate', {
+    const fillResult = await page.sendCDP('Runtime.evaluate', {
       expression: `(function() {
-        var email = document.querySelector('input[name="email"], input[type="email"], #email');
-        if (email) { email.focus(); email.value = 'test@example.com'; email.dispatchEvent(new Event('input', {bubbles:true})); }
-        var pw = document.querySelector('input[name="password"], input[type="password"], #password');
-        if (pw) { pw.focus(); pw.value = 'P@ssword123'; pw.dispatchEvent(new Event('input', {bubbles:true})); }
-        return 'done';
+        var nativeSetter = Object.getOwnPropertyDescriptor(
+          window.HTMLInputElement.prototype, 'value').set;
+        function fillField(el, val) {
+          if (el) {
+            el.focus();
+            nativeSetter.call(el, val);
+            el.dispatchEvent(new Event('input', {bubbles:true}));
+            el.dispatchEvent(new Event('change', {bubbles:true}));
+            el.dispatchEvent(new Event('blur', {bubbles:true}));
+          }
+        }
+        var allInputs = Array.from(document.querySelectorAll('input'));
+        var info = allInputs.map(function(i) {
+          return i.id + '/' + i.name + '/' + i.type + '/' + i.placeholder;
+        });
+        // Find email: look for type=email, or name containing email, or placeholder
+        var email = allInputs.find(function(i) {
+          return i.type === 'email' || (i.name && i.name.toLowerCase().indexOf('email') >= 0)
+            || (i.placeholder && i.placeholder.toLowerCase().indexOf('email') >= 0)
+            || (i.getAttribute('aria-label') && i.getAttribute('aria-label').toLowerCase().indexOf('email') >= 0);
+        });
+        // Find password: look for type=password, or name containing password
+        var pw = allInputs.find(function(i) {
+          return i.type === 'password' || (i.name && i.name.toLowerCase().indexOf('password') >= 0);
+        });
+        fillField(email, 'test@example.com');
+        fillField(pw, 'P@ssword123');
+        return 'inputs=' + info.join(' | ') +
+          ' => email=' + (email ? email.value : 'NOT FOUND') +
+          ' pw=' + (pw ? pw.value : 'NOT FOUND');
       })()`,
       returnByValue: true,
     });
-    await sleep(300);
+    console.log('Fill result:', fillResult?.result?.value);
+    await sleep(500);
 
     // --- DevTools target: set viewport ---
     console.log('Setting DevTools viewport to 1280x720...');

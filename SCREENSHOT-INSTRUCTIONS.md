@@ -143,9 +143,11 @@ echo "Created $APP_DIR"
 #### Step 2: Grant Screen Recording permission
 
 1. Open System Settings:
+
    ```bash
    open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
    ```
+
 2. Click the **+** button
 3. Press **Cmd+Shift+G** in the file dialog to open "Go to Folder"
 4. Paste: `~/Applications/`
@@ -208,13 +210,15 @@ curl -sf http://localhost:9222/json/version > /dev/null 2>&1 || { echo "ERROR: C
 ### Chrome path
 
 These instructions assume Chrome is installed at the default location:
-```
+
+```text
 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
 ```
 
 ### `screencapture` path
 
 On macOS, `screencapture` lives at `/usr/sbin/screencapture` which is **not** in the default `$PATH`. Always use the full path:
+
 ```bash
 /usr/sbin/screencapture -l "$WID" -o -x output.png
 ```
@@ -234,7 +238,8 @@ DevTools stores column visibility in the Chrome profile. Edit this **before laun
 ```
 
 For standard Chrome (non-MCP):
-```
+
+```text
 ~/Library/Application Support/Google/Chrome/Default/Preferences
 ```
 
@@ -581,6 +586,8 @@ for t in json.load(sys.stdin):
 NODE_PATH=$(npm root -g) node scripts/cdp-screenshot.cjs "$DEVTOOLS_WS" "devtools-screenshot.png"
 ```
 
+> **Other capture scripts:** For Console panel screenshots, see Section 16. For a full catalogue of all committed helper scripts, see Section 17.
+
 **After capture, verify dimensions (no resize needed — Emulation override produces exact 1280x720):**
 
 ```bash
@@ -590,6 +597,7 @@ mv devtools-screenshot.png docs/images/devtools-screenshot.png
 ```
 
 **Why this is better than screencapture:**
+
 - No Screen Recording permission needed
 - No `.app` wrapper needed
 - Works reliably across process restarts (no TCC flakiness)
@@ -1195,6 +1203,7 @@ sleep 0.5
 **Cause:** Screen Recording permission not granted for the process running `screencapture`.
 
 **Fix:**
+
 1. Create the Node.app wrapper (see Prerequisites, Step 1)
 2. Add it to Screen Recording (see Prerequisites, Step 2)
 3. **Fully quit your terminal (Cmd+Q) and relaunch** — a new tab is NOT sufficient. macOS permissions only take effect on freshly launched processes.
@@ -1206,6 +1215,7 @@ If the permission prompt appeared but Node.app doesn't show in the list, this is
 **Cause:** Accessibility permission not granted. **Recommendation:** Use the CDP approach (Section 5) instead — it doesn't need Accessibility permissions at all.
 
 If you still need osascript keystrokes:
+
 1. Open Accessibility settings: `open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"`
 2. Add your terminal app (Terminal.app, iTerm2, etc.)
 3. If running via `node`, add `Node.app` (same wrapper from Prerequisites)
@@ -1399,6 +1409,7 @@ NODE_PATH=$(npm root -g) node scripts/annotate-screenshot.cjs \
 ```
 
 Each badge has:
+
 - `text` — label text
 - `class` — one of the badge classes above (or use `style` for custom CSS)
 - `centerY` — **(preferred)** Y coordinate of the vertical center of the target row. Badge auto-centers via `translateY(-50%)`.
@@ -1491,6 +1502,7 @@ Or use inline styles in the badge JSON:
 4. **Kill Chrome before editing preferences.** Chrome overwrites preferences on exit. The correct order is: kill → edit → relaunch. Never edit while Chrome is running.
 
 5. **Double-encoding in preferences:** Values in `devtools.preferences` are JSON strings containing JSON. When setting `network-text-filter`, the Python code is:
+
    ```python
    dp["network-text-filter"] = '"method:POST"'  # Note: outer quotes are Python, inner quotes are the JSON string value
    ```
@@ -1742,6 +1754,8 @@ for (let attempt = 0; attempt < 3; attempt++) {
 }
 ```
 
+> **Automation:** For automated sidebar/drawer collapsing with `<style>` tree item hiding, see `scripts/capture-csd-injected-scripts.cjs` (Section 17).
+
 ---
 
 ## 15. Elements Panel DOM Navigation
@@ -1927,3 +1941,260 @@ NODE_PATH=$(npm root -g) node your-dom-nav-script.cjs "$DEVTOOLS_WS" output.png
 - Section 14 — collapsing sidebar and drawer before capture
 - Section 4, Method 1 — CDP screenshot fundamentals
 - Section 5 — DevTools target discovery and CDP helpers
+- Section 17 — `capture-csd-injected-scripts.cjs` implements this DOM navigation pattern end-to-end
+
+---
+
+## 16. Console Panel Screenshots
+
+When you need to capture a screenshot showing script execution output in the DevTools Console panel (as opposed to Elements, Network, or Sources panels), use a different workflow. The Console panel has its own internal API surface and requires routing script execution through the Console prompt to produce visible output.
+
+### When to use
+
+- Capturing console.log output from attack/demo scripts (e.g., CDN injection, credential harvesting)
+- Showing script execution results alongside their output messages
+- Any screenshot where the Console panel (not Elements) is the primary content
+
+### Why `prompt.appendCommand()` instead of `Runtime.evaluate`
+
+`Runtime.evaluate` on the page target from an external CDP session does **not** produce visible `console.log` output in the DevTools Console panel.
+The output goes to the CDP session's response, not the DevTools UI.
+Using `prompt.appendCommand()` on the DevTools target routes the evaluation through the Console panel's own pipeline, so `console.log` output appears exactly as if the user pasted and ran the script.
+
+### DevTools Console API surface
+
+These APIs are evaluated on the DevTools target (`devtools_app.html`) via `Runtime.evaluate`:
+
+```javascript
+// Access the ConsoleView object
+const view = UI.panels.console.view;
+
+// Clear all console messages
+view.clearConsole();
+
+// Scroll viewport to the latest message
+view.immediatelyScrollToBottom();
+
+// Access the ConsolePrompt object
+const prompt = view.prompt;
+
+// Submit a command as if typed by the user
+// The second parameter (true) means "use command line API"
+prompt.appendCommand(scriptString, true);
+
+// Get current prompt text
+prompt.text();
+
+// Clear prompt input
+prompt.clear();
+```
+
+### Console drawer behavior
+
+When the Console panel is the active panel (not a drawer), it shows a drawer bar at the bottom with tabs ("Console", "AI assistance", etc.). This bar appears in captures and cannot be hidden without switching to a different panel. Pressing Escape while the Console panel is active closes any sub-drawer but does not remove the tab bar itself.
+
+### Complete Console panel screenshot workflow
+
+This is the recommended sequence for capturing Console output screenshots. The committed script `scripts/capture-console-output.cjs` implements this workflow (see Section 17).
+
+1. **Kill Chrome** — ensure clean state
+2. **Set preferences** — `panel-selected-tab` = `console`, `currentDockState` = `undocked`, `uiTheme` = `"default"` or `"dark"` (Section 3)
+3. **Launch Chrome** with `--remote-debugging-port=9222` and navigate to the target page
+4. **Connect to both targets**:
+   - **Page target** — for cookie banner dismissal and credential filling
+   - **DevTools target** (`devtools_app.html`) — for Console API interaction and screenshot capture
+5. **Page target: dismiss cookie banner** — click `.cc-dismiss` or equivalent
+6. **Page target: fill credentials** — populate email/password fields so the page is in a realistic state
+7. **DevTools target: set viewport** — `Emulation.setDeviceMetricsOverride` at 1280x720, 1x DPR
+8. **DevTools target: force theme** — add/remove `theme-with-dark-background` class (Section 13)
+9. **DevTools target: clear console** — `UI.panels.console.view.clearConsole()`
+10. **DevTools target: execute script** — `UI.panels.console.view.prompt.appendCommand(script, true)`
+11. **Wait for async callbacks** — 5-6 seconds for network requests, dynamic script loads, and fetch completions
+12. **DevTools target: close drawer** — press Escape via `Input.dispatchKeyEvent` to close any sub-drawer
+13. **DevTools target: scroll to bottom** — `UI.panels.console.view.immediatelyScrollToBottom()`
+14. **Capture** — `Page.captureScreenshot` with `format: 'png'` on the DevTools target
+15. **Verify** — confirm 1280x720 dimensions and visible console output
+
+**Cross-references:**
+
+- Section 3 — Chrome preferences for panel selection and theme
+- Section 4, Method 1 — CDP screenshot fundamentals
+- Section 5 — DevTools target discovery
+- Section 13 — theme switching
+- Section 17 — `capture-console-output.cjs` script reference
+
+---
+
+## 17. Committed Helper Scripts Reference
+
+The `scripts/` directory contains 5 committed Node.js scripts (plus one HTML template) for CDP-based screenshot capture and annotation. All scripts require the `ws` npm package available via `NODE_PATH=$(npm root -g)`.
+
+### 17.1 `cdp-screenshot.cjs` — Basic DevTools screenshot
+
+**Purpose:** Connect to a DevTools target, set viewport to 1280x720, capture a PNG screenshot.
+
+**Usage:**
+
+```bash
+NODE_PATH=$(npm root -g) node scripts/cdp-screenshot.cjs <ws-url> [output-path]
+```
+
+**Parameters:**
+
+| Parameter | Required | Description |
+| --- | --- | --- |
+| `ws-url` | Yes | WebSocket URL of the DevTools target |
+| `output-path` | No | Output PNG path (default: `devtools-screenshot.png`) |
+
+**Prerequisites:** Chrome running with `--remote-debugging-port=9222`. Target panel and theme should be pre-configured via preferences (Section 3).
+
+**Cross-references:** Section 4 Method 1, Section 5
+
+### 17.2 `cdp-interact.cjs` — Command Menu interaction
+
+**Purpose:** Open the DevTools Command Menu (Cmd+Shift+P), type a command, execute it, then capture a screenshot.
+
+**Usage:**
+
+```bash
+NODE_PATH=$(npm root -g) node scripts/cdp-interact.cjs <ws-url> <command> <output-path>
+```
+
+**Parameters:**
+
+| Parameter | Required | Description |
+| --- | --- | --- |
+| `ws-url` | Yes | WebSocket URL of the DevTools target |
+| `command` | Yes | Command Menu text to type (e.g., `"Show Network"`) |
+| `output-path` | Yes | Output PNG path |
+
+**Caveat:** `document.dispatchEvent(KeyboardEvent)` does not reliably open the Command Menu — DevTools shortcuts are handled above the DOM event layer. Prefer setting the panel via preferences (Section 3) and restarting Chrome. This script is a best-effort fallback.
+
+**Cross-references:** Section 3, Section 4 Method 1
+
+### 17.3 `annotate-screenshot.cjs` — Badge annotations
+
+**Purpose:** Overlay badge annotations (labels, callouts) on an existing screenshot PNG using an HTML template rendered via CDP.
+
+**Usage:**
+
+```bash
+NODE_PATH=$(npm root -g) node scripts/annotate-screenshot.cjs \
+  <screenshot> <output> <width> <height> '<badges-json>'
+```
+
+**Parameters:**
+
+| Parameter | Required | Description |
+| --- | --- | --- |
+| `screenshot` | Yes | Path to the source screenshot PNG |
+| `output` | Yes | Path for the annotated output PNG |
+| `width` | Yes | Viewport width (typically `1280`) |
+| `height` | Yes | Viewport height (typically `720`) |
+| `badges-json` | Yes | JSON array of badge objects |
+
+**Badge object format:**
+
+```json
+[
+  {
+    "text": "CSD Script",
+    "class": "badge-csd",
+    "centerY": 110,
+    "left": 500
+  }
+]
+```
+
+Available badge classes: `badge-csd`, `badge-thirdparty`, `badge-info`, `badge-warning`, `badge-success`.
+
+**Template:** Uses `scripts/annotate-template.html` for rendering. The template defines badge styles, positioning, and the background screenshot overlay.
+
+**Prerequisites:** Chrome running with `--remote-debugging-port=9222` and at least one page target available.
+
+**Cross-references:** Section 4 Method 1
+
+### 17.4 `capture-csd-injected-scripts.cjs` — Elements panel with style hiding
+
+**Purpose:** Capture an Elements panel screenshot showing the three CSD-injected `<script>` tags in `<head>`, with intermediate `<style>` tree items hidden and the Styles sidebar and console drawer collapsed.
+
+**Usage:**
+
+```bash
+NODE_PATH=$(npm root -g) node scripts/capture-csd-injected-scripts.cjs \
+  <ws-url> [output-path] [light|dark]
+```
+
+**Parameters:**
+
+| Parameter | Required | Description |
+| --- | --- | --- |
+| `ws-url` | Yes | WebSocket URL of the DevTools target |
+| `output-path` | No | Output PNG path (default: `/tmp/csd-injected-scripts-raw.png`) |
+| `light\|dark` | No | Theme (default: `light`) |
+
+**What the script does (end-to-end):**
+
+1. Sets viewport to 1280x720 at 1x DPR
+2. Forces light or dark theme via `theme-with-dark-background` class
+3. Collapses Styles sidebar: `UI.panels.elements.splitWidget.hideSidebar()`
+4. Closes console drawer via Escape key events (with retry loop)
+5. Queries DOM model for three target scripts:
+   - CSD sync: `head > script[src*="common.js"]` with `single` in src
+   - Bot Defense: `head > script[src*="bot_defense"]`
+   - CSD async: `head > script[async]`
+6. Reveals and selects each script node via `to.revealAndSelectNode(node, true)`
+7. Re-hides sidebar and drawer (reveal operations can restore them)
+8. Hides `<style>` tree items between script 1 and script 3 via `display: none`
+9. Scrolls script 1 to top of visible area
+10. Re-hides sidebar one final time
+11. Captures screenshot
+
+**DevTools APIs used:** `UI.panels.elements.splitWidget`, `UI.panels.elements.getTreeOutlineForTesting()`, `to.rootDOMNodeInternal.domModel()`, `dm.requestDocument()`, `dm.querySelectorAll()`, `dm.nodeForId()`, `to.revealAndSelectNode()`.
+
+**Prerequisites:** Chrome with the target page loaded in Elements panel. The page must have the three CSD-injected scripts in `<head>`.
+
+**Cross-references:** Section 14 (sidebar/drawer collapsing), Section 15 (DOM navigation APIs)
+
+### 17.5 `capture-console-output.cjs` — Console panel script execution
+
+**Purpose:** Execute an attack/demo script via the Console panel's prompt API and capture the resulting console output as a screenshot.
+
+**Usage:**
+
+```bash
+NODE_PATH=$(npm root -g) node scripts/capture-console-output.cjs \
+  <page-ws> <devtools-ws> <script-file> <output-path> [light|dark]
+```
+
+**Parameters:**
+
+| Parameter | Required | Description |
+| --- | --- | --- |
+| `page-ws` | Yes | WebSocket URL of the page target |
+| `devtools-ws` | Yes | WebSocket URL of the DevTools target |
+| `script-file` | Yes | Path to the JavaScript file to execute |
+| `output-path` | No | Output PNG path (default: `/tmp/console-output.png`) |
+| `light\|dark` | No | Theme (default: `light`) |
+
+**Why two WebSocket connections:** The script needs the page target to dismiss the cookie banner and fill credentials, and the DevTools target to interact with the Console panel UI and capture the screenshot.
+
+**What the script does (end-to-end):**
+
+1. Connects to both the page and DevTools targets
+2. Page target: dismisses cookie banner (`.cc-dismiss`)
+3. Page target: fills email and password fields
+4. DevTools target: sets viewport to 1280x720 at 1x DPR
+5. DevTools target: forces theme
+6. DevTools target: clears console via `UI.panels.console.view.clearConsole()`
+7. DevTools target: executes script via `UI.panels.console.view.prompt.appendCommand(script, true)`
+8. Waits 6 seconds for async callbacks (network requests, dynamic script loads)
+9. DevTools target: closes drawer via Escape
+10. DevTools target: scrolls to bottom via `UI.panels.console.view.immediatelyScrollToBottom()`
+11. Captures screenshot on DevTools target
+
+**DevTools APIs used:** `UI.panels.console.view`, `view.clearConsole()`, `view.immediatelyScrollToBottom()`, `view.prompt`, `prompt.appendCommand()`.
+
+**Prerequisites:** Chrome with the target page loaded, DevTools open to Console panel (set via preferences — Section 3). The script file should contain the JavaScript to execute (e.g., a CDN injection attack script).
+
+**Cross-references:** Section 16 (Console panel workflow), Section 3 (Chrome preferences), Section 13 (theme switching)

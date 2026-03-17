@@ -82,12 +82,14 @@ Each `xTOKENx` placeholder in the curl commands below maps directly to an enviro
 **Tenant is automatic**: The tenant identifier is derived from your API URL (e.g., `f5-amer-ent` from `https://f5-amer-ent.console.ves.volterra.io`). You do not need to supply it — the platform populates tenant references automatically when creating objects.
 </Aside>
 
-## Step 1: Create Healthcheck
+## Step 1: Create Healthcheck (Optional)
 
-Create an HTTP healthcheck that the origin pool will use to monitor backend health.
+Create an HTTP healthcheck that the origin pool can use to monitor backend health.
 
-<Aside type="tip">
-**Critical**: Create the healthcheck BEFORE creating the origin pool. The origin pool must reference an existing healthcheck — if the healthcheck doesn't exist when you create the origin pool, the reference will be empty and health monitoring won't work.
+<Aside type="note">
+**Healthchecks are optional for CSD.** The Client-Side Defense feature does not depend on origin health monitoring. If your tenant has exhausted the healthcheck object limit (`429` — see Error Handling), skip this step and create the origin pool without a healthcheck reference. CSD will function normally.
+
+If you do create a healthcheck, create it BEFORE the origin pool. The origin pool must reference an existing healthcheck — if the healthcheck does not exist when you create the origin pool, the reference will be silently empty.
 </Aside>
 
 ```bash
@@ -123,11 +125,13 @@ curl -s -X POST \
   | jq .
 ```
 
-A `200` response confirms the healthcheck was created.
+A `200` response confirms the healthcheck was created. A `429` response means the tenant has exhausted its healthcheck limit — skip to Step 2 and omit the healthcheck reference.
 
 ## Step 2: Create Origin Pool
 
-Create an origin pool referencing the healthcheck from Step 1.
+Create an origin pool pointing to your backend server. If you created a healthcheck in Step 1, include the `healthcheck` reference. If Step 1 was skipped, use an empty array.
+
+**With healthcheck** (Step 1 succeeded):
 
 ```bash
 curl -s -X POST \
@@ -163,11 +167,43 @@ curl -s -X POST \
   | jq .
 ```
 
+**Without healthcheck** (Step 1 skipped):
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_ORIGIN_POOLx",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "Origin pool for CSD demo",
+      "disable": false
+    },
+    "spec": {
+      "origin_servers": [{
+        "public_ip": { "ip": "xF5XC_ORIGIN_IPx" },
+        "labels": {}
+      }],
+      "no_tls": {},
+      "port": xF5XC_ORIGIN_PORTx,
+      "same_as_endpoint_port": {},
+      "healthcheck": [],
+      "loadbalancer_algorithm": "LB_OVERRIDE",
+      "endpoint_selection": "LOCAL_PREFERRED"
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools" \
+  | jq .
+```
+
 A `200` response confirms the origin pool was created.
 
 ### Verify Healthcheck is Linked
 
-Confirm the healthcheck is properly linked to the origin pool:
+If you included a healthcheck reference, confirm it is properly linked:
 
 ```bash
 curl -s \
@@ -176,7 +212,7 @@ curl -s \
   | jq '.spec.healthcheck'
 ```
 
-If successful, the response shows the healthcheck reference. An empty array `[]` means the healthcheck wasn't linked — delete the origin pool, ensure the healthcheck exists, and recreate.
+A populated array confirms the link. An empty array `[]` is expected if Step 1 was skipped, or means the healthcheck was not found if you intended to link one.
 
 ## Step 3: Create HTTP Load Balancer with CSD
 
@@ -273,9 +309,13 @@ A response containing `"isConfigured": true` and `"isEnabled": true` confirms CS
 
 Register the root domain that CSD will monitor. The `protected_domain` field must be the **eTLD+1** root domain (e.g., `f5demos.com`), not the full FQDN.
 
-<Aside type="note">
-If your tenant already has CSD enabled at the tenant level (check with Step 4), the protected domain registration may be optional. CSD can work without explicit registration — the load balancer's CSD config triggers JS injection automatically. However, registering the domain enables additional features like domain categorization and risk scoring.
+<Aside type="caution">
+**Protected domains are tenant-scoped and persistent.** Unlike healthchecks, origin pools, and load balancers, protected domains are not scoped to a namespace — they are registered globally on the tenant. A domain registered once persists across deployments and should **not** be deleted during teardown. The namespace in the API URL is a routing parameter, not an ownership boundary.
 </Aside>
+
+### Check if Already Registered
+
+Before creating, check whether the domain is already registered on the tenant. A `409` response to the POST means the domain already exists — this is a success condition, not an error.
 
 ```bash
 curl -s -X POST \
@@ -294,14 +334,10 @@ curl -s -X POST \
   | jq .
 ```
 
-Verify the domain was registered:
-
-```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
-  | jq '.items[].name'
-```
+| Response | Meaning | Action |
+| --- | --- | --- |
+| `200` | Domain registered successfully | Continue to Step 6 |
+| `409` (domain already exists) | Domain was previously registered on this tenant | Already done — continue to Step 6 |
 
 ## Step 6: Verify
 
@@ -354,22 +390,15 @@ curl -s \
 
 ## Teardown
 
-Remove objects in **reverse creation order** — delete objects that depend on other objects first:
+Remove namespace-scoped objects in **reverse creation order** — delete objects that depend on other objects first:
 
-1. **Protected Domain** (if registered) — no dependents
-2. **HTTP Load Balancer** — depends on Origin Pool
-3. **Origin Pool** — depends on Healthcheck
-4. **Healthcheck** — no dependents
+1. **HTTP Load Balancer** — depends on Origin Pool
+2. **Origin Pool** — depends on Healthcheck (if created)
+3. **Healthcheck** — only if created in Step 1
 
-### Delete Protected Domain
-
-```bash
-curl -s -X DELETE \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/xF5XC_DOMAINNAMEx"
-```
-
-Verify: `GET /api/shape/csd/namespaces/{namespace}/protected_domains` returns empty or 404.
+<Aside type="caution">
+**Do not delete the protected domain.** Protected domains are tenant-scoped and persistent — they are shared infrastructure, not per-deployment resources. Deleting a protected domain would affect all load balancers on the tenant that use that domain for CSD monitoring.
+</Aside>
 
 ### Delete HTTP Load Balancer
 
@@ -440,11 +469,11 @@ Values are resolved in this order:
 ### Execution Order
 
 <Steps>
-1. **Create Healthcheck** — `POST /api/config/namespaces/\{namespace\}/healthchecks`
-2. **Create Origin Pool** — `POST /api/config/namespaces/\{namespace\}/origin_pools` (references healthcheck)
+1. **Create Healthcheck** (optional) — `POST /api/config/namespaces/\{namespace\}/healthchecks` — skip on `429` (tenant limit); CSD does not require health monitoring
+2. **Create Origin Pool** — `POST /api/config/namespaces/\{namespace\}/origin_pools` — use empty `healthcheck: []` if Step 1 was skipped
 3. **Create HTTP Load Balancer** — `POST /api/config/namespaces/\{namespace\}/http_loadbalancers` (references origin pool, enables CSD)
 4. **Verify CSD is Enabled** — `GET /api/shape/csd/namespaces/\{namespace\}/status` (tenant-wide — check `isConfigured` and `isEnabled` are both `true`)
-5. **Register Protected Domain** — `POST /api/shape/csd/namespaces/\{namespace\}/protected_domains` (uses eTLD+1 root domain in `spec.protected_domain`)
+5. **Register Protected Domain** — `POST /api/shape/csd/namespaces/\{namespace\}/protected_domains` — tenant-scoped and persistent; `409` means already registered (success)
 6. **Verify** — `GET .../status`, `GET .../js_configuration`, `GET .../detected_domains`
 </Steps>
 
@@ -485,16 +514,16 @@ The `single_lb_app` object has its own required `oneOf` groups. Setting `single_
 
 ### Teardown Order
 
-Delete in reverse: protected domain &rarr; HTTP load balancer &rarr; origin pool &rarr; healthcheck.
+Delete namespace-scoped objects in reverse: HTTP load balancer &rarr; origin pool &rarr; healthcheck (if created). Do **not** delete the protected domain — it is tenant-scoped and persistent.
 
 ### Error Handling
 
 - **401 Unauthorized** — API token is invalid or expired. Regenerate under **Administration** &rarr; **Credentials**.
 - **403 Forbidden** — token lacks permissions for the namespace. Check role bindings.
 - **404 Not Found** — namespace or object name is incorrect. List objects with `GET /api/config/namespaces/\{namespace\}/\{object_type\}`.
-- **409 Conflict** — object already exists. For protected domains, the root domain may be registered in another namespace. Delete first or use `PUT` to update.
+- **409 Conflict** — object already exists. For protected domains, a `409` with "domain already exists (in uriList)" means the root domain is already registered on the tenant — this is a success condition, not an error. For other objects, delete first or use `PUT` to update.
 - **422 Unprocessable Entity** — JSON schema validation failed. Common causes: missing `oneOf` choice, multiple choices set in same group, wrong field type. Check the error message for the specific field.
-- **429 Too Many Requests** — tenant has hit an object limit (e.g., 150 healthchecks). Delete unused objects or contact your administrator to increase limits.
+- **429 Too Many Requests** — tenant has hit an object limit (e.g., 150 healthchecks). For healthchecks, this is non-blocking — skip Step 1 and create the origin pool without a healthcheck reference. CSD does not depend on health monitoring. For other object types, delete unused objects or contact your administrator to increase limits.
 
 ## Troubleshooting
 
@@ -517,12 +546,9 @@ CSD must be enabled at the tenant level. Contact your F5 XC administrator to ena
 3. Check the JS configuration endpoint returns a `scriptTag`
 4. Visit the protected domain in a browser and view page source to confirm the script is injected
 
-### Protected Domain Registration Fails with 409
+### Protected Domain Registration Returns 409
 
-The root domain may already be registered in another namespace. Either:
-- Use a different root domain
-- Delete the existing registration in the other namespace
-- Use `PUT` instead of `POST` to update the existing registration
+A `409` with "domain already exists (in uriList)" means the root domain is already registered on the tenant. Protected domains are **tenant-scoped** — they do not belong to any single namespace. This is a success condition: the domain is already protected and no further action is needed. Continue to Step 6.
 
 ## OpenAPI Reference
 

@@ -86,6 +86,10 @@ Each `xTOKENx` placeholder in the curl commands below maps directly to an enviro
 
 Create an HTTP healthcheck that the origin pool will use to monitor backend health.
 
+<Aside type="tip">
+**Critical**: Create the healthcheck BEFORE creating the origin pool. The origin pool must reference an existing healthcheck — if the healthcheck doesn't exist when you create the origin pool, the reference will be empty and health monitoring won't work.
+</Aside>
+
 ```bash
 curl -s -X POST \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
@@ -160,6 +164,19 @@ curl -s -X POST \
 ```
 
 A `200` response confirms the origin pool was created.
+
+### Verify Healthcheck is Linked
+
+Confirm the healthcheck is properly linked to the origin pool:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '.spec.healthcheck'
+```
+
+If successful, the response shows the healthcheck reference. An empty array `[]` means the healthcheck wasn't linked — delete the origin pool, ensure the healthcheck exists, and recreate.
 
 ## Step 3: Create HTTP Load Balancer with CSD
 
@@ -255,6 +272,10 @@ A response containing `"isConfigured": true` and `"isEnabled": true` confirms CS
 ## Step 5: Register Protected Domain
 
 Register the root domain that CSD will monitor. The `protected_domain` field must be the **eTLD+1** root domain (e.g., `f5demos.com`), not the full FQDN.
+
+<Aside type="note">
+If your tenant already has CSD enabled at the tenant level (check with Step 4), the protected domain registration may be optional. CSD can work without explicit registration — the load balancer's CSD config triggers JS injection automatically. However, registering the domain enables additional features like domain categorization and risk scoring.
+</Aside>
 
 ```bash
 curl -s -X POST \
@@ -461,6 +482,34 @@ Delete in reverse: protected domain &rarr; HTTP load balancer &rarr; origin pool
 - **409 Conflict** — object already exists. For protected domains, the root domain may be registered in another namespace. Delete first or use `PUT` to update.
 - **422 Unprocessable Entity** — JSON schema validation failed. Common causes: missing `oneOf` choice, multiple choices set in same group, wrong field type. Check the error message for the specific field.
 - **429 Too Many Requests** — tenant has hit an object limit (e.g., 150 healthchecks). Delete unused objects or contact your administrator to increase limits.
+
+## Troubleshooting
+
+### Healthcheck Not Linked to Origin Pool
+
+If Step 2 (Verify Healthcheck is Linked) shows an empty array `[]`:
+
+1. Delete the origin pool: `DELETE /api/config/namespaces/{namespace}/origin_pools/{pool_name}`
+2. Verify the healthcheck exists: `GET /api/config/namespaces/{namespace}/healthchecks/{hc_name}`
+3. Recreate the origin pool with the correct healthcheck reference
+
+### CSD Status Shows isConfigured: false
+
+CSD must be enabled at the tenant level. Contact your F5 XC administrator to enable Client-Side Defense for your tenant. This is a tenant-wide setting that cannot be configured via API.
+
+### JS Injection Not Working
+
+1. Verify CSD is enabled at tenant level (Step 4)
+2. Confirm the load balancer has `client_side_defense` set in the spec
+3. Check the JS configuration endpoint returns a `scriptTag`
+4. Visit the protected domain in a browser and view page source to confirm the script is injected
+
+### Protected Domain Registration Fails with 409
+
+The root domain may already be registered in another namespace. Either:
+- Use a different root domain
+- Delete the existing registration in the other namespace
+- Use `PUT` instead of `POST` to update the existing registration
 
 ## OpenAPI Reference
 

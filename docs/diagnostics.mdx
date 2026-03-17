@@ -68,25 +68,19 @@ curl -s -X POST \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "xF5XC_NAMESPACEx",
-    "query": {
-      "start_time": "'"$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)"'",
-      "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"
-    },
-    "aggs": {
-      "total_requests": {
-        "value_count": {
-          "field": "@timestamp"
-        }
-      }
-    }
+    "start_time": "'"$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)"'",
+    "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"
   }' \
   "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs/aggregation" \
-  | jq '{total_requests: .aggs.total_requests.value}'
+  | jq '{total_requests: .total_hits}'
 ```
 
+<Aside type="note">
+The `total_hits` value is returned as a **string** (e.g., `"380"`), not an integer. The namespace is inferred from the URL path &mdash; do not include it in the request body.
+</Aside>
+
 <Aside type="caution">
-If the result is `0` or the response contains no aggregation data, traffic is not reaching the load balancer. Check [Health Checks](#health-checks) to verify DNS resolution, LB state, and certificate status before investigating CSD telemetry.
+If the result is `"0"` or the response contains no data, traffic is not reaching the load balancer. Check [Health Checks](#health-checks) to verify DNS resolution, LB state, and certificate status before investigating CSD telemetry.
 </Aside>
 
 ### Status Code Distribution
@@ -98,35 +92,33 @@ curl -s -X POST \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "xF5XC_NAMESPACEx",
-    "query": {
-      "start_time": "'"$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)"'",
-      "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"
-    },
-    "aggs": {
-      "status_codes": {
-        "terms": {
-          "field": "rsp_code_class"
-        }
-      }
-    }
+    "start_time": "'"$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)"'",
+    "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",
+    "sort": "DESCENDING",
+    "limit": 100
   }' \
-  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs/aggregation" \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs" \
   | jq -r '
-    ["STATUS_CLASS", "COUNT"],
-    (.aggs.status_codes.buckets[] | [.key, .doc_count])
+    [.logs[] | fromjson | .rsp_code_class]
+    | group_by(.) | map({class: .[0], count: length})
+    | sort_by(-.count)
+    | ["STATUS_CLASS", "COUNT"], (.[] | [.class, .count])
     | @tsv' | column -t
 ```
+
+<Aside type="note">
+The aggregation endpoint does not support `terms` bucketing &mdash; `aggs` always returns empty. This command fetches the most recent 100 log entries and computes the distribution client-side. Each log entry is a **JSON string** that must be parsed with `fromjson`.
+</Aside>
 
 Expected output for a healthy site:
 
 ```
 STATUS_CLASS  COUNT
-2xx           142
-3xx           18
+2xx           82
+downstream_remote_disconnect  18
 ```
 
-A high `4xx` or `5xx` count indicates client or server errors worth investigating.
+A high `4xx` or `5xx` count indicates client or server errors worth investigating. The `downstream_remote_disconnect` class indicates the client closed the connection before the response completed (common for long-polling or WebSocket upgrade requests).
 
 ### Recent Request Samples
 
@@ -137,36 +129,39 @@ curl -s -X POST \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   -H "Content-Type: application/json" \
   -d '{
-    "namespace": "xF5XC_NAMESPACEx",
-    "query": {
-      "start_time": "'"$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-1H +%Y-%m-%dT%H:%M:%SZ)"'",
-      "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"
-    },
-    "sort": "desc",
+    "start_time": "'"$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-1H +%Y-%m-%dT%H:%M:%SZ)"'",
+    "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",
+    "sort": "DESCENDING",
     "limit": 10
   }' \
   "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs" \
   | jq -r '
     ["TIMESTAMP", "METHOD", "PATH", "STATUS", "SRC_IP"],
-    (.logs[] | [.timestamp, .method, .req_path, .rsp_code, .src_ip])
+    (.logs[] | fromjson | [.["@timestamp"], .method, .req_path, .rsp_code, .src_ip])
     | @tsv' | column -t
 ```
 
 ### Access Log Field Reference
 
-| Field | Description |
-| --- | --- |
-| `@timestamp` | Request timestamp (ISO 8601) |
-| `method` | HTTP method (GET, POST, etc.) |
-| `req_path` | Request URI path |
-| `rsp_code` | HTTP response status code (e.g., 200, 404) |
-| `rsp_code_class` | Status code class (2xx, 3xx, 4xx, 5xx) |
-| `src_ip` | Client source IP address |
-| `dst_ip` | Destination (VIP) IP address |
-| `domain` | Request Host header value |
-| `user_agent` | Client User-Agent string |
-| `rsp_size` | Response body size in bytes |
-| `duration` | Request duration in milliseconds |
+<Aside type="caution">
+Each entry in the `.logs[]` array is a **JSON string**, not a parsed object. You must pipe through `fromjson` in jq before accessing fields (e.g., `.logs[] | fromjson | .method`).
+</Aside>
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `@timestamp` | string | Request timestamp (ISO 8601). Note the `@` prefix &mdash; access with `.["@timestamp"]` in jq |
+| `method` | string | HTTP method (GET, POST, etc.) |
+| `req_path` | string | Request URI path |
+| `rsp_code` | string | HTTP response status code as a string (e.g., `"200"`, `"404"`) |
+| `rsp_code_class` | string | Status code class (`2xx`, `3xx`, `4xx`, `5xx`, or `downstream_remote_disconnect`) |
+| `src_ip` | string | Client source IP address |
+| `dst_ip` | string | Destination (VIP) IP address |
+| `domain` | string | Request Host header value |
+| `user_agent` | string | Client User-Agent string |
+| `rsp_size` | string | Response body size in bytes (returned as string) |
+| `req_size` | string | Request body size in bytes (returned as string) |
+| `duration_with_data_tx_delay` | string | Total request duration in seconds (returned as string, e.g., `"0.024219"`) |
+| `csd_js_injection` | string | `"true"` when CSD JavaScript was injected (only present when active) |
 
 ## CSD Telemetry
 
@@ -226,12 +221,18 @@ curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
   | jq '{
-    summary: .domain_summary,
+    summary: {
+      action_needed: .domain_summary.actionNeededCount.count,
+      mitigated: .domain_summary.mitigatedDomains.count,
+      allowed: .domain_summary.allowedDomains.count,
+      total: .domain_summary.totalDomains.count
+    },
     domains: [.domains_list[] | {
       domain: .domain,
       category: .category,
       status: .status,
-      last_seen: .last_seen
+      first_seen: (.firstSeenDate | tonumber | todate),
+      latest_seen: (.latestSeenDate | tonumber | todate)
     }]
   }'
 ```
@@ -324,8 +325,8 @@ curl -s -X POST \
 | `.status` | scripts | AN (Action Needed) or NA (No Action Needed) |
 | `.formFieldsCount` | scripts | Number of form fields the script reads |
 | `.affectedUsersCount` | scripts | Number of unique users/sessions affected |
-| `domain_summary` | detected_domains | Counts by status (action_needed, allowed, mitigated, total) |
-| `domains_list[]` | detected_domains | Array of detected domain objects |
+| `domain_summary` | detected_domains | Counts by status: `.actionNeededCount.count`, `.mitigatedDomains.count`, `.allowedDomains.count`, `.totalDomains.count` (each has `.count` and `.lastUpdated`) |
+| `domains_list[]` | detected_domains | Array of detected domain objects with `.domain`, `.status`, `.category`, `.firstSeenDate`, `.latestSeenDate` (epoch seconds as strings) |
 | `form_fields[]` | formFields | Array of detected form field objects |
 | `.analysis` | formFields | Sensitivity classification (Sensitive, Not Sensitive) |
 
@@ -343,7 +344,7 @@ curl -s \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
   | jq '{
     state: .spec.state,
-    cert_state: .spec.auto_cert_state,
+    cert_state: .spec.cert_state,
     domains: .spec.domains,
     csd_enabled: (if .spec.client_side_defense then true else false end)
   }'
@@ -399,7 +400,7 @@ LB=$(curl -s \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx")
 
 LB_STATE=$(echo "$LB" | jq -r '.spec.state // "UNKNOWN"')
-CERT_STATE=$(echo "$LB" | jq -r '.spec.auto_cert_state // "UNKNOWN"')
+CERT_STATE=$(echo "$LB" | jq -r '.spec.cert_state // "UNKNOWN"')
 CSD_ON_LB=$(echo "$LB" | jq -r 'if .spec.client_side_defense then "ENABLED" else "DISABLED" end')
 DOMAINS=$(echo "$LB" | jq -r '.spec.domains | join(", ")')
 
@@ -537,7 +538,7 @@ If the [Script Inventory](#script-inventory) returns an empty array:
 | Diagnostic | Endpoint | Method | Time Format |
 | --- | --- | --- | --- |
 | Request count | `/api/data/namespaces/\{ns\}/access_logs/aggregation` | POST | ISO 8601 |
-| Status codes | `/api/data/namespaces/\{ns\}/access_logs/aggregation` | POST | ISO 8601 |
+| Status codes | `/api/data/namespaces/\{ns\}/access_logs` | POST | ISO 8601 |
 | Recent requests | `/api/data/namespaces/\{ns\}/access_logs` | POST | ISO 8601 |
 | CSD status | `/api/shape/csd/namespaces/\{ns\}/status` | GET | None |
 | Script list | `/api/shape/csd/namespaces/\{ns\}/scripts` | POST | Epoch seconds |

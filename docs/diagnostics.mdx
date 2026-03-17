@@ -1,0 +1,549 @@
+---
+title: Diagnostics & Monitoring
+sidebar:
+  order: 8
+  label: Diagnostics & Monitoring
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+This page provides **API-based diagnostic commands** for verifying that traffic is reaching your HTTP load balancer, inspecting CSD telemetry (scripts, domains, form fields), and running health checks on infrastructure state. Each command produces readable terminal output using `jq`.
+
+These commands are the **API equivalent** of the [CSD Console Walkthrough](/csd/csd-console/) — use them when you need to check status from the terminal, automate monitoring, or demonstrate CSD capabilities without the UI.
+
+## Prerequisites
+
+Set up your environment variables as described in [API Automation &mdash; Environment Setup](/csd/api-automation/#environment-setup):
+
+```bash
+set -a && source .env && set +a
+```
+
+All commands below use the `xTOKENx` placeholder format. Substitute with your environment variables (`$F5XC_API_TOKEN`, `$F5XC_NAMESPACE`, etc.) or use the interactive form at the top of the page.
+
+## Time Range Helpers
+
+Many CSD endpoints require epoch timestamps (seconds since Unix epoch). These one-liners compute start/end times for common ranges.
+
+**Cross-platform** (macOS + Linux):
+
+```bash
+# Current time as epoch seconds
+NOW=$(date +%s)
+
+# 1 hour ago
+START_1H=$(( NOW - 3600 ))
+
+# 24 hours ago
+START_24H=$(( NOW - 86400 ))
+
+# 7 days ago
+START_7D=$(( NOW - 604800 ))
+
+# 30 days ago
+START_30D=$(( NOW - 2592000 ))
+```
+
+| Preset | Seconds | Shell expression |
+| --- | --- | --- |
+| 1 hour | 3,600 | `$(( $(date +%s) - 3600 ))` |
+| 24 hours | 86,400 | `$(( $(date +%s) - 86400 ))` |
+| 7 days | 604,800 | `$(( $(date +%s) - 604800 ))` |
+| 30 days | 2,592,000 | `$(( $(date +%s) - 2592000 ))` |
+
+<Aside type="note">
+CSD endpoints (`/api/shape/csd/`) use **epoch seconds** (e.g., `1710000000`). Access log endpoints (`/api/data/`) use **ISO 8601** timestamps (e.g., `2024-03-10T00:00:00Z`). The commands in each section use the correct format for that endpoint.
+</Aside>
+
+## Load Balancer Traffic
+
+Use the access log API to verify that HTTP requests are reaching your load balancer. Zero results here means traffic is not arriving — skip to [Health Checks](#health-checks) to diagnose.
+
+### Request Count (Last 24 Hours)
+
+Count total requests received by the load balancer in the past 24 hours:
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "namespace": "xF5XC_NAMESPACEx",
+    "query": {
+      "start_time": "'"$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)"'",
+      "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"
+    },
+    "aggs": {
+      "total_requests": {
+        "value_count": {
+          "field": "@timestamp"
+        }
+      }
+    }
+  }' \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs/aggregation" \
+  | jq '{total_requests: .aggs.total_requests.value}'
+```
+
+<Aside type="caution">
+If the result is `0` or the response contains no aggregation data, traffic is not reaching the load balancer. Check [Health Checks](#health-checks) to verify DNS resolution, LB state, and certificate status before investigating CSD telemetry.
+</Aside>
+
+### Status Code Distribution
+
+Break down responses by status code class to spot errors:
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "namespace": "xF5XC_NAMESPACEx",
+    "query": {
+      "start_time": "'"$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)"'",
+      "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"
+    },
+    "aggs": {
+      "status_codes": {
+        "terms": {
+          "field": "rsp_code_class"
+        }
+      }
+    }
+  }' \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs/aggregation" \
+  | jq -r '
+    ["STATUS_CLASS", "COUNT"],
+    (.aggs.status_codes.buckets[] | [.key, .doc_count])
+    | @tsv' | column -t
+```
+
+Expected output for a healthy site:
+
+```
+STATUS_CLASS  COUNT
+2xx           142
+3xx           18
+```
+
+A high `4xx` or `5xx` count indicates client or server errors worth investigating.
+
+### Recent Request Samples
+
+Fetch the 10 most recent access log entries to inspect individual requests:
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "namespace": "xF5XC_NAMESPACEx",
+    "query": {
+      "start_time": "'"$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-1H +%Y-%m-%dT%H:%M:%SZ)"'",
+      "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"
+    },
+    "sort": "desc",
+    "limit": 10
+  }' \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs" \
+  | jq -r '
+    ["TIMESTAMP", "METHOD", "PATH", "STATUS", "SRC_IP"],
+    (.logs[] | [.timestamp, .method, .req_path, .rsp_code, .src_ip])
+    | @tsv' | column -t
+```
+
+### Access Log Field Reference
+
+| Field | Description |
+| --- | --- |
+| `@timestamp` | Request timestamp (ISO 8601) |
+| `method` | HTTP method (GET, POST, etc.) |
+| `req_path` | Request URI path |
+| `rsp_code` | HTTP response status code (e.g., 200, 404) |
+| `rsp_code_class` | Status code class (2xx, 3xx, 4xx, 5xx) |
+| `src_ip` | Client source IP address |
+| `dst_ip` | Destination (VIP) IP address |
+| `domain` | Request Host header value |
+| `user_agent` | Client User-Agent string |
+| `rsp_size` | Response body size in bytes |
+| `duration` | Request duration in milliseconds |
+
+## CSD Telemetry
+
+These commands query the same data displayed in the [CSD Console](/csd/csd-console/) dashboard, script list, form fields, and network views.
+
+### CSD Status Overview
+
+Verify that CSD is configured and enabled for the tenant:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq '{isConfigured, isEnabled}'
+```
+
+Both values must be `true` for CSD telemetry to function. If `isConfigured` is `false`, CSD has not been enabled for this tenant — contact your F5 XC administrator.
+
+### Script Inventory
+
+List all detected scripts with risk level, status, and field/user counts. This is the API equivalent of the [Script Inventory](/csd/csd-console/#script-inventory) in the console.
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"startTime\": \"${START}\",
+    \"endTime\": \"${NOW}\"
+  }" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq -r '
+    ["SCRIPT", "RISK", "STATUS", "FIELDS", "USERS"],
+    (.scripts[] | [
+      (.name | if length > 50 then .[:47] + "..." else . end),
+      .risk,
+      .status,
+      (.formFieldsCount // 0),
+      (.affectedUsersCount // 0)
+    ])
+    | @tsv' | column -t
+```
+
+<Aside type="tip">
+Script names are full URLs and can be very long. The command above truncates names to 50 characters for terminal readability. Remove the truncation filter to see full URLs.
+</Aside>
+
+### Detected Domains
+
+View the domain summary and list all detected script source domains. This is the API equivalent of the [Dashboard](/csd/csd-console/#dashboard) domain table.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{
+    summary: .domain_summary,
+    domains: [.domains_list[] | {
+      domain: .domain,
+      category: .category,
+      status: .status,
+      last_seen: .last_seen
+    }]
+  }'
+```
+
+### Form Field Inventory
+
+List all form fields that CSD detected scripts reading, with sensitivity classification. This is the API equivalent of the [Form Fields](/csd/csd-console/#form-fields) view.
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields?startTime=${START}&endTime=${NOW}" \
+  | jq -r '
+    ["FIELD", "SENSITIVITY", "SCRIPTS"],
+    (.form_fields[] | [
+      .name,
+      .analysis,
+      (.scripts_count // 0)
+    ])
+    | @tsv' | column -t
+```
+
+### Script Deep Dive
+
+For a specific script, retrieve its dashboard overview, behaviors, and network interactions. First, get a script ID from the script inventory above, then query its details:
+
+```bash
+SCRIPT_ID="your-script-id"
+
+# Overview (risk level, type, source domain)
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/dashboard" \
+  | jq '{name, risk, type, source_domain, status}'
+
+# Behaviors over time
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/behaviors" \
+  | jq '.behaviors'
+
+# Network interactions (domains the script communicates with)
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/networkInteractions" \
+  | jq '.network_interactions'
+```
+
+### Affected Users
+
+List users impacted by a specific script. This is the API equivalent of the [Affected Users](/csd/csd-console/#affected-users) tab.
+
+```bash
+SCRIPT_ID="your-script-id"
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"startTime\": \"${START}\",
+    \"endTime\": \"${NOW}\"
+  }" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/affectedUsers" \
+  | jq -r '
+    ["IP_ADDRESS", "DEVICE_ID", "GEO", "CHANNEL", "USER_AGENT"],
+    (.affected_users[] | [
+      .ip_address,
+      (.device_id | if length > 12 then .[:12] + "..." else . end),
+      .geolocation,
+      .channel,
+      (.user_agent | if length > 30 then .[:27] + "..." else . end)
+    ])
+    | @tsv' | column -t
+```
+
+### CSD Telemetry Field Reference
+
+| Field | Endpoint | Description |
+| --- | --- | --- |
+| `isConfigured` | status | CSD enabled at tenant level |
+| `isEnabled` | status | CSD active for this namespace |
+| `scripts[]` | scripts | Array of detected script objects |
+| `.name` | scripts | Full URL of the JavaScript file |
+| `.risk` | scripts | Risk level (No Risk, Low Risk, High Risk) |
+| `.status` | scripts | AN (Action Needed) or NA (No Action Needed) |
+| `.formFieldsCount` | scripts | Number of form fields the script reads |
+| `.affectedUsersCount` | scripts | Number of unique users/sessions affected |
+| `domain_summary` | detected_domains | Counts by status (action_needed, allowed, mitigated, total) |
+| `domains_list[]` | detected_domains | Array of detected domain objects |
+| `form_fields[]` | formFields | Array of detected form field objects |
+| `.analysis` | formFields | Sensitivity classification (Sensitive, Not Sensitive) |
+
+## Health Checks
+
+Run these commands to verify that your load balancer, certificate, CSD configuration, and DNS are all healthy.
+
+### Load Balancer and Certificate State
+
+Check the LB operational state and TLS certificate status:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  | jq '{
+    state: .spec.state,
+    cert_state: .spec.auto_cert_state,
+    domains: .spec.domains,
+    csd_enabled: (if .spec.client_side_defense then true else false end)
+  }'
+```
+
+| Field | Healthy | Problem |
+| --- | --- | --- |
+| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` &mdash; DNS A record not configured |
+| `cert_state` | `AutoCertIssued` or `AutoCertRenewing` | `PreDomainChallengePending` &mdash; ACME challenge CNAME missing |
+| `csd_enabled` | `true` | `false` &mdash; CSD not enabled on LB |
+
+### CSD and JS Configuration
+
+Verify CSD is enabled and the JavaScript injection tag is configured:
+
+```bash
+# CSD status
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq '{isConfigured, isEnabled}'
+
+# JS injection tag
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq '{has_script_tag: (.scriptTag | length > 0)}'
+```
+
+### DNS Resolution
+
+Verify that DNS records are resolving correctly:
+
+```bash
+# A record — should return the VIP IP
+dig +short xF5XC_DOMAINNAMEx A
+
+# ACME challenge CNAME — required for automatic TLS
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+```
+
+### Combined Health Dashboard
+
+Run a single command that checks all health indicators and produces a summary table:
+
+```bash
+echo "=== CSD Health Dashboard ==="
+echo ""
+
+# LB state
+LB=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx")
+
+LB_STATE=$(echo "$LB" | jq -r '.spec.state // "UNKNOWN"')
+CERT_STATE=$(echo "$LB" | jq -r '.spec.auto_cert_state // "UNKNOWN"')
+CSD_ON_LB=$(echo "$LB" | jq -r 'if .spec.client_side_defense then "ENABLED" else "DISABLED" end')
+DOMAINS=$(echo "$LB" | jq -r '.spec.domains | join(", ")')
+
+# CSD status
+CSD=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status")
+
+CSD_CONFIGURED=$(echo "$CSD" | jq -r '.isConfigured // false')
+CSD_ENABLED=$(echo "$CSD" | jq -r '.isEnabled // false')
+
+# JS config
+JS_TAG=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq -r 'if (.scriptTag | length) > 0 then "PRESENT" else "MISSING" end')
+
+# DNS
+DNS_A=$(dig +short xF5XC_DOMAINNAMEx A | head -1)
+DNS_ACME=$(dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME | head -1)
+
+printf "%-24s %s\n" "CHECK" "STATUS"
+printf "%-24s %s\n" "------------------------" "----------------------------"
+printf "%-24s %s\n" "LB State" "$LB_STATE"
+printf "%-24s %s\n" "Certificate" "$CERT_STATE"
+printf "%-24s %s\n" "CSD on LB" "$CSD_ON_LB"
+printf "%-24s %s\n" "CSD Configured (tenant)" "$CSD_CONFIGURED"
+printf "%-24s %s\n" "CSD Enabled" "$CSD_ENABLED"
+printf "%-24s %s\n" "JS Script Tag" "$JS_TAG"
+printf "%-24s %s\n" "DNS A Record" "${DNS_A:-NOT_FOUND}"
+printf "%-24s %s\n" "ACME CNAME" "${DNS_ACME:-NOT_FOUND}"
+printf "%-24s %s\n" "Domains" "$DOMAINS"
+```
+
+### Health Status Reference
+
+| Check | Healthy | Problem | Fix |
+| --- | --- | --- | --- |
+| LB State | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` | Configure DNS A record &mdash; see [API Automation &mdash; Step 4](/csd/api-automation/#step-4-configure-dns) |
+| Certificate | `AutoCertIssued` | `PreDomainChallengePending` | Add ACME challenge CNAME: `_acme-challenge.&lt;domain&gt;` &rarr; `*.autocerts.ves.volterra.io` |
+| CSD on LB | `ENABLED` | `DISABLED` | Enable CSD on the load balancer &mdash; see [API Reference](/csd/api-reference/#enable-csd-on-a-load-balancer) |
+| CSD Configured | `true` | `false` | Contact F5 XC administrator to enable CSD for the tenant |
+| CSD Enabled | `true` | `false` | CSD not active &mdash; check tenant configuration |
+| JS Script Tag | `PRESENT` | `MISSING` | Verify CSD is enabled and protected domain is registered |
+| DNS A Record | VIP IP address | `NOT_FOUND` | Create A record pointing to LB VIP &mdash; see [API Automation &mdash; Step 4](/csd/api-automation/#step-4-configure-dns) |
+| ACME CNAME | `*.autocerts...` | `NOT_FOUND` | Create CNAME for `_acme-challenge.&lt;domain&gt;` |
+
+## Troubleshooting
+
+### Zero Access Logs
+
+If the [Request Count](#request-count-last-24-hours) returns `0`:
+
+<Steps>
+1. **Check DNS resolution** &mdash; verify the domain resolves to the LB VIP:
+   ```bash
+   dig +short xF5XC_DOMAINNAMEx A
+   ```
+   If empty, DNS is not configured. See [API Automation &mdash; Step 4](/csd/api-automation/#step-4-configure-dns).
+
+2. **Check LB state** &mdash; the load balancer must be `VIRTUAL_HOST_READY`:
+   ```bash
+   curl -s \
+     -H "Authorization: APIToken xF5XC_API_TOKENx" \
+     "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+     | jq '.spec.state'
+   ```
+
+3. **Send a test request** &mdash; generate traffic to confirm end-to-end connectivity:
+   ```bash
+   curl -sv "https://xF5XC_DOMAINNAMEx/" 2>&1 | head -20
+   ```
+   Look for a successful TLS handshake and HTTP response.
+</Steps>
+
+### LB Stuck in VIRTUAL_HOST_PENDING_A_RECORD
+
+The load balancer is waiting for a DNS A record pointing to its VIP. See [API Automation &mdash; LB Stuck in VIRTUAL_HOST_PENDING_A_RECORD](/csd/api-automation/#lb-stuck-in-virtual_host_pending_a_record) for detailed resolution steps.
+
+### Certificate Stuck in PreDomainChallengePending
+
+The automatic TLS certificate requires an ACME challenge CNAME record:
+
+```
+_acme-challenge.xF5XC_DOMAINNAMEx  CNAME  *.autocerts.ves.volterra.io
+```
+
+Verify the CNAME exists:
+
+```bash
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+```
+
+If empty, create the CNAME at your DNS provider. Certificate provisioning takes 2&ndash;5 minutes after the CNAME is in place.
+
+### CSD isConfigured is false
+
+CSD must be enabled at the tenant level by an F5 XC administrator. This is a tenant-wide setting that cannot be configured via the namespace API. Contact your administrator to enable Client-Side Defense.
+
+### Empty Scripts Array
+
+If the [Script Inventory](#script-inventory) returns an empty array:
+
+<Steps>
+1. **Check the protected domain** &mdash; CSD monitors scripts only on registered domains:
+   ```bash
+   curl -s \
+     -H "Authorization: APIToken xF5XC_API_TOKENx" \
+     "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+     | jq '.items[].spec.protected_domain'
+   ```
+
+2. **Verify JS injection** &mdash; confirm the CSD script tag is being injected into pages:
+   ```bash
+   curl -s "https://xF5XC_DOMAINNAMEx/" | grep -o 'shape.com[^"]*' | head -1
+   ```
+   If no match, CSD JavaScript is not being injected. Check that the LB has `client_side_defense` enabled.
+
+3. **Allow processing time** &mdash; after first enabling CSD or registering a new protected domain, script detection can take 5&ndash;15 minutes. Generate traffic to the site and wait before re-checking.
+</Steps>
+
+## Quick Reference
+
+### Time Range Presets
+
+| Period | Epoch offset | ISO 8601 (Linux) | ISO 8601 (macOS) |
+| --- | --- | --- | --- |
+| 1 hour | `$(( $(date +%s) - 3600 ))` | `date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ` | `date -u -v-1H +%Y-%m-%dT%H:%M:%SZ` |
+| 24 hours | `$(( $(date +%s) - 86400 ))` | `date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ` | `date -u -v-24H +%Y-%m-%dT%H:%M:%SZ` |
+| 7 days | `$(( $(date +%s) - 604800 ))` | `date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ` | `date -u -v-7d +%Y-%m-%dT%H:%M:%SZ` |
+| 30 days | `$(( $(date +%s) - 2592000 ))` | `date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ` | `date -u -v-30d +%Y-%m-%dT%H:%M:%SZ` |
+
+### Endpoint Summary
+
+| Diagnostic | Endpoint | Method | Time Format |
+| --- | --- | --- | --- |
+| Request count | `/api/data/namespaces/\{ns\}/access_logs/aggregation` | POST | ISO 8601 |
+| Status codes | `/api/data/namespaces/\{ns\}/access_logs/aggregation` | POST | ISO 8601 |
+| Recent requests | `/api/data/namespaces/\{ns\}/access_logs` | POST | ISO 8601 |
+| CSD status | `/api/shape/csd/namespaces/\{ns\}/status` | GET | None |
+| Script list | `/api/shape/csd/namespaces/\{ns\}/scripts` | POST | Epoch seconds |
+| Detected domains | `/api/shape/csd/namespaces/\{ns\}/detected_domains` | GET | None |
+| Form fields | `/api/shape/csd/namespaces/\{ns\}/formFields` | GET | Epoch seconds (query params) |
+| Script details | `/api/shape/csd/namespaces/\{ns\}/scripts/\{id\}/dashboard` | GET | None |
+| Affected users | `/api/shape/csd/namespaces/\{ns\}/scripts/\{id\}/affectedUsers` | POST | Epoch seconds |
+| LB state | `/api/config/namespaces/\{ns\}/http_loadbalancers/\{name\}` | GET | None |
+| JS configuration | `/api/shape/csd/namespaces/\{ns\}/js_configuration` | GET | None |

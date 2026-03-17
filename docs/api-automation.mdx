@@ -56,6 +56,10 @@ Source the file to load variables into your shell session:
 set -a && source .env && set +a
 ```
 
+<Aside type="tip">
+If your API token contains `/` or `=` characters, wrap the value in single quotes in `.env` (e.g., `F5XC_API_TOKEN='abc/def='`) to prevent shell interpretation issues when sourcing.
+</Aside>
+
 Each `xTOKENx` placeholder in the curl commands below maps directly to an environment variable — for example, `xF5XC_API_TOKENx` corresponds to `$F5XC_API_TOKEN`. You can substitute these values using the interactive form at the top of the page, or let an AI assistant like Claude Code read your `.env` and build the commands for you.
 
 ## Placeholder Tokens
@@ -214,7 +218,11 @@ curl -s -X POST \
       "disable_api_discovery": {},
       "disable_ip_reputation": {},
       "disable_malicious_user_detection": {},
-      "single_lb_app": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
       "disable_trust_client_ip_headers": {},
       "user_id_client_ip": {},
       "disable_threat_mesh": {},
@@ -231,20 +239,18 @@ curl -s -X POST \
 
 A `200` response confirms the load balancer was created with CSD enabled.
 
-## Step 4: Initialize CSD
+## Step 4: Verify CSD is Enabled
 
-Enable Client-Side Defense for the tenant. This is a one-time, idempotent operation at the `system` namespace level. The `email` field sets the notification address for CSD alerts.
+Check that Client-Side Defense is enabled for the tenant. CSD is configured at the tenant level — if it has not been enabled yet, contact your F5 XC administrator.
 
 ```bash
-curl -s -X POST \
+curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  -H "Content-Type: application/json" \
-  -d '{ "email": "xF5XC_EMAILx" }' \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/system/init" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
   | jq .
 ```
 
-A response containing `"isConfigured": true` confirms CSD is enabled for the tenant.
+A response containing `"isConfigured": true` and `"isEnabled": true` confirms CSD is active.
 
 ## Step 5: Register Protected Domain
 
@@ -273,21 +279,10 @@ Verify the domain was registered:
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
-  | jq '.items[].metadata.name'
+  | jq '.items[].name'
 ```
 
 ## Step 6: Verify
-
-### CSD Status
-
-```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
-  | jq .
-```
-
-The response includes `enabled`, `namespace`, and domain registration status.
 
 ### JS Configuration
 
@@ -298,7 +293,7 @@ curl -s \
   | jq .
 ```
 
-The response contains script paths and configuration parameters that the load balancer injects into page responses.
+The response contains a `scriptTag` field with the full HTML `<script>` tag that the load balancer injects into page responses.
 
 ### Detected Domains
 
@@ -306,27 +301,34 @@ The response contains script paths and configuration parameters that the load ba
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
-  | jq '.items[] | {domain: .metadata.name, risk: .spec.risk}'
+  | jq '{summary: .domain_summary, domains: .domains_list}'
 ```
 
 ### Detected Scripts
+
+The scripts endpoint requires a time range using epoch timestamps (seconds since Unix epoch). The example below queries the last 7 days.
 
 ```bash
 curl -s -X POST \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   -H "Content-Type: application/json" \
-  -d '{}' \
+  -d "{
+    \"startTime\": \"$(date -u -v-7d +%s)\",
+    \"endTime\": \"$(date -u +%s)\"
+  }" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
-  | jq '.items[] | {id: .id, url: .url, risk: .risk}'
+  | jq '.scripts'
 ```
 
 ### Form Fields
 
+The form fields endpoint requires a time range using epoch timestamps, passed as query parameters.
+
 ```bash
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields" \
-  | jq .
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields?startTime=$(date -u -v-7d +%s)&endTime=$(date -u +%s)" \
+  | jq '.form_fields'
 ```
 
 ## Teardown
@@ -407,7 +409,7 @@ Values are resolved in this order:
 1. **Create Healthcheck** — `POST /api/config/namespaces/\{namespace\}/healthchecks`
 2. **Create Origin Pool** — `POST /api/config/namespaces/\{namespace\}/origin_pools` (references healthcheck)
 3. **Create HTTP Load Balancer** — `POST /api/config/namespaces/\{namespace\}/http_loadbalancers` (references origin pool, enables CSD)
-4. **Initialize CSD** — `POST /api/shape/csd/namespaces/system/init` (tenant-wide, idempotent, requires `email` field)
+4. **Verify CSD is Enabled** — `GET /api/shape/csd/namespaces/\{namespace\}/status` (tenant-wide — check `isConfigured` and `isEnabled` are both `true`)
 5. **Register Protected Domain** — `POST /api/shape/csd/namespaces/\{namespace\}/protected_domains` (uses eTLD+1 root domain in `spec.protected_domain`)
 6. **Verify** — `GET .../status`, `GET .../js_configuration`, `GET .../detected_domains`
 </Steps>
@@ -433,6 +435,16 @@ The HTTP Load Balancer spec uses `oneOf` choice groups where exactly one option 
 | `mtls_choice` | `no_mtls`, `use_mtls` | `no_mtls` |
 | `default_loadbalancer_choice` | `default_loadbalancer`, `non_default_loadbalancer` | `default_loadbalancer` |
 
+**`single_lb_app` nested choices** (ML config):
+
+The `single_lb_app` object has its own required `oneOf` groups. Setting `single_lb_app: \{\}` without these nested choices causes a `400` error.
+
+| Choice Group | Options | Default |
+| --- | --- | --- |
+| `api_discovery_choice` | `disable_discovery`, `enable_discovery` | `disable_discovery` |
+| `ddos_detection_choice` | `disable_ddos_detection`, `enable_ddos_detection` | `disable_ddos_detection` |
+| `malicious_user_detection_choice` | `disable_malicious_user_detection`, `enable_malicious_user_detection` | `disable_malicious_user_detection` |
+
 **Other LB-level choices (all set to disable/default):**
 
 `disable_rate_limit` · `no_service_policies` · `round_robin` · `disable_waf` · `no_challenge` · `disable_bot_defense` · `disable_api_definition` · `disable_api_discovery` · `disable_ip_reputation` · `disable_malicious_user_detection` · `single_lb_app` · `disable_trust_client_ip_headers` · `user_id_client_ip` · `disable_threat_mesh` · `l7_ddos_action_default` · `system_default_timeouts` · `default_sensitive_data_policy` · `disable_malware_protection` · `disable_api_testing`
@@ -446,8 +458,9 @@ Delete in reverse: protected domain &rarr; HTTP load balancer &rarr; origin pool
 - **401 Unauthorized** — API token is invalid or expired. Regenerate under **Administration** &rarr; **Credentials**.
 - **403 Forbidden** — token lacks permissions for the namespace. Check role bindings.
 - **404 Not Found** — namespace or object name is incorrect. List objects with `GET /api/config/namespaces/\{namespace\}/\{object_type\}`.
-- **409 Conflict** — object already exists. For CSD init, this is safe (idempotent). For other objects, delete first or use `PUT` to update.
+- **409 Conflict** — object already exists. For protected domains, the root domain may be registered in another namespace. Delete first or use `PUT` to update.
 - **422 Unprocessable Entity** — JSON schema validation failed. Common causes: missing `oneOf` choice, multiple choices set in same group, wrong field type. Check the error message for the specific field.
+- **429 Too Many Requests** — tenant has hit an object limit (e.g., 150 healthchecks). Delete unused objects or contact your administrator to increase limits.
 
 ## OpenAPI Reference
 

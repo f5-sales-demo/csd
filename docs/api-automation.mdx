@@ -1,0 +1,241 @@
+---
+title: API Automation
+sidebar:
+  order: 3
+  label: API Automation
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+This page generates ready-to-run `curl` commands for configuring Client-Side Defense via the F5 XC API. Fill in the placeholder form (top of page) to customize every command for your environment. AI agents can substitute `xTOKENx`-style variables programmatically.
+
+<Aside type="caution">
+The placeholder form stores your API token in the browser's `localStorage`. Do not use production tokens on shared or public machines.
+</Aside>
+
+## Prerequisites
+
+- An **F5 XC API token** — generate one under **Administration** &rarr; **Credentials** &rarr; **API Credentials**
+- `curl` and `jq` installed locally
+- An HTTP Load Balancer already configured in the target namespace
+
+## Step 1: Initialize CSD
+
+Enable Client-Side Defense for the tenant. This is a one-time operation at the `system` namespace level.
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/system/init"
+```
+
+A `200` response with an empty JSON object (`\{\}`) confirms CSD is enabled.
+
+## Step 2: Register Protected Domain
+
+Register the domain that CSD will monitor. This tells the reporting engine which domain to track.
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_DOMAINNAMEx",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {}
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq .
+```
+
+Verify the domain was registered:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '.items[].metadata.name'
+```
+
+## Step 3: Enable CSD on HTTP Load Balancer
+
+This is a read-modify-write operation. Retrieve the current load balancer configuration, enable CSD with JavaScript injection on all pages, and apply the update.
+
+### 3a. Retrieve current configuration
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  > lb-config.json
+```
+
+### 3b. Modify to enable CSD
+
+```bash
+jq '.spec |= (
+  del(.disable_client_side_defense) |
+  .client_side_defense = {
+    "policy": {
+      "js_insert_all_pages": {}
+    }
+  }
+)' lb-config.json > lb-config-updated.json
+```
+
+### 3c. Apply the update
+
+```bash
+curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d @lb-config-updated.json \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  | jq '.spec.client_side_defense'
+```
+
+Expected output confirms the policy is active:
+
+```json
+{
+  "policy": {
+    "js_insert_all_pages": {}
+  }
+}
+```
+
+## Step 4: Verify CSD Status
+
+Confirm CSD is active and reporting for the namespace.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq .
+```
+
+The response includes `enabled`, `namespace`, and domain registration status.
+
+## Step 5: Test JS Configuration
+
+Retrieve the JavaScript injection configuration to confirm the CSD scripts will be served.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq .
+```
+
+The response contains the script paths (`common.js`) and configuration parameters that the load balancer injects into page responses.
+
+## Step 6: Monitor Detections
+
+Once CSD is active and traffic is flowing, use these endpoints to monitor what CSD has found.
+
+### Detected domains
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '.items[] | {domain: .metadata.name, risk: .spec.risk}'
+```
+
+### High-risk domains only
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains?risk=high" \
+  | jq '.items[] | {domain: .metadata.name, risk: .spec.risk}'
+```
+
+### Detected scripts
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq '.items[] | {id: .id, url: .url, risk: .risk}'
+```
+
+### Form fields
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields" \
+  | jq .
+```
+
+## Teardown (Optional)
+
+Remove the CSD configuration created above. Run these steps in reverse order.
+
+### Disable CSD on the load balancer
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  > lb-config.json
+
+jq '.spec |= (
+  del(.client_side_defense) |
+  .disable_client_side_defense = {}
+)' lb-config.json > lb-config-updated.json
+
+curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d @lb-config-updated.json \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  | jq '.spec.disable_client_side_defense'
+```
+
+### Delete the protected domain
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/xF5XC_DOMAINNAMEx"
+```
+
+## AI Agent Reference
+
+This section is structured for AI assistants (Claude Code, etc.) to parse and execute the full CSD configuration workflow.
+
+### Variables
+
+| Token | Description | Default |
+| --- | --- | --- |
+| `xF5XC_API_URLx` | XC Console API URL | `https://f5-sales-demo.console.ves.volterra.io` |
+| `xF5XC_API_TOKENx` | API credential token | (user-provided) |
+| `xF5XC_NAMESPACEx` | Namespace | `bot-defense` |
+| `xF5XC_LB_NAMEx` | HTTP Load Balancer name | `bot-defense-demo-2` |
+| `xF5XC_DOMAINNAMEx` | Domain to protect | `botdemo.sales-demo.f5demos.com` |
+
+### Execution Order
+
+<Steps>
+1. **Initialize CSD** — `POST /api/shape/csd/namespaces/system/init` (one-time, idempotent)
+2. **Register domain** — `POST .../protected_domains` with domain name and namespace
+3. **Enable on LB** — `GET` current config, `jq` to add `client_side_defense`, `PUT` back
+4. **Verify status** — `GET .../status` and confirm `enabled: true`
+5. **Verify JS config** — `GET .../js_configuration` and confirm script paths present
+6. **Monitor** — poll `detected_domains`, `scripts`, and `formFields` for detection data
+</Steps>
+
+### Error Handling
+
+- **401 Unauthorized** — API token is invalid or expired. Regenerate under **Administration** &rarr; **Credentials**.
+- **403 Forbidden** — token lacks permissions for the namespace. Check role bindings.
+- **404 Not Found** — namespace or load balancer name is incorrect. Verify with `GET /api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers`.
+- **409 Conflict** — domain already registered. Safe to continue; the existing registration is valid.

@@ -7,34 +7,252 @@ sidebar:
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-This page generates ready-to-run `curl` commands for configuring Client-Side Defense via the F5 XC API. Fill in the placeholder form (top of page) to customize every command for your environment. AI agents can substitute `xTOKENx`-style variables programmatically.
+This page provides ready-to-run `curl` commands that create a **complete Client-Side Defense deployment** on F5 Distributed Cloud — from healthcheck through protected domain registration. Fill in the placeholder form (top of page) to customize every command, or substitute `xTOKENx`-style variables programmatically for AI agent workflows.
 
 <Aside type="caution">
-The placeholder form stores your API token in the browser's `localStorage`. Do not use production tokens on shared or public machines.
+The placeholder form stores values — including your API token — in the browser's `localStorage`. Do not use production tokens on shared or public machines.
 </Aside>
 
 ## Prerequisites
 
 - An **F5 XC API token** — generate one under **Administration** &rarr; **Credentials** &rarr; **API Credentials**
 - `curl` and `jq` installed locally
-- An HTTP Load Balancer already configured in the target namespace
+- A namespace with permissions to create healthchecks, origin pools, and HTTP load balancers
 
-## Step 1: Initialize CSD
+## Environment Setup
 
-Enable Client-Side Defense for the tenant. This is a one-time operation at the `system` namespace level.
+Create a `.env` file with your environment values. A template is provided in the repository:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your actual values:
+
+```bash title=".env"
+# Tenant
+F5XC_API_URL=https://your-tenant.console.ves.volterra.io
+F5XC_API_TOKEN=your-api-token
+F5XC_TENANT=your-tenant-id
+F5XC_EMAIL=you@example.com
+
+# Application
+F5XC_NAMESPACE=your-namespace
+F5XC_LB_NAME=your-lb-name
+F5XC_DOMAINNAME=app.yourdomain.com
+F5XC_ROOT_DOMAIN=yourdomain.com
+
+# Origin Configuration
+F5XC_ORIGIN_POOL=your-origin-pool
+F5XC_ORIGIN_IP=192.0.2.1
+F5XC_ORIGIN_PORT=443
+F5XC_HC_NAME=your-healthcheck
+```
+
+<Aside type="caution">
+The `.env` file contains your API token. It is listed in `.gitignore` and must never be committed to version control.
+</Aside>
+
+Source the file to use variables in shell commands:
+
+```bash
+set -a && source .env && set +a
+```
+
+## Placeholder Tokens
+
+| Token | Default | Description |
+| --- | --- | --- |
+| `xF5XC_API_URLx` | `https://f5-sales-demo.console.ves.volterra.io` | XC Console API URL |
+| `xF5XC_API_TOKENx` | `your-api-token` | API credential token |
+| `xF5XC_TENANTx` | `f5-sales-demo-rljyvvmw` | Tenant name (appears in API responses) |
+| `xF5XC_EMAILx` | `admin@example.com` | CSD notification email address |
+| `xF5XC_NAMESPACEx` | `bot-defense` | Namespace |
+| `xF5XC_LB_NAMEx` | `bot-defense-demo-2` | HTTP Load Balancer name |
+| `xF5XC_DOMAINNAMEx` | `botdemo.sales-demo.f5demos.com` | FQDN to protect |
+| `xF5XC_ROOT_DOMAINx` | `f5demos.com` | Root domain (eTLD+1) for CSD protected domain |
+| `xF5XC_ORIGIN_POOLx` | `juice-origin` | Origin pool name |
+| `xF5XC_ORIGIN_IPx` | `192.0.2.1` | Origin server IP (your backend) |
+| `xF5XC_ORIGIN_PORTx` | `443` | Origin server port |
+| `xF5XC_HC_NAMEx` | `juice-shop-hc` | Healthcheck name |
+
+<Aside type="tip">
+**Finding your tenant name**: The tenant name appears in the `system_metadata.tenant` field of any API response. You can also find it under **Administration** &rarr; **Tenant Settings** in the console.
+</Aside>
+
+## Step 1: Create Healthcheck
+
+Create an HTTP healthcheck that the origin pool will use to monitor backend health.
 
 ```bash
 curl -s -X POST \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   -H "Content-Type: application/json" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/system/init"
+  -d '{
+    "metadata": {
+      "name": "xF5XC_HC_NAMEx",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "disable": false
+    },
+    "spec": {
+      "http_health_check": {
+        "use_origin_server_name": {},
+        "path": "/",
+        "use_http2": false,
+        "headers": {},
+        "request_headers_to_remove": [],
+        "expected_status_codes": ["200"]
+      },
+      "timeout": 3,
+      "interval": 15,
+      "jitter": 0,
+      "unhealthy_threshold": 1,
+      "healthy_threshold": 3,
+      "jitter_percent": 30
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks" \
+  | jq .
 ```
 
-A `200` response with an empty JSON object (`\{\}`) confirms CSD is enabled.
+A `200` response confirms the healthcheck was created.
 
-## Step 2: Register Protected Domain
+## Step 2: Create Origin Pool
 
-Register the domain that CSD will monitor. This tells the reporting engine which domain to track.
+Create an origin pool referencing the healthcheck from Step 1.
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_ORIGIN_POOLx",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "Origin pool for CSD demo",
+      "disable": false
+    },
+    "spec": {
+      "origin_servers": [{
+        "public_ip": { "ip": "xF5XC_ORIGIN_IPx" },
+        "labels": {}
+      }],
+      "no_tls": {},
+      "port": xF5XC_ORIGIN_PORTx,
+      "same_as_endpoint_port": {},
+      "healthcheck": [{
+        "tenant": "xF5XC_TENANTx",
+        "namespace": "xF5XC_NAMESPACEx",
+        "name": "xF5XC_HC_NAMEx",
+        "kind": "healthcheck"
+      }],
+      "loadbalancer_algorithm": "LB_OVERRIDE",
+      "endpoint_selection": "LOCAL_PREFERRED"
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools" \
+  | jq .
+```
+
+A `200` response confirms the origin pool was created.
+
+## Step 3: Create HTTP Load Balancer with CSD
+
+Create an HTTPS load balancer with automatic certificate management and Client-Side Defense enabled. This is the most complex object — the F5 XC API uses `oneOf` choice groups where exactly one option must be set per group.
+
+<Aside type="note">
+The HTTP Load Balancer spec has 22+ `oneOf` choice groups. Every group must have exactly one choice set or the API returns a `422` error. The configuration below disables all optional security features except CSD — modify as needed for your environment.
+</Aside>
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_LB_NAMEx",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "HTTP LB with Client-Side Defense enabled",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["xF5XC_DOMAINNAMEx"],
+      "https_auto_cert": {
+        "http_redirect": true,
+        "add_hsts": false,
+        "port": 443,
+        "default_header": {},
+        "enable_path_normalize": {},
+        "no_mtls": {},
+        "default_loadbalancer": {}
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [{
+        "pool": {
+          "tenant": "xF5XC_TENANTx",
+          "namespace": "xF5XC_NAMESPACEx",
+          "name": "xF5XC_ORIGIN_POOLx",
+          "kind": "origin_pool"
+        },
+        "weight": 1,
+        "priority": 1
+      }],
+      "client_side_defense": {
+        "policy": {
+          "js_insert_all_pages": {}
+        }
+      },
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {},
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers" \
+  | jq .
+```
+
+A `200` response confirms the load balancer was created with CSD enabled.
+
+## Step 4: Initialize CSD
+
+Enable Client-Side Defense for the tenant. This is a one-time, idempotent operation at the `system` namespace level. The `email` field sets the notification address for CSD alerts.
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{ "email": "xF5XC_EMAILx" }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/system/init" \
+  | jq .
+```
+
+A response containing `"isConfigured": true` confirms CSD is enabled for the tenant.
+
+## Step 5: Register Protected Domain
+
+Register the root domain that CSD will monitor. The `protected_domain` field must be the **eTLD+1** root domain (e.g., `f5demos.com`), not the full FQDN.
 
 ```bash
 curl -s -X POST \
@@ -45,7 +263,9 @@ curl -s -X POST \
       "name": "xF5XC_DOMAINNAMEx",
       "namespace": "xF5XC_NAMESPACEx"
     },
-    "spec": {}
+    "spec": {
+      "protected_domain": "xF5XC_ROOT_DOMAINx"
+    }
   }' \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
   | jq .
@@ -60,56 +280,9 @@ curl -s \
   | jq '.items[].metadata.name'
 ```
 
-## Step 3: Enable CSD on HTTP Load Balancer
+## Step 6: Verify
 
-This is a read-modify-write operation. Retrieve the current load balancer configuration, enable CSD with JavaScript injection on all pages, and apply the update.
-
-### 3a. Retrieve current configuration
-
-```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
-  > lb-config.json
-```
-
-### 3b. Modify to enable CSD
-
-```bash
-jq '.spec |= (
-  del(.disable_client_side_defense) |
-  .client_side_defense = {
-    "policy": {
-      "js_insert_all_pages": {}
-    }
-  }
-)' lb-config.json > lb-config-updated.json
-```
-
-### 3c. Apply the update
-
-```bash
-curl -s -X PUT \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  -H "Content-Type: application/json" \
-  -d @lb-config-updated.json \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
-  | jq '.spec.client_side_defense'
-```
-
-Expected output confirms the policy is active:
-
-```json
-{
-  "policy": {
-    "js_insert_all_pages": {}
-  }
-}
-```
-
-## Step 4: Verify CSD Status
-
-Confirm CSD is active and reporting for the namespace.
+### CSD Status
 
 ```bash
 curl -s \
@@ -120,9 +293,7 @@ curl -s \
 
 The response includes `enabled`, `namespace`, and domain registration status.
 
-## Step 5: Test JS Configuration
-
-Retrieve the JavaScript injection configuration to confirm the CSD scripts will be served.
+### JS Configuration
 
 ```bash
 curl -s \
@@ -131,13 +302,9 @@ curl -s \
   | jq .
 ```
 
-The response contains the script paths (`common.js`) and configuration parameters that the load balancer injects into page responses.
+The response contains script paths and configuration parameters that the load balancer injects into page responses.
 
-## Step 6: Monitor Detections
-
-Once CSD is active and traffic is flowing, use these endpoints to monitor what CSD has found.
-
-### Detected domains
+### Detected Domains
 
 ```bash
 curl -s \
@@ -146,16 +313,7 @@ curl -s \
   | jq '.items[] | {domain: .metadata.name, risk: .spec.risk}'
 ```
 
-### High-risk domains only
-
-```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains?risk=high" \
-  | jq '.items[] | {domain: .metadata.name, risk: .spec.risk}'
-```
-
-### Detected scripts
+### Detected Scripts
 
 ```bash
 curl -s -X POST \
@@ -166,7 +324,7 @@ curl -s -X POST \
   | jq '.items[] | {id: .id, url: .url, risk: .risk}'
 ```
 
-### Form fields
+### Form Fields
 
 ```bash
 curl -s \
@@ -175,32 +333,11 @@ curl -s \
   | jq .
 ```
 
-## Teardown (Optional)
+## Teardown
 
-Remove the CSD configuration created above. Run these steps in reverse order.
+Remove objects in reverse creation order.
 
-### Disable CSD on the load balancer
-
-```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
-  > lb-config.json
-
-jq '.spec |= (
-  del(.client_side_defense) |
-  .disable_client_side_defense = {}
-)' lb-config.json > lb-config-updated.json
-
-curl -s -X PUT \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  -H "Content-Type: application/json" \
-  -d @lb-config-updated.json \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
-  | jq '.spec.disable_client_side_defense'
-```
-
-### Delete the protected domain
+### Delete Protected Domain
 
 ```bash
 curl -s -X DELETE \
@@ -208,9 +345,33 @@ curl -s -X DELETE \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/xF5XC_DOMAINNAMEx"
 ```
 
+### Delete HTTP Load Balancer
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx"
+```
+
+### Delete Origin Pool
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx"
+```
+
+### Delete Healthcheck
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx"
+```
+
 ## AI Agent Reference
 
-This section is structured for AI assistants (Claude Code, etc.) to parse and execute the full CSD configuration workflow.
+This section is structured for AI assistants (Claude Code, etc.) to parse and execute the full CSD configuration workflow programmatically.
 
 ### Variables
 
@@ -218,24 +379,69 @@ This section is structured for AI assistants (Claude Code, etc.) to parse and ex
 | --- | --- | --- |
 | `xF5XC_API_URLx` | XC Console API URL | `https://f5-sales-demo.console.ves.volterra.io` |
 | `xF5XC_API_TOKENx` | API credential token | (user-provided) |
+| `xF5XC_TENANTx` | Tenant name | `f5-sales-demo-rljyvvmw` |
+| `xF5XC_EMAILx` | CSD notification email | `admin@example.com` |
 | `xF5XC_NAMESPACEx` | Namespace | `bot-defense` |
 | `xF5XC_LB_NAMEx` | HTTP Load Balancer name | `bot-defense-demo-2` |
-| `xF5XC_DOMAINNAMEx` | Domain to protect | `botdemo.sales-demo.f5demos.com` |
+| `xF5XC_DOMAINNAMEx` | FQDN to protect | `botdemo.sales-demo.f5demos.com` |
+| `xF5XC_ROOT_DOMAINx` | Root domain (eTLD+1) | `f5demos.com` |
+| `xF5XC_ORIGIN_POOLx` | Origin pool name | `juice-origin` |
+| `xF5XC_ORIGIN_IPx` | Origin server IP (your backend) | `192.0.2.1` |
+| `xF5XC_ORIGIN_PORTx` | Origin server port | `443` |
+| `xF5XC_HC_NAMEx` | Healthcheck name | `juice-shop-hc` |
 
 ### Execution Order
 
 <Steps>
-1. **Initialize CSD** — `POST /api/shape/csd/namespaces/system/init` (one-time, idempotent)
-2. **Register domain** — `POST .../protected_domains` with domain name and namespace
-3. **Enable on LB** — `GET` current config, `jq` to add `client_side_defense`, `PUT` back
-4. **Verify status** — `GET .../status` and confirm `enabled: true`
-5. **Verify JS config** — `GET .../js_configuration` and confirm script paths present
-6. **Monitor** — poll `detected_domains`, `scripts`, and `formFields` for detection data
+1. **Create Healthcheck** — `POST /api/config/namespaces/\{namespace\}/healthchecks`
+2. **Create Origin Pool** — `POST /api/config/namespaces/\{namespace\}/origin_pools` (references healthcheck)
+3. **Create HTTP Load Balancer** — `POST /api/config/namespaces/\{namespace\}/http_loadbalancers` (references origin pool, enables CSD)
+4. **Initialize CSD** — `POST /api/shape/csd/namespaces/system/init` (tenant-wide, idempotent, requires `email` field)
+5. **Register Protected Domain** — `POST /api/shape/csd/namespaces/\{namespace\}/protected_domains` (uses eTLD+1 root domain in `spec.protected_domain`)
+6. **Verify** — `GET .../status`, `GET .../js_configuration`, `GET .../detected_domains`
 </Steps>
+
+### oneOf Choice Groups
+
+The HTTP Load Balancer spec uses `oneOf` choice groups where exactly one option must be set per group. Setting zero or more than one option in a group causes a `422` error.
+
+**Key CSD-related choices:**
+
+| Choice Group | Options | CSD Default |
+| --- | --- | --- |
+| `client_side_defense_choice` | `client_side_defense`, `disable_client_side_defense` | `client_side_defense` |
+| `java_script_choice` (nested in CSD) | `disable_js_insert`, `js_insert_all_pages`, `js_insert_all_pages_except`, `js_insertion_rules` | `js_insert_all_pages` |
+
+**HTTPS auto-cert nested choices:**
+
+| Choice Group | Options | Default |
+| --- | --- | --- |
+| port | `port` (number) | `443` |
+| `server_header_choice` | `default_header`, `server_name`, `append_server_name` | `default_header` |
+| `path_normalize_choice` | `enable_path_normalize`, `disable_path_normalize` | `enable_path_normalize` |
+| `mtls_choice` | `no_mtls`, `use_mtls` | `no_mtls` |
+| `default_loadbalancer_choice` | `default_loadbalancer`, `non_default_loadbalancer` | `default_loadbalancer` |
+
+**Other LB-level choices (all set to disable/default):**
+
+`disable_rate_limit` · `no_service_policies` · `round_robin` · `disable_waf` · `no_challenge` · `disable_bot_defense` · `disable_api_definition` · `disable_api_discovery` · `disable_ip_reputation` · `disable_malicious_user_detection` · `single_lb_app` · `disable_trust_client_ip_headers` · `user_id_client_ip` · `disable_threat_mesh` · `l7_ddos_action_default` · `system_default_timeouts` · `default_sensitive_data_policy` · `disable_malware_protection` · `disable_api_testing`
+
+### Teardown Order
+
+Delete in reverse: protected domain &rarr; HTTP load balancer &rarr; origin pool &rarr; healthcheck.
 
 ### Error Handling
 
 - **401 Unauthorized** — API token is invalid or expired. Regenerate under **Administration** &rarr; **Credentials**.
 - **403 Forbidden** — token lacks permissions for the namespace. Check role bindings.
-- **404 Not Found** — namespace or load balancer name is incorrect. Verify with `GET /api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers`.
-- **409 Conflict** — domain already registered. Safe to continue; the existing registration is valid.
+- **404 Not Found** — namespace or object name is incorrect. List objects with `GET /api/config/namespaces/\{namespace\}/\{object_type\}`.
+- **409 Conflict** — object already exists. For CSD init, this is safe (idempotent). For other objects, delete first or use `PUT` to update.
+- **422 Unprocessable Entity** — JSON schema validation failed. Common causes: missing `oneOf` choice, multiple choices set in same group, wrong field type. Check the error message for the specific field.
+
+## OpenAPI Reference
+
+The canonical F5 Distributed Cloud API specification is available at:
+
+`https://docs.cloud.f5.com/docs-v2/downloads/f5-distributed-cloud-open-api.zip`
+
+This ZIP contains OpenAPI 3.0 specs for all API groups including `ves.io.schema.views.http_loadbalancer`, `ves.io.schema.healthcheck`, `ves.io.schema.origin_pool`, and `ves.io.schema.shape.csd`. Use these specs to validate JSON payloads and discover additional fields.

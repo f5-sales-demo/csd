@@ -292,7 +292,112 @@ curl -s -X POST \
 
 A `200` response confirms the load balancer was created with CSD enabled.
 
-## Step 4: Verify CSD is Enabled
+## Step 4: Configure DNS
+
+After creating the load balancer, it enters `VIRTUAL_HOST_PENDING_A_RECORD` status and the automatic certificate stays in `PreDomainChallengePending`. Two DNS records must exist before the LB becomes fully operational:
+
+1. **A record** — `xF5XC_DOMAINNAMEx` pointing to the VIP IP address (from `dns_info` in the LB response)
+2. **ACME challenge CNAME** — `_acme-challenge.xF5XC_DOMAINNAMEx` pointing to `*.autocerts.ves.volterra.io`
+
+The approach depends on whether F5 XC is the authoritative DNS provider for your domain.
+
+### Detect DNS Authority
+
+Check the nameservers for your root domain:
+
+```bash
+dig +short NS xF5XC_ROOT_DOMAINx
+```
+
+If the response includes `ns1.f5clouddns.com` and `ns2.f5clouddns.com`, F5 XC is the authoritative DNS provider — follow **Option A**. Otherwise, follow **Option B** for external DNS.
+
+### Option A: F5 XC Managed DNS
+
+When F5 XC is the authoritative DNS provider, the platform can automatically create both the A record and the ACME challenge CNAME — but only when the DNS zone has `allow_http_lb_managed_records` enabled.
+
+<Aside type="note">
+DNS zones live in the **system** namespace, not in user namespaces. The zone name matches the root domain (e.g., `bankexample.com`).
+</Aside>
+
+**1. Check if managed records are enabled:**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq '.spec.primary.allow_http_lb_managed_records'
+```
+
+If the response is `true`, the platform will auto-create DNS records for load balancers — skip to **3. Verify DNS resolution**. If `false` or `null`, continue to the next step.
+
+**2. Enable managed records:**
+
+<Aside type="caution">
+The `PUT` payload must include the **full zone spec** — metadata and all existing configuration fields. Omitting fields will reset them to defaults. Retrieve the current zone configuration first, then modify only the `allow_http_lb_managed_records` field.
+</Aside>
+
+Retrieve the current zone configuration, enable managed records, and update:
+
+```bash
+# Get current zone config
+ZONE_CONFIG=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx")
+
+# Update with managed records enabled
+echo "$ZONE_CONFIG" \
+  | jq '.spec.primary.allow_http_lb_managed_records = true' \
+  | curl -s -X PUT \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d @- \
+    "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq .
+```
+
+A `200` response confirms the zone was updated. F5 XC will immediately create the A record and ACME challenge CNAME in the zone's auto-managed record group.
+
+**3. Verify DNS resolution:**
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A
+```
+
+The response should return the VIP IP address. DNS propagation is typically immediate for F5 XC managed zones, but allow up to 60 seconds.
+
+### Option B: External DNS Provider
+
+When your domain uses an external DNS provider, you must create the records manually. Extract the required values from the load balancer:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  | jq '{
+    vip_ip: .spec.dns_info[0].ip_address,
+    acme_target: .spec.auto_cert_info.dns_records
+  }'
+```
+
+Create these records at your DNS provider:
+
+| Type | Name | Value |
+| --- | --- | --- |
+| A | `xF5XC_DOMAINNAMEx` | VIP IP from `dns_info[0].ip_address` |
+| CNAME | `_acme-challenge.xF5XC_DOMAINNAMEx` | `*.autocerts.ves.volterra.io` |
+
+After creating the records, verify resolution:
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+```
+
+<Aside type="tip">
+The A record is required for the LB to transition from `VIRTUAL_HOST_PENDING_A_RECORD` to `VIRTUAL_HOST_READY`. The ACME CNAME is required for automatic TLS certificate provisioning. Without both records, the LB will remain in a pending state.
+</Aside>
+
+## Step 5: Verify CSD is Enabled
 
 Check that Client-Side Defense is enabled for the tenant. CSD is configured at the tenant level — if it has not been enabled yet, contact your F5 XC administrator.
 
@@ -305,7 +410,7 @@ curl -s \
 
 A response containing `"isConfigured": true` and `"isEnabled": true` confirms CSD is active.
 
-## Step 5: Register Protected Domain
+## Step 6: Register Protected Domain
 
 Register the root domain that CSD will monitor. The `protected_domain` field must be the **eTLD+1** root domain (e.g., `f5demos.com`), not the full FQDN.
 
@@ -336,10 +441,41 @@ curl -s -X POST \
 
 | Response | Meaning | Action |
 | --- | --- | --- |
-| `200` | Domain registered successfully | Continue to Step 6 |
-| `409` (domain already exists) | Domain was previously registered on this tenant | Already done — continue to Step 6 |
+| `200` | Domain registered successfully | Continue to Step 7 |
+| `409` (domain already exists) | Domain was previously registered on this tenant | Already done — continue to Step 7 |
 
-## Step 6: Verify
+## Step 7: Verify
+
+### DNS Resolution
+
+Confirm the A record is resolving and the ACME challenge CNAME is in place:
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+```
+
+The A record should return the VIP IP address. The CNAME should point to `*.autocerts.ves.volterra.io` (or a related autocerts target).
+
+### Load Balancer State
+
+Check that the load balancer has transitioned out of its pending state:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  | jq '{state: .spec.state, cert_state: .spec.auto_cert_state}'
+```
+
+| Field | Expected | Pending |
+| --- | --- | --- |
+| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS not configured (see Step 4) |
+| `cert_state` | `AutoCertIssued` or `AutoCertRenewing` | `PreDomainChallengePending` — ACME CNAME missing |
+
+<Aside type="note">
+Certificate provisioning can take several minutes after DNS records are created. If `cert_state` is still pending, wait 2–5 minutes and check again.
+</Aside>
 
 ### JS Configuration
 
@@ -439,7 +575,7 @@ This section summarizes the full workflow for scripting or automation. Whether y
 1. Clone the repository and copy the environment template: `cp .env.example .env`
 2. Edit `.env` with your tenant URL, API token, namespace, and domain values
 3. Source the environment: `set -a && source .env && set +a`
-4. Run the curl commands from Steps 1–5 above in order, substituting `xTOKENx` placeholders with your environment variables
+4. Run the curl commands from Steps 1–6 above in order, substituting `xTOKENx` placeholders with your environment variables
 5. Verify each response returns `200` before proceeding to the next step
 
 ### Variable Resolution
@@ -472,9 +608,10 @@ Values are resolved in this order:
 1. **Create Healthcheck** (optional) — `POST /api/config/namespaces/\{namespace\}/healthchecks` — skip on `429` (tenant limit); CSD does not require health monitoring
 2. **Create Origin Pool** — `POST /api/config/namespaces/\{namespace\}/origin_pools` — use empty `healthcheck: []` if Step 1 was skipped
 3. **Create HTTP Load Balancer** — `POST /api/config/namespaces/\{namespace\}/http_loadbalancers` (references origin pool, enables CSD)
-4. **Verify CSD is Enabled** — `GET /api/shape/csd/namespaces/\{namespace\}/status` (tenant-wide — check `isConfigured` and `isEnabled` are both `true`)
-5. **Register Protected Domain** — `POST /api/shape/csd/namespaces/\{namespace\}/protected_domains` — tenant-scoped and persistent; `409` means already registered (success)
-6. **Verify** — `GET .../status`, `GET .../js_configuration`, `GET .../detected_domains`
+4. **Configure DNS** — detect DNS authority with `dig NS`, then enable `allow_http_lb_managed_records` (F5 XC zones) or create A and ACME CNAME records manually (external DNS)
+5. **Verify CSD is Enabled** — `GET /api/shape/csd/namespaces/\{namespace\}/status` (tenant-wide — check `isConfigured` and `isEnabled` are both `true`)
+6. **Register Protected Domain** — `POST /api/shape/csd/namespaces/\{namespace\}/protected_domains` — tenant-scoped and persistent; `409` means already registered (success)
+7. **Verify** — DNS resolution, LB state, certificate status, CSD JS configuration, detected domains
 </Steps>
 
 ### oneOf Choice Groups
@@ -535,20 +672,50 @@ If Step 2 (Verify Healthcheck is Linked) shows an empty array `[]`:
 2. Verify the healthcheck exists: `GET /api/config/namespaces/{namespace}/healthchecks/{hc_name}`
 3. Recreate the origin pool with the correct healthcheck reference
 
+### LB Stuck in VIRTUAL_HOST_PENDING_A_RECORD
+
+If the load balancer `state` remains `VIRTUAL_HOST_PENDING_A_RECORD` after Step 4:
+
+1. **Verify DNS zone exists** (F5 XC managed DNS only):
+   ```bash
+   curl -s \
+     -H "Authorization: APIToken xF5XC_API_TOKENx" \
+     "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+     | jq '.metadata.name'
+   ```
+   A `404` means the DNS zone has not been created in F5 XC.
+
+2. **Check `allow_http_lb_managed_records`** — if the zone exists but the LB is pending, managed records may be disabled:
+   ```bash
+   curl -s \
+     -H "Authorization: APIToken xF5XC_API_TOKENx" \
+     "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+     | jq '.spec.primary.allow_http_lb_managed_records'
+   ```
+   If `false` or `null`, enable it using the `PUT` command in Step 4, Option A.
+
+3. **External DNS** — if F5 XC is not authoritative, create the A and ACME CNAME records manually at your DNS provider (see Step 4, Option B).
+
+4. **Verify resolution** — after fixing DNS, confirm:
+   ```bash
+   dig +short xF5XC_DOMAINNAMEx A
+   ```
+   If the A record resolves, the LB should transition to `VIRTUAL_HOST_READY` within 60 seconds.
+
 ### CSD Status Shows isConfigured: false
 
 CSD must be enabled at the tenant level. Contact your F5 XC administrator to enable Client-Side Defense for your tenant. This is a tenant-wide setting that cannot be configured via API.
 
 ### JS Injection Not Working
 
-1. Verify CSD is enabled at tenant level (Step 4)
+1. Verify CSD is enabled at tenant level (Step 5)
 2. Confirm the load balancer has `client_side_defense` set in the spec
 3. Check the JS configuration endpoint returns a `scriptTag`
 4. Visit the protected domain in a browser and view page source to confirm the script is injected
 
 ### Protected Domain Registration Returns 409
 
-A `409` with "domain already exists (in uriList)" means the root domain is already registered on the tenant. Protected domains are **tenant-scoped** — they do not belong to any single namespace. This is a success condition: the domain is already protected and no further action is needed. Continue to Step 6.
+A `409` with "domain already exists (in uriList)" means the root domain is already registered on the tenant. Protected domains are **tenant-scoped** — they do not belong to any single namespace. This is a success condition: the domain is already protected and no further action is needed. Continue to Step 7.
 
 ## OpenAPI Reference
 

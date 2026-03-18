@@ -597,7 +597,7 @@ curl -s \
 Register the root domain that CSD will monitor. The `protected_domain` field must be the **eTLD+1** root domain (e.g., `f5demos.com`), not the full FQDN.
 
 <Aside type="caution">
-**Protected domains are tenant-scoped and persistent.** Unlike healthchecks, origin pools, and load balancers, protected domains are not scoped to a namespace — they are registered globally on the tenant. A domain registered once persists across deployments and should **not** be deleted during teardown. The namespace in the API URL is a routing parameter, not an ownership boundary.
+**Protected domains are tenant-scoped, not namespace-scoped.** Unlike healthchecks, origin pools, and load balancers, protected domains are registered globally on the tenant — the namespace in the API URL is a routing parameter, not an ownership boundary. However, the protected domain is a CSD configuration object tied to this deployment and **should be deleted during teardown** when the deployment is being fully removed. Do not confuse this with the DNS zone, which is shared infrastructure and should never be deleted.
 </Aside>
 
 ### Check if Already Registered
@@ -865,9 +865,10 @@ Remove objects in **reverse creation order** — delete objects that depend on o
 2. **Origin Pool** — depends on Healthcheck (if created)
 3. **DNS zone cleanup** — managed records (A and ACME) auto-clean when the LB is deleted; manual records in `default_rr_set_group` need manual cleanup via `PUT`
 4. **Healthcheck** — only if created in Step 1
+5. **Protected Domain** — delete the CSD protected domain registration
 
 <Aside type="caution">
-**Do not delete the protected domain or the DNS zone.** Protected domains are tenant-scoped and persistent — they are shared infrastructure, not per-deployment resources. The DNS zone is also shared infrastructure and should not be deleted. Only clean up records you added manually to the `default_rr_set_group`.
+**Do not delete the DNS zone.** The DNS zone is shared infrastructure supporting many other DNS records across the platform and should never be deleted. Only clean up records you added manually to the `default_rr_set_group`. The protected domain, however, is a CSD configuration object tied to this deployment and **should** be deleted when fully tearing down.
 </Aside>
 
 ### Delete HTTP Load Balancer
@@ -899,6 +900,29 @@ curl -s -X DELETE \
 ```
 
 Verify: `GET /api/config/namespaces/{namespace}/healthchecks` should not contain the healthcheck name.
+
+### Delete Protected Domain
+
+Delete the CSD protected domain registration. The protected domain is tenant-scoped (not namespace-scoped), but it is a CSD configuration object tied to this deployment — not shared infrastructure like the DNS zone.
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/xF5XC_ROOT_DOMAINx"
+```
+
+Verify: List protected domains to confirm the domain is no longer registered:
+
+```bash
+curl -s -X GET \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '.items // [] | map(.metadata.name)'
+```
+
+<Aside type="note">
+The individual GET endpoint (`/protected_domains/\{name\}`) may return "API Group could not be determined." If the DELETE endpoint returns the same error, use the list endpoint to verify that the domain no longer appears, or delete the protected domain through the F5 XC Console UI instead.
+</Aside>
 
 ## Automation Reference
 
@@ -991,7 +1015,7 @@ The `single_lb_app` object has its own required `oneOf` groups. Setting `single_
 
 ### Teardown Order
 
-Delete objects in reverse: HTTP load balancer &rarr; origin pool &rarr; DNS zone cleanup (manual records only) &rarr; healthcheck (if created). Do **not** delete the protected domain or DNS zone — both are shared infrastructure. Steps 8–9 (attack simulation and detection verification) produce read-only telemetry — there is nothing to tear down.
+Delete objects in reverse: HTTP load balancer &rarr; origin pool &rarr; DNS zone cleanup (manual records only) &rarr; healthcheck (if created) &rarr; protected domain. Do **not** delete the DNS zone — it is shared infrastructure. The protected domain is a CSD configuration object and should be deleted when fully tearing down. Steps 8–9 (attack simulation and detection verification) produce read-only telemetry — there is nothing to tear down.
 
 ### Error Handling
 

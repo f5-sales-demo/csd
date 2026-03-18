@@ -21,6 +21,12 @@ set -a && source .env && set +a
 
 All commands below use the `xTOKENx` placeholder format. Substitute with your environment variables (`$F5XC_API_TOKEN`, `$F5XC_NAMESPACE`, etc.) or use the interactive form at the top of the page.
 
+## API Behavior Notes
+
+<Aside type="note">
+**PUT and DELETE return empty `\{\}`** on HTTP 200 — this is the expected success response, not an error. Only **POST** returns the created object. **List endpoints** (e.g., `/healthchecks`) and **individual GET endpoints** (e.g., `/healthchecks/\{name\}`) return different response structures — see [API Reference &mdash; API Conventions](/csd/api-reference/#api-conventions) for details on the correct `jq` paths for each.
+</Aside>
+
 ## Time Range Helpers
 
 Many CSD endpoints require epoch timestamps (seconds since Unix epoch). These one-liners compute start/end times for common ranges.
@@ -87,6 +93,10 @@ dig +short xF5XC_DOMAINNAMEx A
 | **FAIL** &mdash; empty response | DNS A record not configured |
 
 **Fix:** [API Automation &mdash; Step 4: Configure DNS](/csd/api-automation/#step-4-configure-dns)
+
+<Aside type="tip">
+**Negative DNS cache:** If the domain previously returned `NXDOMAIN`, recursive resolvers may cache that result. Verify against the authoritative nameserver to rule out stale cache: `dig +short xF5XC_DOMAINNAMEx A @ns1.f5clouddns.com` or use a public resolver like `@8.8.8.8`.
+</Aside>
 
 ### DNS-2: ACME Challenge Record
 
@@ -169,7 +179,7 @@ curl -s \
 | **WARN** &mdash; `"DomainChallengePending"` or `"DomainChallengeStarted"` | ACME challenge in progress &mdash; wait 5&ndash;10 minutes |
 | **FAIL** &mdash; `"PreDomainChallengePending"` | ACME challenge record missing &mdash; see [DNS-2](#dns-2-acme-challenge-record) |
 
-**Fix:** Add the ACME CNAME record. Certificate provisioning takes 2&ndash;5 minutes after the CNAME is in place.
+**Fix:** Ensure the ACME challenge record is in place (CNAME for external DNS, or enable managed records for F5 XC DNS). Certificate provisioning takes **5&ndash;10 minutes** after the record is configured. If stuck beyond 15 minutes, see [Certificate Stuck &mdash; Clean Recreation](/csd/api-automation/#certificate-stuck--clean-recreation).
 
 ### TLS-2: Certificate Details
 

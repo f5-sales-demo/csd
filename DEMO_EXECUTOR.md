@@ -24,22 +24,224 @@ That document specifies variable resolution, error handling, and
 evidence-based PASS/FAIL gating between phases. **Read it before
 executing any phase.**
 
-### Phase Overview
+### Variable Resolution Protocol
 
-1. **Phase 1 — Build** (`phase-1-build.mdx`) — create healthcheck,
-   origin pool, HTTP LB, configure DNS, enable CSD via API (Steps 1-7)
-2. **Phase 2 — Attack** (`phase-2-attack.mdx`) — attack simulation via
-   browser automation + API verification (Steps 8-9). Requires
-   chrome-devtools MCP tools.
-3. **Phase 3 — Mitigate** (`phase-3-mitigate.mdx`) — apply mitigations,
-   re-run attack, verify via API (Steps 1-5). Requires chrome-devtools
-   MCP tools.
-4. **Phase 4 — Teardown** (`phase-4-teardown.mdx`) — delete all objects
-   in reverse order. **Requires explicit human confirmation before
-   execution.**
+Resolve each variable in this exact order. Stop at the first source
+that provides a non-placeholder value:
+
+1. **Check `.env` file** — parse `KEY=VALUE` pairs from the repository
+   root
+2. **Check shell environment** — run `env | grep F5XC_` for exported
+   values
+3. **Identify missing values** — flag any value matching a placeholder
+   default (e.g., `example-api-token`, `example-namespace`,
+   `app.example.com`) as missing
+4. **Prompt human operator** — ask for each missing **required**
+   variable; do not proceed until all are resolved
+5. **Apply defaults** — use built-in defaults for missing **optional**
+   variables (see `index.mdx` for the full table)
+6. **Display confirmation** — show the resolved variable table and
+   wait for operator approval before executing any API calls
+
+### Evidence Display Protocol
+
+After every API call, present structured evidence:
+
+**Creation steps** (POST):
+
+| Field | Value | Status |
+| ----- | ----- | ------ |
+| HTTP Status | `200` | PASS |
+| Object Name | _(from response)_ | — |
+| Key Property | _(extracted via jq)_ | — |
+
+After each creation step, run a **GET** to confirm the object exists.
+If the GET returns `404`, report FAIL and stop.
+
+**Verification steps** (GET/dig):
+
+| Test | Result | Status |
+| ---- | ------ | ------ |
+| DNS-1: A Record | `198.51.100.10` | PASS |
+| TLS-1: Cert State | `AutoCertIssued` | PASS |
+| CSD-1: JS Tag | `scriptTag` present | PASS |
+
+Reference the diagnostics test case IDs (DNS-1, DNS-2, TLS-1, LB-1,
+CSD-1, CSD-2, CSD-3, DET-1 through DET-4) as the verification
+standard for each layer.
+
+### Phase Overview
 
 **Phase execution is sequential and gated:** each phase must reach PASS
 before the next begins.
+
+#### Phase 1 — Build (`phase-1-build.mdx`)
+
+Create healthcheck, origin pool, HTTP LB, configure DNS, enable CSD
+via API (Steps 1-7).
+
+**Critical execution notes:**
+
+- **Step 1 (Healthcheck) is optional** — if the tenant has exhausted
+  the healthcheck object limit (error code `8`), skip Step 1 and
+  create the origin pool without a healthcheck reference. CSD does
+  not depend on health monitoring.
+- **Step 3 (HTTP LB)** is the most complex object — the F5 XC API
+  uses `oneOf` choice groups (22+) where exactly one option must be
+  set per group. Setting zero or more than one causes a `422` error.
+- **Step 4 (DNS)** requires detecting whether F5 XC is authoritative
+  (`dig +short NS $F5XC_ROOT_DOMAIN`). If nameservers include
+  `ns1.f5clouddns.com`, use Option A (managed DNS). Otherwise, use
+  Option B (external DNS — create A and ACME CNAME records manually).
+- **Certificate provisioning takes 5-10 minutes** after DNS records
+  are created. PENDING states (`PreDomainChallengePending`,
+  `DomainChallengeStarted`) are normal during this window.
+
+**Phase 1 Evidence Summary (Step 7):**
+
+| Test ID | Check | Expected |
+| ------- | ----- | -------- |
+| DNS-1 | A Record resolves | VIP IP returned |
+| DNS-2 | ACME CNAME exists | `*.autocerts.ves.volterra.io` |
+| LB-1 | LB state | `VIRTUAL_HOST_READY` |
+| TLS-1 | Certificate state | `AutoCertIssued` |
+| CSD-1 | JS configuration | `scriptTag` present |
+| CSD-2 | CSD status | `isEnabled: true` |
+| CSD-3 | Protected domain | Domain registered |
+
+All tests must PASS (LB-1 and TLS-1 may show PENDING initially —
+wait 5-10 min and re-check) before proceeding to Phase 2.
+
+#### Phase 2 — Attack (`phase-2-attack.mdx`)
+
+Attack simulation via browser automation + API verification (Steps
+8-9). Requires chrome-devtools MCP tools.
+
+**AI-Automated Browser Execution (5-step sequence):**
+
+1. **Navigate** — `navigate_page` to
+   `https://$F5XC_DOMAINNAME/#/login`
+2. **Snapshot** — `take_snapshot` to identify email and password
+   form field UIDs
+3. **Fill credentials** — `fill` email with `test@example.com` and
+   password with `P@ssword123` (do not submit the form)
+4. **Execute script** — `evaluate_script` with the Combined Detection
+   Script IIFE from the Trigger Detection guide — wrap in an arrow
+   function returning a status object
+5. **Capture evidence** — read `evaluate_script` return value and
+   run `list_console_messages` to capture `[CSD Demo]` output
+
+**What Gets Triggered:**
+
+| Signal | Behavior | Detection |
+| ------ | -------- | --------- |
+| Form field harvesting | Reads email and password input values | Scripts reading sensitive form fields — flagged High Risk |
+| Script injection | Injects 4 `<script>` tags from `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io` | 4 new third-party script domains detected |
+| Data exfiltration | Sends harvested data via `fetch` to `httpbin.org` and `jsonplaceholder.typicode.com` | Network calls to external domains |
+
+**Timing:** Detection takes **5-10 minutes** for established tenants.
+After a fresh infrastructure rebuild or first-time protected domain
+registration, allow up to **30 minutes** for the full processing
+pipeline to initialize. The `/detected_domains` endpoint is the
+**leading indicator** — if exfil domains appear there, the CSD
+pipeline is processing data even if `/scripts` and `/formFields`
+remain empty.
+
+**Detection Verification (Step 9):**
+
+| Test ID | Check | Status |
+| ------- | ----- | ------ |
+| DET-1 | Scripts detected (`/scripts`) | PASS if > 0; PENDING if empty but DET-3 passes |
+| DET-2 | CDN domains detected | PASS / FAIL |
+| DET-3 | Exfil domains detected (`/detected_domains`) | **Primary indicator** — PASS if `httpbin.org` or `jsonplaceholder.typicode.com` appear |
+| DET-4 | Form fields detected (`/formFields`) | PASS if > 0; PENDING if empty but DET-3 passes |
+
+**Minimum pass criteria to proceed to Phase 3:** DET-3 must PASS.
+DET-1 and DET-4 may show PENDING on first use — this is normal.
+
+#### Phase 3 — Mitigate (`phase-3-mitigate.mdx`)
+
+Apply mitigations, re-run attack, verify via API (Steps 1-5).
+Requires chrome-devtools MCP tools.
+
+> **Critical behavioral note:** CSD mitigation is a **detection and
+> classification layer**, NOT an inline execution blocker. After
+> mitigating a domain, the CSD backend marks it as acknowledged in
+> the dashboard and API. Mitigated domain scripts **still load in
+> the browser** — the observable change is in CSD's risk
+> classification and the mitigated domains list. Do not expect
+> browser-level blocking errors in the re-run simulation.
+
+**Step 1 — List detected domains:**
+
+Query `/detected_domains` and extract domains with
+`.domains_list[].domain`.
+
+**Step 2 — Mitigate all 6 domains:**
+
+POST to `/mitigated_domains` for each domain. The POST body requires
+**both** fields:
+
+```json
+{
+  "metadata": { "name": "<domain>", "namespace": "<ns>" },
+  "spec": { "mitigated_domain": "<domain>" }
+}
+```
+
+Using `"spec": {}` causes a `400` error — `spec.mitigated_domain`
+is required.
+
+**`httpbin.org` eTLD+1 constraint:** The API rejects bare eTLD+1
+domains as `mitigated_domain` values. Use `www.httpbin.org` as
+`spec.mitigated_domain` while keeping `httpbin.org` as
+`metadata.name`. Any bare domain (no subdomain) used as an exfil
+target has the same constraint.
+
+**Step 3 — Verify mitigations applied:**
+
+List mitigated domains and confirm count matches (6 for the standard
+simulation). The list endpoint returns items with **null metadata** —
+verify by item count, not by name. The `200` response from each
+individual POST in Step 2 is the authoritative evidence.
+
+**Step 4 — Re-run attack simulation:**
+
+Execute the same 5-step AI-automated browser sequence as Phase 2.
+Scripts load normally — mitigation is classification-layer, not
+blocking.
+
+**Step 5 — Verify mitigation effective:**
+
+Wait **5-10 minutes**, then query `/detected_domains` and `/scripts`
+to confirm mitigation is reflected in detection data.
+
+**Phase 3 Evidence Summary:**
+
+| Check | Expected | Status |
+| ----- | -------- | ------ |
+| Mitigated domains count | 6 items in list | PASS / FAIL |
+| All Step 2 POSTs | `200` or `409` for each domain | PASS |
+| Attack re-run console | `[CSD Demo] Simulation complete` | PASS / FAIL |
+| CDN scripts in re-run | Load normally (classification-layer) | PASS |
+
+#### Phase 4 — Teardown (`phase-4-teardown.mdx`)
+
+Delete all objects in reverse dependency order. **Requires explicit
+human confirmation before execution.**
+
+**Teardown order:**
+
+1. HTTP Load Balancer (depends on Origin Pool)
+2. Origin Pool (depends on Healthcheck)
+3. DNS zone cleanup — managed records auto-clean when LB is deleted;
+   manual records need manual cleanup via `PUT`
+4. Healthcheck (only if created in Phase 1 Step 1)
+5. Protected Domain — delete the CSD protected domain registration
+
+> **Do NOT delete the DNS zone.** The DNS zone is shared
+> infrastructure and should never be deleted. Only clean up records
+> you added manually to the `default_rr_set_group`.
 
 ## Environment Setup
 
@@ -68,7 +270,8 @@ set -a && source .env && set +a
 ```
 
 **Resolve all required variables before executing any API calls** (see
-`index.mdx` Variable Resolution Protocol).
+Variable Resolution Protocol above and `index.mdx` for the full
+required/optional table).
 
 ## API Authentication
 
@@ -94,10 +297,22 @@ Authorization: APIToken <token>
 | Create protected domain | `POST` | `…/protected_domains` |
 | Delete protected domain | `DELETE` | `…/protected_domains/{name}` |
 | List detected domains | `GET` | `…/detected_domains` |
-| List scripts | `GET` | `…/scripts` |
-| List form fields | `GET` | `…/form_fields` |
-| Allow domain | `POST` | `…/allow_domain` |
-| Mitigate domain | `POST` | `…/mitigate_domain` |
+| List scripts | `POST` | `…/scripts` |
+| List form fields | `GET` | `…/formFields` |
+| List mitigated domains | `GET` | `…/mitigated_domains` |
+| Mitigate domain | `POST` | `…/mitigated_domains` |
+| Delete mitigated domain | `DELETE` | `…/mitigated_domains/{name}` |
+
+**Mitigation endpoint notes:**
+
+- `POST …/mitigated_domains` requires both `metadata.name` and
+  `spec.mitigated_domain` in the request body
+- For `httpbin.org`, use `www.httpbin.org` as `spec.mitigated_domain`
+  (eTLD+1 constraint) — keep `httpbin.org` as `metadata.name`
+- `GET …/mitigated_domains` returns items with null metadata —
+  verify by count, not by name
+- `DELETE …/mitigated_domains/{name}` uses `metadata.name` as the
+  path parameter
 
 **LB API:** `/api/config/namespaces/{namespace}/http_loadbalancers/{name}`
 
@@ -171,8 +386,8 @@ Follow the error handling patterns documented in
 
 - Display the full API response before diagnosing errors
 - Reference troubleshooting sections in `index.mdx` for common patterns
-- Use `docs/diagnostics.mdx` test case IDs (DNS-1, TLS-1, LB-1, CSD-1,
-  etc.) for systematic verification
+- Use diagnostics test case IDs (DNS-1, DNS-2, TLS-1, LB-1, CSD-1,
+  CSD-2, CSD-3, DET-1 through DET-4) for systematic verification
 
 ## CSD Product Expertise
 

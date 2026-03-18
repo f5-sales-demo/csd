@@ -237,7 +237,7 @@ always tied to a customer concern.
 > right now in the visitor's browser, watching for any JavaScript that tries to touch
 > those payment or login fields. Nothing to install, nothing to configure on the app
 > server. Any questions before we pop open DevTools and actually see that script in action?
-
+>
 > ⏸ *[Pause for audience — ready to continue?]*
 
 **Applies to both demo modes:** walkthrough (as-built reference pages) and API automation

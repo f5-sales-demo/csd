@@ -58,6 +58,12 @@ set -a && source .env && set +a
 
 <Aside type="tip">
 If your API token contains `/` or `=` characters, wrap the value in single quotes in `.env` (e.g., `F5XC_API_TOKEN='abc/def='`) to prevent shell interpretation issues when sourcing.
+
+Some container runtimes and secret managers inject literal quote characters into environment variable values. If API calls return `401 Unauthorized` despite a valid token, strip stray quotes before use:
+
+```bash
+export F5XC_API_TOKEN=$(echo "$F5XC_API_TOKEN" | tr -d "'")
+```
 </Aside>
 
 Each `xTOKENx` placeholder in the curl commands below maps directly to an environment variable — for example, `xF5XC_API_TOKENx` corresponds to `$F5XC_API_TOKEN`. You can substitute these values using the interactive form at the top of the page, or let an AI assistant like Claude Code read your `.env` and build the commands for you.
@@ -297,7 +303,7 @@ A `200` response confirms the load balancer was created with CSD enabled.
 After creating the load balancer, it enters `VIRTUAL_HOST_PENDING_A_RECORD` status and the automatic certificate stays in `PreDomainChallengePending`. Two DNS records must exist before the LB becomes fully operational:
 
 1. **A record** — `xF5XC_DOMAINNAMEx` pointing to the VIP IP address (from `dns_info` in the LB response)
-2. **ACME challenge CNAME** — `_acme-challenge.xF5XC_DOMAINNAMEx` pointing to `*.autocerts.ves.volterra.io`
+2. **ACME challenge record** — `_acme-challenge.xF5XC_DOMAINNAMEx` for TLS certificate validation (managed automatically when using F5 XC DNS with managed records; manual CNAME required for external DNS)
 
 The approach depends on whether F5 XC is the authoritative DNS provider for your domain.
 
@@ -355,7 +361,11 @@ echo "$ZONE_CONFIG" \
   | jq .
 ```
 
-A `200` response confirms the zone was updated. F5 XC will immediately create the A record and ACME challenge CNAME in the zone's auto-managed record group.
+<Aside type="caution">
+The zone spec contains an `x-ves-io-managed` rr_set_group with platform-managed records. Your `PUT` payload **must preserve this group** — omitting it causes HTTP 403 "reserved for internal purposes". Always retrieve the current zone configuration with `GET` first, modify only the fields you need, and send back the complete spec.
+</Aside>
+
+A `200` response confirms the zone was updated. F5 XC will immediately create the A record and ACME challenge record in the zone's auto-managed record group.
 
 **3. Verify DNS resolution:**
 
@@ -364,6 +374,15 @@ dig +short xF5XC_DOMAINNAMEx A
 ```
 
 The response should return the VIP IP address. DNS propagation is typically immediate for F5 XC managed zones, but allow up to 60 seconds.
+
+<Aside type="tip">
+**Negative DNS cache:** If you queried the domain before the record existed, your recursive resolver may have cached the `NXDOMAIN` response. Verify against the authoritative nameserver or a public resolver to rule out stale cache:
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A @ns1.f5clouddns.com
+dig +short xF5XC_DOMAINNAMEx A @8.8.8.8
+```
+</Aside>
 
 ### Option B: External DNS Provider
 
@@ -474,7 +493,7 @@ curl -s \
 | `cert_state` | `AutoCertIssued` or `AutoCertRenewing` | `PreDomainChallengePending` — ACME CNAME missing |
 
 <Aside type="note">
-Certificate provisioning can take several minutes after DNS records are created. If `cert_state` is still pending, wait 2–5 minutes and check again.
+Certificate provisioning can take **5–10 minutes** after DNS records are created. If `cert_state` is still pending, wait and check again. The platform checks DNS on its own schedule — the LB may remain in `VIRTUAL_HOST_PENDING_A_RECORD` for several minutes even after the A record is confirmed at the authoritative nameserver.
 </Aside>
 
 ### JS Configuration
@@ -526,14 +545,15 @@ curl -s \
 
 ## Teardown
 
-Remove namespace-scoped objects in **reverse creation order** — delete objects that depend on other objects first:
+Remove objects in **reverse creation order** — delete objects that depend on other objects first:
 
 1. **HTTP Load Balancer** — depends on Origin Pool
 2. **Origin Pool** — depends on Healthcheck (if created)
-3. **Healthcheck** — only if created in Step 1
+3. **DNS zone cleanup** — managed records (A and ACME) auto-clean when the LB is deleted; manual records in `default_rr_set_group` need manual cleanup via `PUT`
+4. **Healthcheck** — only if created in Step 1
 
 <Aside type="caution">
-**Do not delete the protected domain.** Protected domains are tenant-scoped and persistent — they are shared infrastructure, not per-deployment resources. Deleting a protected domain would affect all load balancers on the tenant that use that domain for CSD monitoring.
+**Do not delete the protected domain or the DNS zone.** Protected domains are tenant-scoped and persistent — they are shared infrastructure, not per-deployment resources. The DNS zone is also shared infrastructure and should not be deleted. Only clean up records you added manually to the `default_rr_set_group`.
 </Aside>
 
 ### Delete HTTP Load Balancer
@@ -651,7 +671,7 @@ The `single_lb_app` object has its own required `oneOf` groups. Setting `single_
 
 ### Teardown Order
 
-Delete namespace-scoped objects in reverse: HTTP load balancer &rarr; origin pool &rarr; healthcheck (if created). Do **not** delete the protected domain — it is tenant-scoped and persistent.
+Delete objects in reverse: HTTP load balancer &rarr; origin pool &rarr; DNS zone cleanup (manual records only) &rarr; healthcheck (if created). Do **not** delete the protected domain or DNS zone — both are shared infrastructure.
 
 ### Error Handling
 
@@ -716,6 +736,21 @@ CSD must be enabled at the tenant level. Contact your F5 XC administrator to ena
 ### Protected Domain Registration Returns 409
 
 A `409` with "domain already exists (in uriList)" means the root domain is already registered on the tenant. Protected domains are **tenant-scoped** — they do not belong to any single namespace. This is a success condition: the domain is already protected and no further action is needed. Continue to Step 7.
+
+### Certificate Stuck — Clean Recreation
+
+When the certificate is stuck in `DomainChallengePending` or `PreDomainChallengePending` for more than 15 minutes, the fastest recovery path is to delete the LB and origin pool, then recreate them from scratch. With the DNS zone already configured (managed records enabled), the clean recreation typically produces `VIRTUAL_HOST_READY` with `CertificateValid` in 5–7 minutes.
+
+1. Delete the HTTP Load Balancer (Step: Teardown)
+2. Delete the Origin Pool (Step: Teardown)
+3. Wait 30 seconds for platform cleanup
+4. Recreate the Origin Pool (Step 2)
+5. Recreate the HTTP Load Balancer (Step 3)
+6. Monitor certificate state (Step 7) — expect `CertificateValid` within 5–10 minutes
+
+<Aside type="tip">
+You do not need to reconfigure the DNS zone or re-register the protected domain. These are persistent resources that survive LB deletion.
+</Aside>
 
 ## OpenAPI Reference
 

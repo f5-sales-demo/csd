@@ -46,7 +46,7 @@ Operators without browser automation tools perform the steps manually:
 | Data exfiltration | Sends harvested data via `fetch` to `httpbin.org` and `jsonplaceholder.typicode.com` | Network calls to external domains |
 
 <Aside type="tip">
-Detection takes **5–10 minutes** to appear in the CSD dashboard. Proceed to Step 9 after waiting at least 5 minutes. For additional targeted simulations (individual attack categories, maximum detection stress test), see the [Attack Script Library](/csd/attack-scripts/).
+Detection takes **5–10 minutes** to appear in the CSD dashboard for established tenants. After a fresh infrastructure rebuild or first-time protected domain registration, allow up to **30 minutes** for the full processing pipeline to initialize. The `/detected_domains` endpoint is the leading indicator — if exfil domains appear there, the CSD pipeline is processing data even if `/scripts` and `/formFields` remain empty. Proceed to Step 9 after waiting at least 5 minutes. For additional targeted simulations (individual attack categories, maximum detection stress test), see the [Attack Script Library](/csd/attack-scripts/).
 </Aside>
 
 ### Evidence
@@ -63,7 +63,11 @@ The AI assistant should report the following. For AI-automated execution, eviden
 
 ## Step 9: Detection Verification via API
 
-After waiting **5–10 minutes** for CSD to process the attack simulation, query the CSD API endpoints to confirm detections appeared. These endpoints are documented in the [API Reference](/csd/api-reference/) and use the same authentication and namespace as previous steps.
+After waiting at least **5 minutes** (up to 30 minutes on first use or after a fresh infrastructure rebuild), query the CSD API endpoints to confirm detections appeared. These endpoints are documented in the [API Reference](/csd/api-reference/) and use the same authentication and namespace as previous steps.
+
+<Aside type="note">
+**Endpoint processing order:** `/detected_domains` is populated first and is the primary indicator that the CSD pipeline is working. `/scripts` and `/formFields` are populated on a slower backend processing schedule and may remain empty for 20–30 minutes even after multiple simulation runs. If `/detected_domains` shows exfil domains (`httpbin.org`, `jsonplaceholder.typicode.com`), treat the simulation as successfully detected and proceed — the DET-1 check below reflects this.
+</Aside>
 
 ### Detected Scripts
 
@@ -82,7 +86,7 @@ curl -s -X POST \
 
 | Field | Expected | Status |
 | --- | --- | --- |
-| `total` | &gt; 0 (scripts detected) | PASS if &gt; 0, FAIL if 0 after 10+ minutes |
+| `total` | &gt; 0 (scripts detected) | PASS if &gt; 0; PENDING if 0 but `/detected_domains` shows exfil domains |
 | Script hosts | Includes `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io` | PASS if injected CDN domains appear |
 
 ### Detected Domains
@@ -121,13 +125,13 @@ After all detection queries, present the final detection status:
 
 | Test ID | Check | Status |
 | --- | --- | --- |
-| DET-1 | Scripts detected | PASS / FAIL |
+| DET-1 | Scripts detected (`/scripts` endpoint) | PASS if &gt; 0; PENDING if empty but DET-3 passes |
 | DET-2 | CDN domains detected | PASS / FAIL |
-| DET-3 | Exfil domains detected | PASS / FAIL |
-| DET-4 | Form fields detected | PASS / FAIL |
+| DET-3 | Exfil domains detected (`/detected_domains`) | **Primary indicator** — PASS if `httpbin.org` or `jsonplaceholder.typicode.com` appear |
+| DET-4 | Form fields detected (`/formFields` endpoint) | PASS if &gt; 0; PENDING if empty but DET-3 passes |
 
 <Aside type="note">
-If all DET tests show FAIL after 10+ minutes, verify that CSD is enabled (Phase 1 Step 5), the protected domain is registered (Phase 1 Step 6), and the CSD JS tag is being injected (Phase 1 Step 7 JS Configuration check). Detection requires all three to be functioning.
+**Minimum pass criteria to proceed to Phase 3:** DET-3 must PASS (exfil domains visible in `/detected_domains`). DET-1 and DET-4 may show PENDING on first use or after a fresh rebuild — this is normal. If DET-3 also shows FAIL after 30 minutes, verify CSD is enabled (Phase 1 Step 5), the protected domain is registered (Phase 1 Step 6), and the CSD JS tag is being injected (Phase 1 Step 7 JS Configuration check).
 </Aside>
 
 ---

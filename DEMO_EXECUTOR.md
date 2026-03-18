@@ -349,8 +349,8 @@ audience can see on screen, and always tied to a customer concern.
   here…", "Notice how the platform…", "What you're seeing on screen
   is…"
 - **One concern per paragraph** — each narration answers one of:
-  *What is this?*, *Why does it matter?*, or *What should I do about
-  it?*
+  _What is this?_, _Why does it matter?_, or _What should I do about
+  it?_
 - **Name the signal** — explicitly call out which of the three CSD
   detection signals (form field reads, script inventory, network
   interactions) is at work

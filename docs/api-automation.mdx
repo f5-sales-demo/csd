@@ -160,7 +160,7 @@ Each `xTOKENx` placeholder in the curl commands below maps directly to an enviro
 Create an HTTP healthcheck that the origin pool can use to monitor backend health.
 
 <Aside type="note">
-**Healthchecks are optional for CSD.** The Client-Side Defense feature does not depend on origin health monitoring. If your tenant has exhausted the healthcheck object limit (`429` — see Error Handling), skip this step and create the origin pool without a healthcheck reference. CSD will function normally.
+**Healthchecks are optional for CSD.** The Client-Side Defense feature does not depend on origin health monitoring. If your tenant has exhausted the healthcheck object limit (error code `8` — see Error Handling), skip this step and create the origin pool without a healthcheck reference. CSD will function normally.
 
 If you do create a healthcheck, create it BEFORE the origin pool. The origin pool must reference an existing healthcheck — if the healthcheck does not exist when you create the origin pool, the reference will be silently empty.
 </Aside>
@@ -198,7 +198,7 @@ curl -s -X POST \
   | jq .
 ```
 
-A `200` response confirms the healthcheck was created. A `429` response means the tenant has exhausted its healthcheck limit — skip to Step 2 and omit the healthcheck reference.
+A `200` response with the created object confirms the healthcheck was created. If the response contains `"code": 8` with a message like `"Object kind healthcheck has exhausted limits(150)"`, the tenant has hit its healthcheck limit — skip to Step 2 and omit the healthcheck reference. CSD does not depend on health monitoring.
 
 ### Evidence
 
@@ -213,10 +213,10 @@ curl -s \
 
 | Field | Expected | Status |
 | --- | --- | --- |
-| HTTP Status | `200` | PASS if returned, FAIL if `404` |
+| HTTP Status | `200` with object | PASS if returned, FAIL if `404` |
 | `name` | Matches `F5XC_HC_NAME` | PASS |
 | `path` | `/` | PASS |
-| Step 1 skipped (`429`) | — | PASS (healthcheck is optional) |
+| Step 1 skipped (error code `8`, limit exhausted) | — | PASS (healthcheck is optional for CSD) |
 
 ## Step 2: Create Origin Pool
 
@@ -404,13 +404,13 @@ A `200` response confirms the load balancer was created with CSD enabled.
 
 ### Evidence
 
-Confirm the load balancer exists with CSD enabled:
+Confirm the load balancer exists with CSD enabled. Always use a **GET** for evidence — the POST response returns transient state values that may not reflect the settled configuration.
 
 ```bash
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
-  | jq '{name: .metadata.name, domains: .spec.domains, csd_enabled: (.spec.client_side_defense != null), state: .spec.state}'
+  | jq '{name: .metadata.name, domains: .spec.domains, csd_enabled: (.spec.client_side_defense != null), state: .spec.state, cert_state: .spec.cert_state}'
 ```
 
 | Field | Expected | Status |
@@ -420,6 +420,7 @@ curl -s \
 | `domains` | Contains `F5XC_DOMAINNAME` | PASS |
 | `csd_enabled` | `true` | PASS — CSD is configured on this LB |
 | `state` | `VIRTUAL_HOST_PENDING_A_RECORD` | Expected at this point — DNS not yet configured |
+| `cert_state` | `PreDomainChallengePending` | Expected — ACME challenge not started |
 
 ## Step 4: Configure DNS
 
@@ -488,7 +489,21 @@ echo "$ZONE_CONFIG" \
 The zone spec contains an `x-ves-io-managed` rr_set_group with platform-managed records. Your `PUT` payload **must preserve this group** — omitting it causes HTTP 403 "reserved for internal purposes". Always retrieve the current zone configuration with `GET` first, modify only the fields you need, and send back the complete spec.
 </Aside>
 
-A `200` response confirms the zone was updated. F5 XC will immediately create the A record and ACME challenge record in the zone's auto-managed record group.
+A `200` response (empty `\{\}`) confirms the zone was updated. F5 XC will create the A record and ACME challenge record in the zone's auto-managed record group. If the managed records do not appear within 60 seconds, re-apply the load balancer to trigger record creation:
+
+```bash
+LB_CONFIG=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx")
+echo "$LB_CONFIG" | curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d @- \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  | jq .
+```
+
+This GET+PUT re-apply does not change the LB configuration — it simply triggers the platform to re-evaluate the DNS zone and create managed records.
 
 **3. Verify DNS resolution:**
 
@@ -613,19 +628,24 @@ curl -s -X POST \
 
 ### Evidence
 
-Confirm the protected domain is registered:
+The POST response itself is the primary evidence — it returns the registered domain object with `spec.protected_domain` matching your root domain. Alternatively, list all protected domains to confirm:
 
 ```bash
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/xF5XC_ROOT_DOMAINx" \
-  | jq '{domain: .spec.protected_domain, name: .metadata.name}'
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '.items | length'
 ```
 
 | Field | Expected | Status |
 | --- | --- | --- |
-| HTTP Status | `200` | PASS if returned |
-| `domain` | Matches `F5XC_ROOT_DOMAIN` | PASS |
+| POST returned `protected_domain` | Matches `F5XC_ROOT_DOMAIN` | PASS |
+| POST returned `200` or `409` | Domain registered or already exists | PASS |
+| List items count | &gt; 0 | PASS |
+
+<Aside type="note">
+The individual GET endpoint (`/protected_domains/\{name\}`) is not available for protected domains. Use the POST response or the list endpoint for verification.
+</Aside>
 
 ## Step 7: Verify
 
@@ -648,13 +668,13 @@ Check that the load balancer has transitioned out of its pending state:
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
-  | jq '{state: .spec.state, cert_state: .spec.auto_cert_state}'
+  | jq '{state: .spec.state, cert_state: .spec.cert_state}'
 ```
 
-| Field | Expected | Pending |
+| Field | Expected | Intermediate States |
 | --- | --- | --- |
-| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS not configured (see Step 4) |
-| `cert_state` | `AutoCertIssued` or `AutoCertRenewing` | `PreDomainChallengePending` — ACME CNAME missing |
+| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS not configured (see Step 4); `VIRTUAL_HOST_DNS_A_RECORD_ADDED` — A record found, waiting for cert |
+| `cert_state` | `CertificateValid` | `PreDomainChallengePending` — waiting for ACME CNAME; `DomainChallengeStarted` — ACME challenge in progress; `DnsDomainVerification` — verifying DNS ownership |
 
 <Aside type="note">
 Certificate provisioning can take **5–10 minutes** after DNS records are created. If `cert_state` is still pending, wait and check again. The platform checks DNS on its own schedule — the LB may remain in `VIRTUAL_HOST_PENDING_A_RECORD` for several minutes even after the A record is confirmed at the authoritative nameserver.
@@ -685,13 +705,12 @@ curl -s \
 The scripts endpoint requires a time range using epoch timestamps (seconds since Unix epoch). The example below queries the last 7 days.
 
 ```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
 curl -s -X POST \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   -H "Content-Type: application/json" \
-  -d "{
-    \"startTime\": \"$(date -u -v-7d +%s)\",
-    \"endTime\": \"$(date -u +%s)\"
-  }" \
+  -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
   | jq '.scripts'
 ```
@@ -701,9 +720,11 @@ curl -s -X POST \
 The form fields endpoint requires a time range using epoch timestamps, passed as query parameters.
 
 ```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields?startTime=$(date -u -v-7d +%s)&endTime=$(date -u +%s)" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields?startTime=$START&endTime=$NOW" \
   | jq '.form_fields'
 ```
 
@@ -722,6 +743,10 @@ After completing all verification checks, the AI assistant should present a cons
 | CSD-3 | Protected domain | Domain registered | PASS / FAIL |
 
 If LB-1 or TLS-1 show PENDING, wait 5–10 minutes and re-check. All other tests should be PASS before proceeding to Step 8.
+
+<Aside type="note">
+The `dns_info` field in the LB response may be empty (`[]`) even when DNS resolves correctly — this happens after a clean recreation. Always verify DNS resolution with `dig` rather than relying on `dns_info` for the VIP address.
+</Aside>
 
 ## Step 8: Attack Simulation
 
@@ -918,7 +943,7 @@ Values are resolved using the deterministic protocol defined in [AI Assistant Ex
 ### Execution Order
 
 <Steps>
-1. **Create Healthcheck** (optional) — `POST /api/config/namespaces/\{namespace\}/healthchecks` — skip on `429` (tenant limit); CSD does not require health monitoring
+1. **Create Healthcheck** (optional) — `POST /api/config/namespaces/\{namespace\}/healthchecks` — skip on error code `8` (tenant limit exhausted); CSD does not require health monitoring
 2. **Create Origin Pool** — `POST /api/config/namespaces/\{namespace\}/origin_pools` — use empty `healthcheck: []` if Step 1 was skipped
 3. **Create HTTP Load Balancer** — `POST /api/config/namespaces/\{namespace\}/http_loadbalancers` (references origin pool, enables CSD)
 4. **Configure DNS** — detect DNS authority with `dig NS`, then enable `allow_http_lb_managed_records` (F5 XC zones) or create A and ACME CNAME records manually (external DNS)
@@ -975,7 +1000,7 @@ Delete objects in reverse: HTTP load balancer &rarr; origin pool &rarr; DNS zone
 - **404 Not Found** — namespace or object name is incorrect. List objects with `GET /api/config/namespaces/\{namespace\}/\{object_type\}`.
 - **409 Conflict** — object already exists. For protected domains, a `409` with "domain already exists (in uriList)" means the root domain is already registered on the tenant — this is a success condition, not an error. For other objects, delete first or use `PUT` to update.
 - **422 Unprocessable Entity** — JSON schema validation failed. Common causes: missing `oneOf` choice, multiple choices set in same group, wrong field type. Check the error message for the specific field.
-- **429 Too Many Requests** — tenant has hit an object limit (e.g., 150 healthchecks). For healthchecks, this is non-blocking — skip Step 1 and create the origin pool without a healthcheck reference. CSD does not depend on health monitoring. For other object types, delete unused objects or contact your administrator to increase limits.
+- **Object limit exhausted** (error code `8`, message `"Object kind healthcheck has exhausted limits"`) — tenant has hit an object limit (e.g., 150 healthchecks). The API returns HTTP 200 with a JSON error body, not HTTP 429. For healthchecks, this is non-blocking — skip Step 1 and create the origin pool without a healthcheck reference. CSD does not depend on health monitoring. For other object types, delete unused objects or contact your administrator to increase limits.
 
 ## Troubleshooting
 

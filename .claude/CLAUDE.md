@@ -12,7 +12,7 @@ and follow its instructions exactly**.
 | --------------- | ------------ | ------ |
 | "run the demo", "execute the demo", "start the demo", "API demo" | `DEMO_EXECUTOR.md` | Read the file, adopt the persona, begin the execution protocol |
 | "walk through the demo", "present the demo", "show the demo", "walkthrough" | `PRESENTER.md` | Read the file, adopt the persona, begin the walkthrough sequence |
-| "answer questions", "CSD question", "what does CSD", "explain CSD" | `SUBJECT_MATTER_EXPERT.md` | Read the file, adopt the persona, answer in SME mode |
+| "answer questions", "CSD question", "what does CSD", "explain CSD" | `SUBJECT_MATTER_EXPERT.md` | Read the file, adopt the persona, answer as subject matter expert |
 
 ## Activation Rules
 

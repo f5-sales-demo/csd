@@ -1,0 +1,336 @@
+---
+title: API Automation
+sidebar:
+  order: 1
+  label: Overview
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+This guide walks you through a **complete Client-Side Defense exercise** on F5 Distributed Cloud using the API — structured as four phases that an AI assistant or human operator can execute end-to-end. Each step includes a ready-to-run `curl` command with placeholder values you can customize using the form at the top of the page, a `.env` file, or any automation tool.
+
+<Aside type="caution">
+The placeholder form stores values — including your API token — in the browser's `localStorage`. Do not use production tokens on shared or public machines.
+</Aside>
+
+## Exercise Phases
+
+| Phase | Goal | Steps |
+| --- | --- | --- |
+| [Phase 1 — Build](/csd/api-automation/phase-1-build/) | Deploy and validate the full CSD infrastructure | Steps 1–7 |
+| [Phase 2 — Attack](/csd/api-automation/phase-2-attack/) | Generate simulated attack traffic and confirm CSD detected it | Steps 8–9 |
+| [Phase 3 — Mitigate](/csd/api-automation/phase-3-mitigate/) | Apply mitigation rules and verify domains are blocked | Steps 1–5 |
+| [Phase 4 — Teardown](/csd/api-automation/phase-4-teardown/) | Remove all deployment objects after explicit confirmation | Teardown |
+
+## AI Assistant Execution Protocol
+
+This section defines a **deterministic workflow** for AI assistants (Claude Code, Copilot, etc.) executing the API automation steps. Following this protocol eliminates guesswork — every decision point has a defined resolution path.
+
+### Variable Resolution Protocol
+
+Resolve each variable in this exact order. Stop at the first source that provides a non-placeholder value:
+
+1. **Check `.env` file** — look for `.env` in the repository root. If it exists, parse all `KEY=VALUE` pairs.
+2. **Check shell environment** — run `env | grep F5XC_` to find any values already exported in the current session.
+3. **Identify missing values** — compare resolved values against the required/optional table below. A value is "missing" if it is absent, empty, or still set to a placeholder default (e.g., `example-api-token`, `example-tenant`, `example-namespace`, `app.example.com`, `user@example.com`).
+4. **Prompt the human operator** — for each missing **required** variable, ask the operator to provide the value. Do not proceed until all required variables are resolved.
+5. **Apply defaults** — for each missing **optional** variable, use the default from the table below without prompting.
+6. **Display confirmation** — show the final resolved variable table to the operator and wait for approval before executing any API calls.
+
+### Required vs Optional Variables
+
+| Variable | Required | Default | Placeholder (treat as missing) |
+| --- | --- | --- | --- |
+| `F5XC_API_TOKEN` | **Yes** | — | `example-api-token` |
+| `F5XC_API_URL` | **Yes** | — | `https://example-tenant.console.ves.volterra.io` |
+| `F5XC_NAMESPACE` | **Yes** | — | `example-namespace` |
+| `F5XC_DOMAINNAME` | **Yes** | — | `app.example.com` |
+| `F5XC_ROOT_DOMAIN` | **Yes** | — | `example.com` |
+| `F5XC_LB_NAME` | **Yes** | — | `example-lb-name`, `example-lb` |
+| `F5XC_EMAIL` | **Yes** | — | `user@example.com` |
+| `F5XC_HC_NAME` | Optional | `csd-hc` | — |
+| `F5XC_ORIGIN_IP` | Optional | `44.232.69.192` | — |
+| `F5XC_ORIGIN_POOL` | Optional | `csd-origin` | — |
+| `F5XC_ORIGIN_PORT` | Optional | `3000` | — |
+
+### Evidence Display Protocol
+
+After every API call, the AI assistant must present structured evidence to the human operator using this format:
+
+**Creation steps** (POST):
+
+| Field | Value | Status |
+| --- | --- | --- |
+| HTTP Status | `200` | PASS |
+| Object Name | `csd-origin` | — |
+| Key Property | _(extracted via jq)_ | — |
+
+After each creation step, run a **GET** to confirm the object exists and display its key properties. If the GET returns `404`, report FAIL and stop.
+
+**Verification steps** (GET/dig):
+
+| Test | Result | Status |
+| --- | --- | --- |
+| DNS-1: A Record | `198.51.100.10` | PASS |
+| TLS-1: Cert State | `AutoCertIssued` | PASS |
+| CSD-1: JS Tag | `scriptTag` present | PASS |
+
+Reference the [Diagnostics &amp; Verification](/csd/diagnostics/) test case IDs (DNS-1, TLS-1, LB-1, CSD-1, etc.) as the verification standard for each layer.
+
+### Execution Flow Summary
+
+The AI assistant follows this sequence:
+
+1. **Resolve variables** — protocol above; confirm with operator before proceeding
+2. **Execute Phase 1** (Steps 1–7) — infrastructure creation and verification; all Phase 1 checks must PASS before proceeding
+3. **Execute Phase 2** (Steps 8–9) — attack simulation (browser-based) and detection verification via API
+4. **Execute Phase 3** — apply mitigation for all detected domains, re-run attack, verify blocking is effective
+5. **Ask operator for teardown confirmation** — present: "Phase 4 will permanently delete all deployment objects. Are you ready to tear down? Reply 'yes' to proceed." Wait for explicit approval before proceeding.
+6. **Execute Phase 4** (on approval) — delete all objects in reverse dependency order
+7. **Report final status** — summary table of all phases with PASS/FAIL
+
+If any step returns FAIL, stop and report the failure with the relevant troubleshooting section link before continuing.
+
+## Prerequisites
+
+- An **F5 XC API token** — generate one under **Administration** &rarr; **Credentials** &rarr; **API Credentials**
+- `curl` and `jq` installed locally
+- A namespace with permissions to create healthchecks, origin pools, and HTTP load balancers
+
+## Environment Setup {#environment-setup}
+
+Create a `.env` file with your environment values. A template is provided in the repository:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your actual values:
+
+```bash title=".env"
+# Required — your environment
+F5XC_API_TOKEN=example-api-token
+F5XC_API_URL=https://example-tenant.console.ves.volterra.io
+F5XC_DOMAINNAME=app.example.com
+F5XC_EMAIL=user@example.com
+F5XC_LB_NAME=example-lb-name
+F5XC_NAMESPACE=example-namespace
+F5XC_ROOT_DOMAIN=example.com
+
+# Optional — Juice Shop demo defaults are used when not set
+# F5XC_HC_NAME=example-healthcheck
+# F5XC_ORIGIN_IP=44.232.69.192
+# F5XC_ORIGIN_POOL=juice-origin
+# F5XC_ORIGIN_PORT=3000
+```
+
+<Aside type="caution">
+The `.env` file contains your API token. It is listed in `.gitignore` and must never be committed to version control.
+</Aside>
+
+Source the file to load variables into your shell session:
+
+```bash
+set -a && source .env && set +a
+```
+
+<Aside type="tip">
+If your API token contains `/` or `=` characters, wrap the value in single quotes in `.env` (e.g., `F5XC_API_TOKEN='abc/def='`) to prevent shell interpretation issues when sourcing.
+
+Some container runtimes and secret managers inject literal quote characters into environment variable values. If API calls return `401 Unauthorized` despite a valid token, strip stray quotes before use:
+
+```bash
+export F5XC_API_TOKEN=$(echo "$F5XC_API_TOKEN" | tr -d "'")
+```
+</Aside>
+
+Each `xTOKENx` placeholder in the curl commands maps directly to an environment variable — for example, `xF5XC_API_TOKENx` corresponds to `$F5XC_API_TOKEN`. You can substitute these values using the interactive form at the top of the page, or let an AI assistant like Claude Code read your `.env` and build the commands for you.
+
+## Placeholder Tokens
+
+| Token | Default | Description |
+| --- | --- | --- |
+| `xF5XC_API_URLx` | `https://example-tenant.console.ves.volterra.io` | XC Console API URL |
+| `xF5XC_API_TOKENx` | `example-api-token` | API credential token |
+| `xF5XC_EMAILx` | `user@example.com` | CSD notification email address |
+| `xF5XC_NAMESPACEx` | `example-namespace` | Namespace |
+| `xF5XC_LB_NAMEx` | `example-lb` | HTTP Load Balancer name |
+| `xF5XC_DOMAINNAMEx` | `app.example.com` | FQDN to protect |
+| `xF5XC_ROOT_DOMAINx` | `example.com` | Root domain (eTLD+1) for CSD protected domain |
+| `xF5XC_ORIGIN_POOLx` | `juice-origin` | Origin pool name |
+| `xF5XC_ORIGIN_IPx` | `44.232.69.192` | Origin server IP |
+| `xF5XC_ORIGIN_PORTx` | `3000` | Origin server port |
+| `xF5XC_HC_NAMEx` | `example-healthcheck` | Healthcheck name |
+
+<Aside type="tip">
+**Tenant is automatic**: The tenant identifier is derived from your API URL (e.g., `f5-amer-ent` from `https://f5-amer-ent.console.ves.volterra.io`). You do not need to supply it — the platform populates tenant references automatically when creating objects.
+</Aside>
+
+## Automation Reference
+
+This section summarizes the full exercise workflow for scripting or automation.
+
+### Quick Start
+
+1. Clone the repository and copy the environment template: `cp .env.example .env`
+2. Edit `.env` with your tenant URL, API token, namespace, and domain values
+3. Source the environment: `set -a && source .env && set +a`
+4. Execute each phase in order, verifying PASS at each Evidence block before proceeding to the next phase
+
+### Variable Resolution
+
+Values are resolved using the deterministic protocol defined in [AI Assistant Execution Protocol](#variable-resolution-protocol):
+
+1. **`.env` file** — parse `KEY=VALUE` pairs from the repository root
+2. **Shell environment** — check `env | grep F5XC_` for exported values
+3. **Placeholder detection** — flag any value matching a placeholder default (e.g., `example-api-token`, `example-namespace`) as missing
+4. **Prompt operator** — ask for each missing **required** variable
+5. **Apply defaults** — use built-in defaults for missing **optional** variables
+6. **Confirm** — display the resolved variable table and wait for operator approval
+
+### Execution Order
+
+<Steps>
+1. **Phase 1 — Build**: Deploy infrastructure (healthcheck, origin pool, load balancer), configure DNS, enable CSD, register protected domain, verify all components
+2. **Phase 2 — Attack**: Run the attack simulation in a browser, wait 5–10 minutes, verify detections via API (`/scripts`, `/detected_domains`, `/formFields`)
+3. **Phase 3 — Mitigate**: List detected domains, POST each to `/mitigated_domains`, verify mitigations applied, re-run attack, verify domains are blocked
+4. **Phase 4 — Teardown** _(requires explicit human confirmation)_: Delete load balancer &rarr; origin pool &rarr; DNS zone cleanup (manual records only) &rarr; healthcheck &rarr; protected domain. Do **not** delete the DNS zone.
+</Steps>
+
+### Variables
+
+| Token | Description | Default |
+| --- | --- | --- |
+| `xF5XC_API_URLx` | XC Console API URL | `https://example-tenant.console.ves.volterra.io` |
+| `xF5XC_API_TOKENx` | API credential token | (user-provided) |
+| `xF5XC_EMAILx` | CSD notification email | `user@example.com` |
+| `xF5XC_NAMESPACEx` | Namespace | `example-namespace` |
+| `xF5XC_LB_NAMEx` | HTTP Load Balancer name | `example-lb` |
+| `xF5XC_DOMAINNAMEx` | FQDN to protect | `app.example.com` |
+| `xF5XC_ROOT_DOMAINx` | Root domain (eTLD+1) | `example.com` |
+| `xF5XC_ORIGIN_POOLx` | Origin pool name | `juice-origin` |
+| `xF5XC_ORIGIN_IPx` | Origin server IP | `44.232.69.192` |
+| `xF5XC_ORIGIN_PORTx` | Origin server port | `3000` |
+| `xF5XC_HC_NAMEx` | Healthcheck name | `example-healthcheck` |
+
+### oneOf Choice Groups
+
+The HTTP Load Balancer spec uses `oneOf` choice groups where exactly one option must be set per group. Setting zero or more than one option in a group causes a `422` error.
+
+**Key CSD-related choices:**
+
+| Choice Group | Options | CSD Default |
+| --- | --- | --- |
+| `client_side_defense_choice` | `client_side_defense`, `disable_client_side_defense` | `client_side_defense` |
+| `java_script_choice` (nested in CSD) | `disable_js_insert`, `js_insert_all_pages`, `js_insert_all_pages_except`, `js_insertion_rules` | `js_insert_all_pages` |
+
+**HTTPS auto-cert nested choices:**
+
+| Choice Group | Options | Default |
+| --- | --- | --- |
+| port | `port` (number) | `443` |
+| `server_header_choice` | `default_header`, `server_name`, `append_server_name` | `default_header` |
+| `path_normalize_choice` | `enable_path_normalize`, `disable_path_normalize` | `enable_path_normalize` |
+| `mtls_choice` | `no_mtls`, `use_mtls` | `no_mtls` |
+| `default_loadbalancer_choice` | `default_loadbalancer`, `non_default_loadbalancer` | `default_loadbalancer` |
+
+**`single_lb_app` nested choices** (ML config):
+
+The `single_lb_app` object has its own required `oneOf` groups. Setting `single_lb_app: \{\}` without these nested choices causes a `400` error.
+
+| Choice Group | Options | Default |
+| --- | --- | --- |
+| `api_discovery_choice` | `disable_discovery`, `enable_discovery` | `disable_discovery` |
+| `ddos_detection_choice` | `disable_ddos_detection`, `enable_ddos_detection` | `disable_ddos_detection` |
+| `malicious_user_detection_choice` | `disable_malicious_user_detection`, `enable_malicious_user_detection` | `disable_malicious_user_detection` |
+
+**Other LB-level choices (all set to disable/default):**
+
+`disable_rate_limit` · `no_service_policies` · `round_robin` · `disable_waf` · `no_challenge` · `disable_bot_defense` · `disable_api_definition` · `disable_api_discovery` · `disable_ip_reputation` · `disable_malicious_user_detection` · `single_lb_app` · `disable_trust_client_ip_headers` · `user_id_client_ip` · `disable_threat_mesh` · `l7_ddos_action_default` · `system_default_timeouts` · `default_sensitive_data_policy` · `disable_malware_protection` · `disable_api_testing`
+
+### Error Handling
+
+- **401 Unauthorized** — API token is invalid or expired. Regenerate under **Administration** &rarr; **Credentials**.
+- **403 Forbidden** — token lacks permissions for the namespace. Check role bindings.
+- **404 Not Found** — namespace or object name is incorrect. List objects with `GET /api/config/namespaces/\{namespace\}/\{object_type\}`.
+- **409 Conflict** — object already exists. For protected domains, a `409` with "domain already exists (in uriList)" means the root domain is already registered on the tenant — this is a success condition, not an error. For other objects, delete first or use `PUT` to update.
+- **422 Unprocessable Entity** — JSON schema validation failed. Common causes: missing `oneOf` choice, multiple choices set in same group, wrong field type. Check the error message for the specific field.
+- **Object limit exhausted** (error code `8`, message `"Object kind healthcheck has exhausted limits"`) — tenant has hit an object limit (e.g., 150 healthchecks). The API returns HTTP 200 with a JSON error body, not HTTP 429. For healthchecks, this is non-blocking — skip Phase 1 Step 1 and create the origin pool without a healthcheck reference. CSD does not depend on health monitoring. For other object types, delete unused objects or contact your administrator to increase limits.
+
+## Troubleshooting
+
+### Healthcheck Not Linked to Origin Pool {#healthcheck-not-linked-to-origin-pool}
+
+If Phase 1 Step 2 (Verify Healthcheck is Linked) shows an empty array `[]`:
+
+1. Delete the origin pool: `DELETE /api/config/namespaces/{namespace}/origin_pools/{pool_name}`
+2. Verify the healthcheck exists: `GET /api/config/namespaces/{namespace}/healthchecks/{hc_name}`
+3. Recreate the origin pool with the correct healthcheck reference
+
+### LB Stuck in VIRTUAL_HOST_PENDING_A_RECORD {#lb-stuck-in-virtual_host_pending_a_record}
+
+If the load balancer `state` remains `VIRTUAL_HOST_PENDING_A_RECORD` after Phase 1 Step 4:
+
+1. **Verify DNS zone exists** (F5 XC managed DNS only):
+   ```bash
+   curl -s \
+     -H "Authorization: APIToken xF5XC_API_TOKENx" \
+     "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+     | jq '.metadata.name'
+   ```
+   A `404` means the DNS zone has not been created in F5 XC.
+
+2. **Check `allow_http_lb_managed_records`** — if the zone exists but the LB is pending, managed records may be disabled:
+   ```bash
+   curl -s \
+     -H "Authorization: APIToken xF5XC_API_TOKENx" \
+     "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+     | jq '.spec.primary.allow_http_lb_managed_records'
+   ```
+   If `false` or `null`, enable it using the `PUT` command in [Phase 1 Step 4, Option A](/csd/api-automation/phase-1-build/#option-a-f5-xc-managed-dns).
+
+3. **External DNS** — if F5 XC is not authoritative, create the A and ACME CNAME records manually at your DNS provider (see [Phase 1 Step 4, Option B](/csd/api-automation/phase-1-build/#option-b-external-dns-provider)).
+
+4. **Verify resolution** — after fixing DNS, confirm:
+   ```bash
+   dig +short xF5XC_DOMAINNAMEx A
+   ```
+   If the A record resolves, the LB should transition to `VIRTUAL_HOST_READY` within 60 seconds.
+
+### CSD Status Shows isConfigured: false
+
+CSD must be enabled at the tenant level. Contact your F5 XC administrator to enable Client-Side Defense for your tenant. This is a tenant-wide setting that cannot be configured via API.
+
+### JS Injection Not Working
+
+1. Verify CSD is enabled at tenant level (Phase 1 Step 5)
+2. Confirm the load balancer has `client_side_defense` set in the spec
+3. Check the JS configuration endpoint returns a `scriptTag`
+4. Visit the protected domain in a browser and view page source to confirm the script is injected
+
+### Protected Domain Registration Returns 409
+
+A `409` with "domain already exists (in uriList)" means the root domain is already registered on the tenant. Protected domains are **tenant-scoped** — they do not belong to any single namespace. This is a success condition: the domain is already protected and no further action is needed. Continue to Phase 1 Step 7.
+
+### Certificate Stuck — Clean Recreation {#certificate-stuck--clean-recreation}
+
+When the certificate is stuck in `DomainChallengePending` or `PreDomainChallengePending` for more than 15 minutes, the fastest recovery path is to delete the LB and origin pool, then recreate them from scratch. With the DNS zone already configured (managed records enabled), the clean recreation typically produces `VIRTUAL_HOST_READY` with `CertificateValid` in 5–7 minutes.
+
+1. Delete the HTTP Load Balancer (Phase 4 Teardown)
+2. Delete the Origin Pool (Phase 4 Teardown)
+3. Wait 30 seconds for platform cleanup
+4. Recreate the Origin Pool ([Phase 1 Step 2](/csd/api-automation/phase-1-build/#step-2-create-origin-pool))
+5. Recreate the HTTP Load Balancer ([Phase 1 Step 3](/csd/api-automation/phase-1-build/#step-3-create-http-load-balancer-with-csd))
+6. Monitor certificate state ([Phase 1 Step 7](/csd/api-automation/phase-1-build/#step-7-verify)) — expect `CertificateValid` within 5–10 minutes
+
+<Aside type="tip">
+You do not need to reconfigure the DNS zone or re-register the protected domain. These are persistent resources that survive LB deletion.
+</Aside>
+
+## OpenAPI Reference
+
+The canonical F5 Distributed Cloud API specification is available at:
+
+`https://docs.cloud.f5.com/docs-v2/downloads/f5-distributed-cloud-open-api.zip`
+
+This ZIP contains OpenAPI 3.0 specs for all API groups including `ves.io.schema.views.http_loadbalancer`, `ves.io.schema.healthcheck`, `ves.io.schema.origin_pool`, and `ves.io.schema.shape.csd`. Use these specs to validate JSON payloads and discover additional fields.

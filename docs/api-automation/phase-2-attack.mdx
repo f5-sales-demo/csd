@@ -1,0 +1,123 @@
+---
+title: "Phase 2 — Attack"
+sidebar:
+  order: 3
+  label: "Phase 2 — Attack"
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Phase 2 generates simulated attack traffic against the protected application and confirms CSD detected it. Phase 1 must be complete — all Step 7 checks PASS — before proceeding.
+
+## Step 8: Attack Simulation
+
+<Aside type="note">
+This step requires a **web browser** — CSD monitors JavaScript behavior inside the browser and cannot be triggered with `curl`. If you are an AI assistant without browser access, instruct the human operator to perform this step manually, or use browser automation (Playwright, Puppeteer) if available.
+</Aside>
+
+After the infrastructure is verified (all Phase 1 Step 7 checks PASS), run the attack simulation scripts to generate CSD detections. The scripts are defined in the [Trigger Detection](/csd/trigger-detection/) guide and the [Attack Script Library](/csd/attack-scripts/).
+
+### Execution Order
+
+1. **Navigate** to the protected application login page: `https://xF5XC_DOMAINNAMEx/#/login`
+2. **Enter dummy credentials** — type `test@example.com` in the Email field and `P@ssword123` in the Password field (do not submit the form)
+3. **Open DevTools** — press **F12** and switch to the **Console** tab
+4. **Run the Combined Detection Script** — paste the script from [Trigger Detection &mdash; Run the Combined Simulation Script](/csd/trigger-detection/#run-the-combined-simulation-script) into the console and press Enter
+5. **Verify console output** — confirm the `[CSD Demo]` phased output shows: field harvesting, script injection from 4 CDN domains, and data exfiltration to 2 endpoints
+
+### What Gets Triggered
+
+| Signal | Behavior | Detection |
+| --- | --- | --- |
+| Form field harvesting | Reads email and password input values | Scripts reading sensitive form fields — flagged High Risk |
+| Script injection | Injects 4 `&lt;script&gt;` tags from `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io` | 4 new third-party script domains detected |
+| Data exfiltration | Sends harvested data via `fetch` to `httpbin.org` and `jsonplaceholder.typicode.com` | Network calls to external domains |
+
+<Aside type="tip">
+Detection takes **5–10 minutes** to appear in the CSD dashboard. Proceed to Step 9 after waiting at least 5 minutes. For additional targeted simulations (individual attack categories, maximum detection stress test), see the [Attack Script Library](/csd/attack-scripts/).
+</Aside>
+
+### Evidence
+
+The AI assistant should report:
+
+| Check | Expected | Status |
+| --- | --- | --- |
+| Login page loaded | `200 OK` at `https://$F5XC_DOMAINNAME/#/login` | PASS / FAIL |
+| Console script executed | `[CSD Demo] Simulation complete` in console output | PASS / FAIL |
+| Fields harvested | Count &gt; 0 in console output | PASS |
+| Scripts injected | 4 CDN domains in console output | PASS |
+| Exfil channels | 2 fetch POST attempts in console output | PASS |
+
+## Step 9: Detection Verification via API
+
+After waiting **5–10 minutes** for CSD to process the attack simulation, query the CSD API endpoints to confirm detections appeared. These endpoints are documented in the [API Reference](/csd/api-reference/) and use the same authentication and namespace as previous steps.
+
+### Detected Scripts
+
+Query for scripts detected in the last 24 hours:
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 86400 ))
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq '{total: (.scripts | length), scripts: [.scripts[]? | {url: .url, host: .host, risk: .risk}]}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| `total` | &gt; 0 (scripts detected) | PASS if &gt; 0, FAIL if 0 after 10+ minutes |
+| Script hosts | Includes `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io` | PASS if injected CDN domains appear |
+
+### Detected Domains
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| `total_domains` | &gt; 0 | PASS if &gt; 0 |
+| Domain list | Includes CDN and exfil domains | PASS if expected domains appear |
+
+### Form Fields
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 86400 ))
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields?startTime=$START&endTime=$NOW" \
+  | jq '{fields: [.form_fields[]? | {field_name: .fieldName, field_type: .fieldType, page_url: .pageUrl}]}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| Form fields detected | Email and password fields from login page | PASS if fields appear |
+| `field_type` | `email`, `password` | PASS if sensitive field types detected |
+
+### Phase 2 Evidence Summary
+
+After all detection queries, present the final detection status:
+
+| Test ID | Check | Status |
+| --- | --- | --- |
+| DET-1 | Scripts detected | PASS / FAIL |
+| DET-2 | CDN domains detected | PASS / FAIL |
+| DET-3 | Exfil domains detected | PASS / FAIL |
+| DET-4 | Form fields detected | PASS / FAIL |
+
+<Aside type="note">
+If all DET tests show FAIL after 10+ minutes, verify that CSD is enabled (Phase 1 Step 5), the protected domain is registered (Phase 1 Step 6), and the CSD JS tag is being injected (Phase 1 Step 7 JS Configuration check). Detection requires all three to be functioning.
+</Aside>
+
+---
+
+**Phase 2 complete.** Proceed to [Phase 3 — Mitigate](/csd/api-automation/phase-3-mitigate/) to apply mitigation rules and verify domains are blocked.

@@ -1,0 +1,210 @@
+---
+title: "Phase 3 — Mitigate"
+sidebar:
+  order: 4
+  label: "Phase 3 — Mitigate"
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Phase 3 applies mitigations for the domains detected in Phase 2, then re-runs the attack simulation to confirm the mitigated domains are blocked. Phase 2 must be complete — all DET checks PASS — before proceeding.
+
+<Aside type="caution">
+**Live testing note:** The mitigation POST/DELETE endpoints have been validated in development environments but behavior details (response timing, effect on script detection status) may vary across tenant configurations. If you observe unexpected responses, check the [API Reference](/csd/api-reference/#mitigated-domains) for the canonical endpoint definitions.
+</Aside>
+
+## Step 1: List All Detected Domains
+
+Query the detected domains endpoint to get the current list of domains CSD has flagged. This confirms what needs to be mitigated.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '.items // [] | map(.name)'
+```
+
+### Evidence
+
+| Check | Expected | Status |
+| --- | --- | --- |
+| HTTP Status | `200` | PASS |
+| Detected domain count | &gt; 0 | PASS if &gt; 0, FAIL if 0 (Phase 2 may not have completed) |
+| CDN domains present | `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io` | PASS if all 4 appear |
+
+If the count is `0`, wait an additional 5 minutes and re-query. Detection can take up to 10 minutes after the simulation completes.
+
+## Step 2: Mitigate All Detected Domains
+
+For each detected domain, POST to the mitigated domains endpoint. The primary targets from the Phase 2 simulation are the 4 CDN injection domains and any data exfiltration domains detected.
+
+**Primary mitigation targets** (from the combined simulation script):
+
+| Domain | Role |
+| --- | --- |
+| `cdn.jsdelivr.net` | CDN script injection |
+| `esm.sh` | CDN script injection |
+| `unpkg.com` | CDN script injection |
+| `ga.jspm.io` | CDN script injection |
+| `httpbin.org` | Data exfiltration endpoint |
+| `jsonplaceholder.typicode.com` | Data exfiltration endpoint |
+
+<Aside type="note">
+The `name` field in the POST body must be the domain value itself (e.g., `cdn.jsdelivr.net`). Repeat this command for each detected domain — replace the name value in the request body for each domain.
+</Aside>
+
+**Mitigate a domain** (run once per domain):
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "cdn.jsdelivr.net",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {}
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+```
+
+Repeat for each domain, replacing `cdn.jsdelivr.net` with the next domain name:
+
+```bash
+# esm.sh
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"esm.sh","namespace":"xF5XC_NAMESPACEx"},"spec":{}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# unpkg.com
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"unpkg.com","namespace":"xF5XC_NAMESPACEx"},"spec":{}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# ga.jspm.io
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"ga.jspm.io","namespace":"xF5XC_NAMESPACEx"},"spec":{}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# httpbin.org
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"httpbin.org","namespace":"xF5XC_NAMESPACEx"},"spec":{}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# jsonplaceholder.typicode.com
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"jsonplaceholder.typicode.com","namespace":"xF5XC_NAMESPACEx"},"spec":{}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+```
+
+A `200` response returns the created mitigated domain object. A `409` response means the domain is already in the mitigated list — this is a success condition.
+
+## Step 3: Verify Mitigations Applied
+
+List all mitigated domains and confirm all targeted domains appear:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '.items // [] | map(.name)'
+```
+
+### Evidence
+
+| Domain | Expected | Status |
+| --- | --- | --- |
+| `cdn.jsdelivr.net` | Present in list | PASS / FAIL |
+| `esm.sh` | Present in list | PASS / FAIL |
+| `unpkg.com` | Present in list | PASS / FAIL |
+| `ga.jspm.io` | Present in list | PASS / FAIL |
+| `httpbin.org` | Present in list | PASS / FAIL |
+| `jsonplaceholder.typicode.com` | Present in list | PASS / FAIL |
+
+If any domain is missing, re-run the POST command for that domain from Step 2.
+
+## Step 4: Re-run Attack Simulation
+
+<Aside type="note">
+This step requires a **web browser** — the same requirement as Phase 2 Step 8. If you are an AI assistant without browser access, instruct the human operator to perform this step manually.
+</Aside>
+
+Re-run the combined simulation script using the same procedure as [Phase 2 — Step 8: Attack Simulation](/csd/api-automation/phase-2-attack/#step-8-attack-simulation):
+
+1. Navigate to `https://xF5XC_DOMAINNAMEx/#/login`
+2. Enter dummy credentials in the Email and Password fields (do not submit)
+3. Open DevTools — press **F12** and switch to the **Console** tab
+4. Paste and run the Combined Detection Script from [Trigger Detection](/csd/trigger-detection/#run-the-combined-simulation-script)
+5. Observe console output — mitigated domain scripts should be **blocked by the browser** rather than loading
+
+<Aside type="tip">
+When domains are mitigated, the CSD JavaScript instructs the browser to block script execution from those domains. You may see browser console errors indicating blocked scripts rather than the normal script injection messages. This is the expected behavior showing mitigation is working.
+</Aside>
+
+### Evidence
+
+| Check | Expected | Status |
+| --- | --- | --- |
+| Login page loaded | `200 OK` at `https://xF5XC_DOMAINNAMEx/#/login` | PASS / FAIL |
+| Console script executed | `[CSD Demo] Simulation complete` in console output | PASS / FAIL |
+| CDN scripts blocked | Console shows blocked/errors for mitigated CDN domains | PASS / FAIL |
+
+## Step 5: Verify Mitigation is Effective
+
+Wait **5–10 minutes** for CSD to process the second simulation run, then verify the mitigation is reflected in the detection data.
+
+### Check Detected Domains Post-Mitigation
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
+```
+
+### Check Scripts for Mitigated Status
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 86400 ))
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq '{total: (.scripts | length), scripts: [.scripts[]? | {url: .url, host: .host, risk: .risk}]}'
+```
+
+### Phase 3 Evidence Summary
+
+| Check | Expected | Status |
+| --- | --- | --- |
+| Mitigated domains listed | All 6 targeted domains present | PASS / FAIL |
+| Attack re-run console | `[CSD Demo] Simulation complete` | PASS / FAIL |
+| CDN scripts in second simulation | Blocked by browser (mitigation active) | PASS / FAIL |
+| CSD detection data | Mitigated domains show updated status | PASS / FAIL |
+
+<Aside type="note">
+Detection status updates after mitigation may take several minutes to appear in the API response. If the domains still show "Action Needed" immediately after mitigation, wait 5–10 minutes and re-query.
+</Aside>
+
+---
+
+**Phase 3 complete.** Proceed to [Phase 4 — Teardown](/csd/api-automation/phase-4-teardown/) when you are ready to remove all deployment objects.

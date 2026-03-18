@@ -1,0 +1,95 @@
+---
+title: "Phase 4 — Teardown"
+sidebar:
+  order: 5
+  label: "Phase 4 — Teardown"
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Phase 4 removes all objects created during the exercise in reverse dependency order. This phase requires explicit human confirmation before any destructive operations.
+
+<Aside type="caution">
+**Confirm before proceeding.** If you are an AI assistant, you MUST ask the human operator: "Phase 4 will permanently delete all deployment objects. Are you ready to tear down? Reply 'yes' to proceed." Do not execute any DELETE commands until the operator confirms.
+</Aside>
+
+## Teardown Order
+
+Remove objects in **reverse creation order** — delete objects that depend on other objects first:
+
+1. **HTTP Load Balancer** — depends on Origin Pool
+2. **Origin Pool** — depends on Healthcheck (if created)
+3. **DNS zone cleanup** — managed records (A and ACME) auto-clean when the LB is deleted; manual records in `default_rr_set_group` need manual cleanup via `PUT`
+4. **Healthcheck** — only if created in Phase 1 Step 1
+5. **Protected Domain** — delete the CSD protected domain registration
+
+<Aside type="caution">
+**Do not delete the DNS zone.** The DNS zone is shared infrastructure supporting many other DNS records across the platform and should never be deleted. Only clean up records you added manually to the `default_rr_set_group`. The protected domain, however, is a CSD configuration object tied to this deployment and **should** be deleted when fully tearing down.
+</Aside>
+
+## Delete HTTP Load Balancer
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx"
+```
+
+Verify: `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` should not contain the LB name.
+
+## Delete Origin Pool
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx"
+```
+
+Verify: `GET /api/config/namespaces/\{namespace\}/origin_pools` should not contain the pool name.
+
+## Delete Healthcheck
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx"
+```
+
+Verify: `GET /api/config/namespaces/\{namespace\}/healthchecks` should not contain the healthcheck name.
+
+## Delete Protected Domain
+
+Delete the CSD protected domain registration. The protected domain is tenant-scoped (not namespace-scoped), but it is a CSD configuration object tied to this deployment — not shared infrastructure like the DNS zone.
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/xF5XC_ROOT_DOMAINx"
+```
+
+Verify: List protected domains to confirm the domain is no longer registered:
+
+```bash
+curl -s -X GET \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '.items // [] | map(.metadata.name)'
+```
+
+<Aside type="note">
+The individual GET endpoint (`/protected_domains/\{name\}`) may return "API Group could not be determined." If the DELETE endpoint returns the same error, use the list endpoint to verify that the domain no longer appears, or delete the protected domain through the F5 XC Console UI instead.
+</Aside>
+
+## Phase 4 Evidence Summary
+
+| Object | Delete Status | Verify Status |
+| --- | --- | --- |
+| HTTP Load Balancer | `200` (empty `\{\}`) | Not in list — PASS |
+| Origin Pool | `200` (empty `\{\}`) | Not in list — PASS |
+| Healthcheck | `200` (empty `\{\}`) or skipped | Not in list — PASS |
+| Protected Domain | `200` (empty `\{\}`) | Not in list — PASS |
+| DNS zone | NOT deleted (shared infra) | Zone still exists — PASS |
+
+---
+
+**Teardown complete.** All deployment objects have been removed. The DNS zone and its non-managed records remain intact.

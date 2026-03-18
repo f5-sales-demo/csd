@@ -83,7 +83,7 @@ dig +short xF5XC_DOMAINNAMEx A
 
 | Result | Meaning |
 | --- | --- |
-| **PASS** &mdash; VIP IP returned (e.g., `72.19.3.189`) | Domain resolves to the LB virtual IP |
+| **PASS** &mdash; VIP IP returned (e.g., `72.19.3.185`) | Domain resolves to the LB virtual IP |
 | **FAIL** &mdash; empty response | DNS A record not configured |
 
 **Fix:** [API Automation &mdash; Step 4: Configure DNS](/csd/api-automation/#step-4-configure-dns)
@@ -133,6 +133,10 @@ curl -s \
 | --- | --- |
 | **PASS** &mdash; `true` | Platform will auto-create A and ACME records for LBs |
 | **FAIL** &mdash; `false` or `null` | Managed records disabled; enable via zone update |
+
+<Aside type="caution">
+A `false` result is a common misconfiguration when using F5 XC managed DNS. Without managed records enabled, the platform cannot auto-create the A record (pointing to the VIP) or the ACME challenge CNAME (required for TLS certificate provisioning). This causes the load balancer to remain stuck in `VIRTUAL_HOST_PENDING_A_RECORD` and the certificate to stay in `PreDomainChallengePending`. Enable managed records on the DNS zone or create the records manually.
+</Aside>
 
 **Fix:** [API Automation &mdash; Option A: F5 XC Managed DNS](/csd/api-automation/#option-a-f5-xc-managed-dns)
 
@@ -459,16 +463,18 @@ curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks" \
   | jq -r '
-    ["NAME", "TYPE", "PATH", "INTERVAL", "TIMEOUT"],
+    ["NAME", "NAMESPACE", "DESCRIPTION"],
     (.items[] | [
-      .metadata.name,
-      (if .spec.http_health_check then "HTTP" elif .spec.tcp_health_check then "TCP" else "?" end),
-      (.spec.http_health_check.path // "N/A"),
-      .spec.interval,
-      .spec.timeout
+      .name,
+      .namespace,
+      (.description | if length == 0 then "—" else . end)
     ])
     | @tsv' | column -t
 ```
+
+<Aside type="note">
+The list endpoint returns summary data only (name, namespace, description). To see full configuration details (type, path, interval, timeout), query an individual healthcheck using [HC-1](#hc-1-healthcheck-configuration).
+</Aside>
 
 ---
 
@@ -528,16 +534,17 @@ curl -s \
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
-  | jq '.items[] | {
-    name: .metadata.name,
-    protected_domain: .spec.protected_domain
-  }'
+  | jq '.items[] | {name, namespace, description}'
 ```
 
 | Result | Meaning |
 | --- | --- |
-| **PASS** &mdash; shows your root domain (e.g., `example.com`) | Domain is protected |
-| **FAIL** &mdash; empty or domain not listed | Register the domain &mdash; see [Step 6](/csd/api-automation/#step-6-register-protected-domain) |
+| **PASS** &mdash; shows an item with a non-empty `name` | Domain is protected |
+| **FAIL** &mdash; items have empty `name` and `namespace` fields | No protected domains registered &mdash; see [Step 6](/csd/api-automation/#step-6-register-protected-domain) |
+
+<Aside type="note">
+The protected domains list endpoint returns summary data. Items with all empty fields indicate no protected domains are configured. The CSD JavaScript tag ([CSD-2](#csd-2-js-injection-tag)) is a more reliable indicator that domain protection is active.
+</Aside>
 
 ### CSD-5: Live JS Injection Verification
 
@@ -1054,6 +1061,12 @@ If [TV-1](#tv-1-request-count-last-24-hours) returns `0`:
    Look for a successful TLS handshake and HTTP response.
 </Steps>
 
+### Managed Records Disabled on DNS Zone
+
+If [DNS-4](#dns-4-f5-xc-managed-records-enabled) returns `false`, automatic record creation is disabled even though F5 XC is the authoritative DNS provider. This is a common misconfiguration that causes both the A record and ACME CNAME to be missing, which blocks the load balancer from reaching `VIRTUAL_HOST_READY` and the certificate from being issued.
+
+To enable managed records, update the DNS zone configuration to set `allow_http_lb_managed_records: true`. See [API Automation &mdash; Option A: F5 XC Managed DNS](/csd/api-automation/#option-a-f5-xc-managed-dns) for the API call.
+
 ### LB Stuck in VIRTUAL_HOST_PENDING_A_RECORD
 
 The load balancer is waiting for a DNS A record pointing to its VIP. See [API Automation &mdash; LB Stuck in VIRTUAL_HOST_PENDING_A_RECORD](/csd/api-automation/#lb-stuck-in-virtual_host_pending_a_record) for detailed resolution steps.
@@ -1088,7 +1101,7 @@ If [TEL-1](#tel-1-script-inventory) returns an empty array:
    curl -s \
      -H "Authorization: APIToken xF5XC_API_TOKENx" \
      "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
-     | jq '.items[].spec.protected_domain'
+     | jq '.items[] | {name, namespace}'
    ```
 
 2. **Verify JS injection** &mdash; confirm the CSD script tag is being injected into pages:

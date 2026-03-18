@@ -88,20 +88,26 @@ dig +short xF5XC_DOMAINNAMEx A
 
 **Fix:** [API Automation &mdash; Step 4: Configure DNS](/csd/api-automation/#step-4-configure-dns)
 
-### DNS-2: ACME Challenge CNAME
+### DNS-2: ACME Challenge Record
 
-**What it proves:** The ACME challenge CNAME exists for automatic TLS certificate provisioning.
+**What it proves:** The ACME challenge record exists for automatic TLS certificate provisioning.
 
 ```bash
 dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx TXT
 ```
 
 | Result | Meaning |
 | --- | --- |
-| **PASS** &mdash; `*.autocerts.ves.volterra.io.` returned | ACME challenge CNAME is in place |
-| **FAIL** &mdash; empty response | CNAME not configured; certificate will stay in `PreDomainChallengePending` |
+| **PASS** &mdash; CNAME to `*.autocerts.ves.volterra.io.` (external DNS) | ACME challenge CNAME is in place |
+| **PASS** &mdash; TXT record with domain value (F5 XC managed DNS) | Platform-managed ACME challenge via TXT record |
+| **FAIL** &mdash; both empty | ACME record not configured; certificate will stay in `PreDomainChallengePending` |
 
-**Fix:** Create CNAME at your DNS provider: `_acme-challenge.xF5XC_DOMAINNAMEx` &rarr; `*.autocerts.ves.volterra.io`. See [API Automation &mdash; Step 4](/csd/api-automation/#step-4-configure-dns).
+<Aside type="note">
+When using F5 XC managed DNS with `allow_http_lb_managed_records` enabled, the platform auto-creates a **TXT** record (not a CNAME) in the `x-ves-io-managed` RR set group. This TXT-based ACME validation is handled internally. When using external DNS, you must manually create a CNAME to `*.autocerts.ves.volterra.io`.
+</Aside>
+
+**Fix:** For external DNS, create CNAME: `_acme-challenge.xF5XC_DOMAINNAMEx` &rarr; `*.autocerts.ves.volterra.io`. For F5 XC managed DNS, enable `allow_http_lb_managed_records` on the DNS zone &mdash; see [DNS-4](#dns-4-f5-xc-managed-records-enabled). See [API Automation &mdash; Step 4](/csd/api-automation/#step-4-configure-dns).
 
 ### DNS-3: Nameserver Authority
 
@@ -159,8 +165,9 @@ curl -s \
 
 | Result | Meaning |
 | --- | --- |
-| **PASS** &mdash; `"AutoCertIssued"` or `"AutoCertRenewing"` | Certificate is valid and active |
-| **FAIL** &mdash; `"PreDomainChallengePending"` | ACME challenge CNAME missing &mdash; see [DNS-2](#dns-2-acme-challenge-cname) |
+| **PASS** &mdash; `"CertificateValid"` or `"AutoCertRenewing"` | Certificate is valid and active |
+| **WARN** &mdash; `"DomainChallengePending"` or `"DomainChallengeStarted"` | ACME challenge in progress &mdash; wait 5&ndash;10 minutes |
+| **FAIL** &mdash; `"PreDomainChallengePending"` | ACME challenge record missing &mdash; see [DNS-2](#dns-2-acme-challenge-record) |
 
 **Fix:** Add the ACME CNAME record. Certificate provisioning takes 2&ndash;5 minutes after the CNAME is in place.
 
@@ -236,6 +243,7 @@ curl -s \
 | Result | Meaning |
 | --- | --- |
 | **PASS** &mdash; `"VIRTUAL_HOST_READY"` | LB is operational |
+| **WARN** &mdash; `"VIRTUAL_HOST_DNS_A_RECORD_ADDED"` | A record created, waiting for certificate &mdash; see [TLS-1](#tls-1-certificate-state) |
 | **FAIL** &mdash; `"VIRTUAL_HOST_PENDING_A_RECORD"` | DNS A record not configured &mdash; see [DNS-1](#dns-1-a-record-resolution) |
 
 **Fix:** [API Automation &mdash; LB Stuck in VIRTUAL_HOST_PENDING_A_RECORD](/csd/api-automation/#lb-stuck-in-virtual_host_pending_a_record)
@@ -317,6 +325,17 @@ curl -s \
 | --- | --- |
 | **PASS** &mdash; `state` is `VIRTUAL_HOST_READY`, `dns_info` populated | LB fully deployed with VIP assigned |
 | **FAIL** &mdash; pending state or empty `dns_info` | DNS or certificate issue blocking deployment |
+
+<Aside type="tip">
+When the LB is not in `VIRTUAL_HOST_READY` state, check `.status[].virtual_host_status.error_description` for the same error details shown in the F5 XC console UI:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  | jq '[.status[]? | select(.virtual_host_status != null) | .virtual_host_status | {state, error_description, suggested_action}]'
+```
+</Aside>
 
 ### LB-6: Full LB Summary
 
@@ -552,12 +571,12 @@ The protected domains list endpoint returns summary data. Items with all empty f
 
 ```bash
 curl -s "https://xF5XC_DOMAINNAMEx/" \
-  | grep -o 'shape.com[^"]*' | head -1
+  | grep -oE '(zeronaught|shape)\.com[^"]*' | head -1
 ```
 
 | Result | Meaning |
 | --- | --- |
-| **PASS** &mdash; returns a `shape.com` URL fragment | CSD JavaScript is being injected into pages |
+| **PASS** &mdash; returns a `zeronaught.com` or `shape.com` URL fragment (e.g., `zeronaught.com/__imp_apg__/js/...`) | CSD JavaScript is being injected into pages |
 | **FAIL** &mdash; empty output | JS not injected &mdash; check [LB-3](#lb-3-csd-enabled-on-lb) and [CSD-1](#csd-1-tenant-csd-status) |
 
 ---
@@ -1073,19 +1092,31 @@ The load balancer is waiting for a DNS A record pointing to its VIP. See [API Au
 
 ### Certificate Stuck in PreDomainChallengePending
 
-The automatic TLS certificate requires an ACME challenge CNAME record:
+The automatic TLS certificate requires an ACME challenge record. The method depends on your DNS provider:
+
+**F5 XC Managed DNS:** Enable `allow_http_lb_managed_records` on the DNS zone ([DNS-4](#dns-4-f5-xc-managed-records-enabled)). The platform auto-creates a TXT-based ACME challenge record in the `x-ves-io-managed` RR set group. If the certificate remains stuck after enabling managed records, delete and recreate the load balancer to trigger a fresh certificate request.
+
+**External DNS:** Create a CNAME record at your DNS provider:
 
 ```
 _acme-challenge.xF5XC_DOMAINNAMEx  CNAME  *.autocerts.ves.volterra.io
 ```
 
-Verify the CNAME exists:
+Verify the record exists:
 
 ```bash
 dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx TXT
 ```
 
-If empty, create the CNAME at your DNS provider. Certificate provisioning takes 2&ndash;5 minutes after the CNAME is in place.
+If both are empty, the ACME record is not configured. Certificate provisioning takes 5&ndash;10 minutes after the record is in place. Check the LB error status for specific ACME validation errors:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  | jq '[.status[]? | select(.virtual_host_status != null) | .virtual_host_status.error_description]'
+```
 
 ### CSD isConfigured is false
 
@@ -1106,7 +1137,7 @@ If [TEL-1](#tel-1-script-inventory) returns an empty array:
 
 2. **Verify JS injection** &mdash; confirm the CSD script tag is being injected into pages:
    ```bash
-   curl -s "https://xF5XC_DOMAINNAMEx/" | grep -o 'shape.com[^"]*' | head -1
+   curl -s "https://xF5XC_DOMAINNAMEx/" | grep -oE '(zeronaught|shape)\.com[^"]*' | head -1
    ```
    If no match, CSD JavaScript is not being injected. Check that the LB has `client_side_defense` enabled.
 

@@ -241,7 +241,7 @@ always tied to a customer concern.
 > ⏸ *[Pause for audience — ready to continue?]*
 
 **Applies to both demo modes:** walkthrough (as-built reference pages) and API automation
-execution (phase-by-phase provisioning). For API phases, narrate after each curl result is
+execution (phase-by-phase provisioning). For API phases, narrate after each cURL result is
 displayed — explain what the API response confirms and why it matters to the customer.
 
 ### Attack Simulation
@@ -296,7 +296,7 @@ screenshots or procedures become stale.
 
 **AI-executable** provisioning instructions. These phases are written for Claude Code to
 **execute** against a real tenant — not just read and present. Each phase has ready-to-run
-curl commands, evidence tables for PASS/FAIL validation, and deterministic decision paths.
+cURL commands, evidence tables for PASS/FAIL validation, and deterministic decision paths.
 
 **Execution requires `.env` or environment variables.** Resolve all required variables
 before executing any API calls (see `index.mdx` Variable Resolution Protocol).

@@ -13,6 +13,73 @@ This guide walks you through creating a **complete Client-Side Defense deploymen
 The placeholder form stores values — including your API token — in the browser's `localStorage`. Do not use production tokens on shared or public machines.
 </Aside>
 
+## AI Assistant Execution Protocol
+
+This section defines a **deterministic workflow** for AI assistants (Claude Code, Copilot, etc.) executing the API automation steps. Following this protocol eliminates guesswork — every decision point has a defined resolution path.
+
+### Variable Resolution Protocol
+
+Resolve each variable in this exact order. Stop at the first source that provides a non-placeholder value:
+
+1. **Check `.env` file** — look for `.env` in the repository root. If it exists, parse all `KEY=VALUE` pairs.
+2. **Check shell environment** — run `env | grep F5XC_` to find any values already exported in the current session.
+3. **Identify missing values** — compare resolved values against the required/optional table below. A value is "missing" if it is absent, empty, or still set to a placeholder default (e.g., `example-api-token`, `example-tenant`, `example-namespace`, `app.example.com`, `user@example.com`).
+4. **Prompt the human operator** — for each missing **required** variable, ask the operator to provide the value. Do not proceed until all required variables are resolved.
+5. **Apply defaults** — for each missing **optional** variable, use the default from the table below without prompting.
+6. **Display confirmation** — show the final resolved variable table to the operator and wait for approval before executing any API calls.
+
+### Required vs Optional Variables
+
+| Variable | Required | Default | Placeholder (treat as missing) |
+| --- | --- | --- | --- |
+| `F5XC_API_TOKEN` | **Yes** | — | `example-api-token` |
+| `F5XC_API_URL` | **Yes** | — | `https://example-tenant.console.ves.volterra.io` |
+| `F5XC_NAMESPACE` | **Yes** | — | `example-namespace` |
+| `F5XC_DOMAINNAME` | **Yes** | — | `app.example.com` |
+| `F5XC_ROOT_DOMAIN` | **Yes** | — | `example.com` |
+| `F5XC_LB_NAME` | **Yes** | — | `example-lb-name`, `example-lb` |
+| `F5XC_EMAIL` | **Yes** | — | `user@example.com` |
+| `F5XC_HC_NAME` | Optional | `csd-hc` | — |
+| `F5XC_ORIGIN_IP` | Optional | `44.232.69.192` | — |
+| `F5XC_ORIGIN_POOL` | Optional | `csd-origin` | — |
+| `F5XC_ORIGIN_PORT` | Optional | `3000` | — |
+
+### Evidence Display Protocol
+
+After every API call, the AI assistant must present structured evidence to the human operator using this format:
+
+**Creation steps** (POST):
+
+| Field | Value | Status |
+| --- | --- | --- |
+| HTTP Status | `200` | PASS |
+| Object Name | `csd-origin` | — |
+| Key Property | _(extracted via jq)_ | — |
+
+After each creation step, run a **GET** to confirm the object exists and display its key properties. If the GET returns `404`, report FAIL and stop.
+
+**Verification steps** (GET/dig):
+
+| Test | Result | Status |
+| --- | --- | --- |
+| DNS-1: A Record | `198.51.100.10` | PASS |
+| TLS-1: Cert State | `AutoCertIssued` | PASS |
+| CSD-1: JS Tag | `scriptTag` present | PASS |
+
+Reference the [Diagnostics &amp; Verification](/csd/diagnostics/) test case IDs (DNS-1, TLS-1, LB-1, CSD-1, etc.) as the verification standard for each layer.
+
+### Execution Flow Summary
+
+The AI assistant follows this sequence:
+
+1. **Resolve variables** — protocol above
+2. **Execute Steps 1–7** — infrastructure creation and verification
+3. **Execute Step 8** — attack simulation (browser-based)
+4. **Execute Step 9** — detection verification via API
+5. **Report final status** — summary table of all steps with PASS/FAIL
+
+If any step returns FAIL, stop and report the failure with the relevant troubleshooting section link before continuing.
+
 ## Prerequisites
 
 - An **F5 XC API token** — generate one under **Administration** &rarr; **Credentials** &rarr; **API Credentials**
@@ -133,6 +200,24 @@ curl -s -X POST \
 
 A `200` response confirms the healthcheck was created. A `429` response means the tenant has exhausted its healthcheck limit — skip to Step 2 and omit the healthcheck reference.
 
+### Evidence
+
+Confirm the healthcheck exists:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx" \
+  | jq '{name: .metadata.name, namespace: .metadata.namespace, path: .spec.http_health_check.path, interval: .spec.interval}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| HTTP Status | `200` | PASS if returned, FAIL if `404` |
+| `name` | Matches `F5XC_HC_NAME` | PASS |
+| `path` | `/` | PASS |
+| Step 1 skipped (`429`) | — | PASS (healthcheck is optional) |
+
 ## Step 2: Create Origin Pool
 
 Create an origin pool pointing to your backend server. If you created a healthcheck in Step 1, include the `healthcheck` reference. If Step 1 was skipped, use an empty array.
@@ -220,6 +305,25 @@ curl -s \
 
 A populated array confirms the link. An empty array `[]` is expected if Step 1 was skipped, or means the healthcheck was not found if you intended to link one.
 
+### Evidence
+
+Confirm the origin pool exists and has the correct configuration:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '{name: .metadata.name, origin_ip: .spec.origin_servers[0].public_ip.ip, port: .spec.port, healthcheck_count: (.spec.healthcheck | length)}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| HTTP Status | `200` | PASS if returned, FAIL if `404` |
+| `name` | Matches `F5XC_ORIGIN_POOL` | PASS |
+| `origin_ip` | Matches `F5XC_ORIGIN_IP` | PASS |
+| `port` | Matches `F5XC_ORIGIN_PORT` | PASS |
+| `healthcheck_count` | `1` (with HC) or `0` (without) | PASS either way |
+
 ## Step 3: Create HTTP Load Balancer with CSD
 
 Create an HTTPS load balancer with automatic certificate management and Client-Side Defense enabled. This is the most complex object — the F5 XC API uses `oneOf` choice groups where exactly one option must be set per group.
@@ -297,6 +401,25 @@ curl -s -X POST \
 ```
 
 A `200` response confirms the load balancer was created with CSD enabled.
+
+### Evidence
+
+Confirm the load balancer exists with CSD enabled:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  | jq '{name: .metadata.name, domains: .spec.domains, csd_enabled: (.spec.client_side_defense != null), state: .spec.state}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| HTTP Status | `200` | PASS if returned, FAIL if `404` |
+| `name` | Matches `F5XC_LB_NAME` | PASS |
+| `domains` | Contains `F5XC_DOMAINNAME` | PASS |
+| `csd_enabled` | `true` | PASS — CSD is configured on this LB |
+| `state` | `VIRTUAL_HOST_PENDING_A_RECORD` | Expected at this point — DNS not yet configured |
 
 ## Step 4: Configure DNS
 
@@ -416,6 +539,16 @@ dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
 The A record is required for the LB to transition from `VIRTUAL_HOST_PENDING_A_RECORD` to `VIRTUAL_HOST_READY`. The ACME CNAME is required for automatic TLS certificate provisioning. Without both records, the LB will remain in a pending state.
 </Aside>
 
+### Evidence
+
+| Test | Command | Expected | Status |
+| --- | --- | --- | --- |
+| DNS-1: A Record | `dig +short $F5XC_DOMAINNAME A` | VIP IP address returned | PASS if IP returned, FAIL if empty |
+| DNS-2: ACME CNAME | `dig +short _acme-challenge.$F5XC_DOMAINNAME CNAME` | `*.autocerts.ves.volterra.io` | PASS if CNAME returned |
+| DNS authority | `dig +short NS $F5XC_ROOT_DOMAIN` | F5 XC or external nameservers | Informational — determines Option A vs B |
+
+If DNS-1 returns empty after 60 seconds, see [Troubleshooting &mdash; LB Stuck in VIRTUAL_HOST_PENDING_A_RECORD](#lb-stuck-in-virtual_host_pending_a_record).
+
 ## Step 5: Verify CSD is Enabled
 
 Check that Client-Side Defense is enabled for the tenant. CSD is configured at the tenant level — if it has not been enabled yet, contact your F5 XC administrator.
@@ -428,6 +561,21 @@ curl -s \
 ```
 
 A response containing `"isConfigured": true` and `"isEnabled": true` confirms CSD is active.
+
+### Evidence
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq '{configured: .isConfigured, enabled: .isEnabled}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| `configured` | `true` | PASS |
+| `enabled` | `true` | PASS |
+| Either is `false` | — | FAIL — contact F5 XC administrator to enable CSD at tenant level |
 
 ## Step 6: Register Protected Domain
 
@@ -462,6 +610,22 @@ curl -s -X POST \
 | --- | --- | --- |
 | `200` | Domain registered successfully | Continue to Step 7 |
 | `409` (domain already exists) | Domain was previously registered on this tenant | Already done — continue to Step 7 |
+
+### Evidence
+
+Confirm the protected domain is registered:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/xF5XC_ROOT_DOMAINx" \
+  | jq '{domain: .spec.protected_domain, name: .metadata.name}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| HTTP Status | `200` | PASS if returned |
+| `domain` | Matches `F5XC_ROOT_DOMAIN` | PASS |
 
 ## Step 7: Verify
 
@@ -543,6 +707,131 @@ curl -s \
   | jq '.form_fields'
 ```
 
+### Evidence Summary
+
+After completing all verification checks, the AI assistant should present a consolidated status table:
+
+| Test ID | Check | Expected | Status |
+| --- | --- | --- | --- |
+| DNS-1 | A Record resolves | VIP IP returned | PASS / FAIL |
+| DNS-2 | ACME CNAME exists | `*.autocerts.ves.volterra.io` | PASS / FAIL |
+| LB-1 | LB state | `VIRTUAL_HOST_READY` | PASS / PENDING |
+| TLS-1 | Certificate state | `AutoCertIssued` | PASS / PENDING |
+| CSD-1 | JS configuration | `scriptTag` present | PASS / FAIL |
+| CSD-2 | CSD status | `isEnabled: true` | PASS / FAIL |
+| CSD-3 | Protected domain | Domain registered | PASS / FAIL |
+
+If LB-1 or TLS-1 show PENDING, wait 5–10 minutes and re-check. All other tests should be PASS before proceeding to Step 8.
+
+## Step 8: Attack Simulation
+
+<Aside type="note">
+This step requires a **web browser** — CSD monitors JavaScript behavior inside the browser and cannot be triggered with `curl`. If you are an AI assistant without browser access, instruct the human operator to perform this step manually, or use browser automation (Playwright, Puppeteer) if available.
+</Aside>
+
+After the infrastructure is verified (all Step 7 checks PASS), run the attack simulation scripts to generate CSD detections. The scripts are defined in the [Trigger Detection](/csd/trigger-detection/) guide and the [Attack Script Library](/csd/attack-scripts/).
+
+### Execution Order
+
+1. **Navigate** to the protected application login page: `https://xF5XC_DOMAINNAMEx/#/login`
+2. **Enter dummy credentials** — type `test@example.com` in the Email field and `P@ssword123` in the Password field (do not submit the form)
+3. **Open DevTools** — press **F12** and switch to the **Console** tab
+4. **Run the Combined Detection Script** — paste the script from [Trigger Detection &mdash; Run the Combined Simulation Script](/csd/trigger-detection/#run-the-combined-simulation-script) into the console and press Enter
+5. **Verify console output** — confirm the `[CSD Demo]` phased output shows: field harvesting, script injection from 4 CDN domains, and data exfiltration to 2 endpoints
+
+### What Gets Triggered
+
+| Signal | Behavior | Detection |
+| --- | --- | --- |
+| Form field harvesting | Reads email and password input values | Scripts reading sensitive form fields — flagged High Risk |
+| Script injection | Injects 4 `&lt;script&gt;` tags from `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io` | 4 new third-party script domains detected |
+| Data exfiltration | Sends harvested data via `fetch` to `httpbin.org` and `jsonplaceholder.typicode.com` | Network calls to external domains |
+
+<Aside type="tip">
+Detection takes **5–10 minutes** to appear in the CSD dashboard. Proceed to Step 9 after waiting at least 5 minutes. For additional targeted simulations (individual attack categories, maximum detection stress test), see the [Attack Script Library](/csd/attack-scripts/).
+</Aside>
+
+### Evidence
+
+The AI assistant should report:
+
+| Check | Expected | Status |
+| --- | --- | --- |
+| Login page loaded | `200 OK` at `https://$F5XC_DOMAINNAME/#/login` | PASS / FAIL |
+| Console script executed | `[CSD Demo] Simulation complete` in console output | PASS / FAIL |
+| Fields harvested | Count &gt; 0 in console output | PASS |
+| Scripts injected | 4 CDN domains in console output | PASS |
+| Exfil channels | 2 fetch POST attempts in console output | PASS |
+
+## Step 9: Detection Verification via API
+
+After waiting **5–10 minutes** for CSD to process the attack simulation, query the CSD API endpoints to confirm detections appeared. These endpoints are documented in the [API Reference](/csd/api-reference/) and use the same authentication and namespace as previous steps.
+
+### Detected Scripts
+
+Query for scripts detected in the last 24 hours:
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 86400 ))
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq '{total: (.scripts | length), scripts: [.scripts[]? | {url: .url, host: .host, risk: .risk}]}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| `total` | &gt; 0 (scripts detected) | PASS if &gt; 0, FAIL if 0 after 10+ minutes |
+| Script hosts | Includes `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io` | PASS if injected CDN domains appear |
+
+### Detected Domains
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| `total_domains` | &gt; 0 | PASS if &gt; 0 |
+| Domain list | Includes CDN and exfil domains | PASS if expected domains appear |
+
+### Form Fields
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 86400 ))
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields?startTime=$START&endTime=$NOW" \
+  | jq '{fields: [.form_fields[]? | {field_name: .fieldName, field_type: .fieldType, page_url: .pageUrl}]}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| Form fields detected | Email and password fields from login page | PASS if fields appear |
+| `field_type` | `email`, `password` | PASS if sensitive field types detected |
+
+### Evidence Summary
+
+After all detection queries, present the final detection status:
+
+| Test ID | Check | Status |
+| --- | --- | --- |
+| DET-1 | Scripts detected | PASS / FAIL |
+| DET-2 | CDN domains detected | PASS / FAIL |
+| DET-3 | Exfil domains detected | PASS / FAIL |
+| DET-4 | Form fields detected | PASS / FAIL |
+
+<Aside type="note">
+If all DET tests show FAIL after 10+ minutes, verify that CSD is enabled (Step 5), the protected domain is registered (Step 6), and the CSD JS tag is being injected (Step 7 JS Configuration check). Detection requires all three to be functioning.
+</Aside>
+
 ## Teardown
 
 Remove objects in **reverse creation order** — delete objects that depend on other objects first:
@@ -595,16 +884,20 @@ This section summarizes the full workflow for scripting or automation. Whether y
 1. Clone the repository and copy the environment template: `cp .env.example .env`
 2. Edit `.env` with your tenant URL, API token, namespace, and domain values
 3. Source the environment: `set -a && source .env && set +a`
-4. Run the curl commands from Steps 1–6 above in order, substituting `xTOKENx` placeholders with your environment variables
-5. Verify each response returns `200` before proceeding to the next step
+4. Run the curl commands from Steps 1–7 in order, substituting `xTOKENx` placeholders with your environment variables
+5. Verify each step using the Evidence block — confirm PASS before proceeding
+6. Run the attack simulation in a browser (Step 8), wait 5–10 minutes, then verify detections via API (Step 9)
 
 ### Variable Resolution
 
-Values are resolved in this order:
+Values are resolved using the deterministic protocol defined in [AI Assistant Execution Protocol](#variable-resolution-protocol):
 
-1. **`.env` file** in the repository root — primary source for all environment-specific values
-2. **User input** — for anything not in `.env` or still set to a placeholder default (especially `F5XC_API_TOKEN`)
-3. **Defaults** from the table below — for origin configuration values not overridden
+1. **`.env` file** — parse `KEY=VALUE` pairs from the repository root
+2. **Shell environment** — check `env | grep F5XC_` for exported values
+3. **Placeholder detection** — flag any value matching a placeholder default (e.g., `example-api-token`, `example-namespace`) as missing
+4. **Prompt operator** — ask for each missing **required** variable
+5. **Apply defaults** — use built-in defaults for missing **optional** variables
+6. **Confirm** — display the resolved variable table and wait for operator approval
 
 ### Variables
 
@@ -632,6 +925,8 @@ Values are resolved in this order:
 5. **Verify CSD is Enabled** — `GET /api/shape/csd/namespaces/\{namespace\}/status` (tenant-wide — check `isConfigured` and `isEnabled` are both `true`)
 6. **Register Protected Domain** — `POST /api/shape/csd/namespaces/\{namespace\}/protected_domains` — tenant-scoped and persistent; `409` means already registered (success)
 7. **Verify** — DNS resolution, LB state, certificate status, CSD JS configuration, detected domains
+8. **Attack Simulation** — run the [Combined Detection Script](/csd/trigger-detection/#run-the-combined-simulation-script) in a browser on the protected domain (requires DevTools Console, not curl)
+9. **Detection Verification** — query CSD API endpoints (`/scripts`, `/detected_domains`, `/formFields`) to confirm attack simulation was detected
 </Steps>
 
 ### oneOf Choice Groups
@@ -671,7 +966,7 @@ The `single_lb_app` object has its own required `oneOf` groups. Setting `single_
 
 ### Teardown Order
 
-Delete objects in reverse: HTTP load balancer &rarr; origin pool &rarr; DNS zone cleanup (manual records only) &rarr; healthcheck (if created). Do **not** delete the protected domain or DNS zone — both are shared infrastructure.
+Delete objects in reverse: HTTP load balancer &rarr; origin pool &rarr; DNS zone cleanup (manual records only) &rarr; healthcheck (if created). Do **not** delete the protected domain or DNS zone — both are shared infrastructure. Steps 8–9 (attack simulation and detection verification) produce read-only telemetry — there is nothing to tear down.
 
 ### Error Handling
 

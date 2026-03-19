@@ -7,10 +7,10 @@ sidebar:
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-Phase 3 demonstrates the **CSD mitigation workflow** — the complete lifecycle from detection to response. You confirm a clean baseline, re-run the attack to establish a "before" snapshot, apply mitigations via the API, verify the mitigations are recorded, and then re-run the same attack to capture an "after" snapshot. Phase 2 must be complete — all DET checks PASS — before proceeding.
+Phase 3 creates a **before/after proof** of CSD mitigation. You re-run the attack with no mitigations to establish a baseline, apply mitigations, then re-run the same attack to prove CSD blocks the network calls. Phase 2 must be complete — all DET checks PASS — before proceeding.
 
 <Aside type="note">
-**CSD mitigation marks domains for enforcement in the CSD backend.** When a domain is on the mitigate list, CSD records the mitigation decision and updates the domain's status from "Action Needed" to "Found &amp; Mitigated." Browser-side enforcement (blocking network calls to mitigated domains) depends on the CSD JavaScript receiving the updated mitigation configuration, which propagates on a backend-controlled schedule — not instantaneously. This phase demonstrates the API-driven mitigation workflow and confirms the backend state change.
+**CSD mitigation blocks script loading from mitigated domains.** When a domain is on the mitigate list, the CSD JavaScript intercepts `&lt;script&gt;` tag source URLs and prevents scripts from loading — stopping supply-chain attacks at the source. CSD does not intercept `fetch()` or `XMLHttpRequest` calls. This phase captures proof of script blocking by running the same attack before and after mitigation.
 </Aside>
 
 <Aside type="caution">
@@ -19,7 +19,7 @@ Phase 3 demonstrates the **CSD mitigation workflow** — the complete lifecycle 
 
 ## Step 1: Confirm No Active Mitigations (Baseline)
 
-Before capturing the "before" snapshot, verify the environment is clean — no mitigations should be active. This ensures the baseline attack runs without any prior mitigations recorded.
+Before capturing the "before" snapshot, verify the environment is clean — no mitigations should be active. This ensures the baseline attack runs without any CSD blocking.
 
 ### Check Mitigated Domains Count
 
@@ -225,20 +225,20 @@ If the count is lower than expected, re-run the POST command for the missing dom
 
 ## Step 5: Run Attack — After Mitigation
 
-Re-run the **exact same** combined simulation to capture the **"after" snapshot**. The simulation script is identical — only CSD's mitigation state has changed in the backend.
+Re-run the **exact same** combined simulation to capture the **"after" snapshot**. The simulation script is identical — only CSD's mitigation state has changed. Script loads from mitigated domains are now blocked by the CSD JavaScript (the `&lt;script&gt;` tag `src` is cleared to an empty string).
 
 <Aside type="note">
-This step uses the same browser automation sequence as Step 2. The attack script and initScript are identical — use the same Phase 2 initScript (which saves native `fetch`) for both Step 2 and Step 5.
+This step uses the same browser automation sequence as Step 2. The difference is not in what you run — it's in what you observe. With mitigations active, CSD blocks `&lt;script&gt;` tag loads from mitigated domains. Fetch API calls to mitigated exfil domains still complete — CSD mitigation targets script loading, not fetch/XHR.
 </Aside>
 
 ### AI-Automated Execution
 
-AI assistants with browser automation tools re-run the attack simulation programmatically using the **same Phase 2 initScript** (verbatim code in [Phase 2 — AI-Automated Execution](/csd/api-automation/phase-2-attack/#ai-automated-execution)):
+AI assistants with browser automation tools re-run the attack simulation programmatically using the **same Phase 2 initScript** (verbatim code in [Phase 2 — AI-Automated Execution](/csd/api-automation/phase-2-attack/#ai-automated-execution)). The initScript saves native `fetch` to avoid zone.js errors — this does not affect CSD mitigation because CSD does not intercept `fetch()` calls.
 
 1. **Navigate with initScript** — use `new_page` with `isolatedContext` for a clean browser context (avoids stale initScripts from Step 2), then navigate to `about:blank`, then to the login page with the **Phase 2 initScript**
 2. **Dismiss Welcome Banner** — `press_key` with `Escape`
 3. **Wait for completion** — wait 10 seconds for all async callbacks
-4. **Capture evidence** — `list_console_messages` to check for `[CSD Demo] Simulation complete`; `list_network_requests` filtered to `script` and `fetch` types to verify HTTP status codes
+4. **Capture evidence** — `list_console_messages` to check for `[CSD Demo] Simulation complete`; `list_network_requests` filtered to `script` and `fetch` types to observe that CDN script loads are **absent** (CSD cleared the script src) while fetch calls to exfil domains still complete normally
 
 ### Manual Execution
 
@@ -248,35 +248,37 @@ Operators without browser automation tools re-run the simulation manually using 
 2. Enter dummy credentials in the Email and Password fields (do not submit)
 3. Open DevTools — press **F12** and switch to the **Console** tab
 4. Paste and run the Combined Detection Script from [Trigger Detection](/csd/trigger-detection/#run-the-combined-simulation-script)
-5. Observe console and network output — the attack runs identically to Step 2
+5. Observe console and network output — CDN script `onload` and `onerror` callbacks do not fire for mitigated domains (CSD cleared the script `src` to an empty string, preventing the network request entirely). Fetch calls to exfil domains (httpbin.org, jsonplaceholder.typicode.com) **still complete** with `200`/`201` — CSD mitigation blocks script loading, not fetch/XHR calls
 
-<Aside type="caution">
-**Mitigation propagation timing:** Browser-side enforcement of mitigations depends on the CSD backend regenerating the JavaScript client with the updated mitigation list. This propagation is not instantaneous — it operates on a backend-controlled schedule. The attack simulation in Step 5 may produce the same network results as Step 2 (all requests completing with `200`/`201`). This is expected behavior for recently applied mitigations. The key evidence for this phase is the **API-confirmed mitigation state** (Step 3 and Step 4), not browser-side blocking. When propagation completes on subsequent page loads, CSD enforces the mitigation in the browser.
+<Aside type="tip">
+After mitigation, the CSD JavaScript blocks script loading from mitigated domains by intercepting the `&lt;script&gt;` tag `src` setter. When a script tag's `src` is set to a URL matching a mitigated domain, CSD clears the `src` to an empty string. The tag is added to the DOM (`appendChild` succeeds) but no network request is made — the script simply does not appear in the Network tab. Neither `onload` nor `onerror` callbacks fire.
+
+**Fetch calls are not intercepted by CSD mitigation.** Exfil fetch calls to mitigated domains (httpbin.org, jsonplaceholder.typicode.com) still complete normally. CSD mitigation targets the supply-chain vector (malicious script loading), not data exfiltration via fetch/XHR. Use the same Phase 2 initScript (with native `fetch` saved) for both Step 2 and Step 5.
 </Aside>
 
 ### Evidence — After Mitigation
 
 | Check | Expected (After Mitigation) | Status |
 | --- | --- | --- |
-| CDN scripts injected | Script tags injected, network requests may complete (`200`) or be held (`pending`) depending on propagation | INFO |
-| Exfil fetch to httpbin.org | May return `200` (propagation pending) or be held (`pending`) if propagation complete | INFO |
-| Exfil fetch to jsonplaceholder.typicode.com | May return `201` (propagation pending) or be held (`pending`) if propagation complete | INFO |
+| CDN script loads | **Blocked** — scripts do not appear in network tab (CSD cleared `src` to empty string) | PASS |
+| CDN script callbacks | Neither `onload` nor `onerror` fires for mitigated domains | PASS |
+| Exfil fetch to httpbin.org | `200` — fetch still completes (CSD does not intercept fetch) | INFO |
+| Exfil fetch to jsonplaceholder.typicode.com | `201` — fetch still completes (CSD does not intercept fetch) | INFO |
 | Console output | `[CSD Demo] Simulation complete` | PASS |
-| CSD mitigated domains API | 6 domains confirmed via Step 4 | PASS |
 
 ## Step 6: Before vs After Comparison
 
-This is the demo payoff — side-by-side evidence showing the complete CSD detection-to-mitigation workflow. The API-confirmed mitigation state is the primary evidence.
+This is the demo payoff — side-by-side evidence proving that the same attack, on the same page, with the same script, now produces a completely different result.
 
 ### Comparison Table
 
 | Signal | Before Mitigation (Step 2) | After Mitigation (Step 5) |
 | --- | --- | --- |
-| CDN script network calls | `200` — CDN scripts load normally | Same attack runs — network results depend on CSD propagation timing |
-| Exfil to httpbin.org | `200` — data exfiltrated | Same attack runs — request may complete or be held depending on propagation |
-| Exfil to jsonplaceholder.typicode.com | `201` — data exfiltrated | Same attack runs — request may complete or be held depending on propagation |
-| CSD mitigated domains API | **0 mitigated** | **6 mitigated** — authoritative evidence of mitigation action |
-| CSD detection status | Domains show "Action Needed" | Domains transition to "Found &amp; Mitigated" (may take 5-10 minutes) |
+| CDN script loads | `200` — all 4 CDN scripts load normally | **Blocked** — scripts absent from network tab (CSD cleared `src` to empty string) |
+| CDN `onload` callbacks | `[Supply Chain] Loaded from` messages appear | No callbacks fire (no network request was made) |
+| Exfil to httpbin.org | `200` — data exfiltrated | `200` — fetch still completes (CSD does not intercept fetch) |
+| Exfil to jsonplaceholder.typicode.com | `201` — data exfiltrated | `201` — fetch still completes (CSD does not intercept fetch) |
+| CSD mitigated domains API | 0 mitigated | 6 mitigated |
 
 ### Verify Mitigation in Backend Data
 
@@ -312,8 +314,8 @@ curl -s -X POST \
 | Before — attack succeeds (Step 2) | Scripts load, exfil returns 200/201 | PASS / FAIL |
 | Mitigations applied (Step 3) | All 6 domains accepted via POST (200 or 409) | PASS / FAIL |
 | Mitigated count confirmed (Step 4) | 6 items in list | PASS / FAIL |
-| After — attack re-run (Step 5) | Simulation completes, evidence captured | PASS / FAIL |
-| API state comparison (Step 6) | 0 mitigated → 6 mitigated, detection status updated | PASS / FAIL |
+| After — script loads blocked (Step 5) | CDN scripts absent from network tab, fetch calls still complete | PASS / FAIL |
+| Before vs After comparison (Step 6) | Clear difference between Step 2 and Step 5 evidence | PASS / FAIL |
 
 <Aside type="note">
 Detection status updates after mitigation may take time to appear in the API response. If the domains still show "Action Needed" immediately after mitigation, query `/detected_domains` every 60 seconds for up to 10 iterations (10 minutes). If still not updated after 10 iterations, record the current state as INFO — this does not block Phase 4.

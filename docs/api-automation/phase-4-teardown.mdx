@@ -17,25 +17,40 @@ Phase 4 removes all objects created during the exercise in reverse dependency or
 
 Remove objects in **reverse creation order** — delete objects that depend on other objects first:
 
-1. **HTTP Load Balancer** — depends on Origin Pool
-2. **Origin Pool** — depends on Healthcheck (if created)
-3. **DNS zone cleanup** — managed records (A and ACME) auto-clean when the LB is deleted; manual records in `default_rr_set_group` need manual cleanup via `PUT`
-4. **Healthcheck** — only if created in Phase 1 Step 1
-5. **Protected Domain** — delete the CSD protected domain registration
+1. **HTTPS Load Balancer** (`${F5XC_LB_NAME}-https`) — depends on Origin Pool
+2. **HTTP Load Balancer** (`${F5XC_LB_NAME}-http`) — depends on Origin Pool
+3. **Origin Pool** — depends on Healthcheck (if created)
+4. **DNS zone cleanup** — managed records (A and ACME) auto-clean when the LBs are deleted; manual records in `default_rr_set_group` need manual cleanup via `PUT`
+5. **Healthcheck** — only if created in Phase 1 Step 1
+6. **Protected Domain** — delete the CSD protected domain registration
 
 <Aside type="caution">
 **Do not delete the DNS zone.** The DNS zone is shared infrastructure supporting many other DNS records across the platform and should never be deleted. Only clean up records you added manually to the `default_rr_set_group`. The protected domain, however, is a CSD configuration object tied to this deployment and **should** be deleted when fully tearing down.
 </Aside>
 
-## Delete HTTP Load Balancer
+## Delete HTTPS Load Balancer
+
+Delete the secondary HTTPS LB first:
 
 ```bash
 curl -s -X DELETE \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx"
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https"
 ```
 
-Verify: `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` should not contain the LB name.
+Verify: `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` should not contain `${F5XC_LB_NAME}-https`.
+
+## Delete HTTP Load Balancer
+
+Delete the primary HTTP LB:
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http"
+```
+
+Verify: `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` should not contain `${F5XC_LB_NAME}-http`.
 
 ## Delete Origin Pool
 
@@ -84,7 +99,8 @@ The individual GET endpoint (`/protected_domains/\{name\}`) may return "API Grou
 
 | Object | Delete Status | Verify Status |
 | --- | --- | --- |
-| HTTP Load Balancer | `200` (empty `\{\}`) | Not in list — PASS |
+| HTTPS Load Balancer (`-https`) | `200` (empty `\{\}`) | Not in list — PASS |
+| HTTP Load Balancer (`-http`) | `200` (empty `\{\}`) | Not in list — PASS |
 | Origin Pool | `200` (empty `\{\}`) | Not in list — PASS |
 | Healthcheck | `200` (empty `\{\}`) or skipped | Not in list — PASS |
 | Protected Domain | `200` (empty `\{\}`) | Not in list — PASS |

@@ -115,7 +115,7 @@ DNS-1, LB-1, CSD-1, CSD-2, and CSD-3 must PASS before proceeding
 to Phase 2. LB-1 should reach READY within 1-2 minutes of DNS
 resolution. LB-2 and TLS-1 are informational — if TLS-1 shows
 `AutoCertDomainRateLimited`, this is expected in demo environments
-and does not affect the HTTP LB. HTTPS is a nice-to-have; HTTP is
+and does not affect the HTTP LB. HTTPS is a nice to have; HTTP is
 the default for all demo traffic.
 
 #### Phase 2 — Attack (`phase-2-attack.mdx`)

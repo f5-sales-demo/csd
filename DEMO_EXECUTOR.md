@@ -77,8 +77,9 @@ before the next begins.
 
 #### Phase 1 — Build (`phase-1-build.mdx`)
 
-Create healthcheck, origin pool, HTTP LB, configure DNS, enable CSD
-via API (Steps 1-7).
+Create healthcheck, origin pool, HTTP LB + HTTPS LB, configure DNS,
+enable CSD via API (Steps 1-7). The HTTP LB is the primary demo
+target; HTTPS is optional.
 
 **Critical execution notes:**
 
@@ -99,18 +100,23 @@ via API (Steps 1-7).
 
 **Phase 1 Evidence Summary (Step 7):**
 
-| Test ID | Check | Expected |
-| ------- | ----- | -------- |
-| DNS-1 | A Record resolves | VIP IP returned |
-| DNS-2 | ACME CNAME exists | `*.autocerts.ves.volterra.io` |
-| LB-1 | LB state | `VIRTUAL_HOST_READY` |
-| TLS-1 | Certificate state | `AutoCertIssued` |
-| CSD-1 | JS configuration | `scriptTag` present |
-| CSD-2 | CSD status | `isEnabled: true` |
-| CSD-3 | Protected domain | Domain registered |
+| Test ID | Check | Expected | Required |
+| ------- | ----- | -------- | -------- |
+| DNS-1 | A Record resolves | VIP IP returned | **Yes** |
+| DNS-2 | ACME CNAME exists | `*.autocerts.ves.volterra.io` | No |
+| LB-1 | HTTP LB state | `VIRTUAL_HOST_READY` | **Yes** |
+| LB-2 | HTTPS LB state | `VIRTUAL_HOST_READY` | No (informational) |
+| TLS-1 | Certificate state | `CertificateValid` | No (informational) |
+| CSD-1 | JS configuration | `scriptTag` present | **Yes** |
+| CSD-2 | CSD status | `isEnabled: true` | **Yes** |
+| CSD-3 | Protected domain | Domain registered | **Yes** |
 
-All tests must PASS (LB-1 and TLS-1 may show PENDING initially —
-wait 5-10 min and re-check) before proceeding to Phase 2.
+DNS-1, LB-1, CSD-1, CSD-2, and CSD-3 must PASS before proceeding
+to Phase 2. LB-1 should reach READY within 1-2 minutes of DNS
+resolution. LB-2 and TLS-1 are informational — if TLS-1 shows
+`AutoCertDomainRateLimited`, this is expected in demo environments
+and does not affect the HTTP LB. HTTPS is a nice-to-have; HTTP is
+the default for all demo traffic.
 
 #### Phase 2 — Attack (`phase-2-attack.mdx`)
 
@@ -120,7 +126,7 @@ Attack simulation via browser automation + API verification (Steps
 **AI-Automated Browser Execution (5-step sequence):**
 
 1. **Navigate** — `navigate_page` to
-   `https://$F5XC_DOMAINNAME/#/login`
+   `http://$F5XC_DOMAINNAME/#/login`
 2. **Snapshot** — `take_snapshot` to identify email and password
    form field UIDs
 3. **Fill credentials** — `fill` email with `test@example.com` and
@@ -232,12 +238,13 @@ human confirmation before execution.**
 
 **Teardown order:**
 
-1. HTTP Load Balancer (depends on Origin Pool)
-2. Origin Pool (depends on Healthcheck)
-3. DNS zone cleanup — managed records auto-clean when LB is deleted;
+1. HTTPS Load Balancer (`${F5XC_LB_NAME}-https`) — depends on Origin Pool
+2. HTTP Load Balancer (`${F5XC_LB_NAME}-http`) — depends on Origin Pool
+3. Origin Pool (depends on Healthcheck)
+4. DNS zone cleanup — managed records auto-clean when LBs are deleted;
    manual records need manual cleanup via `PUT`
-4. Healthcheck (only if created in Phase 1 Step 1)
-5. Protected Domain — delete the CSD protected domain registration
+5. Healthcheck (only if created in Phase 1 Step 1)
+6. Protected Domain — delete the CSD protected domain registration
 
 > **Do NOT delete the DNS zone.** The DNS zone is shared
 > infrastructure and should never be deleted. Only clean up records

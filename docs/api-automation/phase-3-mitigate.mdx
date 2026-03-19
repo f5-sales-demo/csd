@@ -7,19 +7,42 @@ sidebar:
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-Phase 3 applies mitigations for the domains detected in Phase 2, then re-runs the attack simulation. Phase 2 must be complete — all DET checks PASS — before proceeding.
+Phase 3 creates a **before/after proof** of CSD mitigation. You re-run the attack with no mitigations to establish a baseline, apply mitigations, then re-run the same attack to prove CSD blocks the network calls. Phase 2 must be complete — all DET checks PASS — before proceeding.
 
 <Aside type="note">
-**CSD mitigation actively blocks network calls from the browser to mitigated domains.** When a domain is on the mitigate list, the CSD JavaScript prevents scripts on the page from communicating with that domain — blocking data exfiltration in real time. After re-running the simulation, expect network requests to mitigated domains to be blocked.
+**CSD mitigation actively blocks network calls from the browser to mitigated domains.** When a domain is on the mitigate list, the CSD JavaScript prevents scripts on the page from communicating with that domain — blocking data exfiltration in real time. This phase captures proof of that blocking by running the same attack before and after mitigation.
 </Aside>
 
 <Aside type="caution">
 **Live testing note:** The mitigation POST/DELETE endpoints have been validated in development environments but behavior details (response timing, effect on script detection status) may vary across tenant configurations. If you observe unexpected responses, check the [API Reference](/csd/api-reference/#mitigated-domains) for the canonical endpoint definitions.
 </Aside>
 
-## Step 1: List All Detected Domains
+## Step 1: Confirm No Active Mitigations (Baseline)
 
-Query the detected domains endpoint to get the current list of domains CSD has flagged. This confirms what needs to be mitigated.
+Before capturing the "before" snapshot, verify the environment is clean — no mitigations should be active. This ensures the baseline attack runs without any CSD blocking.
+
+### Check Mitigated Domains Count
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '{count: (.items | length)}'
+```
+
+If the count is **not** `0`, mitigations remain from a prior run. Delete each one before proceeding:
+
+```bash
+# Delete a mitigated domain (repeat for each domain name)
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/<domain-name>" \
+  | jq .
+```
+
+Replace `<domain-name>` with the `metadata.name` used when the domain was mitigated (e.g., `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io`, `httpbin.org`, `jsonplaceholder.typicode.com`).
+
+### Confirm Phase 2 Detections Are Present
 
 ```bash
 curl -s \
@@ -32,13 +55,56 @@ curl -s \
 
 | Check | Expected | Status |
 | --- | --- | --- |
-| HTTP Status | `200` | PASS |
-| Detected domain count | &gt; 0 | PASS if &gt; 0, FAIL if 0 (Phase 2 may not have completed) |
+| Mitigated domain count | `0` (clean baseline) | PASS if 0, requires cleanup if &gt; 0 |
+| Detected domain count | &gt; 0 (Phase 2 detections present) | PASS if &gt; 0 |
 | Exfil domains present | `httpbin.org`, `jsonplaceholder.typicode.com` | PASS if at least one appears |
 
-If the count is `0`, wait an additional 5 minutes and re-query. Detection can take up to 10 minutes after the simulation completes. On first use or after a full infrastructure rebuild, allow up to 30 minutes — the `/detected_domains` endpoint is the leading indicator that the CSD pipeline is processing data.
+## Step 2: Run Attack — Before Mitigation
 
-## Step 2: Mitigate All Detected Domains
+Re-run the combined simulation with **no mitigations active** to capture a fresh baseline. This is the **"before" snapshot** — proof that attacks succeed when CSD mitigation is not applied.
+
+<Aside type="note">
+This step requires browser-side JavaScript execution — `curl` cannot trigger CSD detection. AI assistants with browser automation tools (MCP Chrome DevTools, Playwright, Puppeteer) execute these steps directly using the **AI-Automated Execution** sequence below. Operators without browser automation perform the manual steps.
+</Aside>
+
+### AI-Automated Execution
+
+AI assistants with browser automation tools run the attack simulation programmatically:
+
+1. **Navigate with initScript** — `navigate_page` to `http://$F5XC_DOMAINNAME/#/login` with an `initScript` that saves native `console.log`, `setInterval`, `clearInterval`, and `XMLHttpRequest` before zone.js patches them, then sets up a polling function that watches for filled form fields and auto-executes the Combined Detection Script when they have values
+2. **Dismiss dialogs** — on first visit, `take_snapshot` and `click` the "dismiss cookie message" button, then `press_key` with `Escape` to close the Welcome Banner (`click` on the close button fails — after dismissing the cookie overlay, Angular Material's transition leaves the button non-interactive; `Escape` is the reliable method). On subsequent visits these dialogs may not appear (cookies persisted)
+3. **Snapshot** — `take_snapshot` to identify the email and password form field UIDs (look for aria-labels `Text field for the login email` and `Text field for the login password`)
+4. **Fill credentials** — `fill` the email field with `test@example.com` and the password field with `P@ssword123` (do not submit the form). This triggers the initScript's polling function
+5. **Capture evidence** — `list_console_messages` and confirm: all 4 CDN script injections load successfully, exfil fetch calls to `httpbin.org` and `jsonplaceholder.typicode.com` succeed, and `[CSD Demo] Simulation complete` appears in the console output
+
+<Aside type="caution">
+**zone.js incompatibility** — Juice Shop uses Angular's zone.js, which polyfills browser APIs and breaks the MCP `evaluate_script` tool. Use `navigate_page` with `initScript` instead — it runs before zone.js loads. See [Trigger Detection — AI-Automated Execution](/csd/trigger-detection/#ai-automated-execution) for details.
+</Aside>
+
+### Manual Execution
+
+Operators without browser automation tools run the simulation manually using the same procedure as [Phase 2 — Step 8: Attack Simulation](/csd/api-automation/phase-2-attack/#step-8-attack-simulation):
+
+1. Navigate to `http://xF5XC_DOMAINNAMEx/#/login`
+2. Enter dummy credentials in the Email and Password fields (do not submit)
+3. Open DevTools — press **F12** and switch to the **Console** tab
+4. Paste and run the Combined Detection Script from [Trigger Detection](/csd/trigger-detection/#run-the-combined-simulation-script)
+5. Observe console output — all CDN scripts should load and exfil calls should succeed with `200`/`201` responses
+
+### Evidence — Before Mitigation
+
+| Check | Expected (Before Mitigation) | Status |
+| --- | --- | --- |
+| CDN scripts injected | All 4 script tags load successfully | PASS |
+| Exfil fetch to httpbin.org | `200` response — data sent | PASS |
+| Exfil fetch to jsonplaceholder.typicode.com | `201` response — data sent | PASS |
+| Console output | `[CSD Demo] Simulation complete` | PASS |
+
+<Aside type="tip">
+This is the baseline proof: with no mitigations active, the attacker's scripts load freely and data exfiltration succeeds. Save or screenshot this evidence — you will compare it directly against the "after" results in Step 5.
+</Aside>
+
+## Step 3: Apply Mitigations
 
 For each detected domain, POST to the mitigated domains endpoint. The primary targets from the Phase 2 simulation are the 4 CDN injection domains and any data exfiltration domains detected.
 
@@ -126,7 +192,7 @@ curl -s -X POST \
 
 A `200` response returns the created mitigated domain object. A `409` response means the domain is already in the mitigated list — this is a success condition.
 
-## Step 3: Verify Mitigations Applied
+## Step 4: Verify Mitigations Applied
 
 List all mitigated domains and confirm the count matches the number of domains just submitted:
 
@@ -138,7 +204,7 @@ curl -s \
 ```
 
 <Aside type="note">
-The mitigated domains list endpoint returns items with null metadata — individual domain names are not visible in the list response. Verify by checking that the item count equals the number of POST requests made (6 for the standard simulation). The `200` response from each individual POST in Step 2 is the authoritative evidence that each mitigation was created.
+The mitigated domains list endpoint returns items with null metadata — individual domain names are not visible in the list response. Verify by checking that the item count equals the number of POST requests made (6 for the standard simulation). The `200` response from each individual POST in Step 3 is the authoritative evidence that each mitigation was created.
 </Aside>
 
 ### Evidence
@@ -146,24 +212,24 @@ The mitigated domains list endpoint returns items with null metadata — individ
 | Check | Expected | Status |
 | --- | --- | --- |
 | Mitigated domain count | 6 (matches POST count) | PASS if count matches |
-| All Step 2 POSTs returned `200` or `409` | Each domain accepted | PASS |
+| All Step 3 POSTs returned `200` or `409` | Each domain accepted | PASS |
 
-If the count is lower than expected, re-run the POST command for the missing domain from Step 2.
+If the count is lower than expected, re-run the POST command for the missing domain from Step 3.
 
-## Step 4: Re-run Attack Simulation
+## Step 5: Run Attack — After Mitigation
+
+Re-run the **exact same** combined simulation to capture the **"after" snapshot**. The simulation script is identical — only CSD's mitigation state has changed. Network calls to mitigated domains are now blocked by the CSD JavaScript.
 
 <Aside type="note">
-This step requires browser-side JavaScript execution — `curl` cannot trigger CSD detection. AI assistants with browser automation tools (MCP Chrome DevTools, Playwright, Puppeteer) execute these steps directly using the **AI-Automated Execution** sequence below. Operators without browser automation perform the manual steps.
+This step uses the same browser automation sequence as Step 2. The difference is not in what you run — it's in what you observe. With mitigations active, CSD blocks network calls to mitigated domains.
 </Aside>
-
-Re-run the combined simulation script to verify that mitigated domains are now blocked.
 
 ### AI-Automated Execution
 
-AI assistants with browser automation tools re-run the attack simulation programmatically:
+AI assistants with browser automation tools re-run the attack simulation programmatically using the same sequence as Step 2:
 
-1. **Navigate with initScript** — `navigate_page` to `http://$F5XC_DOMAINNAME/#/login` with an `initScript` that saves native `console.log`, `setInterval`, `clearInterval`, and `XMLHttpRequest` before zone.js patches them, then sets up a polling function that watches for filled form fields and auto-executes the Combined Detection Script when they have values
-2. **Dismiss dialogs** — on first visit, `take_snapshot` and `click` the "dismiss cookie message" button, then `press_key` with `Escape` to close the Welcome Banner (`click` on the close button fails — after dismissing the cookie overlay, Angular Material's transition leaves the button non-interactive; `Escape` is the reliable method). On subsequent visits these dialogs may not appear (cookies persisted)
+1. **Navigate with initScript** — `navigate_page` to `http://$F5XC_DOMAINNAME/#/login` with the same `initScript` as Step 2
+2. **Dismiss dialogs** — on first visit, `take_snapshot` and `click` the "dismiss cookie message" button, then `press_key` with `Escape` to close the Welcome Banner. On subsequent visits these dialogs may not appear (cookies persisted)
 3. **Snapshot** — `take_snapshot` to identify the email and password form field UIDs (look for aria-labels `Text field for the login email` and `Text field for the login password`)
 4. **Fill credentials** — `fill` the email field with `test@example.com` and the password field with `P@ssword123` (do not submit the form). This triggers the initScript's polling function
 5. **Capture evidence** — `list_console_messages` and check for blocked/error messages on mitigated CDN domains, confirming mitigation is active. Check for `[CSD Demo] Simulation complete`
@@ -186,19 +252,32 @@ Operators without browser automation tools re-run the simulation manually using 
 After mitigation, the CSD JavaScript blocks network calls to mitigated domains. In the re-run simulation, exfiltration fetch calls to mitigated domains will be blocked. CDN script tags may still be injected into the DOM, but network requests to mitigated domains are prevented.
 </Aside>
 
-### Evidence
+### Evidence — After Mitigation
 
-| Check | Expected | Status |
+| Check | Expected (After Mitigation) | Status |
 | --- | --- | --- |
-| Login page loaded | `200 OK` at `http://xF5XC_DOMAINNAMEx/#/login` | PASS / FAIL |
-| Console script executed | `[CSD Demo] Simulation complete` in console output | PASS / FAIL |
-| Network calls to mitigated domains | Blocked by CSD JavaScript | PASS |
+| Network calls to mitigated CDN domains | Blocked by CSD JavaScript | PASS |
+| Exfil fetch to mitigated domains | Blocked — no response | PASS |
+| Console output | `[CSD Demo] Simulation complete` (script runs but calls fail) | PASS |
 
-## Step 5: Verify Mitigation is Effective
+## Step 6: Before vs After Comparison
 
-Wait **5–10 minutes** for CSD to process the second simulation run, then verify the mitigation is reflected in the detection data.
+This is the demo payoff — side-by-side evidence proving that the same attack, on the same page, with the same script, now produces a completely different result.
 
-### Check Detected Domains Post-Mitigation
+### Comparison Table
+
+| Signal | Before Mitigation (Step 2) | After Mitigation (Step 5) |
+| --- | --- | --- |
+| CDN script network calls | Loaded successfully | Blocked by CSD |
+| Exfil to httpbin.org | 200 — data exfiltrated | Blocked |
+| Exfil to jsonplaceholder.typicode.com | 201 — data exfiltrated | Blocked |
+| CSD mitigated domains API | 0 mitigated | 6 mitigated |
+
+### Verify Mitigation in Backend Data
+
+Wait **5–10 minutes** for CSD to process the second simulation run, then confirm the mitigation is reflected in detection and script data.
+
+**Check Detected Domains Post-Mitigation:**
 
 ```bash
 curl -s \
@@ -207,7 +286,7 @@ curl -s \
   | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
 ```
 
-### Check Scripts for Mitigated Status
+**Check Scripts for Mitigated Status:**
 
 ```bash
 NOW=$(date +%s)
@@ -224,10 +303,12 @@ curl -s -X POST \
 
 | Check | Expected | Status |
 | --- | --- | --- |
-| Mitigated domains count | 6 items in list | PASS / FAIL |
-| Attack re-run console | `[CSD Demo] Simulation complete` | PASS / FAIL |
-| Network calls to mitigated domains | Blocked by CSD JavaScript | PASS |
-| CSD mitigated domains API | All 6 domains accepted via POST (200 or 409) | PASS / FAIL |
+| Baseline clean (Step 1) | 0 mitigated domains at start | PASS / FAIL |
+| Before — attack succeeds (Step 2) | Scripts load, exfil returns 200/201 | PASS / FAIL |
+| Mitigations applied (Step 3) | All 6 domains accepted via POST (200 or 409) | PASS / FAIL |
+| Mitigated count confirmed (Step 4) | 6 items in list | PASS / FAIL |
+| After — attack blocked (Step 5) | Network calls to mitigated domains blocked | PASS / FAIL |
+| Before vs After comparison (Step 6) | Clear difference between Step 2 and Step 5 evidence | PASS / FAIL |
 
 <Aside type="note">
 Detection status updates after mitigation may take several minutes to appear in the API response. If the domains still show "Action Needed" immediately after mitigation, wait 5–10 minutes and re-query.

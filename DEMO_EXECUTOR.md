@@ -63,7 +63,7 @@ If the GET returns `404`, report FAIL and stop.
 | Test | Result | Status |
 | ---- | ------ | ------ |
 | DNS-1: A Record | `198.51.100.10` | PASS |
-| TLS-1: Cert State | `AutoCertIssued` | PASS |
+| TLS-1: Cert State | `CertificateValid` | PASS (informational — does not block demo) |
 | CSD-1: JS Tag | `scriptTag` present | PASS |
 
 Reference the diagnostics test case IDs (DNS-1, DNS-2, TLS-1, LB-1,
@@ -129,10 +129,12 @@ Attack simulation via browser automation + API verification (Steps
    (clears accumulated initScripts), then `navigate_page` to
    `http://$F5XC_DOMAINNAME/#/login` with an `initScript` that
    saves native `setInterval`, `clearInterval`, `fetch`, and
-   `console.log` before zone.js patches them, polls for the
-   login form fields, fills credentials via the native
+   `console.log` before zone.js patches them (stored as `_si`,
+   `_ci`, `_fetch`, `_log`), polls for the login form fields,
+   fills credentials via the native
    `HTMLInputElement.prototype.value` setter, and immediately
-   executes the Combined Detection Script inline
+   executes the Combined Detection Script inline. Use the verbatim
+   initScript from `phase-2-attack.mdx` AI-Automated Execution
 2. **Dismiss Welcome Banner** — `press_key` with `Escape` to close
    the Welcome Banner. The cookie consent dialog is dismissed by
    the same Escape key. On subsequent visits these dialogs may
@@ -283,13 +285,15 @@ human confirmation before execution.**
 
 **Teardown order:**
 
-1. HTTPS Load Balancer (`${F5XC_LB_NAME}-https`) — depends on Origin Pool
-2. HTTP Load Balancer (`${F5XC_LB_NAME}-http`) — depends on Origin Pool
-3. Origin Pool (depends on Healthcheck)
-4. DNS zone cleanup — managed records auto-clean when LBs are deleted;
+1. Mitigated Domains — delete all CSD mitigated domains created in Phase 3
+   (skip if Phase 3 was not executed)
+2. HTTPS Load Balancer (`${F5XC_LB_NAME}-https`) — depends on Origin Pool
+3. HTTP Load Balancer (`${F5XC_LB_NAME}-http`) — depends on Origin Pool
+4. Origin Pool (depends on Healthcheck)
+5. DNS zone cleanup — managed records auto-clean when LBs are deleted;
    manual records need manual cleanup via `PUT`
-5. Healthcheck (only if created in Phase 1 Step 1)
-6. Protected Domain — delete the CSD protected domain registration
+6. Healthcheck (only if created in Phase 1 Step 1)
+7. Protected Domain — delete the CSD protected domain registration
 
 > **Do NOT delete the DNS zone.** The DNS zone is shared
 > infrastructure and should never be deleted. Only clean up records

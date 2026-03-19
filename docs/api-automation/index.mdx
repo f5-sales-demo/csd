@@ -63,11 +63,11 @@ curl -s -H "Authorization: APIToken xF5XC_API_TOKENx" \
 | All Phase 1 objects exist and healthy | Optionally skip Phase 1 and start at Phase 2 |
 
 <Aside type="note">
-The mitigated domains list may return a count of 1 with null metadata even when no real mitigations exist. This is a backend artifact — treat it as 0 for decision purposes.
+The mitigated domains list may return a count of 1 with null metadata even when no real mitigations exist. This is a backend artifact. Decision rule: if the single item has null metadata (name is null or empty), treat it as 0. If it has real metadata, delete each item by name before proceeding.
 </Aside>
 
 <Aside type="note">
-CSD detections persist across infrastructure teardown/rebuild when the same protected domain is re-registered on the same tenant. After a teardown and rebuild, you do not need to wait 5-10 minutes for detections to appear — they are available immediately.
+CSD detections persist across infrastructure teardown/rebuild when the same protected domain is re-registered on the same tenant. After a teardown and rebuild, query `/detected_domains` once. If the response contains items, proceed immediately — no waiting required. If the response is empty, wait 30 seconds and query once more. If still empty after the second query, proceed anyway — detections will appear once the simulation runs.
 </Aside>
 
 ## AI Assistant Execution Protocol
@@ -356,7 +356,7 @@ If the load balancer `state` remains `VIRTUAL_HOST_PENDING_A_RECORD` after Phase
    ```bash
    dig +short xF5XC_DOMAINNAMEx A
    ```
-   If the A record resolves, the LB should transition to `VIRTUAL_HOST_READY` within 60 seconds.
+   If the A record resolves, the LB transitions to `VIRTUAL_HOST_READY`. Poll every 30 seconds, up to 4 iterations (2 minutes total). If still `VIRTUAL_HOST_PENDING_A_RECORD` after 2 minutes, re-check DNS propagation and report to operator.
 
 ### CSD Status Shows isConfigured: false
 

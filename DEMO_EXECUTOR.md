@@ -259,8 +259,8 @@ Present the side-by-side comparison table:
 | Signal | Before (Step 2) | After (Step 5) |
 | ------ | --------------- | -------------- |
 | CDN script network calls | `200` — all 4 scripts load | **Blocked** — absent from network tab (CSD cleared `src`) |
-| Exfil to www.httpbin.org | `200` — data exfiltrated | `200` — fetch still completes (CSD does not intercept fetch) |
-| Exfil to jsonplaceholder.typicode.com | `200`/`201` — data exfiltrated | `201` — fetch still completes (CSD does not intercept fetch) |
+| Exfil to `www.httpbin.org` | `200` — data exfiltrated | `200` — fetch still completes (CSD does not intercept fetch) |
+| Exfil to `jsonplaceholder.typicode.com` | `200`/`201` — data exfiltrated | `201` — fetch still completes (CSD does not intercept fetch) |
 | CSD mitigated domains API | 0 mitigated | 6 mitigated |
 
 Wait **5-10 minutes**, then query `/detected_domains` and `/scripts`

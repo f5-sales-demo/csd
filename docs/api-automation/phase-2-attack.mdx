@@ -21,11 +21,15 @@ After the infrastructure is verified (all Phase 1 Step 7 checks PASS), run the a
 
 AI assistants with browser automation tools execute the attack simulation programmatically:
 
-1. **Navigate** — `navigate_page` to `http://$F5XC_DOMAINNAME/#/login`
-2. **Snapshot** — `take_snapshot` to identify the email and password form field UIDs
-3. **Fill credentials** — `fill` the email field with `test@example.com` and the password field with `P@ssword123` (do not submit the form)
-4. **Execute script** — `evaluate_script` with the Combined Detection Script IIFE from [Trigger Detection](/csd/trigger-detection/#run-the-combined-simulation-script) — wrap it in an arrow function that returns a status object
-5. **Capture evidence** — read the `evaluate_script` return value and run `list_console_messages` to capture the full `[CSD Demo]` output
+1. **Navigate with initScript** — `navigate_page` to `http://$F5XC_DOMAINNAME/#/login` with an `initScript` that saves native `console.log`, `setInterval`, `clearInterval`, and `XMLHttpRequest` before zone.js patches them, then sets up a polling function that watches for filled form fields and auto-executes the Combined Detection Script when they have values
+2. **Dismiss dialogs** — on first visit, `take_snapshot` and `click` the "dismiss cookie message" button, then `click` the "Close Welcome Banner" button (or `×` tutorial cancel). On subsequent visits these dialogs may not appear (cookies persisted)
+3. **Snapshot** — `take_snapshot` to identify the email and password form field UIDs (look for aria-labels `Text field for the login email` and `Text field for the login password`)
+4. **Fill credentials** — `fill` the email field with `test@example.com` and the password field with `P@ssword123` (do not submit the form). This triggers the initScript's polling function
+5. **Capture evidence** — `list_console_messages` to capture the `[CSD Demo]` phased output. Check for `[CSD Demo] Simulation complete` confirming field harvesting, script injection, and data exfiltration
+
+<Aside type="caution">
+**zone.js incompatibility** — Juice Shop uses Angular's zone.js, which polyfills browser APIs and breaks the MCP `evaluate_script` tool. Use `navigate_page` with `initScript` instead — it runs before zone.js loads. See [Trigger Detection — AI-Automated Execution](/csd/trigger-detection/#ai-automated-execution) for details.
+</Aside>
 
 ### Manual Execution
 
@@ -51,7 +55,7 @@ Detection takes **5–10 minutes** to appear in the CSD dashboard for establishe
 
 ### Evidence
 
-The AI assistant should report the following. For AI-automated execution, evidence is captured programmatically via `evaluate_script` return values and `list_console_messages`. For manual execution, the operator reads the browser console output.
+The AI assistant should report the following. For AI-automated execution, evidence is captured programmatically via `list_console_messages` (the initScript's polling function logs results to the console). For manual execution, the operator reads the browser console output.
 
 | Check | Expected | Status |
 | --- | --- | --- |

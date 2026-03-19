@@ -235,10 +235,10 @@ This step uses the same browser automation sequence as Step 2. The difference is
 
 AI assistants with browser automation tools re-run the attack simulation programmatically using the same sequence as Step 2:
 
-1. **Navigate with initScript** — use the same initScript and navigation sequence as Step 2 (navigate to `about:blank` first, then to the login page with the initScript). Use `new_page` with `isolatedContext` if running Step 5 in the same browser session to avoid stale initScripts from Step 2
+1. **Navigate with initScript** — use `new_page` with `isolatedContext` for a clean browser context (avoids stale initScripts from Step 2), then navigate to `about:blank`, then to the login page with the initScript. **Critical:** The Step 5 initScript must NOT save native `fetch` — saving `window.fetch.bind(window)` bypasses CSD's mitigation interception. Only save `setInterval`, `clearInterval`, and `console.log`. Use zone.js-patched `fetch()` so CSD can intercept and block requests to mitigated domains
 2. **Dismiss Welcome Banner** — `press_key` with `Escape`
 3. **Wait for completion** — wait 10 seconds for all async callbacks
-4. **Capture evidence** — `list_console_messages` to check for `[CDN] BLOCKED:` messages on all 4 CDN domains and `[CSD Demo] Simulation complete`; `list_network_requests` to verify all 6 mitigated domains show `net::ERR_INSUFFICIENT_RESOURCES`
+4. **Capture evidence** — `list_console_messages` to check for `[CSD Demo] Simulation complete`; `list_network_requests` to verify all 6 mitigated domains show `pending` (CSD holds requests indefinitely — the data never leaves the browser)
 
 ### Manual Execution
 
@@ -251,17 +251,19 @@ Operators without browser automation tools re-run the simulation manually using 
 5. Observe console output — mitigated domain scripts trigger `onerror` callbacks instead of `onload`, and fetch calls to exfil domains fail with `TypeError: Failed to fetch`. The Network tab shows `net::ERR_INSUFFICIENT_RESOURCES` for all requests to mitigated domains
 
 <Aside type="tip">
-After mitigation, the CSD JavaScript blocks network calls to mitigated domains by intercepting requests before they reach the network layer. The browser reports `net::ERR_INSUFFICIENT_RESOURCES` for blocked requests. Script tags are still injected into the DOM (the `appendChild` call succeeds), but the network requests to load the scripts are prevented — `onerror` callbacks fire instead of `onload`. Fetch calls to mitigated exfil domains reject with `TypeError: Failed to fetch`.
+After mitigation, the CSD JavaScript blocks network calls to mitigated domains by intercepting requests before they reach the network layer. The browser shows `pending` status for blocked requests — they are held indefinitely and never complete (the data never leaves the browser). Script tags are still injected into the DOM (the `appendChild` call succeeds), but the network requests to load the scripts are held. Neither `onload` nor `onerror` callbacks fire for held requests. Fetch calls to mitigated exfil domains also remain `pending` — neither `.then()` nor `.catch()` resolves.
+
+**Important for AI automation:** The initScript saves native `fetch` (`window.fetch.bind(window)`) to avoid zone.js errors. However, native fetch bypasses CSD's interception. The "before" run (Step 2) uses native fetch. The "after" run (Step 5) must NOT save native fetch — it must use the CSD-patched `fetch()` so blocking is visible.
 </Aside>
 
 ### Evidence — After Mitigation
 
 | Check | Expected (After Mitigation) | Status |
 | --- | --- | --- |
-| CDN script network calls | Blocked — network tab shows `net::ERR_INSUFFICIENT_RESOURCES`, script `onerror` callbacks fire with `[CDN] BLOCKED:` messages | PASS |
-| Exfil fetch to httpbin.org | Blocked — `net::ERR_INSUFFICIENT_RESOURCES` in network tab, `Failed to fetch` TypeError in console | PASS |
-| Exfil fetch to jsonplaceholder.typicode.com | Blocked — same `net::ERR_INSUFFICIENT_RESOURCES` error | PASS |
-| Console output | `[CSD Demo] Simulation complete` (script runs to completion but all network calls fail) | PASS |
+| CDN script network calls | Blocked — network tab shows `pending` (CSD holds requests indefinitely, data never leaves browser) | PASS |
+| Exfil fetch to httpbin.org | Blocked — network tab shows `pending`, request never completes | PASS |
+| Exfil fetch to jsonplaceholder.typicode.com | Blocked — network tab shows `pending`, request never completes | PASS |
+| Console output | `[CSD Demo] Simulation complete` (script runs to completion, network calls are held) | PASS |
 
 ## Step 6: Before vs After Comparison
 
@@ -271,11 +273,11 @@ This is the demo payoff — side-by-side evidence proving that the same attack, 
 
 | Signal | Before Mitigation (Step 2) | After Mitigation (Step 5) |
 | --- | --- | --- |
-| CDN script network calls | `200` — all 4 scripts loaded | `net::ERR_INSUFFICIENT_RESOURCES` — all 4 blocked by CSD |
-| Exfil to httpbin.org | `200` — data exfiltrated | `net::ERR_INSUFFICIENT_RESOURCES` — blocked |
-| Exfil to jsonplaceholder.typicode.com | `201` — data exfiltrated | `net::ERR_INSUFFICIENT_RESOURCES` — blocked |
-| Script `onerror` callbacks | Not fired (scripts loaded) | All 4 fire — `[CDN] BLOCKED:` messages in console |
-| Fetch promise resolution | `.then()` fires — `Data sent to` messages | `.catch()` fires — `Failed to fetch` TypeError |
+| CDN script network calls | `200` or not visible (depends on fetch path) | `pending` — all 4 held by CSD, never complete |
+| Exfil to httpbin.org | `200` — data exfiltrated | `pending` — held by CSD, data never leaves browser |
+| Exfil to jsonplaceholder.typicode.com | `201` — data exfiltrated | `pending` — held by CSD, data never leaves browser |
+| Script `onerror` callbacks | Not fired (scripts loaded) | Not fired (requests suspended, not rejected) |
+| Fetch promise resolution | `.then()` fires — `Data sent to` messages | Neither `.then()` nor `.catch()` fires (request held) |
 | CSD mitigated domains API | 0 mitigated | 6 mitigated |
 
 ### Verify Mitigation in Backend Data

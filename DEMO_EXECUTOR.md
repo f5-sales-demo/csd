@@ -123,26 +123,36 @@ the default for all demo traffic.
 Attack simulation via browser automation + API verification (Steps
 8-9). Requires chrome-devtools MCP tools.
 
-**AI-Automated Browser Execution (6-step sequence):**
+**AI-Automated Browser Execution (4-step initScript sequence):**
 
-1. **Navigate** — `navigate_page` to
-   `http://$F5XC_DOMAINNAME/#/login`
-2. **Dismiss dialogs** — on first visit, `take_snapshot` and `click`
-   the "dismiss cookie message" button, then `press_key` with
-   `Escape` to close the Welcome Banner (`click` on the close
-   button fails — after dismissing the cookie overlay, Angular
-   Material's transition leaves the button non-interactive;
-   `Escape` is the reliable method). On subsequent visits these
-   dialogs may not appear (cookies persisted)
-3. **Snapshot** — `take_snapshot` to identify email and password
-   form field UIDs
-4. **Fill credentials** — `fill` email with `test@example.com` and
-   password with `P@ssword123` (do not submit the form)
-5. **Execute script** — `evaluate_script` with the Combined Detection
-   Script IIFE from the Trigger Detection guide — wrap in an arrow
-   function returning a status object
-6. **Capture evidence** — read `evaluate_script` return value and
-   run `list_console_messages` to capture `[CSD Demo]` output
+1. **Navigate with initScript** — first navigate to `about:blank`
+   (clears accumulated initScripts), then `navigate_page` to
+   `http://$F5XC_DOMAINNAME/#/login` with an `initScript` that
+   saves native `setInterval`, `clearInterval`, `fetch`, and
+   `console.log` before zone.js patches them, polls for the
+   login form fields, fills credentials via the native
+   `HTMLInputElement.prototype.value` setter, and immediately
+   executes the Combined Detection Script inline
+2. **Dismiss Welcome Banner** — `press_key` with `Escape` to close
+   the Welcome Banner. The cookie consent dialog is dismissed by
+   the same Escape key. On subsequent visits these dialogs may
+   not appear (cookies persisted)
+3. **Wait for completion** — wait 10 seconds for all CDN script
+   load/error callbacks and fetch promise resolutions
+4. **Capture evidence** — `list_console_messages` to check for
+   `[CSD Demo] Simulation complete`; `list_network_requests`
+   filtered to `script` and `fetch` types to verify HTTP status
+
+> **zone.js incompatibility:** Juice Shop's zone.js patches
+> `setTimeout`, `setInterval`, `fetch`, `XMLHttpRequest`, and other
+> browser APIs. This breaks the MCP `evaluate_script`, `fill`, and
+> `click` tools. The initScript runs before zone.js loads, allowing
+> native references to be saved and used in callbacks.
+>
+> **initScript accumulation:** Each `navigate_page` with `initScript`
+> adds the script to a persistent list. Navigate to `about:blank`
+> between runs or use `new_page` with `isolatedContext` for a clean
+> browser context.
 
 **What Gets Triggered:**
 
@@ -193,10 +203,13 @@ remain from a prior run, DELETE each one to start clean. Also GET
 **Step 2 — Run attack — before mitigation:**
 
 Re-run the combined simulation with no mitigations active. This is
-the **"before" snapshot**. Execute the same 5-step AI-automated
-browser sequence as Phase 2. Capture evidence that scripts load
-from all 4 CDN domains, exfil fetch calls to `httpbin.org` and
-`jsonplaceholder.typicode.com` succeed with `200`/`201` responses.
+the **"before" snapshot**. Use `new_page` with `isolatedContext`
+for a clean browser context, then execute the same 4-step
+initScript sequence as Phase 2. The initScript must save native
+`fetch` (via `window.fetch.bind(window)`) to avoid zone.js errors.
+Capture evidence that exfil fetch calls to `httpbin.org` and
+`jsonplaceholder.typicode.com` are initiated (network tab shows
+requests).
 
 **Step 3 — Apply mitigations:**
 
@@ -228,11 +241,15 @@ individual POST in Step 3 is the authoritative evidence.
 
 **Step 5 — Run attack — after mitigation:**
 
-Re-run the **exact same** combined simulation. This is the **"after"
-snapshot**. Execute the same 5-step AI-automated browser sequence
-as Step 2. Network calls to mitigated domains are now blocked by
-the CSD JavaScript. Script DOM elements may still exist but cannot
-communicate with blocked domains.
+Re-run the combined simulation with mitigations active. This is the
+**"after" snapshot**. Use `new_page` with `isolatedContext` for a
+clean browser context. **Critical:** The initScript must NOT save
+native `fetch` — saving `window.fetch.bind(window)` bypasses CSD's
+mitigation interception entirely. Only save `setInterval`,
+`clearInterval`, and `console.log`. Use zone.js-patched `fetch()`
+so CSD can intercept and block requests to mitigated domains.
+Network calls to mitigated domains are held by the CSD JavaScript —
+they appear as `pending` in the network tab and never complete.
 
 **Step 6 — Before vs after comparison:**
 
@@ -240,9 +257,9 @@ Present the side-by-side comparison table:
 
 | Signal | Before (Step 2) | After (Step 5) |
 | ------ | --------------- | -------------- |
-| CDN script network calls | Loaded successfully | Blocked by CSD |
-| Exfil to httpbin.org | 200 — data exfiltrated | Blocked |
-| Exfil to jsonplaceholder.typicode.com | 201 — data exfiltrated | Blocked |
+| CDN script network calls | Loaded or not visible (native fetch) | `pending` — held by CSD, never completes |
+| Exfil to httpbin.org | `200` — data exfiltrated | `pending` — held by CSD, data never leaves browser |
+| Exfil to jsonplaceholder.typicode.com | `200`/`201` — data exfiltrated | `pending` — held by CSD, data never leaves browser |
 | CSD mitigated domains API | 0 mitigated | 6 mitigated |
 
 Wait **5-10 minutes**, then query `/detected_domains` and `/scripts`

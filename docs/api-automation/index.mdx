@@ -72,7 +72,9 @@ After each creation step, run a **GET** to confirm the object exists and display
 | Test | Result | Status |
 | --- | --- | --- |
 | DNS-1: A Record | `198.51.100.10` | PASS |
-| TLS-1: Cert State | `AutoCertIssued` | PASS |
+| LB-1: HTTP LB State | `VIRTUAL_HOST_READY` | PASS |
+| LB-2: HTTPS LB State | `VIRTUAL_HOST_READY` | INFO (optional) |
+| TLS-1: Cert State | `CertificateValid` | INFO (optional) |
 | CSD-1: JS Tag | `scriptTag` present | PASS |
 
 Reference the [Diagnostics &amp; Verification](/csd/diagnostics/) test case IDs (DNS-1, TLS-1, LB-1, CSD-1, etc.) as the verification standard for each layer.
@@ -154,7 +156,7 @@ Each `xTOKENx` placeholder in the curl commands maps directly to an environment 
 | `xF5XC_API_TOKENx` | `example-api-token` | API credential token |
 | `xF5XC_EMAILx` | `user@example.com` | CSD notification email address |
 | `xF5XC_NAMESPACEx` | `example-namespace` | Namespace |
-| `xF5XC_LB_NAMEx` | `example-lb` | HTTP Load Balancer name |
+| `xF5XC_LB_NAMEx` | `example-lb` | HTTP Load Balancer base name (creates `${name}-http` and `${name}-https`) |
 | `xF5XC_DOMAINNAMEx` | `app.example.com` | FQDN to protect |
 | `xF5XC_ROOT_DOMAINx` | `example.com` | Root domain (eTLD+1) for CSD protected domain |
 | `xF5XC_ORIGIN_POOLx` | `juice-origin` | Origin pool name |
@@ -191,10 +193,10 @@ Values are resolved using the deterministic protocol defined in [AI Assistant Ex
 ### Execution Order
 
 <Steps>
-1. **Phase 1 — Build**: Deploy infrastructure (healthcheck, origin pool, load balancer), configure DNS, enable CSD, register protected domain, verify all components
-2. **Phase 2 — Attack**: Run the attack simulation in a browser, wait 5–10 minutes, verify detections via API (`/scripts`, `/detected_domains`, `/formFields`)
-3. **Phase 3 — Mitigate**: List detected domains, POST each to `/mitigated_domains`, verify mitigations applied, re-run attack, verify domains are blocked
-4. **Phase 4 — Teardown** _(requires explicit human confirmation)_: Delete load balancer &rarr; origin pool &rarr; DNS zone cleanup (manual records only) &rarr; healthcheck &rarr; protected domain. Do **not** delete the DNS zone.
+1. **Phase 1 — Build**: Deploy infrastructure (healthcheck, origin pool, HTTP LB + HTTPS LB), configure DNS, enable CSD, register protected domain, verify all components. The HTTP LB is the primary demo target; the HTTPS LB is optional.
+2. **Phase 2 — Attack**: Run the attack simulation in a browser using `http://` URLs, wait 5–10 minutes, verify detections via API (`/scripts`, `/detected_domains`, `/formFields`)
+3. **Phase 3 — Mitigate**: List detected domains, POST each to `/mitigated_domains`, verify mitigations applied, re-run attack using `http://` URLs, verify domains are blocked
+4. **Phase 4 — Teardown** _(requires explicit human confirmation)_: Delete HTTPS LB &rarr; HTTP LB &rarr; origin pool &rarr; DNS zone cleanup (manual records only) &rarr; healthcheck &rarr; protected domain. Do **not** delete the DNS zone.
 </Steps>
 
 ### Variables
@@ -205,7 +207,7 @@ Values are resolved using the deterministic protocol defined in [AI Assistant Ex
 | `xF5XC_API_TOKENx` | API credential token | (user-provided) |
 | `xF5XC_EMAILx` | CSD notification email | `user@example.com` |
 | `xF5XC_NAMESPACEx` | Namespace | `example-namespace` |
-| `xF5XC_LB_NAMEx` | HTTP Load Balancer name | `example-lb` |
+| `xF5XC_LB_NAMEx` | HTTP Load Balancer base name (creates `${name}-http` and `${name}-https`) | `example-lb` |
 | `xF5XC_DOMAINNAMEx` | FQDN to protect | `app.example.com` |
 | `xF5XC_ROOT_DOMAINx` | Root domain (eTLD+1) | `example.com` |
 | `xF5XC_ORIGIN_POOLx` | Origin pool name | `juice-origin` |
@@ -224,7 +226,18 @@ The HTTP Load Balancer spec uses `oneOf` choice groups where exactly one option 
 | `client_side_defense_choice` | `client_side_defense`, `disable_client_side_defense` | `client_side_defense` |
 | `java_script_choice` (nested in CSD) | `disable_js_insert`, `js_insert_all_pages`, `js_insert_all_pages_except`, `js_insertion_rules` | `js_insert_all_pages` |
 
-**HTTPS auto-cert nested choices:**
+**Listener type choice (HTTP vs HTTPS):**
+
+The demo creates two LBs with different listener configurations:
+
+| LB | Listener Choice | Config |
+| --- | --- | --- |
+| `${F5XC_LB_NAME}-http` (primary) | `http` | `"http": { "dns_volterra_managed": true, "port": 80 }` |
+| `${F5XC_LB_NAME}-https` (secondary) | `https_auto_cert` | `"https_auto_cert": { "http_redirect": true, "port": 443, ... }` |
+
+The `http` and `https_auto_cert` keys are mutually exclusive — each LB uses exactly one.
+
+**HTTPS auto-cert nested choices** (secondary LB only):
 
 | Choice Group | Options | Default |
 | --- | --- | --- |
@@ -312,19 +325,29 @@ CSD must be enabled at the tenant level. Contact your F5 XC administrator to ena
 
 A `409` with "domain already exists (in uriList)" means the root domain is already registered on the tenant. Protected domains are **tenant-scoped** — they do not belong to any single namespace. This is a success condition: the domain is already protected and no further action is needed. Continue to Phase 1 Step 7.
 
-### Certificate Stuck — Clean Recreation
+### AutoCertDomainRateLimited
 
-When the certificate is stuck in `DomainChallengePending` or `PreDomainChallengePending` for more than 15 minutes, the fastest recovery path is to delete the LB and origin pool, then recreate them from scratch. With the DNS zone already configured (managed records enabled), the clean recreation typically produces `VIRTUAL_HOST_READY` with `CertificateValid` in 5–7 minutes.
+If the HTTPS LB `cert_state` shows `AutoCertDomainRateLimited`, this means Let's Encrypt has rate-limited certificate issuance for this domain. This is **expected in demo environments** where infrastructure is frequently created and destroyed.
 
-1. Delete the HTTP Load Balancer (Phase 4 Teardown)
-2. Delete the Origin Pool (Phase 4 Teardown)
-3. Wait 30 seconds for platform cleanup
-4. Recreate the Origin Pool ([Phase 1 Step 2](/csd/api-automation/phase-1-build/#step-2-create-origin-pool))
-5. Recreate the HTTP Load Balancer ([Phase 1 Step 3](/csd/api-automation/phase-1-build/#step-3-create-http-load-balancer-with-csd))
-6. Monitor certificate state ([Phase 1 Step 7](/csd/api-automation/phase-1-build/#step-7-verify)) — expect `CertificateValid` within 5–10 minutes
+**Impact:** The HTTPS LB will not serve traffic until the rate limit resets (typically 1 hour). The HTTP LB is completely unaffected — all demo traffic proceeds normally over `http://`.
+
+**Resolution:** No action needed for demo progression. The HTTP LB (`${F5XC_LB_NAME}-http`) is the primary demo target and does not depend on certificate provisioning. If HTTPS is desired, wait for the rate limit to reset and the certificate will auto-provision.
+
+### Certificate Stuck — Clean Recreation (Optional)
+
+<Aside type="note">
+This troubleshooting step applies only to the **HTTPS LB** (`${F5XC_LB_NAME}-https`) and is **optional for demo progression**. The HTTP LB does not have a certificate dependency.
+</Aside>
+
+When the HTTPS LB certificate is stuck in `DomainChallengePending` or `PreDomainChallengePending` for more than 15 minutes, the fastest recovery path is to delete the HTTPS LB and recreate it. With the DNS zone already configured (managed records enabled), the clean recreation typically produces `CertificateValid` in 5–7 minutes — unless rate-limited.
+
+1. Delete the HTTPS Load Balancer: `DELETE .../http_loadbalancers/${F5XC_LB_NAME}-https`
+2. Wait 30 seconds for platform cleanup
+3. Recreate the HTTPS Load Balancer ([Phase 1 Step 3](/csd/api-automation/phase-1-build/#step-3-create-http-load-balancers-with-csd))
+4. Monitor certificate state ([Phase 1 Step 7](/csd/api-automation/phase-1-build/#step-7-verify)) — expect `CertificateValid` within 5–10 minutes
 
 <Aside type="tip">
-You do not need to reconfigure the DNS zone or re-register the protected domain. These are persistent resources that survive LB deletion.
+You do not need to reconfigure the DNS zone, re-register the protected domain, or touch the HTTP LB. These are persistent resources unaffected by HTTPS LB recreation.
 </Aside>
 
 ## OpenAPI Reference

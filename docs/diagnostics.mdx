@@ -164,12 +164,16 @@ After DNS resolves, the load balancer must have a valid TLS certificate.
 
 ### TLS-1: Certificate State
 
-**What it proves:** The automatic TLS certificate has been issued.
+<Aside type="note">
+**This test applies to the HTTPS LB (`${F5XC_LB_NAME}-https`) only.** The HTTP LB does not have a certificate. In demo environments, TLS-1 is informational — if it shows `AutoCertDomainRateLimited`, the demo proceeds normally using `http://` URLs via the HTTP LB.
+</Aside>
+
+**What it proves:** The automatic TLS certificate has been issued on the HTTPS LB.
 
 ```bash
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
   | jq '.spec.cert_state'
 ```
 
@@ -177,18 +181,19 @@ curl -s \
 | --- | --- |
 | **PASS** &mdash; `"CertificateValid"` or `"AutoCertRenewing"` | Certificate is valid and active |
 | **WARN** &mdash; `"DomainChallengePending"` or `"DomainChallengeStarted"` | ACME challenge in progress &mdash; wait 5&ndash;10 minutes |
+| **INFO** &mdash; `"AutoCertDomainRateLimited"` | Let's Encrypt rate limit hit &mdash; expected in demo environments, does not affect HTTP LB |
 | **FAIL** &mdash; `"PreDomainChallengePending"` | ACME challenge record missing &mdash; see [DNS-2](#dns-2-acme-challenge-record) |
 
-**Fix:** Ensure the ACME challenge record is in place (CNAME for external DNS, or enable managed records for F5 XC DNS). Certificate provisioning takes **5&ndash;10 minutes** after the record is configured. If stuck beyond 15 minutes, see [Certificate Stuck &mdash; Clean Recreation](/csd/api-automation/#certificate-stuck--clean-recreation).
+**Fix:** Ensure the ACME challenge record is in place (CNAME for external DNS, or enable managed records for F5 XC DNS). Certificate provisioning takes **5&ndash;10 minutes** after the record is configured. If stuck beyond 15 minutes, see [Certificate Stuck &mdash; Clean Recreation](/csd/api-automation/#certificate-stuck--clean-recreation-optional). If rate-limited, the HTTP LB is unaffected.
 
 ### TLS-2: Certificate Details
 
-**What it proves:** The certificate covers the expected domain and shows expiry information.
+**What it proves:** The certificate covers the expected domain and shows expiry information. Only applicable to the HTTPS LB.
 
 ```bash
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
   | jq '{
     cert_state: .spec.cert_state,
     auto_cert_info: .spec.auto_cert_info
@@ -202,7 +207,11 @@ curl -s \
 
 ### TLS-3: Live TLS Handshake
 
-**What it proves:** The TLS certificate is valid and the handshake completes from the client side.
+**What it proves:** The TLS certificate is valid and the handshake completes from the client side. Only applicable when the HTTPS LB has a valid certificate.
+
+<Aside type="note">
+In demo environments, use `curl http://xF5XC_DOMAINNAMEx/` (HTTP, not HTTPS) as the primary verification path. The TLS handshake test is optional — it only works when the HTTPS LB certificate is `CertificateValid`.
+</Aside>
 
 ```bash
 curl -sv "https://xF5XC_DOMAINNAMEx/" 2>&1 \
@@ -212,16 +221,16 @@ curl -sv "https://xF5XC_DOMAINNAMEx/" 2>&1 \
 | Result | Meaning |
 | --- | --- |
 | **PASS** &mdash; shows `SSL connection using TLSv1.3`, valid subject and expiry | End-to-end TLS is working |
-| **FAIL** &mdash; connection refused or certificate error | Check DNS resolution and cert state |
+| **FAIL** &mdash; connection refused or certificate error | Check DNS resolution and cert state; if rate-limited, use HTTP instead |
 
 ### TLS-4: ACME Record Target from LB
 
-**What it proves:** The load balancer reports the correct ACME target for certificate validation.
+**What it proves:** The HTTPS load balancer reports the correct ACME target for certificate validation.
 
 ```bash
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
   | jq '{
     vip_ip: .spec.dns_info[0].ip_address,
     acme_target: .spec.auto_cert_info.dns_records
@@ -241,31 +250,34 @@ The load balancer must be in a ready state and correctly configured.
 
 ### LB-1: Operational State
 
-**What it proves:** The load balancer is fully operational and accepting traffic.
+**What it proves:** The HTTP load balancer (primary) is fully operational and accepting traffic.
+
+<Aside type="note">
+**HTTP LB is the primary verification target.** In demo environments, check the HTTP LB (`${F5XC_LB_NAME}-http`) first — it reaches `VIRTUAL_HOST_READY` as soon as DNS resolves, with no certificate dependency. Use `curl http://xF5XC_DOMAINNAMEx/` for the primary HTTP-based verification.
+</Aside>
 
 ```bash
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
   | jq '.spec.state'
 ```
 
 | Result | Meaning |
 | --- | --- |
 | **PASS** &mdash; `"VIRTUAL_HOST_READY"` | LB is operational |
-| **WARN** &mdash; `"VIRTUAL_HOST_DNS_A_RECORD_ADDED"` | A record created, waiting for certificate &mdash; see [TLS-1](#tls-1-certificate-state) |
 | **FAIL** &mdash; `"VIRTUAL_HOST_PENDING_A_RECORD"` | DNS A record not configured &mdash; see [DNS-1](#dns-1-a-record-resolution) |
 
 **Fix:** [LB Stuck in VIRTUAL_HOST_PENDING_A_RECORD](/csd/api-automation/#lb-stuck-in-virtual_host_pending_a_record)
 
 ### LB-2: Domain Configuration
 
-**What it proves:** The load balancer is configured for the correct domain(s).
+**What it proves:** The HTTP load balancer is configured for the correct domain(s).
 
 ```bash
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
   | jq '.spec.domains'
 ```
 
@@ -281,7 +293,7 @@ curl -s \
 ```bash
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
   | jq '{
     csd_enabled: (if .spec.client_side_defense then true else false end),
     js_policy: .spec.client_side_defense.policy
@@ -302,7 +314,7 @@ curl -s \
 ```bash
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
   | jq '.spec.default_route_pools[] | {
     pool: .pool.name,
     namespace: .pool.namespace,
@@ -323,7 +335,7 @@ curl -s \
 ```bash
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
   | jq '{
     state: .spec.state,
     dns_info: .spec.dns_info,
@@ -342,27 +354,44 @@ When the LB is not in `VIRTUAL_HOST_READY` state, check `.status[].virtual_host_
 ```bash
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
   | jq '[.status[]? | select(.virtual_host_status != null) | .virtual_host_status | {state, error_description, suggested_action}]'
 ```
 </Aside>
 
 ### LB-6: Full LB Summary
 
-**What it proves:** Comprehensive snapshot of LB configuration for debugging.
+**What it proves:** Comprehensive snapshot of both LB configurations for debugging.
+
+**HTTP LB (primary):**
 
 ```bash
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{
+    name: .metadata.name,
+    state: .spec.state,
+    domains: .spec.domains,
+    csd_enabled: (if .spec.client_side_defense then true else false end),
+    route_pools: [.spec.default_route_pools[] | .pool.name],
+    advertise: (if .spec.advertise_on_public_default_vip then "public_default_vip" else "custom" end)
+  }'
+```
+
+**HTTPS LB (secondary — includes cert state):**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
   | jq '{
     name: .metadata.name,
     state: .spec.state,
     cert_state: .spec.cert_state,
     domains: .spec.domains,
     csd_enabled: (if .spec.client_side_defense then true else false end),
-    route_pools: [.spec.default_route_pools[] | .pool.name],
-    advertise: (if .spec.advertise_on_public_default_vip then "public_default_vip" else "custom" end)
+    route_pools: [.spec.default_route_pools[] | .pool.name]
   }'
 ```
 
@@ -580,7 +609,7 @@ The protected domains list endpoint returns summary data. Items with all empty f
 **What it proves:** The CSD JavaScript is actually being injected into page responses served by the load balancer.
 
 ```bash
-curl -s "https://xF5XC_DOMAINNAMEx/" \
+curl -s "http://xF5XC_DOMAINNAMEx/" \
   | grep -oE '(zeronaught|shape)\.com[^"]*' | head -1
 ```
 
@@ -718,17 +747,21 @@ The `csd_js_injection` field is only present on log entries where injection occu
 
 ### TV-5: End-to-End Connectivity Test
 
-**What it proves:** A complete request flows from client through DNS, TLS, LB, and origin and returns a valid response.
+**What it proves:** A complete request flows from client through DNS, LB, and origin and returns a valid response.
 
 ```bash
-curl -sv "https://xF5XC_DOMAINNAMEx/" 2>&1 \
-  | grep -E 'Connected to|SSL connection|< HTTP|< content-type'
+curl -sv "http://xF5XC_DOMAINNAMEx/" 2>&1 \
+  | grep -E 'Connected to|< HTTP|< content-type'
 ```
 
 | Result | Meaning |
 | --- | --- |
-| **PASS** &mdash; shows connection, TLS, HTTP 200, and content-type | Full stack is operational |
+| **PASS** &mdash; shows connection, HTTP 200, and content-type | Full stack is operational |
 | **FAIL** &mdash; connection refused or DNS error | Start debugging at [Layer 1: DNS](#layer-1-dns-resolution) |
+
+<Aside type="tip">
+For HTTPS end-to-end testing (only when the HTTPS LB certificate is valid), use `curl -sv "https://xF5XC_DOMAINNAMEx/"` and check for `SSL connection` in the output.
+</Aside>
 
 ---
 
@@ -973,10 +1006,13 @@ DNS_ACME=$(dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME | head -1)
 # Layers 2-3: LB + TLS
 LB=$(curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx")
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http")
+LB_HTTPS=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
 
 LB_STATE=$(echo "$LB" | jq -r '.spec.state // "UNKNOWN"')
-CERT_STATE=$(echo "$LB" | jq -r '.spec.cert_state // "UNKNOWN"')
+CERT_STATE=$(echo "$LB_HTTPS" | jq -r '.spec.cert_state // "UNKNOWN"')
 CSD_ON_LB=$(echo "$LB" | jq -r 'if .spec.client_side_defense then "ENABLED" else "DISABLED" end')
 DOMAINS=$(echo "$LB" | jq -r '.spec.domains | join(", ")')
 ROUTE_POOL=$(echo "$LB" | jq -r '[.spec.default_route_pools[] | .pool.name] | join(", ")')
@@ -1079,15 +1115,15 @@ If [TV-1](#tv-1-request-count-last-24-hours) returns `0`:
    ```bash
    curl -s \
      -H "Authorization: APIToken xF5XC_API_TOKENx" \
-     "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+     "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
      | jq '.spec.state'
    ```
 
 3. **Send a test request** &mdash; generate traffic to confirm end-to-end connectivity:
    ```bash
-   curl -sv "https://xF5XC_DOMAINNAMEx/" 2>&1 | head -20
+   curl -sv "http://xF5XC_DOMAINNAMEx/" 2>&1 | head -20
    ```
-   Look for a successful TLS handshake and HTTP response.
+   Look for a successful HTTP response. Use `https://` only if the HTTPS LB certificate is valid.
 </Steps>
 
 ### Managed Records Disabled on DNS Zone
@@ -1124,7 +1160,7 @@ If both are empty, the ACME record is not configured. Certificate provisioning t
 ```bash
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
   | jq '[.status[]? | select(.virtual_host_status != null) | .virtual_host_status.error_description]'
 ```
 
@@ -1147,7 +1183,7 @@ If [TEL-1](#tel-1-script-inventory) returns an empty array:
 
 2. **Verify JS injection** &mdash; confirm the CSD script tag is being injected into pages:
    ```bash
-   curl -s "https://xF5XC_DOMAINNAMEx/" | grep -oE '(zeronaught|shape)\.com[^"]*' | head -1
+   curl -s "http://xF5XC_DOMAINNAMEx/" | grep -oE '(zeronaught|shape)\.com[^"]*' | head -1
    ```
    If no match, CSD JavaScript is not being injected. Check that the LB has `client_side_defense` enabled.
 

@@ -178,13 +178,21 @@ curl -s \
 | `port` | Matches `F5XC_ORIGIN_PORT` | PASS |
 | `healthcheck_count` | `1` (with HC) or `0` (without) | PASS either way |
 
-## Step 3: Create HTTP Load Balancer with CSD
+## Step 3: Create HTTP Load Balancers with CSD
 
-Create an HTTPS load balancer with automatic certificate management and Client-Side Defense enabled. This is the most complex object — the F5 XC API uses `oneOf` choice groups where exactly one option must be set per group.
+Create **two** load balancers with Client-Side Defense enabled — an HTTP LB (primary, port 80) and an HTTPS LB (secondary, port 443 with automatic certificate management). The HTTP LB is the default for all demo traffic. The HTTPS LB is a nice to have that depends on Let's Encrypt certificate provisioning, which can hit rate limits in demo environments.
 
 <Aside type="note">
-The HTTP Load Balancer spec has 22+ `oneOf` choice groups. Every group must have exactly one choice set or the API returns a `422` error. The configuration below disables all optional security features except CSD — modify as needed for your environment.
+The HTTP Load Balancer spec has 22+ `oneOf` choice groups. Every group must have exactly one choice set or the API returns a `422` error. The configurations below disable all optional security features except CSD — modify as needed for your environment. Both LBs share the same origin pool, CSD settings, and domain — only the listener type differs.
 </Aside>
+
+<Aside type="tip">
+Both LB names derive from `F5XC_LB_NAME`: the HTTP LB is `${F5XC_LB_NAME}-http` and the HTTPS LB is `${F5XC_LB_NAME}-https`. No additional environment variables are needed.
+</Aside>
+
+### HTTP Load Balancer (Primary)
+
+This is the **primary** load balancer for demos. It uses an `http` listener on port 80 with F5 XC managed DNS. It does not depend on TLS certificate provisioning, so it becomes ready immediately after DNS resolves.
 
 ```bash
 curl -s -X POST \
@@ -192,11 +200,80 @@ curl -s -X POST \
   -H "Content-Type: application/json" \
   -d '{
     "metadata": {
-      "name": "xF5XC_LB_NAMEx",
+      "name": "xF5XC_LB_NAMEx-http",
       "namespace": "xF5XC_NAMESPACEx",
       "labels": {},
       "annotations": {},
-      "description": "HTTP LB with Client-Side Defense enabled",
+      "description": "HTTP LB with Client-Side Defense enabled (primary demo LB)",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["xF5XC_DOMAINNAMEx"],
+      "http": {
+        "dns_volterra_managed": true,
+        "port": 80
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [{
+        "pool": {
+          "namespace": "xF5XC_NAMESPACEx",
+          "name": "xF5XC_ORIGIN_POOLx",
+          "kind": "origin_pool"
+        },
+        "weight": 1,
+        "priority": 1
+      }],
+      "client_side_defense": {
+        "policy": {
+          "js_insert_all_pages": {}
+        }
+      },
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers" \
+  | jq .
+```
+
+A `200` response confirms the HTTP load balancer was created with CSD enabled.
+
+### HTTPS Load Balancer (Secondary)
+
+This is the **secondary** load balancer. It uses `https_auto_cert` on port 443 with automatic Let's Encrypt certificate provisioning. This LB is optional for demo progression — if the certificate hits rate limits (`AutoCertDomainRateLimited`), the demo continues using the HTTP LB.
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_LB_NAMEx-https",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "HTTPS LB with Client-Side Defense enabled (secondary, cert-dependent)",
       "disable": false
     },
     "spec": {
@@ -254,27 +331,46 @@ curl -s -X POST \
   | jq .
 ```
 
-A `200` response confirms the load balancer was created with CSD enabled.
+A `200` response confirms the HTTPS load balancer was created.
 
 ### Evidence
 
-Confirm the load balancer exists with CSD enabled. Always use a **GET** for evidence — the POST response returns transient state values that may not reflect the settled configuration.
+Confirm both load balancers exist with CSD enabled. Always use a **GET** for evidence — the POST response returns transient state values that may not reflect the settled configuration.
+
+**HTTP LB (primary):**
 
 ```bash
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{name: .metadata.name, domains: .spec.domains, csd_enabled: (.spec.client_side_defense != null), state: .spec.state}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| HTTP Status | `200` | PASS if returned, FAIL if `404` |
+| `name` | `${F5XC_LB_NAME}-http` | PASS |
+| `domains` | Contains `F5XC_DOMAINNAME` | PASS |
+| `csd_enabled` | `true` | PASS — CSD is configured on this LB |
+| `state` | `VIRTUAL_HOST_READY` or `VIRTUAL_HOST_PENDING_A_RECORD` | Expected — HTTP LB transitions to READY once DNS resolves |
+
+**HTTPS LB (secondary):**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
   | jq '{name: .metadata.name, domains: .spec.domains, csd_enabled: (.spec.client_side_defense != null), state: .spec.state, cert_state: .spec.cert_state}'
 ```
 
 | Field | Expected | Status |
 | --- | --- | --- |
 | HTTP Status | `200` | PASS if returned, FAIL if `404` |
-| `name` | Matches `F5XC_LB_NAME` | PASS |
+| `name` | `${F5XC_LB_NAME}-https` | PASS |
 | `domains` | Contains `F5XC_DOMAINNAME` | PASS |
 | `csd_enabled` | `true` | PASS — CSD is configured on this LB |
 | `state` | `VIRTUAL_HOST_PENDING_A_RECORD` | Expected at this point — DNS not yet configured |
-| `cert_state` | `PreDomainChallengePending` | Expected — ACME challenge not started |
+| `cert_state` | `PreDomainChallengePending` | Expected — ACME challenge not started. Informational only — does not block demo progression |
 
 ## Step 4: Configure DNS
 
@@ -348,12 +444,12 @@ A `200` response (empty `\{\}`) confirms the zone was updated. F5 XC will create
 ```bash
 LB_CONFIG=$(curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx")
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http")
 echo "$LB_CONFIG" | curl -s -X PUT \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   -H "Content-Type: application/json" \
   -d @- \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
   | jq .
 ```
 
@@ -383,7 +479,7 @@ When your domain uses an external DNS provider, you must create the records manu
 ```bash
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
   | jq '{
     vip_ip: .spec.dns_info[0].ip_address,
     acme_target: .spec.auto_cert_info.dns_records
@@ -516,22 +612,37 @@ The A record should return the VIP IP address. The CNAME should point to `*.auto
 
 ### Load Balancer State
 
-Check that the load balancer has transitioned out of its pending state:
+Check that both load balancers have transitioned out of their pending states. The HTTP LB is the primary check — it should reach `VIRTUAL_HOST_READY` once DNS resolves, with no certificate dependency. The HTTPS LB certificate state is informational only.
+
+**HTTP LB (primary — must be READY to proceed):**
 
 ```bash
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{state: .spec.state}'
+```
+
+| Field | Expected | Intermediate States |
+| --- | --- | --- |
+| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS not configured (see Step 4) |
+
+**HTTPS LB (secondary — informational, does not block progression):**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
   | jq '{state: .spec.state, cert_state: .spec.cert_state}'
 ```
 
 | Field | Expected | Intermediate States |
 | --- | --- | --- |
-| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS not configured (see Step 4); `VIRTUAL_HOST_DNS_A_RECORD_ADDED` — A record found, waiting for cert |
-| `cert_state` | `CertificateValid` | `PreDomainChallengePending` — waiting for ACME CNAME; `DomainChallengeStarted` — ACME challenge in progress; `DnsDomainVerification` — verifying DNS ownership |
+| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS not configured; `VIRTUAL_HOST_DNS_A_RECORD_ADDED` — A record found, waiting for cert |
+| `cert_state` | `CertificateValid` | `PreDomainChallengePending` — waiting for ACME CNAME; `DomainChallengeStarted` — ACME challenge in progress; `AutoCertDomainRateLimited` — Let's Encrypt rate limit hit (expected in demo environments, does not affect HTTP LB) |
 
 <Aside type="note">
-Certificate provisioning can take **5–10 minutes** after DNS records are created. If `cert_state` is still pending, wait and check again. The platform checks DNS on its own schedule — the LB may remain in `VIRTUAL_HOST_PENDING_A_RECORD` for several minutes even after the A record is confirmed at the authoritative nameserver.
+Certificate provisioning can take **5–10 minutes** after DNS records are created. If `cert_state` shows `AutoCertDomainRateLimited`, this is expected in demo environments where infrastructure is frequently created and destroyed. The HTTP LB is unaffected — proceed with the demo using `http://` URLs.
 </Aside>
 
 ### JS Configuration
@@ -586,17 +697,22 @@ curl -s \
 
 After completing all verification checks, the AI assistant should present a consolidated status table:
 
-| Test ID | Check | Expected | Status |
-| --- | --- | --- | --- |
-| DNS-1 | A Record resolves | VIP IP returned | PASS / FAIL |
-| DNS-2 | ACME CNAME exists | `*.autocerts.ves.volterra.io` | PASS / PENDING |
-| LB-1 | LB state | `VIRTUAL_HOST_READY` | PASS / PENDING |
-| TLS-1 | Certificate state | `AutoCertIssued` | PASS / PENDING |
-| CSD-1 | JS configuration | `scriptTag` present | PASS / FAIL |
-| CSD-2 | CSD status | `isEnabled: true` | PASS / FAIL |
-| CSD-3 | Protected domain | Domain registered | PASS / FAIL |
+| Test ID | Check | Expected | Required | Status |
+| --- | --- | --- | --- | --- |
+| DNS-1 | A Record resolves | VIP IP returned | **Yes** | PASS / FAIL |
+| DNS-2 | ACME CNAME exists | `*.autocerts.ves.volterra.io` | No | PASS / PENDING |
+| LB-1 | HTTP LB state | `VIRTUAL_HOST_READY` | **Yes** | PASS / PENDING |
+| LB-2 | HTTPS LB state | `VIRTUAL_HOST_READY` | No | PASS / PENDING / INFO |
+| TLS-1 | Certificate state | `CertificateValid` | No | PASS / PENDING / INFO |
+| CSD-1 | JS configuration | `scriptTag` present | **Yes** | PASS / FAIL |
+| CSD-2 | CSD status | `isEnabled: true` | **Yes** | PASS / FAIL |
+| CSD-3 | Protected domain | Domain registered | **Yes** | PASS / FAIL |
 
-If LB-1 or TLS-1 show PENDING, wait 5–10 minutes and re-check. All other tests should be PASS before proceeding to Phase 2.
+<Aside type="note">
+**Phase 2 uses the HTTP LB.** HTTPS is optional — if TLS-1 shows `AutoCertDomainRateLimited` or LB-2 remains PENDING, the demo proceeds normally using `http://` URLs. Only DNS-1, LB-1, CSD-1, CSD-2, and CSD-3 are required to pass before proceeding to Phase 2.
+</Aside>
+
+If LB-1 shows PENDING, wait 1–2 minutes for DNS to propagate and re-check. LB-2 and TLS-1 may take 5–10 minutes or may not complete due to rate limiting — this is informational only.
 
 <Aside type="note">
 The `dns_info` field in the LB response may be empty (`[]`) even when DNS resolves correctly — this happens after a clean recreation. Always verify DNS resolution with `dig` rather than relying on `dns_info` for the VIP address.

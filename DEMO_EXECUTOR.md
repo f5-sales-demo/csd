@@ -162,7 +162,7 @@ Attack simulation via browser automation + API verification (Steps
 | ------ | -------- | --------- |
 | Form field harvesting | Reads email and password input values | Scripts reading sensitive form fields — flagged High Risk |
 | Script injection | Injects 4 `<script>` tags from `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io` | 4 new third-party script domains detected |
-| Data exfiltration | Sends harvested data via `fetch` to `httpbin.org` and `jsonplaceholder.typicode.com` | Network calls to external domains |
+| Data exfiltration | Sends harvested data via `fetch` to `www.httpbin.org` and `jsonplaceholder.typicode.com` | Network calls to external domains |
 
 **Timing:** Detection takes **5-10 minutes** for established tenants.
 After a fresh infrastructure rebuild or first-time protected domain
@@ -178,7 +178,7 @@ remain empty.
 | ------- | ----- | ------ |
 | DET-1 | Scripts detected (`/scripts`) | PASS if > 0; PENDING if empty but DET-3 passes |
 | DET-2 | CDN domains detected | PASS / FAIL |
-| DET-3 | Exfil domains detected (`/detected_domains`) | **Primary indicator** — PASS if `httpbin.org` or `jsonplaceholder.typicode.com` appear |
+| DET-3 | Exfil domains detected (`/detected_domains`) | **Primary indicator** — PASS if `www.httpbin.org` or `jsonplaceholder.typicode.com` appear |
 | DET-4 | Form fields detected (`/formFields`) | PASS if > 0; PENDING if empty but DET-3 passes |
 
 **Minimum pass criteria to proceed to Phase 3:** DET-3 must PASS.
@@ -209,7 +209,7 @@ the **"before" snapshot**. Use `new_page` with `isolatedContext`
 for a clean browser context, then execute the same 4-step
 initScript sequence as Phase 2. The initScript must save native
 `fetch` (via `window.fetch.bind(window)`) to avoid zone.js errors.
-Capture evidence that exfil fetch calls to `httpbin.org` and
+Capture evidence that exfil fetch calls to `www.httpbin.org` and
 `jsonplaceholder.typicode.com` are initiated (network tab shows
 requests).
 
@@ -259,8 +259,8 @@ Present the side-by-side comparison table:
 | Signal | Before (Step 2) | After (Step 5) |
 | ------ | --------------- | -------------- |
 | CDN script network calls | `200` — all 4 scripts load | **Blocked** — absent from network tab (CSD cleared `src`) |
-| Exfil to httpbin.org | `200` — data exfiltrated | `200` — fetch still completes (CSD does not intercept fetch) |
-| Exfil to jsonplaceholder.typicode.com | `200`/`201` — data exfiltrated | `201` — fetch still completes (CSD does not intercept fetch) |
+| Exfil to `www.httpbin.org` | `200` — data exfiltrated | `200` — fetch still completes (CSD does not intercept fetch) |
+| Exfil to `jsonplaceholder.typicode.com` | `200`/`201` — data exfiltrated | `201` — fetch still completes (CSD does not intercept fetch) |
 | CSD mitigated domains API | 0 mitigated | 6 mitigated |
 
 Wait **5-10 minutes**, then query `/detected_domains` and `/scripts`

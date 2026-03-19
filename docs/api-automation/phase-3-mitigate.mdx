@@ -57,7 +57,7 @@ curl -s \
 | --- | --- | --- |
 | Mitigated domain count | `0` (clean baseline) | PASS if 0, requires cleanup if &gt; 0 |
 | Detected domain count | &gt; 0 (Phase 2 detections present) | PASS if &gt; 0 |
-| Exfil domains present | `httpbin.org`, `jsonplaceholder.typicode.com` | PASS if at least one appears |
+| Exfil domains present | `www.httpbin.org`, `jsonplaceholder.typicode.com` | PASS if at least one appears |
 
 ## Step 2: Run Attack — Before Mitigation
 
@@ -99,7 +99,7 @@ Operators without browser automation tools run the simulation manually using the
 | Check | Expected (Before Mitigation) | Status |
 | --- | --- | --- |
 | CDN scripts injected | All 4 script tags load — `[Supply Chain] Loaded from` messages appear, network tab shows `200` | PASS |
-| Exfil fetch to httpbin.org | Network tab shows `200` — data sent | PASS |
+| Exfil fetch to `www.httpbin.org` | Network tab shows `200` — data sent | PASS |
 | Exfil fetch to jsonplaceholder.typicode.com | Network tab shows `201` — data sent | PASS |
 | Console output | `[CSD Demo] Simulation complete` | PASS |
 
@@ -123,7 +123,7 @@ For each detected domain, POST to the mitigated domains endpoint. The primary ta
 | `esm.sh` | CDN script injection |
 | `unpkg.com` | CDN script injection |
 | `ga.jspm.io` | CDN script injection |
-| `httpbin.org` | Data exfiltration endpoint |
+| `www.httpbin.org` | Data exfiltration endpoint |
 | `jsonplaceholder.typicode.com` | Data exfiltration endpoint |
 
 <Aside type="note">
@@ -248,12 +248,12 @@ Operators without browser automation tools re-run the simulation manually using 
 2. Enter dummy credentials in the Email and Password fields (do not submit)
 3. Open DevTools — press **F12** and switch to the **Console** tab
 4. Paste and run the Combined Detection Script from [Trigger Detection](/csd/trigger-detection/#run-the-combined-simulation-script)
-5. Observe console and network output — CDN script `onload` and `onerror` callbacks do not fire for mitigated domains (CSD cleared the script `src` to an empty string, preventing the network request entirely). Fetch calls to exfil domains (httpbin.org, jsonplaceholder.typicode.com) **still complete** with `200`/`201` — CSD mitigation blocks script loading, not fetch/XHR calls
+5. Observe console and network output — CDN script `onload` and `onerror` callbacks do not fire for mitigated domains (CSD cleared the script `src` to an empty string, preventing the network request entirely). Fetch calls to exfil domains (www.httpbin.org, jsonplaceholder.typicode.com) **still complete** with `200`/`201` — CSD mitigation blocks script loading, not fetch/XHR calls
 
 <Aside type="tip">
 After mitigation, the CSD JavaScript blocks script loading from mitigated domains by intercepting the `&lt;script&gt;` tag `src` setter. When a script tag's `src` is set to a URL matching a mitigated domain, CSD clears the `src` to an empty string. The tag is added to the DOM (`appendChild` succeeds) but no network request is made — the script simply does not appear in the Network tab. Neither `onload` nor `onerror` callbacks fire.
 
-**Fetch calls are not intercepted by CSD mitigation.** Exfil fetch calls to mitigated domains (httpbin.org, jsonplaceholder.typicode.com) still complete normally. CSD mitigation targets the supply-chain vector (malicious script loading), not data exfiltration via fetch/XHR. Use the same Phase 2 initScript (with native `fetch` saved) for both Step 2 and Step 5.
+**Fetch calls are not intercepted by CSD mitigation.** Exfil fetch calls to mitigated domains (www.httpbin.org, jsonplaceholder.typicode.com) still complete normally. CSD mitigation targets the supply-chain vector (malicious script loading), not data exfiltration via fetch/XHR. Use the same Phase 2 initScript (with native `fetch` saved) for both Step 2 and Step 5.
 </Aside>
 
 ### Evidence — After Mitigation
@@ -262,7 +262,7 @@ After mitigation, the CSD JavaScript blocks script loading from mitigated domain
 | --- | --- | --- |
 | CDN script loads | **Blocked** — scripts do not appear in network tab (CSD cleared `src` to empty string) | PASS |
 | CDN script callbacks | Neither `onload` nor `onerror` fires for mitigated domains | PASS |
-| Exfil fetch to httpbin.org | `200` — fetch still completes (CSD does not intercept fetch) | INFO |
+| Exfil fetch to `www.httpbin.org` | `200` — fetch still completes (CSD does not intercept fetch) | INFO |
 | Exfil fetch to jsonplaceholder.typicode.com | `201` — fetch still completes (CSD does not intercept fetch) | INFO |
 | Console output | `[CSD Demo] Simulation complete` | PASS |
 
@@ -276,7 +276,7 @@ This is the demo payoff — side-by-side evidence proving that the same attack, 
 | --- | --- | --- |
 | CDN script loads | `200` — all 4 CDN scripts load normally | **Blocked** — scripts absent from network tab (CSD cleared `src` to empty string) |
 | CDN `onload` callbacks | `[Supply Chain] Loaded from` messages appear | No callbacks fire (no network request was made) |
-| Exfil to httpbin.org | `200` — data exfiltrated | `200` — fetch still completes (CSD does not intercept fetch) |
+| Exfil to `www.httpbin.org` | `200` — data exfiltrated | `200` — fetch still completes (CSD does not intercept fetch) |
 | Exfil to jsonplaceholder.typicode.com | `201` — data exfiltrated | `201` — fetch still completes (CSD does not intercept fetch) |
 | CSD mitigated domains API | 0 mitigated | 6 mitigated |
 
@@ -303,7 +303,7 @@ curl -s -X POST \
   -H "Content-Type: application/json" \
   -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
-  | jq '{total: (.scripts | length), scripts: [.scripts[]? | {url: .url, host: .host, risk: .risk}]}'
+  | jq '{total: (.scripts | length), scripts: [.scripts[]? | {script_name: .script_name, risk_level: .risk_level}]}'
 ```
 
 ### Phase 3 Evidence Summary

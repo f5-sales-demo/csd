@@ -22,6 +22,54 @@ The placeholder form stores values — including your API token — in the brows
 | [Phase 3 — Mitigate](/csd/api-automation/phase-3-mitigate/) | Before/after mitigation proof — run attack, apply mitigations, re-run attack, compare | Steps 1–6 |
 | [Phase 4 — Teardown](/csd/api-automation/phase-4-teardown/) | Remove all deployment objects after explicit confirmation | Teardown |
 
+## Pre-flight Check
+
+Before starting Phase 1, verify the environment is clean. Run these API checks to determine if leftover objects exist from a prior run:
+
+```bash
+# Check all Phase 1 objects (run in parallel)
+curl -s -o /dev/null -w "HTTP LB: %{http_code}\n" \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http"
+
+curl -s -o /dev/null -w "HTTPS LB: %{http_code}\n" \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https"
+
+curl -s -o /dev/null -w "Origin Pool: %{http_code}\n" \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx"
+
+curl -s -o /dev/null -w "Healthcheck: %{http_code}\n" \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx"
+
+curl -s -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '{protected_domains: (.items | length)}'
+
+curl -s -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '{mitigated_domains: (.items | length)}'
+```
+
+### Decision Logic
+
+| Result | Action |
+| --- | --- |
+| All `404` + 0 protected/mitigated | **Clean** — proceed to Phase 1 |
+| Any infrastructure objects exist (`200`) | Run [Phase 4 — Teardown](/csd/api-automation/phase-4-teardown/) first, then re-check |
+| Only mitigated domains exist | Delete them inline (no full teardown needed) |
+| All Phase 1 objects exist and healthy | Optionally skip Phase 1 and start at Phase 2 |
+
+<Aside type="note">
+The mitigated domains list may return a count of 1 with null metadata even when no real mitigations exist. This is a backend artifact — treat it as 0 for decision purposes.
+</Aside>
+
+<Aside type="note">
+CSD detections persist across infrastructure teardown/rebuild when the same protected domain is re-registered on the same tenant. After a teardown and rebuild, you do not need to wait 5-10 minutes for detections to appear — they are available immediately.
+</Aside>
+
 ## AI Assistant Execution Protocol
 
 This section defines a **deterministic workflow** for AI assistants (Claude Code, Copilot, etc.) executing the API automation steps. Following this protocol eliminates guesswork — every decision point has a defined resolution path.

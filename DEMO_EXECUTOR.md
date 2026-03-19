@@ -177,13 +177,12 @@ DET-1 and DET-4 may show PENDING on first use — this is normal.
 Apply mitigations, re-run attack, verify via API (Steps 1-5).
 Requires chrome-devtools MCP tools.
 
-> **Critical behavioral note:** CSD mitigation is a **detection and
-> classification layer**, NOT an inline execution blocker. After
-> mitigating a domain, the CSD backend marks it as acknowledged in
-> the dashboard and API. Mitigated domain scripts **still load in
-> the browser** — the observable change is in CSD's risk
-> classification and the mitigated domains list. Do not expect
-> browser-level blocking errors in the re-run simulation.
+> **Critical behavioral note:** CSD mitigation actively **blocks
+> network calls** to mitigated domains. The CSD JavaScript prevents
+> scripts from communicating with domains on the mitigate list,
+> blocking data exfiltration in real time. After re-running the
+> simulation, expect network requests to mitigated domains to be
+> blocked.
 
 **Step 1 — List detected domains:**
 
@@ -221,8 +220,8 @@ individual POST in Step 2 is the authoritative evidence.
 **Step 4 — Re-run attack simulation:**
 
 Execute the same 5-step AI-automated browser sequence as Phase 2.
-Scripts load normally — mitigation is classification-layer, not
-blocking.
+Network calls to mitigated domains are blocked by the CSD JavaScript.
+Script DOM elements may still exist but cannot communicate with blocked domains.
 
 **Step 5 — Verify mitigation effective:**
 
@@ -236,7 +235,7 @@ to confirm mitigation is reflected in detection data.
 | Mitigated domains count | 6 items in list | PASS / FAIL |
 | All Step 2 POSTs | `200` or `409` for each domain | PASS |
 | Attack re-run console | `[CSD Demo] Simulation complete` | PASS / FAIL |
-| CDN scripts in re-run | Load normally (classification-layer) | PASS |
+| Network calls to mitigated domains | Blocked by CSD JavaScript | PASS |
 
 #### Phase 4 — Teardown (`phase-4-teardown.mdx`)
 

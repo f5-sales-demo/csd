@@ -123,18 +123,25 @@ the default for all demo traffic.
 Attack simulation via browser automation + API verification (Steps
 8-9). Requires chrome-devtools MCP tools.
 
-**AI-Automated Browser Execution (5-step sequence):**
+**AI-Automated Browser Execution (6-step sequence):**
 
 1. **Navigate** — `navigate_page` to
    `http://$F5XC_DOMAINNAME/#/login`
-2. **Snapshot** — `take_snapshot` to identify email and password
+2. **Dismiss dialogs** — on first visit, `take_snapshot` and `click`
+   the "dismiss cookie message" button, then `press_key` with
+   `Escape` to close the Welcome Banner (`click` on the close
+   button fails — after dismissing the cookie overlay, Angular
+   Material's transition leaves the button non-interactive;
+   `Escape` is the reliable method). On subsequent visits these
+   dialogs may not appear (cookies persisted)
+3. **Snapshot** — `take_snapshot` to identify email and password
    form field UIDs
-3. **Fill credentials** — `fill` email with `test@example.com` and
+4. **Fill credentials** — `fill` email with `test@example.com` and
    password with `P@ssword123` (do not submit the form)
-4. **Execute script** — `evaluate_script` with the Combined Detection
+5. **Execute script** — `evaluate_script` with the Combined Detection
    Script IIFE from the Trigger Detection guide — wrap in an arrow
    function returning a status object
-5. **Capture evidence** — read `evaluate_script` return value and
+6. **Capture evidence** — read `evaluate_script` return value and
    run `list_console_messages` to capture `[CSD Demo]` output
 
 **What Gets Triggered:**

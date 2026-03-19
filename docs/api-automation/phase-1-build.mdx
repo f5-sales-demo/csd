@@ -352,7 +352,7 @@ curl -s \
 | `name` | `${F5XC_LB_NAME}-http` | PASS |
 | `domains` | Contains `F5XC_DOMAINNAME` | PASS |
 | `csd_enabled` | `true` | PASS — CSD is configured on this LB |
-| `state` | `VIRTUAL_HOST_READY` or `VIRTUAL_HOST_PENDING_A_RECORD` | Expected — HTTP LB transitions to READY once DNS resolves |
+| `state` | `VIRTUAL_HOST_READY` or `VIRTUAL_HOST_PENDING_A_RECORD` | Expected — HTTP LB transitions to READY once DNS resolves. Any other state (e.g. `VIRTUAL_HOST_FAILED`) is a FAIL — report to operator and do not proceed |
 
 **HTTPS LB (secondary):**
 
@@ -453,7 +453,7 @@ echo "$LB_CONFIG" | curl -s -X PUT \
   | jq .
 ```
 
-This GET+PUT re-apply does not change the LB configuration — it simply triggers the platform to re-evaluate the DNS zone and create managed records.
+This GET+PUT re-apply does not change the LB configuration — it simply triggers the platform to re-evaluate the DNS zone and create managed records. If the A record still does not resolve within 60 seconds after the re-apply, stop and report to the operator — do not retry the re-apply more than once.
 
 **3. Verify DNS resolution:**
 
@@ -712,7 +712,7 @@ After completing all verification checks, the AI assistant should present a cons
 **Phase 2 uses the HTTP LB.** HTTPS is optional — if TLS-1 shows `AutoCertDomainRateLimited` or LB-2 remains PENDING, the demo proceeds normally using `http://` URLs. Only DNS-1, LB-1, CSD-1, CSD-2, and CSD-3 are required to pass before proceeding to Phase 2.
 </Aside>
 
-If LB-1 shows PENDING, wait 1–2 minutes for DNS to propagate and re-check. LB-2 and TLS-1 may take 5–10 minutes or may not complete due to rate limiting — this is informational only.
+If LB-1 shows PENDING, poll every 30 seconds for up to 4 iterations (2 minutes total). If LB-1 is still not `VIRTUAL_HOST_READY` after 4 iterations, check DNS resolution with `dig` and report to operator — do not proceed until LB-1 reaches READY. For LB-2 and TLS-1, poll every 60 seconds for up to 10 iterations (10 minutes). If still in an intermediate state after 10 iterations, record the current state as INFO and proceed — these are informational and do not block demo progression.
 
 <Aside type="note">
 The `dns_info` field in the LB response may be empty (`[]`) even when DNS resolves correctly — this happens after a clean recreation. Always verify DNS resolution with `dig` rather than relying on `dns_info` for the VIP address.

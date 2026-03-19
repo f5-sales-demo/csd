@@ -111,11 +111,15 @@ CSD monitors JavaScript behavior inside the browser. Unlike WAF or Bot Defense, 
 
 AI assistants with browser automation tools (MCP Chrome DevTools, Playwright, Puppeteer) execute the simulation programmatically instead of following the manual steps above:
 
-1. **Navigate** — `navigate_page` to the login page URL (e.g., `https://botdemo.sales-demo.f5demos.com/#/login` or your `$F5XC_DOMAINNAME`)
-2. **Snapshot** — `take_snapshot` to identify the email and password form field UIDs
-3. **Fill credentials** — `fill` the email field with `test@example.com` and the password field with `P@ssword123` (do not submit the form)
-4. **Execute script** — `evaluate_script` with the Combined Detection Script IIFE above, wrapped in an arrow function that returns a status object (e.g., `() =&gt; \{ ... return \{ status: 'complete', fields: count \} \}`)
-5. **Capture evidence** — read the `evaluate_script` return value and run `list_console_messages` to capture the full `[CSD Demo]` phased output confirming field harvesting, script injection, and data exfiltration
+1. **Navigate with initScript** — `navigate_page` to the login page URL (e.g., `http://botdemo.sales-demo.f5demos.com/#/login` or your `$F5XC_DOMAINNAME`) with an `initScript` that saves native `console.log`, `setInterval`, `clearInterval`, and `XMLHttpRequest` before zone.js patches them, then sets up a polling function that watches for filled form fields and auto-executes the Combined Detection Script when they have values
+2. **Dismiss dialogs** — on first visit, `take_snapshot` and `click` the "dismiss cookie message" button, then `click` the "Close Welcome Banner" button (or `×` tutorial cancel). On subsequent visits these dialogs may not appear (cookies persisted)
+3. **Snapshot** — `take_snapshot` to identify the email and password form field UIDs (look for aria-labels `Text field for the login email` and `Text field for the login password`)
+4. **Fill credentials** — `fill` the email field with `test@example.com` and the password field with `P@ssword123` (do not submit the form). This triggers the initScript's polling function
+5. **Capture evidence** — `list_console_messages` to capture the `[CSD Demo]` phased output. Check for `[CSD Demo] Simulation complete` confirming field harvesting, script injection, and data exfiltration
+
+<Aside type="caution">
+**zone.js incompatibility** — Juice Shop uses Angular's zone.js, which polyfills browser APIs and breaks the MCP `evaluate_script` tool (even `() => document.title` fails with `Cannot read properties of undefined (reading 'call')`). Use `navigate_page` with `initScript` instead — `initScript` runs before zone.js loads, preserving access to native APIs.
+</Aside>
 
 Operators without browser automation tools use the manual steps above.
 

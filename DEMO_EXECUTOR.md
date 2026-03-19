@@ -174,22 +174,31 @@ DET-1 and DET-4 may show PENDING on first use — this is normal.
 
 #### Phase 3 — Mitigate (`phase-3-mitigate.mdx`)
 
-Apply mitigations, re-run attack, verify via API (Steps 1-5).
-Requires chrome-devtools MCP tools.
+Before/after mitigation proof (Steps 1-6). Requires
+chrome-devtools MCP tools.
 
 > **Critical behavioral note:** CSD mitigation actively **blocks
 > network calls** to mitigated domains. The CSD JavaScript prevents
 > scripts from communicating with domains on the mitigate list,
-> blocking data exfiltration in real time. After re-running the
-> simulation, expect network requests to mitigated domains to be
-> blocked.
+> blocking data exfiltration in real time. Phase 3 proves this by
+> running the same attack before and after mitigation — creating a
+> dramatic side-by-side comparison.
 
-**Step 1 — List detected domains:**
+**Step 1 — Confirm no active mitigations (baseline):**
 
-Query `/detected_domains` and extract domains with
-`.domains_list[].domain`.
+GET `/mitigated_domains` and verify count is `0`. If mitigations
+remain from a prior run, DELETE each one to start clean. Also GET
+`/detected_domains` to confirm Phase 2 detections are present.
 
-**Step 2 — Mitigate all 6 domains:**
+**Step 2 — Run attack — before mitigation:**
+
+Re-run the combined simulation with no mitigations active. This is
+the **"before" snapshot**. Execute the same 5-step AI-automated
+browser sequence as Phase 2. Capture evidence that scripts load
+from all 4 CDN domains, exfil fetch calls to `httpbin.org` and
+`jsonplaceholder.typicode.com` succeed with `200`/`201` responses.
+
+**Step 3 — Apply mitigations:**
 
 POST to `/mitigated_domains` for each domain. The POST body requires
 **both** fields:
@@ -210,32 +219,45 @@ domains as `mitigated_domain` values. Use `www.httpbin.org` as
 `metadata.name`. Any bare domain (no subdomain) used as an exfil
 target has the same constraint.
 
-**Step 3 — Verify mitigations applied:**
+**Step 4 — Verify mitigations applied:**
 
 List mitigated domains and confirm count matches (6 for the standard
 simulation). The list endpoint returns items with **null metadata** —
 verify by item count, not by name. The `200` response from each
-individual POST in Step 2 is the authoritative evidence.
+individual POST in Step 3 is the authoritative evidence.
 
-**Step 4 — Re-run attack simulation:**
+**Step 5 — Run attack — after mitigation:**
 
-Execute the same 5-step AI-automated browser sequence as Phase 2.
-Network calls to mitigated domains are blocked by the CSD JavaScript.
-Script DOM elements may still exist but cannot communicate with blocked domains.
+Re-run the **exact same** combined simulation. This is the **"after"
+snapshot**. Execute the same 5-step AI-automated browser sequence
+as Step 2. Network calls to mitigated domains are now blocked by
+the CSD JavaScript. Script DOM elements may still exist but cannot
+communicate with blocked domains.
 
-**Step 5 — Verify mitigation effective:**
+**Step 6 — Before vs after comparison:**
+
+Present the side-by-side comparison table:
+
+| Signal | Before (Step 2) | After (Step 5) |
+| ------ | --------------- | -------------- |
+| CDN script network calls | Loaded successfully | Blocked by CSD |
+| Exfil to httpbin.org | 200 — data exfiltrated | Blocked |
+| Exfil to jsonplaceholder.typicode.com | 201 — data exfiltrated | Blocked |
+| CSD mitigated domains API | 0 mitigated | 6 mitigated |
 
 Wait **5-10 minutes**, then query `/detected_domains` and `/scripts`
-to confirm mitigation is reflected in detection data.
+to confirm mitigation is reflected in backend detection data.
 
 **Phase 3 Evidence Summary:**
 
 | Check | Expected | Status |
 | ----- | -------- | ------ |
-| Mitigated domains count | 6 items in list | PASS / FAIL |
-| All Step 2 POSTs | `200` or `409` for each domain | PASS |
-| Attack re-run console | `[CSD Demo] Simulation complete` | PASS / FAIL |
-| Network calls to mitigated domains | Blocked by CSD JavaScript | PASS |
+| Baseline clean (Step 1) | 0 mitigated domains at start | PASS / FAIL |
+| Before — attack succeeds (Step 2) | Scripts load, exfil returns 200/201 | PASS / FAIL |
+| Mitigations applied (Step 3) | All 6 POSTs return `200` or `409` | PASS / FAIL |
+| Mitigated count confirmed (Step 4) | 6 items in list | PASS / FAIL |
+| After — attack blocked (Step 5) | Network calls blocked | PASS / FAIL |
+| Before vs After comparison (Step 6) | Clear difference in evidence | PASS / FAIL |
 
 #### Phase 4 — Teardown (`phase-4-teardown.mdx`)
 

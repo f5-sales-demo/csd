@@ -148,7 +148,7 @@ Attack simulation via browser automation + API verification (Steps
 > browser APIs. This breaks the MCP `evaluate_script`, `fill`, and
 > `click` tools. The initScript runs before zone.js loads, allowing
 > native references to be saved and used in callbacks.
-
+>
 > **initScript accumulation:** Each `navigate_page` with `initScript`
 > adds the script to a persistent list. Navigate to `about:blank`
 > between runs or use `new_page` with `isolatedContext` for a clean

@@ -19,16 +19,23 @@ After the infrastructure is verified (all Phase 1 Step 7 checks PASS), run the a
 
 ### AI-Automated Execution
 
-AI assistants with browser automation tools execute the attack simulation programmatically:
+AI assistants with browser automation tools run the attack simulation programmatically:
 
-1. **Navigate with initScript** — `navigate_page` to `http://$F5XC_DOMAINNAME/#/login` with an `initScript` that saves native `console.log`, `setInterval`, `clearInterval`, and `XMLHttpRequest` before zone.js patches them, then sets up a polling function that watches for filled form fields and auto-executes the Combined Detection Script when they have values
-2. **Dismiss dialogs** — on first visit, `take_snapshot` and `click` the "dismiss cookie message" button, then `press_key` with `Escape` to close the Welcome Banner (`click` on the close button fails — after dismissing the cookie overlay, Angular Material's transition leaves the button non-interactive; `Escape` is the reliable method). On subsequent visits these dialogs may not appear (cookies persisted)
-3. **Snapshot** — `take_snapshot` to identify the email and password form field UIDs (look for aria-labels `Text field for the login email` and `Text field for the login password`)
-4. **Fill credentials** — `fill` the email field with `test@example.com` and the password field with `P@ssword123` (do not submit the form). This triggers the initScript's polling function
-5. **Capture evidence** — `list_console_messages` to capture the `[CSD Demo]` phased output. Check for `[CSD Demo] Simulation complete` confirming field harvesting, script injection, and data exfiltration
+1. **Navigate with initScript** — first navigate to `about:blank` to ensure a clean document context (avoids stale initScripts from prior navigations), then `navigate_page` to `http://$F5XC_DOMAINNAME/#/login` with an `initScript` that saves native `setInterval`, `clearInterval`, `fetch`, and `console.log` before zone.js patches them, polls for the login form fields, fills credentials via the native `HTMLInputElement.prototype.value` setter, and immediately executes the Combined Detection Script inline
+2. **Dismiss Welcome Banner** — `press_key` with `Escape` to close the Welcome Banner. On subsequent visits the banner may not appear (cookies persisted). The cookie consent dialog is dismissed automatically by the Escape key
+3. **Wait for completion** — wait 10 seconds for all CDN script load/error callbacks and fetch promise resolutions to complete
+4. **Capture evidence** — `list_console_messages` to check for `[CSD Demo] Simulation complete` and CDN load results; `list_network_requests` filtered to `script` and `fetch` types to verify HTTP status codes (`200`/`201` for success, `pending` for held requests)
 
 <Aside type="caution">
-**zone.js incompatibility** — Juice Shop uses Angular's zone.js, which polyfills browser APIs and breaks the MCP `evaluate_script` tool. Use `navigate_page` with `initScript` instead — it runs before zone.js loads. See [Trigger Detection — AI-Automated Execution](/csd/trigger-detection/#ai-automated-execution) for details.
+**zone.js incompatibility** — Juice Shop uses Angular's zone.js, which patches `setTimeout`, `setInterval`, `fetch`, `XMLHttpRequest`, and other browser APIs. This breaks the MCP `evaluate_script`, `fill`, and `click` tools with `Cannot read properties of undefined (reading 'call')`. Use `navigate_page` with `initScript` instead — `initScript` runs before zone.js loads, so you can save native API references and use them in polling callbacks. The initScript must fill form fields using the native `HTMLInputElement.prototype.value` setter (not `fill`) and run the detection script inline (not via `setTimeout`, which zone.js may intercept after page load). See [Trigger Detection — AI-Automated Execution](/csd/trigger-detection/#ai-automated-execution) for details.
+</Aside>
+
+<Aside type="note">
+**initScript accumulation** — each `navigate_page` call with an `initScript` parameter adds the script to a persistent list that runs on every subsequent document load. To avoid stale scripts interfering, either navigate to `about:blank` between runs or use `new_page` with `isolatedContext` for a clean browser context.
+</Aside>
+
+<Aside type="note">
+**Saving native `fetch` in the initScript** — the initScript saves `window.fetch.bind(window)` before CSD's telemetry script or zone.js patches it. This ensures fetch calls work correctly without zone.js errors. However, this native reference bypasses CSD's mitigation interception. In Phase 3, the "after mitigation" run must NOT save native fetch — see [Phase 3 Step 5](/csd/api-automation/phase-3-mitigate/#step-5-run-attack--after-mitigation) for the correct approach.
 </Aside>
 
 ### Manual Execution

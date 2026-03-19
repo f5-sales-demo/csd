@@ -17,15 +17,41 @@ Phase 4 removes all objects created during the exercise in reverse dependency or
 
 Remove objects in **reverse creation order** — delete objects that depend on other objects first:
 
-1. **HTTPS Load Balancer** (`${F5XC_LB_NAME}-https`) — depends on Origin Pool
-2. **HTTP Load Balancer** (`${F5XC_LB_NAME}-http`) — depends on Origin Pool
-3. **Origin Pool** — depends on Healthcheck (if created)
-4. **DNS zone cleanup** — managed records (A and ACME) auto-clean when the LBs are deleted; manual records in `default_rr_set_group` need manual cleanup via `PUT`
-5. **Healthcheck** — only if created in Phase 1 Step 1
-6. **Protected Domain** — delete the CSD protected domain registration
+1. **Mitigated Domains** — delete all CSD mitigated domains created in Phase 3
+2. **HTTPS Load Balancer** (`${F5XC_LB_NAME}-https`) — depends on Origin Pool
+3. **HTTP Load Balancer** (`${F5XC_LB_NAME}-http`) — depends on Origin Pool
+4. **Origin Pool** — depends on Healthcheck (if created)
+5. **DNS zone cleanup** — managed records (A and ACME) auto-clean when the LBs are deleted; manual records in `default_rr_set_group` need manual cleanup via `PUT`
+6. **Healthcheck** — only if created in Phase 1 Step 1
+7. **Protected Domain** — delete the CSD protected domain registration
 
 <Aside type="caution">
 **Do not delete the DNS zone.** The DNS zone is shared infrastructure supporting many other DNS records across the platform and should never be deleted. Only clean up records you added manually to the `default_rr_set_group`. The protected domain, however, is a CSD configuration object tied to this deployment and **should** be deleted when fully tearing down.
+</Aside>
+
+## Delete Mitigated Domains
+
+If Phase 3 was executed, delete all mitigated domains before removing infrastructure objects. The standard simulation creates 6 mitigated domains:
+
+```bash
+for domain in cdn.jsdelivr.net esm.sh unpkg.com ga.jspm.io httpbin.org jsonplaceholder.typicode.com; do
+  curl -s -X DELETE \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/$domain"
+done
+```
+
+Verify: List mitigated domains to confirm the count is 0 (or 1 — see note below):
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '{count: (.items | length)}'
+```
+
+<Aside type="note">
+The mitigated domains list may return a phantom entry (count = 1) with null metadata after all mitigated domains are deleted. This is a backend artifact that appears when the CSD service state is between configurations — it does not represent a real mitigation and can be ignored. Attempting to delete this phantom entry returns `"Delete list when service not configured"`.
 </Aside>
 
 ## Delete HTTPS Load Balancer
@@ -99,6 +125,7 @@ The individual GET endpoint (`/protected_domains/\{name\}`) may return "API Grou
 
 | Object | Delete Status | Verify Status |
 | --- | --- | --- |
+| Mitigated Domains (6) | All `200` (empty `\{\}`) or skipped if Phase 3 not run | Count 0 (or 1 phantom) — PASS |
 | HTTPS Load Balancer (`-https`) | `200` (empty `\{\}`) | Not in list — PASS |
 | HTTP Load Balancer (`-http`) | `200` (empty `\{\}`) | Not in list — PASS |
 | Origin Pool | `200` (empty `\{\}`) | Not in list — PASS |

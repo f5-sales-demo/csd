@@ -53,6 +53,7 @@ find, verify, and report answers with citations — nothing else.
 | LOCAL-PHASE2 | `docs/api-automation/phase-2-attack.mdx` | Phase 2 attack simulation |
 | LOCAL-PHASE3 | `docs/api-automation/phase-3-mitigate.mdx` | Phase 3 mitigation, allow/mitigate |
 | LOCAL-PHASE4 | `docs/api-automation/phase-4-teardown.mdx` | Phase 4 teardown, cleanup |
+| LOCAL-FAQ | `docs/faq.mdx` | Frequently asked questions — alerts, logging, SIEM, mitigation behavior, detection timing |
 
 ### F5 API Documentation
 

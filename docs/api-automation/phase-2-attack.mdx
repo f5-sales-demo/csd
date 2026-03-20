@@ -130,8 +130,17 @@ Operators without browser automation tools perform the steps manually:
 | Signal | Behavior | Detection |
 | --- | --- | --- |
 | Form field harvesting | Reads email and password input values | Scripts reading sensitive form fields — flagged High Risk |
-| Script injection | Injects 4 `&lt;script&gt;` tags from `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io` | 4 new third-party script domains detected |
+| Script injection | Injects 4 `&lt;script&gt;` tags from `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io` | Up to 4 new third-party script domains detected (CDN availability varies) |
 | Data exfiltration | Sends harvested data via `fetch` to `www.httpbin.org` and `jsonplaceholder.typicode.com` | Network calls to external domains |
+
+<Aside type="note">
+**CDN availability varies.** Not all 4 CDN scripts will load in every
+run — browser resource limits, network conditions, or CDN throttling
+may cause some to fail with `ERR_INSUFFICIENT_RESOURCES` or timeout.
+The simulation succeeds if **any** CDN script loads. CSD detects the
+injection attempt regardless of whether the script loads successfully —
+the `&lt;script&gt;` tag creation itself is the detection signal.
+</Aside>
 
 <Aside type="tip">
 After running the attack simulation, use this deterministic polling loop to wait for detections:
@@ -153,7 +162,7 @@ The AI assistant should report the following. For AI-automated execution, eviden
 | Login page loaded | `200 OK` at `http://$F5XC_DOMAINNAME/#/login` | PASS / FAIL |
 | Console script executed | `[CSD Demo] Simulation complete` in console output | PASS / FAIL |
 | Fields harvested | Count &gt; 0 in console output | PASS |
-| Scripts injected | 4 CDN domains in console output | PASS |
+| Scripts injected | 1–4 CDN domains in console output (some may fail with resource errors) | PASS if any CDN domain appears |
 | Exfil channels | 2 fetch POST attempts in console output | PASS |
 
 <Aside type="tip">
@@ -210,13 +219,24 @@ START=$(( NOW - 86400 ))
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields?startTime=$START&endTime=$NOW" \
-  | jq '{fields: [.form_fields[]? | {field_name: .fieldName, field_type: .fieldType, page_url: .pageUrl}]}'
+  | jq '{total: .total_size, fields: [.form_fields[]? | {name: .name, sensitivity: .analysis.value, scripts: (.associated_scripts | length), locations: .locations}]}'
 ```
 
 | Field | Expected | Status |
 | --- | --- | --- |
-| Form fields detected | Email and password fields from login page | PASS if fields appear |
-| `field_type` | `email`, `password` | PASS if sensitive field types detected |
+| `total` | &gt; 0 | PASS if &gt; 0; PENDING if 0 but DET-3 passes |
+| `name` | Includes `email`, `password` | PASS if sensitive fields appear |
+| `sensitivity` | `Sensitive` for email/password fields | PASS if ML classified correctly |
+
+<Aside type="note">
+**Form field processing is slower than domain detection.** The
+`/formFields` endpoint may return fields with partial metadata
+on first query. The ML sensitivity classification (`Sensitive` vs
+`Not Sensitive`) populates after backend processing completes —
+this can take 20–30 minutes after the first simulation run. If
+fields show but lack classification, requery later. DET-3
+(`/detected_domains`) is the primary pass criteria.
+</Aside>
 
 ### Phase 2 Evidence Summary
 

@@ -1,3 +1,13 @@
+---
+name: demo-housekeeping
+description: Autonomous agent for demo Prepare (pre-meeting verification/cleanup) and Teardown (post-meeting deletion) stages
+tools:
+  - Read
+  - Bash
+  - Glob
+  - Grep
+---
+
 # Demo Housekeeping Agent
 
 ## Identity & Scope

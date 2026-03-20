@@ -62,6 +62,25 @@ curl -s -H "Authorization: APIToken xF5XC_API_TOKENx" \
 | Only mitigated domains exist | Delete them inline (no full teardown needed) |
 | All Phase 1 objects exist and healthy | Optionally skip Phase 1 and start at Phase 2 |
 
+### Skip-Ahead Verification
+
+When all Phase 1 objects exist (`200`) and you plan to skip to Phase 2,
+run the **Phase 1 Step 7 verification commands** to confirm infrastructure
+health before skipping. Use the exact commands from
+[Phase 1 — Step 7: Verify](/csd/api-automation/phase-1-build/#step-7-verify):
+
+1. DNS resolution: `dig +short xF5XC_DOMAINNAMEx A`
+2. HTTP LB state: `GET .../http_loadbalancers/xF5XC_LB_NAMEx-http` piped
+   to `jq '{state: .spec.state}'` — must show `VIRTUAL_HOST_READY`
+3. CSD JS configuration: `GET .../js_configuration` — must contain
+   `scriptTag`
+4. CSD status: `GET .../status` piped to `jq '{configured: .isConfigured,
+   enabled: .isEnabled}'` — both must be `true`
+
+All required checks (DNS-1, LB-1, CSD-1, CSD-2) must PASS before
+skipping to Phase 2. If any check fails, execute Phase 1 starting from
+the failed step.
+
 <Aside type="note">
 The mitigated domains list may return a count of 1 with null metadata even when no real mitigations exist. This is a backend artifact. Decision rule: if the single item has null metadata (name is null or empty), treat it as 0. If it has real metadata, delete each item by name before proceeding.
 </Aside>
@@ -100,6 +119,44 @@ Resolve each variable in this exact order. Stop at the first source that provide
 | `F5XC_ORIGIN_IP` | Optional | `44.232.69.192` | — |
 | `F5XC_ORIGIN_POOL` | Optional | `csd-origin` | — |
 | `F5XC_ORIGIN_PORT` | Optional | `3000` | — |
+
+### Execution Modes
+
+The AI assistant operates in one of two modes during the demo:
+
+**Normal mode** (default):
+
+- Every API call, verification query, and shell command **must come
+  verbatim from the phase files** (Phase 1–4) or from the Pre-flight
+  Check section above
+- Substitute only `xTOKENx` placeholders with resolved variable values
+- Do not construct API endpoints, jq filters, or curl commands from
+  general knowledge or inference
+- If a needed command is not documented, stop and report to the operator:
+  "This verification step is not covered by the phase documentation"
+
+**Debug mode** (auto-activates on failure):
+
+- Activates automatically when a documented command produces an
+  unexpected result: non-2xx HTTP response, jq parse error, command
+  timeout, or response body that contradicts the evidence table
+- In debug mode, the AI assistant may construct diagnostic commands,
+  inspect raw API responses, test endpoint variations, and use
+  creative troubleshooting to find the root cause
+- Prefix all debug output with `[DEBUG]` so the operator can
+  distinguish diagnostic activity from normal execution
+- **Document what you learn**: after resolving an issue, update the
+  relevant phase file or troubleshooting section with:
+  1. The failure scenario (what went wrong)
+  2. What was tried and did NOT work (so future runs don't repeat it)
+  3. The working resolution (the command or fix that solved it)
+- The goal of debug mode is to **eliminate itself** — every debug
+  session should produce a documentation update that makes the next
+  execution fully deterministic
+- Once the documentation is updated and the issue is resolved, return
+  to normal mode and resume from the last successful documented step
+- If debug mode cannot resolve the issue, report findings to the
+  operator and stop — do not continue to the next phase
 
 ### Evidence Display Protocol
 

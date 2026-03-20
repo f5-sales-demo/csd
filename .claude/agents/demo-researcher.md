@@ -1,6 +1,6 @@
 ---
 name: demo-researcher
-description: Read-only research agent that finds verified answers with citations for CSD demo Q&A and SME conversations
+description: Read-only research agent that finds verified answers with citations for CSD demo Q&A and subject matter expert conversations
 tools:
   - Read
   - Glob
@@ -36,7 +36,7 @@ find, verify, and report answers with citations — nothing else.
 ### Local Knowledge Base
 
 | ID | File | Topics |
-|----|------|--------|
+| -- | ---- | ------ |
 | LOCAL-OVERVIEW | `docs/overview.mdx` | CSD overview, capabilities, architecture |
 | LOCAL-INDEX | `docs/index.mdx` | Landing page, product summary |
 | LOCAL-XC-CONFIG | `docs/xc-configuration.mdx` | F5 XC console configuration, LB setup |
@@ -44,7 +44,7 @@ find, verify, and report answers with citations — nothing else.
 | LOCAL-TELEMETRY | `docs/telemetry-beacons.mdx` | Telemetry scripts, beacon format |
 | LOCAL-TRIGGER | `docs/trigger-detection.mdx` | Detection triggering, attack simulation |
 | LOCAL-ATTACK | `docs/attack-scripts.mdx` | Attack scripts, skimmer behavior |
-| LOCAL-DEMO-SITE | `docs/demo-website.mdx` | Demo website setup, bankexample |
+| LOCAL-DEMO-SITE | `docs/demo-website.mdx` | Demo site setup, bankexample |
 | LOCAL-DIAGNOSTICS | `docs/diagnostics.mdx` | Troubleshooting, diagnostic tests |
 | LOCAL-REFERENCES | `docs/references.mdx` | External links, further reading |
 | LOCAL-API-REF | `docs/api-reference.mdx` | CSD API endpoints, request/response |
@@ -57,51 +57,51 @@ find, verify, and report answers with citations — nothing else.
 ### F5 API Documentation
 
 | ID | URL | Topics |
-|----|-----|--------|
-| F5-API-CSD | https://docs.cloud.f5.com/docs-v2/api/shape-client-side-defense | CSD API spec, enable/status/scripts/detections |
-| F5-API-ALLOWED | https://docs.cloud.f5.com/docs-v2/api/shape-client-side-defense-allowed-domain | Allowed domain API |
-| F5-API-PROTECTED | https://docs.cloud.f5.com/docs-v2/api/shape-client-side-defense-protected-domain | Protected domain API |
-| F5-API-MITIGATED | https://docs.cloud.f5.com/docs-v2/api/shape-client-side-defense-mitigated-domain | Mitigated domain API |
-| F5-API-SUB | https://docs.cloud.f5.com/docs-v2/api/shape-client-side-defense-subscription | CSD subscription API |
-| F5-API-HEALTH | https://docs.cloud.f5.com/docs-v2/api/healthcheck | Healthcheck API |
-| F5-API-LB | https://docs.cloud.f5.com/docs-v2/api/views-http-loadbalancer | HTTP load balancer API |
+| -- | --- | ------ |
+| F5-API-CSD | <https://docs.cloud.f5.com/docs-v2/api/shape-client-side-defense> | CSD API spec, enable/status/scripts/detections |
+| F5-API-ALLOWED | <https://docs.cloud.f5.com/docs-v2/api/shape-client-side-defense-allowed-domain> | Allowed domain API |
+| F5-API-PROTECTED | <https://docs.cloud.f5.com/docs-v2/api/shape-client-side-defense-protected-domain> | Protected domain API |
+| F5-API-MITIGATED | <https://docs.cloud.f5.com/docs-v2/api/shape-client-side-defense-mitigated-domain> | Mitigated domain API |
+| F5-API-SUB | <https://docs.cloud.f5.com/docs-v2/api/shape-client-side-defense-subscription> | CSD subscription API |
+| F5-API-HEALTH | <https://docs.cloud.f5.com/docs-v2/api/healthcheck> | Healthcheck API |
+| F5-API-LB | <https://docs.cloud.f5.com/docs-v2/api/views-http-loadbalancer> | HTTP load balancer API |
 
 ### F5 Product Documentation
 
 | ID | URL | Topics |
-|----|-----|--------|
-| F5-CSD-ABOUT | https://docs.cloud.f5.com/docs-v2/client-side-defense/concepts/about-csd | CSD concepts, architecture, how it works |
-| F5-CSD-HOWTO | https://docs.cloud.f5.com/docs-v2/client-side-defense/how-tos/configure-csd | CSD configuration guide |
-| F5-CSD-FAQ | https://docs.cloud.f5.com/docs-v2/client-side-defense/faqs/csd | CSD frequently asked questions |
+| -- | --- | ------ |
+| F5-CSD-ABOUT | <https://docs.cloud.f5.com/docs-v2/client-side-defense/concepts/about-csd> | CSD concepts, architecture, how it works |
+| F5-CSD-HOWTO | <https://docs.cloud.f5.com/docs-v2/client-side-defense/how-tos/configure-csd> | CSD configuration guide |
+| F5-CSD-FAQ | <https://docs.cloud.f5.com/docs-v2/client-side-defense/faqs/csd> | CSD frequently asked questions |
 
 ### Community & Technical Articles
 
 | ID | URL | Topics |
-|----|-----|--------|
-| F5-COMMUNITY-AUTOMATION | https://community.f5.com/kb/TechnicalArticles/automation-of-f5-distributed-cloud-platform-client-side-defense-feature---part-i/305052 | CSD API automation, scripting |
-| F5-ATTACK-VECTORS | https://community.f5.com/kb/technicalarticles/javascript-supply-chains-magecart-and-f5-xc-client-side-defense-demo/296612 | Magecart, supply chain attacks, skimming |
+| -- | --- | ------ |
+| F5-COMMUNITY-AUTOMATION | <https://community.f5.com/kb/TechnicalArticles/automation-of-f5-distributed-cloud-platform-client-side-defense-feature---part-i/305052> | CSD API automation, scripting |
+| F5-ATTACK-VECTORS | <https://community.f5.com/kb/technicalarticles/javascript-supply-chains-magecart-and-f5-xc-client-side-defense-demo/296612> | Magecart, supply chain attacks, skimming |
 
 ### Marketing & Product Pages
 
 | ID | URL | Topics |
-|----|-----|--------|
-| F5-PRODUCT-PAGE | https://www.f5.com/products/distributed-cloud-services/client-side-defense#capabilities | CSD capabilities, features, positioning |
-| F5-DEMO-PAGE | https://www.f5.com/resources/demos/introduction-to-f5-distributed-cloud-client-side-defense | CSD demo overview, introduction |
-| F5-SOLUTION-BRIEF | https://cdn.studio.f5.com/files/k6fem79d/production/fa6729948127c9d6c7a02c28e091350c0b6e8b22.pdf | CSD solution brief |
-| F5-MARKETING-PDF | https://cdn.studio.f5.com/files/k6fem79d/production/6cf856310ae57017926c3ba475c6199c9747d92b.pdf | CSD marketing material |
+| -- | --- | ------ |
+| F5-PRODUCT-PAGE | <https://www.f5.com/products/distributed-cloud-services/client-side-defense#capabilities> | CSD capabilities, features, positioning |
+| F5-DEMO-PAGE | <https://www.f5.com/resources/demos/introduction-to-f5-distributed-cloud-client-side-defense> | CSD demo overview, introduction |
+| F5-SOLUTION-BRIEF | <https://cdn.studio.f5.com/files/k6fem79d/production/fa6729948127c9d6c7a02c28e091350c0b6e8b22.pdf> | CSD solution brief |
+| F5-MARKETING-PDF | <https://cdn.studio.f5.com/files/k6fem79d/production/6cf856310ae57017926c3ba475c6199c9747d92b.pdf> | CSD marketing material |
 
 ### Video Content
 
 | ID | URL | Topics |
-|----|-----|--------|
-| F5-YOUTUBE-DEMO | https://www.youtube.com/watch?v=esQtt2Ek3Ug | CSD demo video |
-| F5-VIMEO-MARKETING | https://vimeo.com/810975557/cd8d96ecca | CSD marketing video |
+| -- | --- | ------ |
+| F5-YOUTUBE-DEMO | <https://www.youtube.com/watch?v=esQtt2Ek3Ug> | CSD demo video |
+| F5-VIMEO-MARKETING | <https://vimeo.com/810975557/cd8d96ecca> | CSD marketing video |
 
 ### Compliance
 
 | ID | URL | Topics |
-|----|-----|--------|
-| PCI-BLOG | https://www.f5.com/company/blog/pci-dss-v4-0-browser-based-attacks | PCI DSS v4.0, browser attacks, 6.4.3, 11.6.1 |
+| -- | --- | ------ |
+| PCI-BLOG | <https://www.f5.com/company/blog/pci-dss-v4-0-browser-based-attacks> | PCI DSS v4.0, browser attacks, 6.4.3, 11.6.1 |
 
 ## Research Protocol
 
@@ -181,7 +181,7 @@ Omit this section entirely if the answer is complete.]
 Common question patterns and recommended source priority:
 
 | Question pattern | Try first | Then try |
-|------------------|-----------|----------|
+| ---------------- | --------- | -------- |
 | "How does X work?" | LOCAL docs | F5-CSD-ABOUT |
 | "What API endpoint for X?" | LOCAL-API-REF | F5-API-CSD, F5-API-* |
 | "Is CSD PCI compliant?" | LOCAL-OVERVIEW | PCI-BLOG |

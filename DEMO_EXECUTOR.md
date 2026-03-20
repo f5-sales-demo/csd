@@ -50,31 +50,26 @@ dedicated trigger phrase and distinct behavioral rules.
 **Trigger:** "prepare the demo", "prep the demo", "get ready for the demo"
 
 Run before the meeting starts to verify everything works. This stage
-is deterministic (Normal mode only).
+is delegated to the `demo-housekeeping` subagent to preserve main
+session context for the live demo.
 
-> **Autonomous execution.** Once triggered, Prepare runs to completion
-> without stopping for confirmation. The operator's trigger phrase
-> ("prepare the demo") is the authorization to clean up, tear down,
-> and verify. The only hard stop is if required environment variables
-> cannot be resolved from `.env` or shell — report what's missing and
-> stop.
+**Delegation protocol:**
 
-**Checklist:**
+1. Spawn the `demo-housekeeping` subagent (from `.claude/agents/`)
+   with the prompt: "Run Prepare stage"
+2. Wait for the subagent to return its readiness report
+3. Display the readiness summary and resolved variable table to the
+   operator
+4. Retain the resolved variable table in context for Stage 2
+5. If the subagent reports FAILED status or missing required variables,
+   relay the specifics to the operator and stop
 
-1. Resolve variables (`.env` → shell env → defaults for optional).
-   Only stop if required variables are missing.
-2. Test the API token with a lightweight GET (e.g., namespace list or
-   CSD status endpoint) to confirm authentication
-3. Verify internet connectivity
-4. Run `git pull` to ensure the latest documentation
-5. Run the Pre-flight Check from `docs/api-automation/index.mdx`
-6. If any objects exist, automatically run full Phase 4 teardown — no
-   confirmation needed (Prepare is pre-meeting cleanup)
-7. Re-run pre-flight to confirm all `404` (clean state)
-8. Report a readiness summary to the operator
+> **Variable fallback:** If resolved variables are lost from context
+> during a long Q&A session, re-resolve from `.env` and shell
+> environment as a fallback before resuming Execute.
 
-**Exit criteria:** All checks pass and environment is confirmed clean
-(all pre-flight checks return `404`). No operator confirmation gate.
+**Exit criteria:** Subagent reports READY status (all checks pass,
+environment confirmed clean). No additional operator confirmation.
 
 ### Stage 2 — Execute (the meeting)
 
@@ -131,17 +126,21 @@ improvisational behavior is explicitly allowed.
 meeting"
 
 Only triggered explicitly after the meeting is over. This stage is
-deterministic (Normal mode).
+delegated to the `demo-housekeeping` subagent.
 
-**Behavioral rules:**
+**Delegation protocol:**
 
-- **Context-dependent**: if already in a demo session, this is Stage 4
-  of the meeting flow. If triggered standalone (no active demo
-  session), run Phase 4 directly without the full persona activation
-  ceremony
-- Execute Phase 4 from the phase file — deterministic, Normal mode
-- Confirm clean state after teardown (all objects return `404`)
-- Report final status to the operator
+1. **Confirm with the operator first** — ask: "Phase 4 will
+   permanently delete all deployment objects. Ready to tear down?"
+   Wait for confirmation before proceeding.
+2. Spawn the `demo-housekeeping` subagent (from `.claude/agents/`)
+   with the prompt: "Run Teardown stage"
+3. Wait for the subagent to return its cleanup report
+4. Display the teardown summary to the operator
+
+**Context-dependent**: if triggered standalone (no active demo
+session), skip the full persona activation — just confirm and
+delegate.
 
 ## Narration Style
 

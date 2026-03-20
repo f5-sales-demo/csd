@@ -25,8 +25,15 @@ is defined in `docs/api-automation/`.
 
 **Read `docs/api-automation/index.mdx` before executing any phase.**
 That document is the single source of truth for all deterministic
-demo steps. The four phase files contain the verbatim cURL commands,
-evidence tables, and PASS/FAIL gates:
+demo steps. **In normal execution, use only the commands documented
+in the phase files and pre-flight section** — do not construct API
+endpoints, jq filters, or curl commands from general knowledge. When
+a documented command fails, debug mode activates automatically —
+troubleshoot creatively, find the root cause, then update the
+documentation so the fix becomes deterministic for future runs (see
+Execution Modes in the protocol). The four phase files contain every
+cURL command, jq filter, evidence table, and PASS/FAIL gate needed
+for the complete demo:
 
 - `docs/api-automation/phase-1-build.mdx` — Build
 - `docs/api-automation/phase-2-attack.mdx` — Attack

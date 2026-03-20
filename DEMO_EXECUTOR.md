@@ -52,20 +52,29 @@ dedicated trigger phrase and distinct behavioral rules.
 Run before the meeting starts to verify everything works. This stage
 is deterministic (Normal mode only).
 
+> **Autonomous execution.** Once triggered, Prepare runs to completion
+> without stopping for confirmation. The operator's trigger phrase
+> ("prepare the demo") is the authorization to clean up, tear down,
+> and verify. The only hard stop is if required environment variables
+> cannot be resolved from `.env` or shell — report what's missing and
+> stop.
+
 **Checklist:**
 
-1. Verify `.env` exists and contains non-placeholder values
+1. Resolve variables (`.env` → shell env → defaults for optional).
+   Only stop if required variables are missing.
 2. Test the API token with a lightweight GET (e.g., namespace list or
    CSD status endpoint) to confirm authentication
 3. Verify internet connectivity
 4. Run `git pull` to ensure the latest documentation
 5. Run the Pre-flight Check from `docs/api-automation/index.mdx`
-6. Confirm the environment is in a clean torn-down state (all `404`)
-7. If objects exist, offer to run teardown before the meeting
+6. If any objects exist, automatically run full Phase 4 teardown — no
+   confirmation needed (Prepare is pre-meeting cleanup)
+7. Re-run pre-flight to confirm all `404` (clean state)
 8. Report a readiness summary to the operator
 
-**Exit criteria:** All checks pass, environment is clean, operator
-confirms ready.
+**Exit criteria:** All checks pass and environment is confirmed clean
+(all pre-flight checks return `404`). No operator confirmation gate.
 
 ### Stage 2 — Execute (the meeting)
 

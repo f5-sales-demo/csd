@@ -25,10 +25,10 @@ CSD monitors three categories of browser-side behavior:
 | --- | --- | --- |
 | **Form field reads** | Which scripts access which `input` fields present in the page DOM at load time | `main.js` reading the `password` field on `/login` |
 | **Script inventory** | All first-party and third-party JavaScript loaded on each page, tracked by source domain | A new `<script>` tag loading from `cdn.jsdelivr.net` appearing on the login page |
-| **Network interactions** | Domains that scripts load resources from (script source domains) | Scripts sourced from `esm.sh` appearing in the Network view |
+| **Network interactions** | Domains involved in script network activity — includes both script-load source domains and fetch/XHR destination domains | Scripts sourced from `esm.sh` and data exfiltration targets like `www.httpbin.org` appearing in detected domains |
 
 <Aside type="caution">
-CSD tracks **script-load source domains** in the Network view — not fetch/XHR destination domains. If a script sends data via `fetch()` to `evil.com`, that domain does not appear in the Network view. See [Detection Boundaries](#detection-boundaries) for the full list of limitations.
+CSD's Network interactions signal primarily tracks **script-load source domains**. However, fetch/XHR destination domains also appear in the `/detected_domains` API and Dashboard domain table — CSD detects network activity at the domain level, not just script loads. See [Detection Boundaries](#detection-boundaries) for the full list of behavioral limitations.
 </Aside>
 
 ## Feature Matrix
@@ -50,19 +50,17 @@ CSD tracks **script-load source domains** in the Network view — not fetch/XHR 
 
 Understanding what CSD does **not** monitor is critical for setting accurate demo expectations:
 
-| Limitation | Detail |
-| --- | --- |
-| **Fetch/XHR destinations** | The Network view shows script-load source domains only. Domains contacted via `fetch()`, `XMLHttpRequest`, or image beacons do not appear. |
+| Limitation | Detail | Verified |
+| --- | --- | --- |
+| **Dynamically created fields** | CSD tracks `input` fields present in the DOM at page load. Fields injected by JavaScript after load are not monitored. A dynamically created `<input>` read by a script does not appear in the Form Fields view. | Yes — field absent from `/formFields` after 10-minute wait |
+| **Code-level obfuscation** | CSD does not flag dynamic code execution techniques or obfuscation patterns as separate detection signals. Obfuscated harvesters produce the same risk level as non-obfuscated ones — CSD tracks behavioral metadata, not source code patterns. | Yes — identical "High Risk" for both techniques |
+| **Form overlay fields** | CSD tracks only form fields present in the original DOM at page load. Overlay forms injected by JavaScript (a common digital skimming technique) are not tracked — only reads of the original fields are detected. | Yes — overlay fields absent from `/formFields` after 10-minute wait |
+| **Dashboard counter behavior** | The "Found &amp; Mitigated" and "Found &amp; Allowed" summary counts only change after an admin explicitly adds a domain to the mitigate or allow list. The "Action Needed" and "Total Found" counts update automatically when new domains are detected. | Yes — "Found &amp; Allowed" changed from 0 to 1 only after POST to `/allowed_domains` |
 
-<Aside type="note" title="Observed behaviors during demo testing">
-The following behaviors were observed during demo testing and may change as CSD evolves. These are not official F5 product specifications.
+<Aside type="note" title="API vs Console visibility">
+The `/detected_domains` API endpoint returns all detected domains including both first-party and third-party script source domains. The first-party application domain (e.g., `csd.bankexample.com`) appears in the detected domains list alongside third-party CDN domains. Both first-party and third-party domains appear in the Dashboard domain table.
 
-| Observed Behavior | Detail |
-| --- | --- |
-| **Dynamically created fields** | In our testing, CSD tracks `input` fields present in the DOM at page load. Fields injected by JavaScript after load were not observed to be monitored. |
-| **Code-level obfuscation** | In our testing, CSD does not appear to flag dynamic code execution techniques or obfuscation patterns as separate detection signals. |
-| **Dashboard counters** | In our testing, summary cards (Action Needed, Found &amp; Mitigated, etc.) only increment after an admin actions a domain. New detections appear in the Script List first. |
-| **First-party script domains** | In our testing, the Dashboard domain table tracks third-party script domains only. High-risk first-party scripts appear in the Script List but not on the Dashboard. |
+Fetch/XHR destination domains (e.g., `www.httpbin.org` contacted via `fetch()`) also appear in the `/detected_domains` response. The CSD platform tracks these at the domain level even though they are not script-load source domains.
 </Aside>
 
 ## PCI DSS v4.0 Mapping
@@ -96,5 +94,5 @@ The following table maps common client-side attack categories to the CSD detecti
 | **Web skimmer persistence** | Re-injects skimmer scripts across page navigations — see [Sansec Magecart Research](https://sansec.io/what-is-magecart) | — | Yes | Yes |
 
 <Aside type="note">
-"Network" detection depends on whether the attack loads scripts from external domains. Exfiltration via `fetch()` or image beacons to external domains is **not** visible in the CSD Network view — only script-load source domains are tracked.
+"Network" detection covers both script-load source domains and fetch/XHR destination domains — both appear in the CSD `/detected_domains` API and Dashboard domain table. However, CSD mitigation targets script loading (the supply-chain vector), not fetch/XHR calls. Mitigating a domain blocks `<script>` tag loads from that domain but does not intercept `fetch()` or `XMLHttpRequest` calls to it.
 </Aside>

@@ -226,10 +226,11 @@ security teams visibility into script activity they'd otherwise never see.
 
 CSD does **not** detect — be explicit about this during demos:
 
-- Dynamically created form fields (only static fields in the DOM)
-- `fetch`/`XHR` call destinations (only script-load domains are tracked)
-- Code-level pattern analysis (behavioral metadata, not source inspection)
-- First-party scripts (Dashboard scripts are excluded from reporting)
+- Dynamically created form fields (only fields present in the DOM at page load are tracked)
+- Code-level pattern analysis (behavioral metadata, not source inspection — obfuscation is not flagged separately)
+- Form overlay fields (injected overlay forms are not tracked — only original DOM fields)
+
+Note: Both first-party and third-party domains appear in the Dashboard domain table and `/detected_domains` API. Fetch/XHR destination domains also appear in detected domains.
 
 ### Two Configuration Surfaces
 

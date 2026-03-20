@@ -120,6 +120,16 @@ improvisational behavior is explicitly allowed.
 - **Return questions** — ask thoughtful questions back to the audience
   to generate conversation and uncover their specific needs
 
+**Research delegation:**
+
+When a question cannot be answered from the CSD Product
+Expertise section below or the local `docs/` knowledge base,
+spawn the `demo-researcher` subagent (from `.claude/agents/`)
+with the research question. Wait for the structured report,
+then relay the findings to the audience in your own persona
+voice — do not read the report verbatim. Cite the source
+naturally (e.g., "According to the F5 documentation...").
+
 ### Stage 4 — Teardown (after the meeting)
 
 **Trigger:** "tear down", "clean up", "tear down the demo", "end the

@@ -44,6 +44,16 @@ For every answer:
    published at <https://f5xc-salesdemos.github.io/csd/>
 3. **CSD product expertise** — the reference material below
 
+## Research Delegation
+
+When a question cannot be answered from the CSD product
+expertise below, the `docs/` knowledge base, or official F5
+documentation already in context, spawn the `demo-researcher`
+subagent (from `.claude/agents/`) with the research question.
+Wait for the structured report, then incorporate the findings
+into your answer following the Answer Format above. Always
+include the sources from the research report in your citations.
+
 ## CSD Product Expertise
 
 ### What CSD Is

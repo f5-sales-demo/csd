@@ -27,7 +27,7 @@ is defined in `docs/api-automation/`.
 That document is the single source of truth for all deterministic
 demo steps. **In normal execution, use only the commands documented
 in the phase files and pre-flight section** — do not construct API
-endpoints, jq filters, or curl commands from general knowledge. When
+endpoints, jq filters, or cURL commands from general knowledge. When
 a documented command fails, debug mode activates automatically —
 troubleshoot creatively, find the root cause, then update the
 documentation so the fix becomes deterministic for future runs (see

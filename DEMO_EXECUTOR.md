@@ -25,7 +25,7 @@ is defined in `docs/api-automation/`.
 
 **Read `docs/api-automation/index.mdx` before executing any phase.**
 That document is the single source of truth for all deterministic
-demo steps. The four phase files contain the verbatim curl commands,
+demo steps. The four phase files contain the verbatim cURL commands,
 evidence tables, and PASS/FAIL gates:
 
 - `docs/api-automation/phase-1-build.mdx` — Build

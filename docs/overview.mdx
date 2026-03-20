@@ -7,7 +7,7 @@ sidebar:
 
 import { Aside } from "@astrojs/starlight/components";
 
-F5 Distributed Cloud Client-Side Defense (CSD) protects web applications from client-side attacks by monitoring JavaScript behavior directly in the browser. The F5 XC load balancer injects a telemetry script into every page served to the client. This script observes all JavaScript activity — which scripts load, which form fields they read, and which network connections they make. Telemetry data is sent to the F5 XC platform where machine learning models analyze script behavior, assign risk scores, and flag anomalies. Security teams review detections in the CSD console and take action by allowing or mitigating script domains.
+F5 Distributed Cloud Client-Side Defense (CSD) protects web applications from client-side attacks by monitoring JavaScript behavior directly in the browser. The F5 XC load balancer can be configured to inject the CSD telemetry script into pages served to the client. This script observes all JavaScript activity — which scripts load, which form fields they read, and which network connections they make. Telemetry data is sent to the F5 XC platform where machine learning models analyze script behavior, assign risk scores, and flag anomalies. Security teams review detections in the CSD console and take action by allowing or mitigating script domains.
 
 ```mermaid
 flowchart LR
@@ -40,7 +40,7 @@ CSD tracks **script-load source domains** in the Network view — not fetch/XHR 
 | **Behavior timeline** | Charts script risk level, source domain, and type over time | Script detail &rarr; Overview &rarr; Behaviors Over Time |
 | **Affected user attribution** | Tracks impacted users by IP, geolocation, browser, and device | Script detail &rarr; Affected Users tab |
 | **Domain allow list** | Mark trusted script domains as allowed | Dashboard &rarr; domain row &rarr; Add To Allow List |
-| **Domain mitigate list** | Block scripts from specific domains on next page load | Dashboard &rarr; domain row &rarr; Add To Mitigate List |
+| **Domain mitigate list** | Block network calls and form field reads from specific script domains, preventing data exfiltration | Dashboard &rarr; domain row &rarr; Add To Mitigate List |
 | **Alert configuration** | Notifications for new domains, risk changes, suspicious behavior | Notifications section |
 | **Script justification** | Add notes explaining why a script is authorized (PCI DSS compliance) | Script detail &rarr; Justification field |
 | **Transaction tracking** | Monthly telemetry event counter confirming CSD is active | Dashboard &rarr; Transactions Consumed card |
@@ -52,11 +52,18 @@ Understanding what CSD does **not** monitor is critical for setting accurate dem
 
 | Limitation | Detail |
 | --- | --- |
-| **Dynamically created fields** | CSD only tracks `input` fields present in the DOM at page load. Fields injected by JavaScript after load are not monitored. |
 | **Fetch/XHR destinations** | The Network view shows script-load source domains only. Domains contacted via `fetch()`, `XMLHttpRequest`, or image beacons do not appear. |
-| **Code-level patterns** | CSD does not flag `eval()`, `Function()`, or other obfuscation techniques as separate detection signals. |
-| **Dashboard counters** | Summary cards (Action Needed, Found &amp; Mitigated, etc.) only increment after an admin actions a domain. New detections appear in the Script List first. |
-| **First-party script domains** | The Dashboard domain table tracks third-party script domains only. High-risk first-party scripts appear in the Script List but not on the Dashboard. |
+
+<Aside type="note" title="Observed behaviors during demo testing">
+The following behaviors were observed during demo testing and may change as CSD evolves. These are not official F5 product specifications.
+
+| Observed Behavior | Detail |
+| --- | --- |
+| **Dynamically created fields** | In our testing, CSD tracks `input` fields present in the DOM at page load. Fields injected by JavaScript after load were not observed to be monitored. |
+| **Code-level obfuscation** | In our testing, CSD does not appear to flag dynamic code execution techniques or obfuscation patterns as separate detection signals. |
+| **Dashboard counters** | In our testing, summary cards (Action Needed, Found &amp; Mitigated, etc.) only increment after an admin actions a domain. New detections appear in the Script List first. |
+| **First-party script domains** | In our testing, the Dashboard domain table tracks third-party script domains only. High-risk first-party scripts appear in the Script List but not on the Dashboard. |
+</Aside>
 
 ## PCI DSS v4.0 Mapping
 
@@ -73,20 +80,20 @@ Use the **Script justification** feature to document why each script is authoriz
 
 ## Threat Coverage Matrix
 
-The following table maps common client-side attack categories to the CSD detection signals that would fire during each attack type:
+The following table maps common client-side attack categories to the CSD detection signals that would fire during each attack type. Attack types marked with **\*** are confirmed by [F5 official documentation](https://www.f5.com/cloud/products/client-side-defense). Unmarked types are inferred based on CSD's detection signal categories and may not be explicitly claimed by F5.
 
 | Attack Category | Description | Field Reads | Script Injection | Network |
 | --- | --- | --- | --- | --- |
-| **Formjacking** | Malicious script reads form field values and exfiltrates them | Yes | — | Yes |
-| **Digital skimming** | Injects overlay forms or scripts to capture payment data | Yes | Yes | Yes |
-| **Supply chain attack** | Compromised third-party library loads malicious code | — | Yes | Yes |
+| **Formjacking** \* | Malicious script reads form field values and exfiltrates them | Yes | — | Yes |
+| **Digital skimming** \* | Injects overlay forms or scripts to capture payment data | Yes | Yes | Yes |
+| **Supply chain attack** \* | Compromised third-party library loads malicious code | — | Yes | Yes |
+| **Data exfiltration** \* | Reads sensitive data and sends it to external domains | Yes | — | Yes |
+| **Script injection** \* | Inserts unauthorized `<script>` tags into the page | — | Yes | Yes |
+| **Cryptojacking** \* | Injects cryptocurrency mining scripts | — | Yes | Yes |
 | **DOM manipulation** | Injects or modifies page elements to deceive users | — | Yes | — |
-| **Data exfiltration** | Reads sensitive data and sends it to external domains | Yes | — | Yes |
-| **Script injection** | Inserts unauthorized `<script>` tags into the page | — | Yes | Yes |
-| **Man-in-the-Browser** | Intercepts form data within the browser session | Yes | — | Yes |
-| **Cryptojacking** | Injects cryptocurrency mining scripts | — | Yes | Yes |
-| **Clickjacking** | Overlays invisible frames to hijack user clicks | — | Yes | — |
-| **Web skimmer persistence** | Re-injects skimmer scripts across page navigations | — | Yes | Yes |
+| **Man-in-the-Browser** | Intercepts form data within the browser session — see [OWASP](https://owasp.org/www-community/attacks/Man-in-the-browser_attack) and [MITRE T1185](https://attack.mitre.org/techniques/T1185/) | Yes | — | Yes |
+| **Clickjacking** | Overlays invisible frames to hijack user clicks — see [OWASP](https://owasp.org/www-community/attacks/Clickjacking) | — | Yes | — |
+| **Web skimmer persistence** | Re-injects skimmer scripts across page navigations — see [Sansec Magecart Research](https://sansec.io/what-is-magecart) | — | Yes | Yes |
 
 <Aside type="note">
 "Network" detection depends on whether the attack loads scripts from external domains. Exfiltration via `fetch()` or image beacons to external domains is **not** visible in the CSD Network view — only script-load source domains are tracked.

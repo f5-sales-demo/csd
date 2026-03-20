@@ -102,6 +102,26 @@ find, verify, and report answers with citations — nothing else.
 | ID | URL | Topics |
 | -- | --- | ------ |
 | PCI-BLOG | <https://www.f5.com/company/blog/pci-dss-v4-0-browser-based-attacks> | PCI DSS v4.0, browser attacks, 6.4.3, 11.6.1 |
+| F5-PCI-BLOG | <https://www.f5.com/company/blog/distributed-cloud-client-side-defense-prepares-customers-for-pci-dss> | PCI DSS v4.0.1 CSD compliance mapping |
+| PCI-SSC-LIBRARY | <https://www.pcisecuritystandards.org/document_library/> | PCI DSS v4.0 standard documents |
+
+### Threat Research & Standards
+
+| ID | URL | Topics |
+| -- | --- | ------ |
+| OWASP-CLICKJACKING | <https://owasp.org/www-community/attacks/Clickjacking> | Clickjacking, UI redressing, iframe overlay |
+| OWASP-CLICKJACKING-DEFENSE | <https://cheatsheetseries.owasp.org/cheatsheets/Clickjacking_Defense_Cheat_Sheet.html> | Clickjacking prevention, CSP frame-ancestors |
+| OWASP-MITB | <https://owasp.org/www-community/attacks/Man-in-the-browser_attack> | Man-in-the-Browser, browser trojan, session hijack |
+| OWASP-XSS | <https://owasp.org/www-community/attacks/xss/> | Cross-site scripting, script injection, DOM XSS |
+| OWASP-CLIENT-SIDE-TOP10 | <https://owasp.org/www-project-top-10-client-side-security-risks/> | Client-side security risks ranking |
+| MITRE-SUPPLY-CHAIN | <https://attack.mitre.org/techniques/T1195/> | Supply chain compromise T1195 |
+| MITRE-SUPPLY-CHAIN-SW | <https://attack.mitre.org/techniques/T1195/002/> | Software supply chain compromise T1195.002 |
+| MITRE-MITB | <https://attack.mitre.org/techniques/T1185/> | Man-in-the-Browser T1185 |
+| MITRE-EXFILTRATION | <https://attack.mitre.org/tactics/TA0010/> | Data exfiltration tactic TA0010 |
+| MITRE-RESOURCE-HIJACK | <https://attack.mitre.org/techniques/T1496/> | Resource hijacking T1496, cryptojacking |
+| AKAMAI-WEB-SKIMMING | <https://www.akamai.com/glossary/what-is-web-skimming> | Web skimming, digital skimming definition |
+| SANSEC-MAGECART | <https://sansec.io/what-is-magecart> | Magecart, formjacking, e-commerce skimming |
+| F5-CSD-PRIVACY | <https://www.f5.com/company/policies/f5-distributed-cloud-client-side-defense-privacy-statement> | CSD data collection, privacy, what telemetry contains |
 
 ## Research Protocol
 
@@ -192,6 +212,12 @@ Common question patterns and recommended source priority:
 | "How do I configure X?" | LOCAL-XC-CONFIG | F5-CSD-HOWTO |
 | "What does the dashboard show?" | LOCAL-CSD-CONSOLE | F5-CSD-ABOUT |
 | "How does telemetry work?" | LOCAL-TELEMETRY | F5-CSD-ABOUT |
+| "What is clickjacking?" | OWASP-CLICKJACKING | LOCAL-OVERVIEW |
+| "What is man-in-the-browser?" | OWASP-MITB, MITRE-MITB | LOCAL-OVERVIEW |
+| "What is a supply chain attack?" | MITRE-SUPPLY-CHAIN | F5-ATTACK-VECTORS |
+| "What is cryptojacking?" | MITRE-RESOURCE-HIJACK | LOCAL-OVERVIEW |
+| "What is web skimming/Magecart?" | SANSEC-MAGECART, AKAMAI-WEB-SKIMMING | F5-ATTACK-VECTORS |
+| "What data does CSD collect?" | F5-CSD-PRIVACY | LOCAL-TELEMETRY |
 
 ## Execution Rules
 

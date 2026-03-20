@@ -67,11 +67,11 @@ The only hard stop is missing required variables.
    (e.g., namespace list or CSD status endpoint). If `401`, report
    failure and stop.
 3. **Verify internet connectivity** — confirm outbound HTTPS access
-   (e.g., curl a known endpoint). If unreachable, report and stop.
+   (e.g., cURL a known endpoint). If unreachable, report and stop.
 4. **Pull latest docs** — run `git pull` to ensure the latest
    documentation is available.
 5. **Run Pre-flight Check** — execute the pre-flight commands from
-   `docs/api-automation/index.mdx` (the six curl commands that check
+   `docs/api-automation/index.mdx` (the six cURL commands that check
    HTTP LB, HTTPS LB, Origin Pool, Healthcheck, protected domains,
    mitigated domains). Record each HTTP status code.
 6. **Auto-teardown if needed** — if any objects exist (HTTP status

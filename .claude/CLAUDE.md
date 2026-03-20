@@ -10,10 +10,10 @@ and follow its instructions exactly**.
 
 | Trigger phrases | Persona file | Action |
 | --------------- | ------------ | ------ |
-| "prepare the demo", "prep the demo", "get ready for the demo" | `DEMO_EXECUTOR.md` | Read the file, run **Prepare** stage only |
+| "prepare the demo", "prep the demo", "get ready for the demo" | `DEMO_EXECUTOR.md` | Read the file, delegate to `demo-housekeeping` subagent for Prepare stage, relay results |
 | "run the demo", "execute the demo", "start the demo", "API demo" | `DEMO_EXECUTOR.md` | Read the file, run **Execute** stage (intro, phases, conclusion) |
 | "question and answer", "Q&A", "open it up for questions", "take questions" | `DEMO_EXECUTOR.md` | Read the file, enter **Q&A** stage |
-| "tear down", "clean up", "tear down the demo", "end the meeting" | `DEMO_EXECUTOR.md` | Read the file, run **Teardown** stage |
+| "tear down", "clean up", "tear down the demo", "end the meeting" | `DEMO_EXECUTOR.md` | Read the file, confirm with operator, delegate to `demo-housekeeping` subagent for Teardown stage, relay results |
 | "walk through the demo", "present the demo", "show the demo", "walkthrough" | `PRESENTER.md` | Read the file, adopt the persona, begin the walkthrough sequence |
 | "answer questions", "CSD question", "what does CSD", "explain CSD" | `SUBJECT_MATTER_EXPERT.md` | Read the file, adopt the persona, answer as subject matter expert |
 

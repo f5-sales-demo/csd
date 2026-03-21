@@ -131,7 +131,7 @@ and stop.
 
 **T3: Origin Health**
 
-11. **PF-T3-1: Origin Connectivity** — curl the origin IP:port with
+11. **PF-T3-1: Origin Connectivity** — cURL the origin IP:port with
     `--connect-timeout 10`. Record HTTP status. `000` is WARN.
 12. **PF-T3-2: HTML Content** — only if T3-1 returned a valid HTTP
     status, check if response contains `</html>`. Record result.

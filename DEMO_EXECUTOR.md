@@ -47,29 +47,50 @@ dedicated trigger phrase and distinct behavioral rules.
 
 ### Stage 1 — Prepare (before the meeting)
 
-**Trigger:** "prepare the demo", "prep the demo", "get ready for the demo"
+**Trigger:** "prepare the demo", "prep the demo", "get ready for the
+demo", "is the demo environment ready", "is the demo ready",
+"the meeting will be starting soon", "check the demo", "pre-flight",
+"preflight check"
 
 Run before the meeting starts to verify everything works. This stage
-is delegated to the `demo-housekeeping` subagent to preserve main
-session context for the live demo.
+runs the full **Readiness Verification Matrix** (tiers T0–T5) defined
+in `docs/api-automation/index.mdx`, not just the environment cleanup
+checks. It is delegated to the `demo-housekeeping` subagent to
+preserve main session context for the live demo.
+
+**What the readiness matrix checks:**
+
+- **T0** — API connectivity, token validity, namespace access, CSD
+  API permissions
+- **T1** — Object quotas (healthcheck limits, LB/origin pool capacity)
+- **T2** — CSD tenant enablement, DNS zone existence, managed records,
+  nameserver authority
+- **T3** — Origin server reachability, HTML content verification
+- **T4** — Leftover demo objects (auto-teardown if found)
+- **T5** — Let's Encrypt certificate rate limit risk
 
 **Delegation protocol:**
 
 1. Spawn the `demo-housekeeping` subagent (from `.claude/agents/`)
    with the prompt: "Run Prepare stage"
 2. Wait for the subagent to return its readiness report
-3. Display the readiness summary and resolved variable table to the
-   operator
+3. Display the full tiered readiness summary and resolved variable
+   table to the operator
 4. Retain the resolved variable table in context for Stage 2
-5. If the subagent reports FAILED status or missing required variables,
-   relay the specifics to the operator and stop
+5. If the subagent reports **NOT READY** status (any T0–T2 FAIL) or
+   missing required variables, relay the specifics to the operator
+   and stop
+6. If the subagent reports **READY WITH WARNINGS**, display the
+   warnings and let the operator decide whether to proceed
 
 > **Variable fallback:** If resolved variables are lost from context
 > during a long Q&A session, re-resolve from `.env` and shell
 > environment as a fallback before resuming Execute.
 
-**Exit criteria:** Subagent reports READY status (all checks pass,
-environment confirmed clean). No additional operator confirmation.
+**Exit criteria:** Subagent reports READY or READY WITH WARNINGS
+status (all T0–T2 checks pass, environment confirmed clean).
+No additional operator confirmation for READY. Operator
+acknowledgment required for READY WITH WARNINGS.
 
 ### Stage 2 — Execute (the meeting)
 

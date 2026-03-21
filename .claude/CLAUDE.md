@@ -10,7 +10,7 @@ and follow its instructions exactly**.
 
 | Trigger phrases | Persona file | Action |
 | --------------- | ------------ | ------ |
-| "prepare the demo", "prep the demo", "get ready for the demo" | `DEMO_EXECUTOR.md` | Read the file, delegate to `demo-housekeeping` subagent for Prepare stage, relay results |
+| "prepare the demo", "prep the demo", "get ready for the demo", "is the demo environment ready", "is the demo ready", "the meeting will be starting soon", "check the demo", "pre-flight", "preflight check" | `DEMO_EXECUTOR.md` | Read the file, delegate to `demo-housekeeping` subagent for Prepare stage (runs full Readiness Verification Matrix T0–T5), relay results |
 | "run the demo", "execute the demo", "start the demo", "API demo" | `DEMO_EXECUTOR.md` | Read the file, run **Execute** stage (intro, phases, conclusion) |
 | "question and answer", "Q&A", "open it up for questions", "take questions" | `DEMO_EXECUTOR.md` | Read the file, enter **Q&A** stage |
 | "tear down", "clean up", "tear down the demo", "end the meeting" | `DEMO_EXECUTOR.md` | Read the file, confirm with operator, delegate to `demo-housekeeping` subagent for Teardown stage, relay results |

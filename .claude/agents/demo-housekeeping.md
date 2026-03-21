@@ -67,34 +67,108 @@ that provides a non-placeholder value:
 
 When prompted with **"Run Prepare stage"**, execute these steps in
 order. Run autonomously — do not stop for confirmation at any point.
-The only hard stop is missing required variables.
+The only hard stop is missing required variables or a FAIL in tiers
+T0–T2.
 
-1. **Resolve variables** — follow the Variable Resolution Protocol
-   above. Source `.env` if present (`set -a && source .env && set +a`),
-   then check shell environment. Stop if any required variable is
-   missing.
-2. **Test API token** — run a lightweight GET to confirm authentication
-   (e.g., namespace list or CSD status endpoint). If `401`, report
-   failure and stop.
-3. **Verify internet connectivity** — confirm outbound HTTPS access
-   (e.g., cURL a known endpoint). If unreachable, report and stop.
-4. **Pull latest docs** — run `git pull` to ensure the latest
-   documentation is available.
-5. **Run Pre-flight Check** — execute the pre-flight commands from
-   `docs/api-automation/index.mdx` (the six cURL commands that check
-   HTTP LB, HTTPS LB, Origin Pool, Healthcheck, protected domains,
-   mitigated domains). Record each HTTP status code.
-6. **Auto-teardown if needed** — if any objects exist (HTTP status
-   `200` on infrastructure checks, or non-zero real counts on
-   protected/mitigated domains), run the full Phase 4 teardown by
-   reading and executing commands from
-   `docs/api-automation/phase-4-teardown.mdx`. No confirmation needed —
-   Prepare is pre-meeting cleanup.
-7. **Re-run pre-flight** — execute the same pre-flight checks to
-   confirm all objects return `404` and counts are 0. If any object
-   still exists, report failure and stop.
-8. **Return readiness report** — output the structured report per the
-   Output Contract below.
+### Step 1: Resolve Variables
+
+Follow the Variable Resolution Protocol above. Source `.env` if
+present (`set -a && source .env && set +a`), then check shell
+environment. Stop if any required variable is missing.
+
+### Step 2: Pull Latest Docs
+
+Run `git pull` to ensure the latest documentation is available.
+
+### Step 3: Run Readiness Verification Matrix (T0–T5)
+
+Execute the tiered checks defined in the **Readiness Verification
+Matrix** section of `docs/api-automation/index.mdx`. Run each tier
+sequentially — a FAIL in an earlier tier blocks later tiers.
+
+**T0: Connectivity & Auth**
+
+1. **PF-T0-1: API Connectivity** — GET `/api/web/namespaces` with
+   `--connect-timeout 10`. If `000` or timeout, try adding
+   `--tlsv1.2 --tls-max 1.2` (some environments reject TLS 1.3).
+   If still failing, report FAIL and stop.
+2. **PF-T0-2: Namespace Access** — GET
+   `/api/config/namespaces/{namespace}/http_loadbalancers`. If `403`
+   or `404`, report FAIL and stop.
+3. **PF-T0-3: CSD API Access** — GET
+   `/api/shape/csd/namespaces/{namespace}/status`. If `403`, report
+   FAIL and stop.
+
+If any T0 check fails, set status to **NOT READY** and stop. Do
+not proceed to T1.
+
+**T1: Quotas & Capacity**
+
+4. **PF-T1-1: Healthcheck Quota** — POST a probe healthcheck named
+   `preflight-quota-probe`, then DELETE it. If creation returns
+   error code `8` (exhausted limits), record as WARN (not FAIL —
+   healthchecks are optional for CSD).
+5. **PF-T1-2: Origin Pool Count** — GET origin pools list, record
+   count.
+6. **PF-T1-3: HTTP LB Count** — GET LB list, record count.
+
+**T2: Platform Prerequisites**
+
+7. **PF-T2-1: CSD Tenant Status** — GET CSD status, check
+   `isConfigured` and `isEnabled`. If either is `false`, report
+   FAIL and stop.
+8. **PF-T2-2: DNS Zone Exists** — GET
+   `/api/config/dns/namespaces/system/dns_zones/{root_domain}`.
+   Record status code. `404` is WARN (external DNS may be in use).
+   `403` is WARN (token may lack system namespace access).
+9. **PF-T2-3: DNS Managed Records** — only if T2-2 returned `200`,
+   check `allow_http_lb_managed_records`. Record `true`/`false`.
+10. **PF-T2-4: DNS Nameserver Authority** — run
+    `dig +short NS {root_domain}`. Record whether F5 XC or external.
+
+If any T2 check is FAIL (not WARN), set status to **NOT READY**
+and stop.
+
+**T3: Origin Health**
+
+11. **PF-T3-1: Origin Connectivity** — cURL the origin IP:port with
+    `--connect-timeout 10`. Record HTTP status. `000` is WARN.
+12. **PF-T3-2: HTML Content** — only if T3-1 returned a valid HTTP
+    status, check if response contains `</html>`. Record result.
+
+**T4: Environment Clean** (existing pre-flight)
+
+13. Run the six pre-flight commands (HTTP LB, HTTPS LB, Origin Pool,
+    Healthcheck, protected domains, mitigated domains). Record each
+    HTTP status code.
+14. Also check for stale `preflight-quota-probe` healthcheck from a
+    prior interrupted run — delete if found.
+15. **Auto-teardown if needed** — if any objects exist (HTTP `200` on
+    infrastructure checks, or non-zero real counts on
+    protected/mitigated domains), run the full Phase 4 teardown by
+    reading and executing commands from
+    `docs/api-automation/phase-4-teardown.mdx`. No confirmation
+    needed — Prepare is pre-meeting cleanup.
+16. **Re-run pre-flight** — execute the same pre-flight checks to
+    confirm all objects return `404` and counts are 0. If any object
+    still exists, report failure and stop.
+
+**T5: Certificate Readiness**
+
+17. **PF-T5-1: Recent Certificate Issuance History** — there is no
+    API to query Let's Encrypt rate limits directly. Note as INFO
+    that frequent create/destroy cycles can exhaust the weekly limit
+    (5 duplicate certificates per week per domain). If this demo
+    domain has been torn down and rebuilt multiple times recently,
+    include a warning that HTTPS may be rate-limited.
+18. **PF-T5-2: Cert State** — only if an HTTPS LB existed in T4
+    (before teardown), note the `cert_state` value observed. If
+    `AutoCertDomainRateLimited`, include a warning that HTTPS may
+    not be available and the demo should plan for HTTP-only.
+
+### Step 4: Return Readiness Report
+
+Output the structured report per the Output Contract below.
 
 ## Teardown Stage Protocol
 
@@ -115,12 +189,15 @@ before spawning this agent — do not ask for confirmation again.
 
 ## Output Contract
 
-Both stages return a structured report in this format:
+Both stages return a structured report. Teardown uses the simplified
+format. Prepare uses the full readiness format.
+
+### Prepare Report Format
 
 ```
-## Status: READY / CLEAN / FAILED
+## Demo Readiness: READY / NOT READY / READY WITH WARNINGS
 
-## Cleanup Performed: Yes / No / N/A
+## Cleanup Performed: Yes / No
 
 ## Resolved Variables
 | Variable | Value |
@@ -136,7 +213,72 @@ Both stages return a structured report in this format:
 | F5XC_ORIGIN_POOL | ... |
 | F5XC_ORIGIN_PORT | ... |
 
-## Pre-flight Results
+### T0: Connectivity & Auth
+| Check | Result | Status |
+|---|---|---|
+| PF-T0-1: API Connectivity | 200 | PASS |
+| PF-T0-2: Namespace Access | 200 | PASS |
+| PF-T0-3: CSD API Access | 200 | PASS |
+
+### T1: Quotas & Capacity
+| Check | Result | Status |
+|---|---|---|
+| PF-T1-1: Healthcheck Quota | Probe created | PASS |
+| PF-T1-2: Origin Pool Count | 14 | PASS |
+| PF-T1-3: HTTP LB Count | 1 | PASS |
+
+### T2: Platform Prerequisites
+| Check | Result | Status |
+|---|---|---|
+| PF-T2-1: CSD Tenant Status | configured + enabled | PASS |
+| PF-T2-2: DNS Zone Exists | 200 | PASS |
+| PF-T2-3: DNS Managed Records | true | PASS |
+| PF-T2-4: DNS Nameserver Authority | f5clouddns.com | PASS |
+
+### T3: Origin Health
+| Check | Result | Status |
+|---|---|---|
+| PF-T3-1: Origin Connectivity | 200 | PASS |
+| PF-T3-2: HTML Content | HTML detected | PASS |
+
+### T4: Environment Clean
+| Check | Result | Status |
+|---|---|---|
+| HTTP LB | 404 | PASS |
+| HTTPS LB | 404 | PASS |
+| Origin Pool | 404 | PASS |
+| Healthcheck | 404 | PASS |
+| Protected Domains | 0 | PASS |
+| Mitigated Domains | 0 | PASS |
+
+### T5: Certificate Readiness
+| Check | Result | Status |
+|---|---|---|
+| PF-T5-2: Cert State | SKIP (no HTTPS LB) | INFO |
+
+### Warnings
+- (list any WARN or INFO items with context and remediation)
+```
+
+### Teardown Report Format
+
+```
+## Status: CLEAN / FAILED
+
+## Resolved Variables
+(same table as above)
+
+## Teardown Results
+| Object | Action | HTTP Status |
+|---|---|---|
+| Mitigated Domains | Deleted | 200 |
+| HTTPS LB | Deleted | 200 |
+| HTTP LB | Deleted | 200 |
+| Origin Pool | Deleted | 200 |
+| Healthcheck | Deleted | 200 |
+| Protected Domain | Deleted | 200 |
+
+## Post-Teardown Verification
 | Object | HTTP Status |
 |---|---|
 | HTTP LB | 404 |
@@ -150,9 +292,13 @@ Both stages return a structured report in this format:
 - (list any non-blocking issues encountered)
 ```
 
-- **READY** — Prepare completed successfully, environment is clean
-- **CLEAN** — Teardown completed successfully, all objects deleted
-- **FAILED** — A blocking error occurred (details in Warnings)
+### Overall Status Rules
+
+- **READY** — all T0–T4 checks PASS
+- **READY WITH WARNINGS** — T0–T4 PASS but T3 or T5 have WARN/INFO
+- **NOT READY** — any T0, T1, or T2 check is FAIL
+- **CLEAN** — teardown completed, all objects deleted
+- **FAILED** — a blocking error occurred (details in Warnings)
 
 **Note:** Do not include `F5XC_API_TOKEN` values in the report output —
 show `***` instead to avoid leaking credentials.

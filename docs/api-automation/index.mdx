@@ -89,6 +89,339 @@ The mitigated domains list may return a count of 1 with null metadata even when 
 CSD detections persist across infrastructure teardown/rebuild when the same protected domain is re-registered on the same tenant. After a teardown and rebuild, query `/detected_domains` once. If the response contains items, proceed immediately — no waiting required. If the response is empty, wait 30 seconds and query once more. If still empty after the second query, proceed anyway — detections will appear once the simulation runs.
 </Aside>
 
+## Readiness Verification Matrix
+
+The pre-flight check above verifies the environment is **clean**. The readiness matrix below verifies the environment is **capable** — that all prerequisites, quotas, connectivity, and platform services are in place for a successful demo. Run this matrix before every meeting as part of the Prepare stage.
+
+Each check has a test ID, a tier (T0–T5), a PASS/FAIL/WARN criteria, and a remediation path. Tiers are sequential — a FAIL in an earlier tier blocks later tiers from running.
+
+### Tier Summary
+
+| Tier | Category | Blocks Demo? | Purpose |
+| --- | --- | --- | --- |
+| T0 | Connectivity &amp; Auth | **Yes** | Can we reach the platform and authenticate? |
+| T1 | Quotas &amp; Capacity | **Yes** (if at limit) | Is there room to create demo objects? |
+| T2 | Platform Prerequisites | **Yes** | Are tenant-level services configured? |
+| T3 | Origin Health | **Warn** | Is the backend application responding? |
+| T4 | Environment Clean | Auto-remediate | Are there leftover objects from a prior run? |
+| T5 | Certificate Readiness | Informational | Will HTTPS work, or should we plan for HTTP-only? |
+
+### T0: Connectivity &amp; Auth
+
+These checks confirm the execution host can reach the F5 XC API and the credentials are valid.
+
+#### PF-T0-1: API Connectivity
+
+```bash
+curl -s -o /dev/null -w '%\{http_code\}' --connect-timeout 10 --max-time 15 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces"
+```
+
+| Result | Status | Remediation |
+| --- | --- | --- |
+| `200` | **PASS** | API is reachable and token is valid |
+| `401` | **FAIL** | Token expired or invalid — regenerate under **Administration** &rarr; **Credentials** &rarr; **API Credentials** |
+| `000` or timeout | **FAIL** | Network issue — check internet connectivity, VPN, or TLS compatibility (some environments require `--tlsv1.2 --tls-max 1.2`) |
+
+#### PF-T0-2: Namespace Access
+
+```bash
+curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers"
+```
+
+| Result | Status | Remediation |
+| --- | --- | --- |
+| `200` | **PASS** | Token has access to the target namespace |
+| `403` | **FAIL** | Token lacks permissions for namespace `xF5XC_NAMESPACEx` — check role bindings |
+| `404` | **FAIL** | Namespace does not exist |
+
+#### PF-T0-3: CSD API Access
+
+```bash
+curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status"
+```
+
+| Result | Status | Remediation |
+| --- | --- | --- |
+| `200` | **PASS** | Token has CSD/Shape API permissions |
+| `403` | **FAIL** | Token lacks CSD role binding — contact tenant administrator to add Shape/CSD permissions |
+
+### T1: Quotas &amp; Capacity
+
+These checks verify the tenant has room to create the objects Phase 1 needs.
+
+#### PF-T1-1: Healthcheck Quota
+
+Create and immediately delete a probe healthcheck to test whether the tenant has capacity. If the creation returns error code `8` with "exhausted limits", the quota is full.
+
+```bash
+# Create probe
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "preflight-quota-probe",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "http_health_check": {
+        "use_origin_server_name": {},
+        "path": "/",
+        "use_http2": false
+      },
+      "timeout": 3,
+      "interval": 15,
+      "unhealthy_threshold": 1,
+      "healthy_threshold": 3
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks" \
+  | jq '{name: .metadata.name, code: .code, message: .message}'
+
+# Cleanup probe
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/preflight-quota-probe" \
+  > /dev/null
+```
+
+| Result | Status | Remediation |
+| --- | --- | --- |
+| Probe created (name returned, no error code) | **PASS** | Healthcheck quota available |
+| `"code": 8` with "exhausted limits" | **WARN** | Quota full — Phase 1 Step 1 will be skipped automatically (CSD does not require a healthcheck). Demo proceeds normally. Delete unused healthchecks to free capacity for future runs. |
+
+<Aside type="note">
+The probe creates a real object and deletes it immediately. If the deletion fails (e.g., network issue), a stale `preflight-quota-probe` healthcheck may remain — the next pre-flight run will detect and clean it.
+</Aside>
+
+#### PF-T1-2: Origin Pool Capacity
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools" \
+  | jq '{count: (.items | length)}'
+```
+
+| Result | Status | Remediation |
+| --- | --- | --- |
+| Count returned | **PASS** (informational) | Note the current count for awareness |
+| API error | **FAIL** | Permissions issue — see PF-T0-2 |
+
+#### PF-T1-3: HTTP Load Balancer Capacity
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers" \
+  | jq '{count: (.items | length)}'
+```
+
+| Result | Status | Remediation |
+| --- | --- | --- |
+| Count returned | **PASS** (informational) | Note the current count — the demo creates 2 LBs |
+| API error | **FAIL** | Permissions issue — see PF-T0-2 |
+
+### T2: Platform Prerequisites
+
+These checks verify tenant-level services that the demo depends on.
+
+#### PF-T2-1: CSD Tenant Status
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq '{configured: .isConfigured, enabled: .isEnabled}'
+```
+
+| Result | Status | Remediation |
+| --- | --- | --- |
+| Both `true` | **PASS** | CSD is active |
+| `isConfigured: false` | **FAIL** | CSD not enabled at tenant level — contact F5 XC administrator. This is a tenant-wide setting that cannot be configured via API. |
+| `isEnabled: false` | **FAIL** | CSD configured but not active — contact administrator |
+
+#### PF-T2-2: DNS Zone Exists
+
+```bash
+curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx"
+```
+
+| Result | Status | Remediation |
+| --- | --- | --- |
+| `200` | **PASS** | DNS zone exists in F5 XC |
+| `404` | **WARN** | No F5 XC DNS zone for this domain — if using F5 XC managed DNS, the zone must be created first. If using external DNS, this is expected. |
+| `403` | **WARN** | Token lacks DNS zone read access (zones are in the `system` namespace) — DNS configuration may require manual steps |
+
+#### PF-T2-3: DNS Managed Records Enabled
+
+Only run if PF-T2-2 returned `200` (F5 XC DNS zone exists):
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq '.spec.primary.allow_http_lb_managed_records'
+```
+
+| Result | Status | Remediation |
+| --- | --- | --- |
+| `true` | **PASS** | LB-managed DNS records will be auto-created |
+| `false` or `null` | **WARN** | Managed records disabled — Phase 1 Step 4 will need to enable them, or DNS records must be created manually. See [Phase 1 Step 4, Option A](/csd/api-automation/phase-1-build/#option-a-f5-xc-managed-dns). |
+
+#### PF-T2-4: DNS Nameserver Authority
+
+```bash
+dig +short NS xF5XC_ROOT_DOMAINx
+```
+
+| Result | Status | Remediation |
+| --- | --- | --- |
+| Includes `ns1.f5clouddns.com` and `ns2.f5clouddns.com` | **PASS** | F5 XC is authoritative — automatic DNS management available |
+| Other nameservers | **INFO** | External DNS provider — Phase 1 Step 4 will use Option B (manual record creation) |
+| Empty | **FAIL** | Domain has no NS records — DNS is fundamentally broken for this domain |
+
+### T3: Origin Health
+
+These checks verify the backend application is reachable.
+
+#### PF-T3-1: Origin Server Connectivity
+
+```bash
+curl -s -o /dev/null -w '%\{http_code\}' --connect-timeout 10 --max-time 15 \
+  "http://xF5XC_ORIGIN_IPx:xF5XC_ORIGIN_PORTx/"
+```
+
+| Result | Status | Remediation |
+| --- | --- | --- |
+| `200` (or other valid HTTP code) | **PASS** | Origin server is responding |
+| `000` or connection refused | **WARN** | Origin unreachable from this network — this tests client-to-origin connectivity, not LB-to-origin. The LB may use a different network path. If the origin is only reachable via the F5 XC network fabric, this is expected. |
+
+<Aside type="note">
+The default origin for the CSD demo is the Juice Shop application at `44.232.69.192:3000`. If you are using a custom origin (`F5XC_ORIGIN_IP` / `F5XC_ORIGIN_PORT`), verify that it serves an HTML page with form fields — CSD needs form elements to demonstrate detection capabilities.
+</Aside>
+
+#### PF-T3-2: Origin Serves HTML Content
+
+Only run if PF-T3-1 returned a valid HTTP status:
+
+```bash
+curl -s --max-time 10 "http://xF5XC_ORIGIN_IPx:xF5XC_ORIGIN_PORTx/" \
+  | grep -qi '</html>' && echo "PASS: HTML content" || echo "WARN: No HTML detected"
+```
+
+| Result | Status | Remediation |
+| --- | --- | --- |
+| `PASS: HTML content` | **PASS** | Origin serves HTML pages (required for CSD JS injection) |
+| `WARN: No HTML detected` | **WARN** | Origin may be an API-only service or returning non-HTML — CSD JS injection requires HTML page responses |
+
+### T4: Environment Clean
+
+These are the existing pre-flight checks — verify no leftover objects from a prior demo run.
+
+Run the six pre-flight commands from the [Pre-flight Check](#pre-flight-check) section above. Apply the [Decision Logic](#decision-logic) to determine next steps. If objects exist, auto-teardown is performed during Prepare stage (no confirmation needed).
+
+### T5: Certificate Readiness
+
+These checks assess whether HTTPS will work or the demo should plan for HTTP-only.
+
+#### PF-T5-1: Recent Certificate Issuance History
+
+Check whether a Let's Encrypt certificate was recently issued for the demo domain. Frequent create/destroy cycles can exhaust the weekly rate limit (5 duplicate certificates per week per domain).
+
+<Aside type="note">
+There is no API to query Let's Encrypt rate limit status directly. This check uses the HTTPS LB cert state as a proxy. If no HTTPS LB exists yet (clean environment), this check is skipped — the risk is noted as informational based on recent demo frequency.
+</Aside>
+
+#### PF-T5-2: Existing HTTPS LB Certificate State
+
+Only run if an HTTPS LB exists from a prior run (PF-T4 found objects):
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{cert_state: .spec.cert_state}'
+```
+
+| Result | Status | Remediation |
+| --- | --- | --- |
+| `CertificateValid` | **PASS** | Certificate is healthy — HTTPS will work |
+| `AutoCertDomainRateLimited` | **INFO** | Let's Encrypt rate limit hit — plan for HTTP-only demo. The HTTP LB is unaffected. |
+| `DomainChallengePending` / `DomainChallengeStarted` | **INFO** | Certificate provisioning in progress |
+| `404` (no HTTPS LB) | **SKIP** | No existing HTTPS LB — certificate state will be assessed after Phase 1 Step 3 |
+
+### Readiness Report Format
+
+After running all tiers, present a consolidated readiness report:
+
+```
+## Demo Readiness: READY / NOT READY / READY WITH WARNINGS
+
+### T0: Connectivity & Auth
+| Check | Result | Status |
+|---|---|---|
+| PF-T0-1: API Connectivity | 200 | PASS |
+| PF-T0-2: Namespace Access | 200 | PASS |
+| PF-T0-3: CSD API Access | 200 | PASS |
+
+### T1: Quotas & Capacity
+| Check | Result | Status |
+|---|---|---|
+| PF-T1-1: Healthcheck Quota | Probe created | PASS |
+| PF-T1-2: Origin Pool Count | 14 | PASS |
+| PF-T1-3: HTTP LB Count | 1 | PASS |
+
+### T2: Platform Prerequisites
+| Check | Result | Status |
+|---|---|---|
+| PF-T2-1: CSD Tenant Status | configured + enabled | PASS |
+| PF-T2-2: DNS Zone Exists | 200 | PASS |
+| PF-T2-3: DNS Managed Records | true | PASS |
+| PF-T2-4: DNS Nameserver Authority | f5clouddns.com | PASS |
+
+### T3: Origin Health
+| Check | Result | Status |
+|---|---|---|
+| PF-T3-1: Origin Connectivity | 200 | PASS |
+| PF-T3-2: HTML Content | HTML detected | PASS |
+
+### T4: Environment Clean
+| Check | Result | Status |
+|---|---|---|
+| HTTP LB | 404 | PASS |
+| HTTPS LB | 404 | PASS |
+| Origin Pool | 404 | PASS |
+| Healthcheck | 404 | PASS |
+| Protected Domains | 0 | PASS |
+| Mitigated Domains | 0 | PASS |
+
+### T5: Certificate Readiness
+| Check | Result | Status |
+|---|---|---|
+| PF-T5-2: Cert State | SKIP (no HTTPS LB) | INFO |
+
+### Warnings
+- (list any WARN or INFO items with context)
+```
+
+**Overall status rules:**
+
+| Condition | Status |
+| --- | --- |
+| All T0–T4 checks PASS | **READY** |
+| All T0–T4 checks PASS but T3 or T5 have WARN/INFO | **READY WITH WARNINGS** |
+| Any T0, T1, or T2 check is FAIL | **NOT READY** — resolve before proceeding |
+| T4 has leftover objects | Auto-remediate (teardown), then re-check |
+
 ## AI Assistant Execution Protocol
 
 This section defines a **deterministic workflow** for AI assistants (Claude Code, Copilot, etc.) executing the API automation steps. Following this protocol eliminates guesswork — every decision point has a defined resolution path.

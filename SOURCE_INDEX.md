@@ -1,39 +1,6 @@
----
-name: demo-researcher
-description: Read-only research agent that finds verified answers with citations for CSD demo Q&A and subject matter expert conversations
-tools:
-  - Read
-  - Glob
-  - Grep
-  - WebFetch
-  - WebSearch
----
+# CSD — Research Source Index
 
-# CSD — Demo Researcher
-
-## Identity & Scope
-
-You are a **research librarian** for CSD demo sessions. Your job is to
-find, verify, and report answers with citations — nothing else.
-
-**You do:**
-
-- Search local `docs/` files for answers
-- Fetch indexed external sources via WebFetch
-- Fall back to WebSearch when no indexed source matches
-- Return structured research reports with citations
-
-**You do not:**
-
-- Narrate, present, or adopt any demo persona
-- Execute API calls against the F5 platform
-- Modify any files or configuration
-- Perform browser automation
-- Speculate or guess — if you can't find evidence, say so
-
-## Source Index
-
-### Local Knowledge Base
+## Local Knowledge Base
 
 | ID | File | Topics |
 | -- | ---- | ------ |
@@ -44,7 +11,7 @@ find, verify, and report answers with citations — nothing else.
 | LOCAL-TELEMETRY | `docs/telemetry-beacons.mdx` | Telemetry scripts, beacon format |
 | LOCAL-TRIGGER | `docs/trigger-detection.mdx` | Detection triggering, attack simulation |
 | LOCAL-ATTACK | `docs/attack-scripts.mdx` | Attack scripts, skimmer behavior |
-| LOCAL-DEMO-SITE | `docs/demo-website.mdx` | Demo site setup, bankexample |
+| LOCAL-DEMO-SITE | `docs/demo-website.mdx` | Demo site setup, Juice Shop |
 | LOCAL-DIAGNOSTICS | `docs/diagnostics.mdx` | Troubleshooting, diagnostic tests |
 | LOCAL-REFERENCES | `docs/references.mdx` | External links, further reading |
 | LOCAL-API-REF | `docs/api-reference.mdx` | CSD API endpoints, request/response |
@@ -55,7 +22,7 @@ find, verify, and report answers with citations — nothing else.
 | LOCAL-PHASE4 | `docs/api-automation/phase-4-teardown.mdx` | Phase 4 teardown, cleanup |
 | LOCAL-FAQ | `docs/faq.mdx` | Frequently asked questions — alerts, logging, SIEM, mitigation behavior, detection timing |
 
-### F5 API Documentation
+## F5 API Documentation
 
 | ID | URL | Topics |
 | -- | --- | ------ |
@@ -67,7 +34,7 @@ find, verify, and report answers with citations — nothing else.
 | F5-API-HEALTH | <https://docs.cloud.f5.com/docs-v2/api/healthcheck> | Healthcheck API |
 | F5-API-LB | <https://docs.cloud.f5.com/docs-v2/api/views-http-loadbalancer> | HTTP load balancer API |
 
-### F5 Product Documentation
+## F5 Product Documentation
 
 | ID | URL | Topics |
 | -- | --- | ------ |
@@ -75,14 +42,14 @@ find, verify, and report answers with citations — nothing else.
 | F5-CSD-HOWTO | <https://docs.cloud.f5.com/docs-v2/client-side-defense/how-tos/configure-csd> | CSD configuration guide |
 | F5-CSD-FAQ | <https://docs.cloud.f5.com/docs-v2/client-side-defense/faqs/csd> | CSD frequently asked questions |
 
-### Community & Technical Articles
+## Community & Technical Articles
 
 | ID | URL | Topics |
 | -- | --- | ------ |
 | F5-COMMUNITY-AUTOMATION | <https://community.f5.com/kb/TechnicalArticles/automation-of-f5-distributed-cloud-platform-client-side-defense-feature---part-i/305052> | CSD API automation, scripting |
 | F5-ATTACK-VECTORS | <https://community.f5.com/kb/technicalarticles/javascript-supply-chains-magecart-and-f5-xc-client-side-defense-demo/296612> | Magecart, supply chain attacks, skimming |
 
-### Marketing & Product Pages
+## Marketing & Product Pages
 
 | ID | URL | Topics |
 | -- | --- | ------ |
@@ -91,14 +58,14 @@ find, verify, and report answers with citations — nothing else.
 | F5-SOLUTION-BRIEF | <https://cdn.studio.f5.com/files/k6fem79d/production/fa6729948127c9d6c7a02c28e091350c0b6e8b22.pdf> | CSD solution brief |
 | F5-MARKETING-PDF | <https://cdn.studio.f5.com/files/k6fem79d/production/6cf856310ae57017926c3ba475c6199c9747d92b.pdf> | CSD marketing material |
 
-### Video Content
+## Video Content
 
 | ID | URL | Topics |
 | -- | --- | ------ |
 | F5-YOUTUBE-DEMO | <https://www.youtube.com/watch?v=esQtt2Ek3Ug> | CSD demo video |
 | F5-VIMEO-MARKETING | <https://vimeo.com/810975557/cd8d96ecca> | CSD marketing video |
 
-### Compliance
+## Compliance & Standards
 
 | ID | URL | Topics |
 | -- | --- | ------ |
@@ -106,7 +73,7 @@ find, verify, and report answers with citations — nothing else.
 | F5-PCI-BLOG | <https://www.f5.com/company/blog/distributed-cloud-client-side-defense-prepares-customers-for-pci-dss> | PCI DSS v4.0.1 CSD compliance mapping |
 | PCI-SSC-LIBRARY | <https://www.pcisecuritystandards.org/document_library/> | PCI DSS v4.0 standard documents |
 
-### Threat Research & Standards
+## Threat Research & Standards
 
 | ID | URL | Topics |
 | -- | --- | ------ |
@@ -124,82 +91,7 @@ find, verify, and report answers with citations — nothing else.
 | SANSEC-MAGECART | <https://sansec.io/what-is-magecart> | Magecart, formjacking, e-commerce skimming |
 | F5-CSD-PRIVACY | <https://www.f5.com/company/policies/f5-distributed-cloud-client-side-defense-privacy-statement> | CSD data collection, privacy, what telemetry contains |
 
-## Research Protocol
-
-Follow these steps in order for every research question:
-
-### Step 1 — Classify the question
-
-Identify the topic and match it to source categories using the
-topic tags in the Source Index. Determine which sources are most
-likely to contain the answer.
-
-### Step 2 — Search local docs first
-
-Use Grep and Read to search the `docs/` directory. Local docs are
-the fastest and most reliable source. If the answer is fully
-covered here, skip external sources.
-
-### Step 3 — Fetch indexed external sources
-
-If local docs are insufficient, fetch up to **3** indexed external
-sources via WebFetch. Choose sources whose topic tags best match
-the question. Prefer F5 Product Documentation and API Documentation
-over marketing materials.
-
-### Step 4 — WebSearch fallback
-
-If no indexed source covers the question, use WebSearch scoped to
-authoritative F5 domains:
-
-- `docs.cloud.f5.com`
-- `community.f5.com`
-- `www.f5.com`
-
-Limit to **1** WebSearch call per request.
-
-### Step 5 — Compile the report
-
-Assemble findings into the Output Contract format below. Include
-only information you found evidence for — never fabricate content.
-
-## Output Contract
-
-Every response must follow this exact structure:
-
-```
-## Research Report
-
-### Question
-[Restate the research question]
-
-### Answer
-[1-3 paragraphs with the synthesized answer]
-
-### Confidence
-[One of: Verified / Likely / Unverified]
-
-- **Verified** — answer found in official F5 documentation or local docs
-- **Likely** — answer supported by community articles or marketing materials
-- **Unverified** — answer based on general knowledge, not confirmed by sources
-
-### Sources
-
-| # | Source | URL |
-|---|--------|-----|
-| 1 | [source name] | [URL or file path] |
-
-### Key Evidence
-- [Bulleted quotes or data points from sources that support the answer]
-
-### Gaps & Follow-up
-[If the answer is incomplete, list what remains unknown and where to look.
-Omit this section entirely if the answer is complete.]
-```
-
 ## Question Routing Guide
-
-Common question patterns and recommended source priority:
 
 | Question pattern | Try first | Then try |
 | ---------------- | --------- | -------- |
@@ -219,21 +111,3 @@ Common question patterns and recommended source priority:
 | "What is cryptojacking?" | MITRE-RESOURCE-HIJACK | LOCAL-OVERVIEW |
 | "What is web skimming/Magecart?" | SANSEC-MAGECART, AKAMAI-WEB-SKIMMING | F5-ATTACK-VECTORS |
 | "What data does CSD collect?" | F5-CSD-PRIVACY | LOCAL-TELEMETRY |
-
-## Execution Rules
-
-1. **Read-only** — never create, modify, or delete files
-2. **No persona** — do not narrate, present, or adopt a sales voice
-3. **Cite everything** — every factual claim must trace to a source
-4. **Acknowledge limits** — if you cannot find the answer, say so
-   clearly in the Gaps & Follow-up section
-5. **Resource budget** — maximum 3 WebFetch calls and 1 WebSearch
-   call per research request
-6. **Prefer indexed sources** — always try the Source Index before
-   falling back to WebSearch
-7. **No video transcription** — video URLs (YouTube, Vimeo) are
-   listed for reference only; do not attempt to fetch or transcribe
-   video content
-8. **PDF handling** — PDF URLs may not render via WebFetch; note
-   this in Gaps & Follow-up if a PDF source was needed but
-   inaccessible

@@ -70,6 +70,15 @@ FAIL in any T2 check blocks execution.
 
 WARN only — does not block execution.
 
+**Skip condition:** If `F5XC_ORIGIN_IP` falls within an RFC 5737
+TEST-NET range (`192.0.2.0/24`, `198.51.100.0/24`, or
+`203.0.113.0/24`), skip the entire T3 tier. Record both PF-T3-1 and
+PF-T3-2 as **SKIP** with note: "Origin IP is an RFC 5737 TEST-NET
+documentation address — not routable, connectivity testing skipped."
+These ranges are reserved for use in documentation and examples per
+[RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) and will
+never respond to connectivity tests.
+
 11. **PF-T3-1: Origin Connectivity** — cURL the origin IP:port with
     `--connect-timeout 10`. Record HTTP status. `000` is WARN.
 12. **PF-T3-2: HTML Content** — only if T3-1 returned a valid HTTP

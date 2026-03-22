@@ -153,7 +153,7 @@ curl -s -o /dev/null -w '%\{http_code\}' \
 
 ### T1: Quotas &amp; Capacity
 
-These checks verify the tenant has room to create the objects Phase 1 needs.
+These checks verify the tenant has room to create the objects Phase 1 needs. PF-T1-1 is WARN because healthchecks are optional for CSD. PF-T1-4 through PF-T1-6 are **FAIL** because origin pools, load balancers, and protected domains are required — if any of these hit quota limits, the demo cannot proceed.
 
 #### PF-T1-1: Healthcheck Quota
 
@@ -228,6 +228,158 @@ curl -s \
 | Count returned | **PASS** (informational) | Note the current count — the demo creates 2 LBs |
 | API error | **FAIL** | Permissions issue — see PF-T0-2 |
 
+#### PF-T1-4: Origin Pool &amp; Endpoint Quota
+
+Create and immediately delete a probe origin pool to test whether the tenant has capacity for both origin pool and endpoint objects. The origin pool requires at least one origin server entry, which creates an endpoint sub-object — this single probe tests both quotas simultaneously.
+
+```bash
+# Create probe
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "preflight-origin-probe",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "origin_servers": [{
+        "public_ip": { "ip": "192.0.2.1" },
+        "labels": {}
+      }],
+      "no_tls": {},
+      "port": 80,
+      "same_as_endpoint_port": {},
+      "healthcheck": [],
+      "loadbalancer_algorithm": "LB_OVERRIDE",
+      "endpoint_selection": "LOCAL_PREFERRED"
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools" \
+  | jq '{name: .metadata.name, code: .code, message: .message}'
+
+# Cleanup probe
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/preflight-origin-probe" \
+  > /dev/null
+```
+
+| Result | Status | Remediation |
+| --- | --- | --- |
+| Probe created (name returned, no error code) | **PASS** | Origin pool and endpoint quota available |
+| `"code": 8` with "endpoint has exhausted limits" | **FAIL** | Endpoint quota full — origin pools are required for the demo and cannot be created. Delete unused origin pools in other namespaces to free endpoint capacity, or contact your administrator to increase the tenant limit. |
+| `"code": 8` with "origin_pool has exhausted limits" | **FAIL** | Origin pool quota full — delete unused origin pools or contact your administrator. |
+
+<Aside type="note">
+The probe uses RFC 5737 TEST-NET IP `192.0.2.1` as the origin server — this is a documentation-only address that will not generate real traffic. The origin pool API requires at least one origin server entry (`origin_servers` minimum is 1), so this probe inherently tests both origin pool and endpoint sub-object quota in a single API call.
+</Aside>
+
+#### PF-T1-5: HTTP Load Balancer Quota
+
+Create and immediately delete a probe HTTP load balancer to test whether the tenant has capacity. This probe uses `default_route_pools: []` (no origin pool dependency) and `dns_volterra_managed: false` (no DNS record creation). One probe covers both HTTP and HTTPS LBs since they share the same API object kind (`http_loadbalancers`).
+
+```bash
+# Create probe
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "preflight-lb-probe",
+      "namespace": "xF5XC_NAMESPACEx",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["preflight-probe.example.com"],
+      "http": {
+        "dns_volterra_managed": false,
+        "port": 80
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [],
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers" \
+  | jq '{name: .metadata.name, code: .code, message: .message}'
+
+# Cleanup probe
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/preflight-lb-probe" \
+  > /dev/null
+```
+
+| Result | Status | Remediation |
+| --- | --- | --- |
+| Probe created (name returned, no error code) | **PASS** | HTTP load balancer quota available |
+| `"code": 8` with "exhausted limits" | **FAIL** | Load balancer quota full — LBs are required for the demo. Delete unused load balancers or contact your administrator. |
+
+<Aside type="note">
+The probe uses `dns_volterra_managed: false` to prevent DNS record creation and `default_route_pools: []` to avoid requiring an origin pool. The domain `preflight-probe.example.com` uses the RFC 2606 reserved `example.com` to avoid conflicts with real domains.
+</Aside>
+
+#### PF-T1-6: Protected Domain Quota
+
+Create and immediately delete a probe protected domain to test whether the tenant has capacity for CSD domain registrations.
+
+```bash
+# Create probe
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "preflight-probe.example.com",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "protected_domain": "example.com"
+    }
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '{name: .metadata.name, code: .code, message: .message}'
+
+# Cleanup probe
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/preflight-probe.example.com" \
+  > /dev/null
+```
+
+| Result | Status | Remediation |
+| --- | --- | --- |
+| Probe created (name returned, no error code) | **PASS** | Protected domain quota available |
+| `409` (domain already exists) | **PASS** | `example.com` is already registered on the tenant — this proves the API accepts domain registrations and quota is not exhausted |
+| `"code": 8` with "exhausted limits" | **FAIL** | Protected domain quota full — delete unused protected domains or contact your administrator. |
+
+<Aside type="note">
+The probe uses RFC 2606 reserved domain `example.com`. A `409` response is a valid PASS condition — it means the domain is already registered on the tenant, which proves the API is functional and quota is not exhausted. The DELETE may return `404` if the `409` occurred (the probe object was never created), which is expected.
+</Aside>
+
 ### T2: Platform Prerequisites
 
 These checks verify tenant-level services that the demo depends on.
@@ -263,7 +415,9 @@ curl -s -o /dev/null -w '%\{http_code\}' \
 
 #### PF-T2-3: DNS Managed Records Enabled
 
-Only run if PF-T2-2 returned `200` (F5 XC DNS zone exists):
+Only run if PF-T2-2 returned `200` (F5 XC DNS zone exists).
+
+**Check current state:**
 
 ```bash
 curl -s \
@@ -272,10 +426,44 @@ curl -s \
   | jq '.spec.primary.allow_http_lb_managed_records'
 ```
 
-| Result | Status | Remediation |
-| --- | --- | --- |
-| `true` | **PASS** | LB-managed DNS records will be auto-created |
-| `false` or `null` | **WARN** | Managed records disabled — Phase 1 Step 4 will need to enable them, or DNS records must be created manually. See [Phase 1 Step 4, Option A](/csd/api-automation/phase-1-build/#option-a-f5-xc-managed-dns). |
+**Auto-remediate if needed:** If the result is `false` or `null` AND PF-T2-4 shows F5 XC nameservers (`ns1.f5clouddns.com`, `ns2.f5clouddns.com`), auto-enable managed records using GET+PUT:
+
+```bash
+# Get current zone config
+ZONE_CONFIG=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx")
+
+# Update with managed records enabled
+echo "$ZONE_CONFIG" \
+  | jq '.spec.primary.allow_http_lb_managed_records = true' \
+  | curl -s -X PUT \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d @- \
+    "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq .
+```
+
+Then re-check to confirm the update took effect:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq '.spec.primary.allow_http_lb_managed_records'
+```
+
+<Aside type="caution">
+The zone spec contains an `x-ves-io-managed` rr_set_group with platform-managed records. The `PUT` payload **must preserve this group** — omitting it causes HTTP 403 "reserved for internal purposes". Always retrieve the current zone configuration with `GET` first, modify only the `allow_http_lb_managed_records` field, and send back the complete spec.
+</Aside>
+
+| Result | DNS Authority | Status | Remediation |
+| --- | --- | --- | --- |
+| `true` | Any | **PASS** | LB-managed DNS records will be auto-created |
+| `false`/`null` | F5 XC | **Auto-remediate** | Enable via GET+PUT, verify, report result |
+| `false`/`null` | External | **INFO** | Managed records not applicable for external DNS — Phase 1 Step 4 will use [Option B](/csd/api-automation/phase-1-build/#option-b-external-dns-provider) (manual record creation) |
+| Auto-remediation failed | F5 XC | **FAIL** | Token may lack system namespace write access — contact tenant administrator |
 
 #### PF-T2-4: DNS Nameserver Authority
 
@@ -351,6 +539,29 @@ belong to T3).
 
 Run the six pre-flight commands from the [Pre-flight Check](#pre-flight-check) section above. Apply the [Decision Logic](#decision-logic) to determine next steps. If objects exist, auto-teardown is performed during Prepare stage (no confirmation needed).
 
+Also check for and delete stale probe objects from prior interrupted pre-flight runs:
+
+```bash
+# Stale probe cleanup (delete in any order — probes have no dependencies)
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/preflight-quota-probe" \
+  > /dev/null
+
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/preflight-lb-probe" \
+  > /dev/null
+
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/preflight-origin-probe" \
+  > /dev/null
+
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/preflight-probe.example.com" \
+  > /dev/null
+```
+
+Each DELETE returns `200` (empty `{}`) if the object existed, or `404` if it did not — both are expected.
+
 ### T5: Certificate Readiness
 
 These checks assess whether HTTPS will work or the demo should plan for HTTP-only.
@@ -401,6 +612,9 @@ After running all tiers, present a consolidated readiness report:
 | PF-T1-1: Healthcheck Quota | Probe created | PASS |
 | PF-T1-2: Origin Pool Count | 14 | PASS |
 | PF-T1-3: HTTP LB Count | 1 | PASS |
+| PF-T1-4: Origin Pool & Endpoint Quota | Probe created | PASS |
+| PF-T1-5: HTTP LB Quota | Probe created | PASS |
+| PF-T1-6: Protected Domain Quota | Probe created | PASS |
 
 ### T2: Platform Prerequisites
 | Check | Result | Status |
@@ -760,7 +974,12 @@ The `single_lb_app` object has its own required `oneOf` groups. Setting `single_
 - **404 Not Found** — namespace or object name is incorrect. List objects with `GET /api/config/namespaces/\{namespace\}/\{object_type\}`.
 - **409 Conflict** — object already exists. For protected domains, a `409` with "domain already exists (in uriList)" means the root domain is already registered on the tenant — this is a success condition, not an error. For other objects, delete first or use `PUT` to update.
 - **422 Unprocessable Entity** — JSON schema validation failed. Common causes: missing `oneOf` choice, multiple choices set in same group, wrong field type. Check the error message for the specific field.
-- **Object limit exhausted** (error code `8`, message `"Object kind healthcheck has exhausted limits"`) — tenant has hit an object limit (e.g., 150 healthchecks). The API returns HTTP 200 with a JSON error body, not HTTP 429. For healthchecks, this is non-blocking — skip Phase 1 Step 1 and create the origin pool without a healthcheck reference. CSD does not depend on health monitoring. For other object types, delete unused objects or contact your administrator to increase limits.
+- **Object limit exhausted** (error code `8`, message `"Object kind {kind} has exhausted limits({N})"`) — tenant has hit an object quota limit. The API returns HTTP 200 with a JSON error body containing `"code": 8`, not HTTP 429. Behavior depends on the object type:
+  - **Healthcheck** (limit ~150): **Non-blocking** — skip Phase 1 Step 1 and create the origin pool without a healthcheck reference. CSD does not depend on health monitoring.
+  - **Endpoint** (limit ~500): **Blocking** — endpoints are sub-objects created inside origin pools. If this limit is hit, origin pool creation fails. Delete unused origin pools (which frees their endpoint sub-objects) or contact your administrator to increase the tenant limit.
+  - **Origin pool**: **Blocking** — delete unused origin pools or contact your administrator.
+  - **HTTP load balancer**: **Blocking** — delete unused load balancers or contact your administrator.
+  - **Protected domain**: **Blocking** — delete unused protected domains or contact your administrator.
 
 ## Troubleshooting
 

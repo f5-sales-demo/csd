@@ -13,7 +13,7 @@ a trigger pattern below, invoke the corresponding skill.
 | "question and answer", "Q&A", "open it up for questions", "take questions" | `f5xc-sales-engineer:demo-executor` | Invoke skill, enter Q&A stage |
 | "tear down", "clean up", "tear down the demo", "end the meeting" | `f5xc-sales-engineer:demo-executor` | Invoke skill, run Teardown stage |
 | "walk through the demo", "present the demo", "show the demo", "walkthrough" | `f5xc-sales-engineer:presenter` | Invoke skill, begin walkthrough |
-| "answer questions", "CSD question", "what does CSD", "explain CSD" | `f5xc-sales-engineer:subject-matter-expert` | Invoke skill, answer as SME |
+| "answer questions", "CSD question", "what does CSD", "explain CSD" | `f5xc-sales-engineer:subject-matter-expert` | Invoke skill, answer as subject matter expert |
 
 ## Convention Files
 

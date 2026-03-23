@@ -6,4 +6,4 @@ Check out this URL: <http://example.com>
 
 Visit <http://github.com> for more info.
 
-This paragraph no longer has a double blank line above it.
+This paragraph no longer has a double empty line above it.

@@ -33,6 +33,8 @@
 | F5-API-SUB | <https://docs.cloud.f5.com/docs-v2/api/shape-client-side-defense-subscription> | CSD subscription API |
 | F5-API-HEALTH | <https://docs.cloud.f5.com/docs-v2/api/healthcheck> | Healthcheck API |
 | F5-API-LB | <https://docs.cloud.f5.com/docs-v2/api/views-http-loadbalancer> | HTTP load balancer API |
+| F5-API-QUOTA | <https://docs.cloud.f5.com/docs-v2/api/quota> | Quota API, tenant limits, usage |
+| F5-QUOTA-REF | <https://docs.cloud.f5.com/docs-v2/platform/reference/default-quota-reference> | Default quota values by plan tier |
 
 ## F5 Product Documentation
 

@@ -25,127 +25,163 @@
 
 ### T0: Connectivity & Auth
 
-FAIL in any T0 check blocks all subsequent tiers.
+FAIL in any T0 check blocks all subsequent tiers. Each check captures
+the HTTP status code and pipes it through a jq filter that computes a
+deterministic `{check, http_code, status, detail}` object — no
+operator interpretation required.
 
 1. **PF-T0-1: API Connectivity** — GET `/api/web/namespaces` with
-   `--connect-timeout 10`. If `000` or timeout, try adding
-   `--tlsv1.2 --tls-max 1.2` (some environments reject TLS 1.3).
-   If still failing, report FAIL and stop.
+   `--connect-timeout 10 --max-time 15`. jq computes: `200` → PASS,
+   `401` → FAIL (token invalid), `0` → FAIL (network unreachable —
+   try `--tlsv1.2 --tls-max 1.2`), all others → FAIL.
 2. **PF-T0-2: Namespace Access** — GET
-   `/api/config/namespaces/{namespace}/http_loadbalancers`. If `403`
-   or `404`, report FAIL and stop.
+   `/api/config/namespaces/{namespace}/http_loadbalancers`. jq
+   computes: `200` → PASS, `403` → FAIL (missing role binding),
+   `404` → FAIL (namespace does not exist), all others → FAIL.
 3. **PF-T0-3: CSD API Access** — GET
-   `/api/shape/csd/namespaces/{namespace}/status`. If `403`, report
-   FAIL and stop.
+   `/api/shape/csd/namespaces/{namespace}/status`. jq computes:
+   `200` → PASS, `403` → FAIL (missing CSD role binding), all
+   others → FAIL.
 
 ### T1: Quotas & Capacity
 
-Mixed blocking — PF-T1-1 is WARN (healthchecks are optional for
-CSD). PF-T1-4 through PF-T1-6 are FAIL if quota is exhausted
-(load balancers, endpoints, and protected domains are required
-for the demo to proceed).
+Uses the Quota Usage API to query tenant-wide limits and current
+usage for each object kind the demo needs. Calculates remaining
+capacity and reports PASS/WARN/FAIL based on whether enough room
+exists. Falls back to probe-and-delete if the Quota Usage API is
+not accessible.
 
-T1 uses a **quota snapshot** approach: a single
-`GET /api/web/namespaces/system/quota/usage` call returns
-`limit.maximum` and `usage.current` for all resource types.
-Each check computes `remaining = limit - used` from the snapshot
-rather than creating and deleting throwaway objects.
-`protected_domains` are not present in the quota API — PF-T1-6
-retains a lightweight probe.
+4. **PF-T1-0: Quota Usage Gate** — GET
+   `/api/web/namespaces/system/quota/usage?namespace=system`. This
+   endpoint requires the `system` namespace (not the demo
+   namespace). If `200`, pass the `objects` map through a jq filter
+   that computes a deterministic `gate` verdict (PASS/WARN/FAIL)
+   by comparing each object kind's `remaining` capacity against the
+   demo's `needed` count. If `403` or any error, fall back to
+   probe-based checks (see Fallback below).
 
-4. **PF-T1-0: Quota Snapshot** — `GET
-   /api/web/namespaces/system/quota/usage`. Store the response
-   for all subsequent T1 checks. If the endpoint returns non-200,
-   fall back to probe-and-delete for all T1 checks and log the
-   fallback reason (token may lack `web` API scope).
-5. **PF-T1-1: Healthcheck Quota** — from snapshot:
-   `remaining = Healthcheck.limit - Healthcheck.used`.
-   `remaining >= 1` → PASS. `remaining == 0` → WARN (not FAIL —
-   healthchecks are optional for CSD).
-6. **PF-T1-2: Origin Pool Count** — GET origin pools list, record
-   count. Origin pool quota is unlimited (`limit: -1`) on this
-   tenant — count is informational only.
-7. **PF-T1-3: HTTP LB Count** — GET LB list, record count.
-8. **PF-T1-4: Endpoint Quota** — from snapshot:
-   `remaining = Endpoint.limit - Endpoint.used`.
-   `remaining >= 1` → PASS. `remaining == 0` → FAIL — each origin
-   pool requires at least one endpoint sub-object. Origin pool
-   quota itself is unlimited (`limit: -1`) on this tenant.
-9. **PF-T1-5: HTTP Load Balancer Quota** — from snapshot:
-   `remaining = Virtual Host.limit - Virtual Host.used`.
-   `remaining >= 2` → PASS (demo creates 2 LBs). `remaining == 1`
-   → WARN (only one LB can be created). `remaining == 0` → FAIL.
-   `HTTP Load Balancer` quota is unlimited (`limit: -1`) on this
-   tenant — `Virtual Host` is the binding constraint.
-10. **PF-T1-6: Protected Domain Quota** — POST a probe protected
-    domain named `preflight-probe.example.com` with
-    `protected_domain: "example.com"` (RFC 2606), then DELETE it.
-    If creation returns error code `8`, record as FAIL. A `409`
-    (domain already exists) counts as PASS — it proves the API
-    accepts domain registrations and quota is not exhausted.
+   The gate evaluates four object kinds:
+
+   | Kind | Needed | Required | Min to proceed |
+   | --- | --- | --- | --- |
+   | `healthcheck` | 1 | No | 0 |
+   | `origin_pool` | 1 | Yes | 1 |
+   | `endpoint` | 1 | Yes | 1 |
+   | `http_loadbalancer` | 2 | Yes | 1 |
+
+   For each kind, the jq filter calculates:
+   - `remaining = limit - usage` (unlimited if limit is `-1`)
+   - `status = PASS` if `remaining >= needed`
+   - `status = WARN` if `remaining >= min_proceed` but `< needed`
+   - `status = FAIL` if `remaining < min_proceed` and kind is
+     required (WARN if optional)
+
+   The overall `gate` is FAIL if any check is FAIL, WARN if any is
+   WARN, PASS otherwise. A FAIL gate blocks demo execution.
+
+5. **PF-T1-4: Protected Domain Quota** — CSD protected domains do
+   not appear in the platform Quota Usage API. Use probe-based
+   check: POST a probe protected domain named
+   `preflight-probe.example.com` with
+   `protected_domain: "example.com"` (RFC 2606), then DELETE it.
+   If creation returns error code `8`, record as FAIL. A `409`
+   (domain already exists) counts as PASS.
+
+**Fallback: Probe-Based Quota Checks**
+
+If PF-T1-0 fails (403, 404, or unexpected format), fall back to
+probe-and-delete for all object kinds. Create and immediately
+delete temporary objects to test whether the tenant has capacity:
+
+- `preflight-quota-probe` healthcheck
+- `preflight-origin-probe` origin pool (tests both origin pool and
+  endpoint sub-object quota simultaneously)
+- `preflight-lb-probe` HTTP load balancer
+- `preflight-probe.example.com` protected domain
+
+Error code `8` from creation indicates exhausted limits. Record as
+WARN for healthchecks (optional) or FAIL for required objects.
 
 ### T2: Platform Prerequisites
 
-FAIL in any T2 check blocks execution.
+FAIL in any T2 check blocks execution. Each check computes a
+deterministic `{check, status, detail}` object via jq.
 
-10. **PF-T2-1: CSD Tenant Status** — GET CSD status, check
-    `isConfigured` and `isEnabled`. If either is `false`, report
-    FAIL and stop.
+10. **PF-T2-1: CSD Tenant Status** — GET CSD status. jq computes:
+    `{check, configured, enabled, status, detail}` where `status` is
+    PASS if both `.isConfigured` and `.isEnabled` are `true`, FAIL
+    otherwise.
 11. **PF-T2-2: DNS Zone Exists** — GET
     `/api/config/dns/namespaces/system/dns_zones/{root_domain}`.
-    Record status code. `404` is WARN (external DNS may be in use).
-    `403` is WARN (token may lack system namespace access).
-12. **PF-T2-3: DNS Managed Records** — only if T2-2 returned `200`,
-    check `allow_http_lb_managed_records`. If `true`, record PASS.
-    If `false` or `null` and F5 XC is the authoritative DNS provider
-    (PF-T2-4 shows `f5clouddns.com` nameservers), auto-enable using
-    GET+PUT on the DNS zone, then re-check to confirm. If external
-    DNS, record as INFO (managed records are not applicable). If
-    auto-remediation fails (PUT returns error), record as FAIL.
-13. **PF-T2-4: DNS Nameserver Authority** — run
-    `dig +short NS {root_domain}`. Record whether F5 XC or external.
+    HTTP code captured in variable, jq computes: `200` → PASS,
+    `404` → WARN (external DNS may be in use), `403` → WARN (token
+    may lack system namespace access), all others → FAIL.
+12. **PF-T2-3: DNS Managed Records** — only if T2-2 returned `200`.
+    jq computes: `{check, managed_records, status, detail}` where
+    `status` is PASS if `allow_http_lb_managed_records` is `true`,
+    WARN otherwise. If WARN and PF-T2-4 shows F5 XC nameservers,
+    auto-enable using GET+PUT, then re-check. If external DNS,
+    record as INFO. If auto-remediation fails, record as FAIL.
+13. **PF-T2-4: DNS Nameserver Authority** — `dig +short NS`
+    output piped through `jq -Rs` which computes:
+    `{check, nameservers, status, detail}` where `status` is PASS
+    if output contains `f5clouddns.com`, INFO for external DNS,
+    FAIL if no NS records found.
 
 ### T3: Origin Health
 
 WARN only — does not block execution.
 
-**Skip condition:** If `F5XC_ORIGIN_IP` falls within an RFC 5737
-TEST-NET range (`192.0.2.0/24`, `198.51.100.0/24`, or
-`203.0.113.0/24`), skip the entire T3 tier. Record both PF-T3-1 and
-PF-T3-2 as **SKIP** with note: "Origin IP is an RFC 5737 TEST-NET
-documentation address — not routable, connectivity testing skipped."
-These ranges are reserved for use in documentation and examples per
+**Skip condition:** A computed check (`PF-T3-skip`) pipes
+`F5XC_ORIGIN_IP` through `jq -Rs` to test against RFC 5737 TEST-NET
+ranges (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`). jq
+outputs `{check, origin_ip, is_test_net, status, detail}` where
+`status` is SKIP if the IP matches a TEST-NET range, CONTINUE
+otherwise. If SKIP, record PF-T3-1 and PF-T3-2 as SKIP and proceed
+to T4. These ranges are reserved for documentation per
 [RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) and will
 never respond to connectivity tests.
 
 14. **PF-T3-1: Origin Connectivity** — cURL the origin IP:port with
-    `--connect-timeout 10`. Record HTTP status. `000` is WARN.
+    `--connect-timeout 10 --max-time 15`. HTTP code captured in
+    variable, jq computes: `200–599` → PASS, `0` → WARN (origin
+    unreachable from this network), all others → WARN.
 15. **PF-T3-2: HTML Content** — only if T3-1 returned a valid HTTP
-    status, check if response contains `</html>`. Record result.
+    status, check if response contains `</html>`. Outputs PASS or
+    WARN deterministically.
 
 ### T4: Environment Clean
 
-Executes auto-teardown if leftover objects are found.
+Executes auto-teardown if leftover objects are found. The pre-flight
+check computes a deterministic `{objects, any_infra_exists,
+any_csd_exists, status, action}` object via jq. The `status` field
+is one of: CLEAN, ALL_EXIST, TEARDOWN_NEEDED, or MITIGATIONS_ONLY.
 
 16. Run the six pre-flight commands (HTTP LB, HTTPS LB, Origin Pool,
-    Healthcheck, protected domains, mitigated domains). Record each
-    HTTP status code.
-17. Also check for a stale probe object from a prior interrupted
-    pre-flight run — delete if found:
+    Healthcheck, protected domains, mitigated domains). Capture each
+    HTTP status code and domain count, then pipe all six through jq
+    to compute environment status deterministically.
+17. Also check for stale probe objects from a prior interrupted
+    pre-flight run — delete if found. These probes are only created
+    when the Quota Usage API was unavailable and fallback
+    probe-based checks were used, or for the protected domain
+    probe (PF-T1-4) which always uses probe-based checking:
+    - `preflight-quota-probe` (healthcheck)
+    - `preflight-lb-probe` (HTTP load balancer)
+    - `preflight-origin-probe` (origin pool)
     - `preflight-probe.example.com` (protected domain)
-18. **Auto-teardown if needed** — if any objects exist (HTTP `200` on
-    infrastructure checks, or non-zero real counts on
-    protected/mitigated domains), run the full Phase 4 teardown by
-    reading and executing commands from
-    `docs/api-automation/phase-4-teardown.mdx`. No confirmation
-    needed — Prepare is pre-meeting cleanup.
+18. **Auto-teardown if needed** — if `status` is not CLEAN (any
+    objects exist), run the full Phase 4 teardown by reading and
+    executing commands from `docs/api-automation/phase-4-teardown.mdx`.
+    No confirmation needed — Prepare is pre-meeting cleanup.
 19. **Re-run pre-flight** — execute the same pre-flight checks to
-    confirm all objects return `404` and counts are 0. If any object
-    still exists, report failure and stop.
+    confirm `status` is CLEAN (`404` on all objects, counts are 0).
+    If any object still exists, report failure and stop.
 
 ### T5: Certificate Readiness
 
-INFO only.
+INFO only. Checks compute deterministic `{check, status, detail}`
+objects.
 
 20. **PF-T5-1: Recent Certificate Issuance History** — there is no
     API to query Let's Encrypt rate limits directly. Note as INFO
@@ -153,7 +189,10 @@ INFO only.
     (5 duplicate certificates per week per domain). If this demo
     domain has been torn down and rebuilt multiple times recently,
     include a warning that HTTPS may be rate-limited.
-21. **PF-T5-2: Cert State** — only if an HTTPS LB existed in T4
-    (before teardown), note the `cert_state` value observed. If
-    `AutoCertDomainRateLimited`, include a warning that HTTPS may
-    not be available and the demo should plan for HTTP-only.
+21. **PF-T5-2: Cert State** — captures HTTP code and response body.
+    jq computes `{check, cert_state, status, detail}`:
+    - HTTP `404` → SKIP (no HTTPS LB exists)
+    - `CertificateValid` → PASS
+    - `AutoCertDomainRateLimited` → INFO (plan for HTTP-only)
+    - `Pending`/`Started` → INFO (provisioning in progress)
+    - All others → INFO with raw `cert_state` value

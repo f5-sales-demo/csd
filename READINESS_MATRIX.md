@@ -42,35 +42,47 @@ FAIL in any T0 check blocks all subsequent tiers.
 
 Mixed blocking — PF-T1-1 is WARN (healthchecks are optional for
 CSD). PF-T1-4 through PF-T1-6 are FAIL if quota is exhausted
-(origin pools, load balancers, and protected domains are required
+(load balancers, endpoints, and protected domains are required
 for the demo to proceed).
 
-4. **PF-T1-1: Healthcheck Quota** — POST a probe healthcheck named
-   `preflight-quota-probe`, then DELETE it. If creation returns
-   error code `8` (exhausted limits), record as WARN (not FAIL —
+T1 uses a **quota snapshot** approach: a single
+`GET /api/web/namespaces/system/quota/usage` call returns
+`limit.maximum` and `usage.current` for all resource types.
+Each check computes `remaining = limit - used` from the snapshot
+rather than creating and deleting throwaway objects.
+`protected_domains` are not present in the quota API — PF-T1-6
+retains a lightweight probe.
+
+4. **PF-T1-0: Quota Snapshot** — `GET
+   /api/web/namespaces/system/quota/usage`. Store the response
+   for all subsequent T1 checks. If the endpoint returns non-200,
+   fall back to probe-and-delete for all T1 checks and log the
+   fallback reason (token may lack `web` API scope).
+5. **PF-T1-1: Healthcheck Quota** — from snapshot:
+   `remaining = Healthcheck.limit - Healthcheck.used`.
+   `remaining >= 1` → PASS. `remaining == 0` → WARN (not FAIL —
    healthchecks are optional for CSD).
-5. **PF-T1-2: Origin Pool Count** — GET origin pools list, record
-   count.
-6. **PF-T1-3: HTTP LB Count** — GET LB list, record count.
-7. **PF-T1-4: Origin Pool & Endpoint Quota** — POST a probe origin
-   pool named `preflight-origin-probe` with one endpoint (RFC 5737
-   TEST-NET IP `192.0.2.1`), then DELETE it. If creation returns
-   error code `8` (exhausted limits for origin pools or endpoints),
-   record as FAIL — origin pools are required for the demo. This
-   single probe tests both origin pool and endpoint sub-object
-   quota simultaneously.
-8. **PF-T1-5: HTTP Load Balancer Quota** — POST a probe HTTP LB
-   named `preflight-lb-probe` with `default_route_pools: []` and
-   `dns_volterra_managed: false`, then DELETE it. If creation
-   returns error code `8`, record as FAIL — load balancers are
-   required. One probe covers both HTTP and HTTPS LBs (same API
-   object kind `http_loadbalancers`).
-9. **PF-T1-6: Protected Domain Quota** — POST a probe protected
-   domain named `preflight-probe.example.com` with
-   `protected_domain: "example.com"` (RFC 2606), then DELETE it.
-   If creation returns error code `8`, record as FAIL. A `409`
-   (domain already exists) counts as PASS — it proves the API
-   accepts domain registrations and quota is not exhausted.
+6. **PF-T1-2: Origin Pool Count** — GET origin pools list, record
+   count. Origin pool quota is unlimited (`limit: -1`) on this
+   tenant — count is informational only.
+7. **PF-T1-3: HTTP LB Count** — GET LB list, record count.
+8. **PF-T1-4: Endpoint Quota** — from snapshot:
+   `remaining = Endpoint.limit - Endpoint.used`.
+   `remaining >= 1` → PASS. `remaining == 0` → FAIL — each origin
+   pool requires at least one endpoint sub-object. Origin pool
+   quota itself is unlimited (`limit: -1`) on this tenant.
+9. **PF-T1-5: HTTP Load Balancer Quota** — from snapshot:
+   `remaining = Virtual Host.limit - Virtual Host.used`.
+   `remaining >= 2` → PASS (demo creates 2 LBs). `remaining == 1`
+   → WARN (only one LB can be created). `remaining == 0` → FAIL.
+   `HTTP Load Balancer` quota is unlimited (`limit: -1`) on this
+   tenant — `Virtual Host` is the binding constraint.
+10. **PF-T1-6: Protected Domain Quota** — POST a probe protected
+    domain named `preflight-probe.example.com` with
+    `protected_domain: "example.com"` (RFC 2606), then DELETE it.
+    If creation returns error code `8`, record as FAIL. A `409`
+    (domain already exists) counts as PASS — it proves the API
+    accepts domain registrations and quota is not exhausted.
 
 ### T2: Platform Prerequisites
 
@@ -118,11 +130,8 @@ Executes auto-teardown if leftover objects are found.
 16. Run the six pre-flight commands (HTTP LB, HTTPS LB, Origin Pool,
     Healthcheck, protected domains, mitigated domains). Record each
     HTTP status code.
-17. Also check for stale probe objects from a prior interrupted
+17. Also check for a stale probe object from a prior interrupted
     pre-flight run — delete if found:
-    - `preflight-quota-probe` (healthcheck)
-    - `preflight-lb-probe` (HTTP load balancer)
-    - `preflight-origin-probe` (origin pool)
     - `preflight-probe.example.com` (protected domain)
 18. **Auto-teardown if needed** — if any objects exist (HTTP `200` on
     infrastructure checks, or non-zero real counts on

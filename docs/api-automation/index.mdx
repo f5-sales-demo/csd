@@ -27,40 +27,63 @@ The placeholder form stores values — including your API token — in the brows
 Before starting Phase 1, verify the environment is clean. Run these API checks to determine if leftover objects exist from a prior run:
 
 ```bash
-# Check all Phase 1 objects (run in parallel)
-curl -s -o /dev/null -w "HTTP LB: %{http_code}\n" \
+# Check all Phase 1 objects and compute environment status
+HTTP_LB=$(curl -s -o /dev/null -w '%\{http_code\}' \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http"
-
-curl -s -o /dev/null -w "HTTPS LB: %{http_code}\n" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http")
+HTTPS_LB=$(curl -s -o /dev/null -w '%\{http_code\}' \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https"
-
-curl -s -o /dev/null -w "Origin Pool: %{http_code}\n" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+ORIGIN=$(curl -s -o /dev/null -w '%\{http_code\}' \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx"
-
-curl -s -o /dev/null -w "Healthcheck: %{http_code}\n" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx")
+HC=$(curl -s -o /dev/null -w '%\{http_code\}' \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx"
-
-curl -s -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx")
+PD_COUNT=$(curl -s -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
-  | jq '{protected_domains: (.items | length)}'
-
-curl -s -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  | jq '[.items // [] | .[] | select(.metadata.name != null)] | length')
+MD_COUNT=$(curl -s -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
-  | jq '{mitigated_domains: (.items | length)}'
+  | jq '[.items // [] | .[] | select(.metadata.name != null)] | length')
+
+# Compute deterministic environment status
+jq -n \
+  --argjson http_lb "$HTTP_LB" \
+  --argjson https_lb "$HTTPS_LB" \
+  --argjson origin "$ORIGIN" \
+  --argjson hc "$HC" \
+  --argjson pd "$PD_COUNT" \
+  --argjson md "$MD_COUNT" \
+'{
+  objects: [
+    { name: "http_lb",           http_code: $http_lb, exists: ($http_lb == 200) },
+    { name: "https_lb",          http_code: $https_lb, exists: ($https_lb == 200) },
+    { name: "origin_pool",       http_code: $origin, exists: ($origin == 200) },
+    { name: "healthcheck",       http_code: $hc, exists: ($hc == 200) },
+    { name: "protected_domains", count: $pd, exists: ($pd > 0) },
+    { name: "mitigated_domains", count: $md, exists: ($md > 0) }
+  ],
+  any_infra_exists: ($http_lb == 200 or $https_lb == 200 or $origin == 200 or $hc == 200),
+  any_csd_exists: ($pd > 0 or $md > 0),
+  status: (
+    if ($http_lb == 404 and $https_lb == 404 and $origin == 404 and $hc == 404 and $pd == 0 and $md == 0) then "CLEAN"
+    elif ($http_lb == 200 and $origin == 200) then "ALL_EXIST"
+    elif ($http_lb == 200 or $https_lb == 200 or $origin == 200 or $hc == 200) then "TEARDOWN_NEEDED"
+    elif ($md > 0 and $http_lb == 404 and $https_lb == 404 and $origin == 404 and $hc == 404) then "MITIGATIONS_ONLY"
+    else "TEARDOWN_NEEDED"
+    end
+  ),
+  action: (
+    if ($http_lb == 404 and $https_lb == 404 and $origin == 404 and $hc == 404 and $pd == 0 and $md == 0) then "Proceed to Phase 1"
+    elif ($http_lb == 200 and $origin == 200) then "All Phase 1 objects exist — verify health, optionally skip to Phase 2"
+    elif ($http_lb == 200 or $https_lb == 200 or $origin == 200 or $hc == 200) then "Run Phase 4 Teardown first, then re-check"
+    elif ($md > 0 and $http_lb == 404 and $https_lb == 404 and $origin == 404 and $hc == 404) then "Delete mitigated domains inline, then proceed"
+    else "Run Phase 4 Teardown first, then re-check"
+    end
+  )
+}'
 ```
-
-### Decision Logic
-
-| Result | Action |
-| --- | --- |
-| All `404` + 0 protected/mitigated | **Clean** — proceed to Phase 1 |
-| Any infrastructure objects exist (`200`) | Run [Phase 4 — Teardown](/csd/api-automation/phase-4-teardown/) first, then re-check |
-| Only mitigated domains exist | Delete them inline (no full teardown needed) |
-| All Phase 1 objects exist and healthy | Optionally skip Phase 1 and start at Phase 2 |
 
 ### Skip-Ahead Verification
 
@@ -113,155 +136,169 @@ These checks confirm the execution host can reach the F5 XC API and the credenti
 #### PF-T0-1: API Connectivity
 
 ```bash
-curl -s -o /dev/null -w '%\{http_code\}' --connect-timeout 10 --max-time 15 \
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' --connect-timeout 10 --max-time 15 \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/web/namespaces"
+  "xF5XC_API_URLx/api/web/namespaces")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T0-1",
+  http_code: .http_code,
+  status: (
+    if .http_code == 200 then "PASS"
+    elif .http_code == 401 then "FAIL"
+    else "FAIL"
+    end
+  ),
+  detail: (
+    if .http_code == 200 then "API reachable, token valid"
+    elif .http_code == 401 then "Token expired or invalid — regenerate under Administration > Credentials > API Credentials"
+    elif .http_code == 0 then "Network unreachable — check connectivity, VPN, or TLS compatibility (try --tlsv1.2 --tls-max 1.2)"
+    else "Unexpected HTTP \(.http_code)"
+    end
+  )
+}'
 ```
-
-| Result | Status | Remediation |
-| --- | --- | --- |
-| `200` | **PASS** | API is reachable and token is valid |
-| `401` | **FAIL** | Token expired or invalid — regenerate under **Administration** &rarr; **Credentials** &rarr; **API Credentials** |
-| `000` or timeout | **FAIL** | Network issue — check internet connectivity, VPN, or TLS compatibility (some environments require `--tlsv1.2 --tls-max 1.2`) |
 
 #### PF-T0-2: Namespace Access
 
 ```bash
-curl -s -o /dev/null -w '%\{http_code\}' \
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers"
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T0-2",
+  http_code: .http_code,
+  status: (if .http_code == 200 then "PASS" else "FAIL" end),
+  detail: (
+    if .http_code == 200 then "Token has namespace access"
+    elif .http_code == 403 then "Token lacks permissions for namespace — check role bindings"
+    elif .http_code == 404 then "Namespace does not exist"
+    else "Unexpected HTTP \(.http_code)"
+    end
+  )
+}'
 ```
-
-| Result | Status | Remediation |
-| --- | --- | --- |
-| `200` | **PASS** | Token has access to the target namespace |
-| `403` | **FAIL** | Token lacks permissions for namespace `xF5XC_NAMESPACEx` — check role bindings |
-| `404` | **FAIL** | Namespace does not exist |
 
 #### PF-T0-3: CSD API Access
 
 ```bash
-curl -s -o /dev/null -w '%\{http_code\}' \
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status"
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T0-3",
+  http_code: .http_code,
+  status: (if .http_code == 200 then "PASS" else "FAIL" end),
+  detail: (
+    if .http_code == 200 then "Token has CSD/Shape API permissions"
+    elif .http_code == 403 then "Token lacks CSD role binding — contact tenant administrator"
+    else "Unexpected HTTP \(.http_code)"
+    end
+  )
+}'
 ```
-
-| Result | Status | Remediation |
-| --- | --- | --- |
-| `200` | **PASS** | Token has CSD/Shape API permissions |
-| `403` | **FAIL** | Token lacks CSD role binding — contact tenant administrator to add Shape/CSD permissions |
 
 ### T1: Quotas &amp; Capacity
 
-These checks verify the tenant has room to create the objects Phase 1 needs. PF-T1-1 is WARN because healthchecks are optional for CSD. PF-T1-4 through PF-T1-6 are **FAIL** because endpoints, load balancers, and protected domains are required — if any of these hit quota limits, the demo cannot proceed.
+These checks query the tenant's Quota Usage API to determine limits, current usage, and remaining capacity for each object kind the demo needs. This replaces probe-and-delete testing with a single read-only API call that reports exact numbers.
 
-T1 uses a **quota snapshot**: a single `GET /api/web/namespaces/system/quota/usage` call (PF-T1-0) returns `limit.maximum` and `usage.current` for all resource types. Each subsequent check reads from that snapshot — no throwaway objects are created or deleted.
+#### PF-T1-0: Quota Usage Gate
 
-#### PF-T1-0: Quota Snapshot
+Query the tenant-wide quota usage endpoint and compute a deterministic PASS/WARN/FAIL status for every object kind the demo needs. This endpoint requires the `system` namespace. A single API call checks all platform-level quotas at once.
 
-Fetch the org-wide quota snapshot used by all subsequent T1 checks. Note: this endpoint uses the `system` namespace, not `xF5XC_NAMESPACEx`.
+The gate defines a `demo_needs` array that specifies how many of each object kind the demo will consume, whether the kind is required, and the minimum needed for the demo to proceed. The jq filter compares `remaining` against `needed` and computes the `status` field deterministically — no operator interpretation required.
 
 ```bash
+# Step 1: Fetch quota data
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/web/namespaces/system/quota/usage" \
-  | jq '{
-      virtual_host: (.quota_usage["Virtual Host"] // {}) | {limit: (.limit.maximum // 0), used: (.usage.current // 0), remaining: ((.limit.maximum // 0) - (.usage.current // 0))},
-      healthcheck:  (.quota_usage["Healthcheck"]  // {}) | {limit: (.limit.maximum // 0), used: (.usage.current // 0), remaining: ((.limit.maximum // 0) - (.usage.current // 0))},
-      endpoint:     (.quota_usage["Endpoint"]     // {}) | {limit: (.limit.maximum // 0), used: (.usage.current // 0), remaining: ((.limit.maximum // 0) - (.usage.current // 0))}
-    }'
+  "xF5XC_API_URLx/api/web/namespaces/system/quota/usage?namespace=system" \
+  > /tmp/quota.json
+
+# Step 2: Compute gate status
+jq '
+  . as $data |
+  [
+    { kind: "healthcheck",       needed: 1, required: false, min_proceed: 0 },
+    { kind: "origin_pool",       needed: 1, required: true,  min_proceed: 1 },
+    { kind: "endpoint",          needed: 1, required: true,  min_proceed: 1 },
+    { kind: "http_loadbalancer", needed: 2, required: true,  min_proceed: 1 }
+  ] | map(
+    . as $req |
+    $data.objects[$req.kind] as $obj |
+    $obj.limit.maximum as $limit |
+    $obj.usage.current as $usage |
+    (if $limit == -1 then null else ($limit - $usage) end) as $remaining |
+    {
+      kind:      $req.kind,
+      limit:     (if $limit == -1 then "unlimited" else $limit end),
+      usage:     $usage,
+      remaining: (if $remaining == null then "unlimited" else $remaining end),
+      needed:    $req.needed,
+      status:    (
+        if $remaining == null then "PASS"
+        elif $remaining >= $req.needed then "PASS"
+        elif $remaining >= $req.min_proceed then "WARN"
+        else
+          (if $req.required then "FAIL" else "WARN" end)
+        end
+      )
+    }
+  )
+  | {
+      checks: .,
+      gate: (if any(.[]; .status == "FAIL") then "FAIL"
+             elif any(.[]; .status == "WARN") then "WARN"
+             else "PASS" end)
+    }
+' /tmp/quota.json
 ```
 
-| Result | Status | Remediation |
-| --- | --- | --- |
-| JSON with `virtual_host`, `healthcheck`, `endpoint` keys | **PASS** | Snapshot available — proceed with T1-1 through T1-5 |
-| `403` or `404` | **WARN** | Token may lack `web` API scope — fall back to probe-and-delete for all T1 checks (see legacy probe steps in `docs/api-automation/index.mdx` git history) |
+**Gate output** — the `gate` field is the single deterministic verdict:
 
-#### PF-T1-1: Healthcheck Quota
+- **`PASS`** — all object kinds have `remaining >= needed`. Demo can proceed.
+- **`WARN`** — at least one kind has reduced capacity but the minimum to proceed is met (e.g., only 1 LB slot available instead of 2, or healthcheck quota exhausted). Demo can proceed with limitations.
+- **`FAIL`** — at least one required kind has `remaining < min_proceed`. Demo cannot proceed until quota is freed.
 
-Read from the T1-0 snapshot. `remaining = Healthcheck.limit - Healthcheck.used`.
+**Example output** (WARN — endpoint at capacity, healthcheck nearly full):
 
-```bash
-# Read from snapshot output — example jq against stored response
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/web/namespaces/system/quota/usage" \
-  | jq '(.quota_usage["Healthcheck"] // {}) | {limit: (.limit.maximum // 0), used: (.usage.current // 0), remaining: ((.limit.maximum // 0) - (.usage.current // 0))}'
+```json
+{
+  "checks": [
+    { "kind": "healthcheck",       "limit": 150,         "usage": 149, "remaining": 1,           "needed": 1, "status": "PASS" },
+    { "kind": "origin_pool",       "limit": "unlimited", "usage": 420, "remaining": "unlimited", "needed": 1, "status": "PASS" },
+    { "kind": "endpoint",          "limit": 500,         "usage": 500, "remaining": 0,           "needed": 1, "status": "FAIL" },
+    { "kind": "http_loadbalancer", "limit": "unlimited", "usage": 116, "remaining": "unlimited", "needed": 2, "status": "PASS" }
+  ],
+  "gate": "FAIL"
+}
 ```
 
-| Result | Status | Remediation |
-| --- | --- | --- |
-| `remaining >= 1` | **PASS** | Healthcheck quota available |
-| `remaining == 0` | **WARN** | Quota full — Phase 1 Step 1 will be skipped automatically (CSD does not require a healthcheck). Demo proceeds normally. Delete unused healthchecks to free capacity for future runs. |
+| `gate` value | Action |
+| --- | --- |
+| **PASS** | Proceed to PF-T1-4 (protected domain check), then T2 |
+| **WARN** | Note limitations in the readiness report, proceed with reduced capability |
+| **FAIL** | Stop — report which kinds are exhausted and remediation steps below |
 
-#### PF-T1-2: Origin Pool Capacity
+**Remediation by kind:**
 
-```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools" \
-  | jq '{count: (.items | length)}'
-```
+| Kind | Remediation |
+| --- | --- |
+| `healthcheck` | Delete unused healthchecks to free capacity. Demo proceeds without healthcheck (CSD does not require one). |
+| `origin_pool` | Delete unused origin pools or contact your administrator to increase the tenant limit. |
+| `endpoint` | Delete unused origin pools in other namespaces to free endpoint capacity (endpoints are sub-objects of origin pools), or contact your administrator. |
+| `http_loadbalancer` | Delete unused load balancers or contact your administrator. If only 1 slot is available, the HTTP LB (primary) will be created but the HTTPS LB (secondary) will be skipped. |
 
-| Result | Status | Remediation |
-| --- | --- | --- |
-| Count returned | **PASS** (informational) | Note the current count for awareness. Origin pool quota is unlimited (`limit: -1`) on this tenant — the binding constraint is endpoint quota (PF-T1-4). |
-| API error | **FAIL** | Permissions issue — see PF-T0-2 |
+<Aside type="note">
+The Quota Usage API returns tenant-wide totals across all namespaces, not per-namespace counts. A `limit` value of `-1` (displayed as `"unlimited"`) means the quota is not capped for that object kind. If the API returns `403`, `404`, or an unexpected format, fall back to the [probe-based checks](#fallback-probe-based-quota-checks) below.
+</Aside>
 
-#### PF-T1-3: HTTP Load Balancer Capacity
+#### PF-T1-4: Protected Domain Quota
 
-```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers" \
-  | jq '{count: (.items | length)}'
-```
-
-| Result | Status | Remediation |
-| --- | --- | --- |
-| Count returned | **PASS** (informational) | Note the current count — the demo creates 2 LBs. `HTTP Load Balancer` quota is unlimited (`limit: -1`) on this tenant — the binding constraint is `Virtual Host` quota (PF-T1-5). |
-| API error | **FAIL** | Permissions issue — see PF-T0-2 |
-
-#### PF-T1-4: Endpoint Quota
-
-Read from the T1-0 snapshot. `remaining = Endpoint.limit - Endpoint.used`. Each origin pool requires at least one endpoint sub-object — this is the binding quota constraint for origin pool creation.
+CSD protected domains do not appear in the platform Quota Usage API. Use a probe-based check: create and immediately delete a probe protected domain.
 
 ```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/web/namespaces/system/quota/usage" \
-  | jq '(.quota_usage["Endpoint"] // {}) | {limit: (.limit.maximum // 0), used: (.usage.current // 0), remaining: ((.limit.maximum // 0) - (.usage.current // 0))}'
-```
-
-| Result | Status | Remediation |
-| --- | --- | --- |
-| `remaining >= 1` | **PASS** | Endpoint quota available |
-| `remaining == 0` | **FAIL** | Endpoint quota exhausted — origin pools cannot be created. Delete unused origin pools in other namespaces to free endpoint capacity, or contact your F5 Distributed Cloud (F5 XC) administrator to increase the tenant limit. |
-
-#### PF-T1-5: HTTP Load Balancer Quota
-
-Read from the T1-0 snapshot. `remaining = Virtual Host.limit - Virtual Host.used`. The `HTTP Load Balancer` quota is unlimited on this tenant — `Virtual Host` is the binding constraint. The demo creates 2 load balancers (http + https).
-
-```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/web/namespaces/system/quota/usage" \
-  | jq '(.quota_usage["Virtual Host"] // {}) | {limit: (.limit.maximum // 0), used: (.usage.current // 0), remaining: ((.limit.maximum // 0) - (.usage.current // 0))}'
-```
-
-| Result | Status | Remediation |
-| --- | --- | --- |
-| `remaining >= 2` | **PASS** | Load balancer quota available for both HTTP and HTTPS LBs |
-| `remaining == 1` | **WARN** | Only 1 Virtual Host slot available — HTTP LB can be created but HTTPS LB will fail. Consider proceeding with HTTP-only demo. |
-| `remaining == 0` | **FAIL** | Load balancer quota exhausted. Delete unused load balancers or contact your administrator. |
-
-#### PF-T1-6: Protected Domain Quota
-
-Create and immediately delete a probe protected domain to test whether the tenant has capacity for CSD domain registrations.
-
-```bash
-# Create probe
-curl -s -X POST \
+# Create probe and capture both HTTP code and response body
+PROBE_BODY=$(curl -s -w '\n%\{http_code\}' -X POST \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   -H "Content-Type: application/json" \
   -d '{
@@ -273,25 +310,175 @@ curl -s -X POST \
       "protected_domain": "example.com"
     }
   }' \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
-  | jq '{name: .metadata.name, code: .code, message: .message}'
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains")
+PROBE_HTTP=$(echo "$PROBE_BODY" | tail -1)
+PROBE_JSON=$(echo "$PROBE_BODY" | sed '$d')
 
-# Cleanup probe
+# Compute status
+echo "$PROBE_JSON" | jq --argjson http "$PROBE_HTTP" '{
+  check: "PF-T1-4",
+  http_code: $http,
+  status: (
+    if $http == 409 then "PASS"
+    elif (.code // 0) == 8 then "FAIL"
+    elif .metadata.name then "PASS"
+    else "FAIL"
+    end
+  ),
+  detail: (
+    if $http == 409 then "example.com already registered — quota not exhausted"
+    elif (.code // 0) == 8 then "Protected domain quota exhausted — delete unused protected domains"
+    elif .metadata.name then "Probe created — quota available"
+    else "Unexpected response"
+    end
+  )
+}'
+
+# Cleanup probe (404 is expected if 409 occurred)
 curl -s -X DELETE \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/preflight-probe.example.com" \
   > /dev/null
 ```
 
-| Result | Status | Remediation |
-| --- | --- | --- |
-| Probe created (name returned, no error code) | **PASS** | Protected domain quota available |
-| `409` (domain already exists) | **PASS** | `example.com` is already registered on the tenant — this proves the API accepts domain registrations and quota is not exhausted |
-| `"code": 8` with "exhausted limits" | **FAIL** | Protected domain quota full — delete unused protected domains or contact your administrator. |
-
 <Aside type="note">
-The probe uses RFC 2606 reserved domain `example.com`. A `409` response is a valid PASS condition — it means the domain is already registered on the tenant, which proves the API is functional and quota is not exhausted. The DELETE may return `404` if the `409` occurred (the probe object was never created), which is expected.
+The probe uses RFC 2606 reserved domain `example.com`. A `409` response is a valid PASS — it means the domain is already registered, proving quota is not exhausted. The DELETE may return `404` if `409` occurred (probe was never created), which is expected.
 </Aside>
+
+#### Fallback: Probe-Based Quota Checks
+
+If PF-T1-0 fails (the Quota Usage API returns `403`, `404`, or an unexpected format), fall back to probe-and-delete checks for healthcheck, origin pool, endpoint, and load balancer quotas. These checks create a temporary object and immediately delete it — if creation returns error code `8` with "exhausted limits", the quota is full.
+
+<Aside type="caution">
+Probe-based checks create real objects on the tenant and delete them immediately. If deletion fails (e.g., network issue), stale probe objects may remain. The [T4 stale probe cleanup](#t4-environment-clean) will detect and remove them on the next pre-flight run.
+</Aside>
+
+Each fallback probe uses the same pattern: create a temporary object, compute a deterministic status from the response, then delete the probe. The `status` field is `PASS` if the object was created (`.metadata.name` present), `WARN` or `FAIL` if error code `8` (exhausted limits), depending on whether the kind is required.
+
+**Healthcheck probe** (WARN if exhausted — healthchecks are optional for CSD):
+
+```bash
+RESULT=$(curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "preflight-quota-probe",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "http_health_check": {
+        "use_origin_server_name": {},
+        "path": "/",
+        "use_http2": false
+      },
+      "timeout": 3,
+      "interval": 15,
+      "unhealthy_threshold": 1,
+      "healthy_threshold": 3
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks")
+echo "$RESULT" | jq '{
+  check: "fallback-healthcheck",
+  status: (if .metadata.name then "PASS" elif (.code // 0) == 8 then "WARN" else "FAIL" end),
+  detail: (if .metadata.name then "Quota available" elif (.code // 0) == 8 then "Quota full — healthcheck optional, demo proceeds" else "Unexpected: \(.message // "unknown error")" end)
+}'
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/preflight-quota-probe" \
+  > /dev/null
+```
+
+**Origin pool &amp; endpoint probe** (FAIL if exhausted — both are required):
+
+```bash
+RESULT=$(curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "preflight-origin-probe",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "origin_servers": [{
+        "public_ip": { "ip": "192.0.2.1" },
+        "labels": {}
+      }],
+      "no_tls": {},
+      "port": 80,
+      "same_as_endpoint_port": {},
+      "healthcheck": [],
+      "loadbalancer_algorithm": "LB_OVERRIDE",
+      "endpoint_selection": "LOCAL_PREFERRED"
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools")
+echo "$RESULT" | jq '{
+  check: "fallback-origin-pool",
+  status: (if .metadata.name then "PASS" elif (.code // 0) == 8 then "FAIL" else "FAIL" end),
+  detail: (if .metadata.name then "Quota available" elif (.code // 0) == 8 then "Quota exhausted — \(.message // "limit reached")" else "Unexpected: \(.message // "unknown error")" end)
+}'
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/preflight-origin-probe" \
+  > /dev/null
+```
+
+**HTTP load balancer probe** (FAIL if exhausted — LBs are required):
+
+```bash
+RESULT=$(curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "preflight-lb-probe",
+      "namespace": "xF5XC_NAMESPACEx",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["preflight-probe.example.com"],
+      "http": {
+        "dns_volterra_managed": false,
+        "port": 80
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [],
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers")
+echo "$RESULT" | jq '{
+  check: "fallback-http-lb",
+  status: (if .metadata.name then "PASS" elif (.code // 0) == 8 then "FAIL" else "FAIL" end),
+  detail: (if .metadata.name then "Quota available" elif (.code // 0) == 8 then "Quota exhausted — \(.message // "limit reached")" else "Unexpected: \(.message // "unknown error")" end)
+}'
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/preflight-lb-probe" \
+  > /dev/null
+```
 
 ### T2: Platform Prerequisites
 
@@ -303,28 +490,45 @@ These checks verify tenant-level services that the demo depends on.
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
-  | jq '{configured: .isConfigured, enabled: .isEnabled}'
+  | jq '{
+    check: "PF-T2-1",
+    configured: .isConfigured,
+    enabled: .isEnabled,
+    status: (if .isConfigured and .isEnabled then "PASS" else "FAIL" end),
+    detail: (
+      if .isConfigured and .isEnabled then "CSD is active"
+      elif (.isConfigured | not) then "CSD not enabled at tenant level — contact F5 XC administrator"
+      else "CSD configured but not active — contact administrator"
+      end
+    )
+  }'
 ```
-
-| Result | Status | Remediation |
-| --- | --- | --- |
-| Both `true` | **PASS** | CSD is active |
-| `isConfigured: false` | **FAIL** | CSD not enabled at tenant level — contact F5 XC administrator. This is a tenant-wide setting that cannot be configured via API. |
-| `isEnabled: false` | **FAIL** | CSD configured but not active — contact administrator |
 
 #### PF-T2-2: DNS Zone Exists
 
 ```bash
-curl -s -o /dev/null -w '%\{http_code\}' \
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx"
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T2-2",
+  http_code: .http_code,
+  status: (
+    if .http_code == 200 then "PASS"
+    elif .http_code == 404 then "WARN"
+    elif .http_code == 403 then "WARN"
+    else "FAIL"
+    end
+  ),
+  detail: (
+    if .http_code == 200 then "DNS zone exists in F5 XC"
+    elif .http_code == 404 then "No F5 XC DNS zone — external DNS may be in use"
+    elif .http_code == 403 then "Token lacks DNS zone read access (system namespace)"
+    else "Unexpected HTTP \(.http_code)"
+    end
+  )
+}'
 ```
-
-| Result | Status | Remediation |
-| --- | --- | --- |
-| `200` | **PASS** | DNS zone exists in F5 XC |
-| `404` | **WARN** | No F5 XC DNS zone for this domain — if using F5 XC managed DNS, the zone must be created first. If using external DNS, this is expected. |
-| `403` | **WARN** | Token lacks DNS zone read access (zones are in the `system` namespace) — DNS configuration may require manual steps |
 
 #### PF-T2-3: DNS Managed Records Enabled
 
@@ -336,10 +540,15 @@ Only run if PF-T2-2 returned `200` (F5 XC DNS zone exists).
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
-  | jq '.spec.primary.allow_http_lb_managed_records'
+  | jq '{
+    check: "PF-T2-3",
+    managed_records: (.spec.primary.allow_http_lb_managed_records // false),
+    status: (if .spec.primary.allow_http_lb_managed_records == true then "PASS" else "WARN" end),
+    detail: (if .spec.primary.allow_http_lb_managed_records == true then "LB-managed DNS records enabled" else "Managed records not enabled — auto-remediation may be needed" end)
+  }'
 ```
 
-**Auto-remediate if needed:** If the result is `false` or `null` AND PF-T2-4 shows F5 XC nameservers (`ns1.f5clouddns.com`, `ns2.f5clouddns.com`), auto-enable managed records using GET+PUT:
+**Auto-remediate if needed:** If the `status` is `WARN` AND PF-T2-4 shows F5 XC nameservers (`ns1.f5clouddns.com`, `ns2.f5clouddns.com`), auto-enable managed records using GET+PUT:
 
 ```bash
 # Get current zone config
@@ -381,14 +590,24 @@ The zone spec contains an `x-ves-io-managed` rr_set_group with platform-managed 
 #### PF-T2-4: DNS Nameserver Authority
 
 ```bash
-dig +short NS xF5XC_ROOT_DOMAINx
+NS_RECORDS=$(dig +short NS xF5XC_ROOT_DOMAINx)
+echo "$NS_RECORDS" | jq -Rs '{
+  check: "PF-T2-4",
+  nameservers: (split("\n") | map(select(length > 0))),
+  status: (
+    if (split("\n") | map(select(length > 0)) | length) == 0 then "FAIL"
+    elif test("f5clouddns\\.com") then "PASS"
+    else "INFO"
+    end
+  ),
+  detail: (
+    if (split("\n") | map(select(length > 0)) | length) == 0 then "No NS records — DNS is broken for this domain"
+    elif test("f5clouddns\\.com") then "F5 XC is authoritative — automatic DNS management available"
+    else "External DNS provider — Phase 1 Step 4 will use Option B (manual record creation)"
+    end
+  )
+}'
 ```
-
-| Result | Status | Remediation |
-| --- | --- | --- |
-| Includes `ns1.f5clouddns.com` and `ns2.f5clouddns.com` | **PASS** | F5 XC is authoritative — automatic DNS management available |
-| Other nameservers | **INFO** | External DNS provider — Phase 1 Step 4 will use Option B (manual record creation) |
-| Empty | **FAIL** | Domain has no NS records — DNS is fundamentally broken for this domain |
 
 ### T3: Origin Health
 
@@ -404,23 +623,37 @@ internet and will never respond to connectivity tests. When
 an intentional documentation placeholder — not a misconfiguration.
 </Aside>
 
-**Skip condition:** If `F5XC_ORIGIN_IP` is within a TEST-NET range
-(`192.0.2.0/24`, `198.51.100.0/24`, or `203.0.113.0/24`), skip the
-entire T3 tier. Record both PF-T3-1 and PF-T3-2 as **SKIP** with
-note: "Origin IP is an RFC 5737 TEST-NET documentation address —
-not routable, connectivity testing skipped."
+**Skip condition check:** Compute whether the origin IP is an RFC 5737 TEST-NET address before running connectivity tests:
+
+```bash
+echo "xF5XC_ORIGIN_IPx" | jq -Rs '{
+  check: "PF-T3-skip",
+  origin_ip: (rtrimstr("\n")),
+  is_test_net: (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")),
+  status: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "SKIP" else "CONTINUE" end),
+  detail: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "RFC 5737 TEST-NET address — not routable, connectivity testing skipped" else "Routable IP — proceed with connectivity tests" end)
+}'
+```
+
+If `status` is `SKIP`, record PF-T3-1 and PF-T3-2 as SKIP and move to T4. Otherwise, run the checks below.
 
 #### PF-T3-1: Origin Server Connectivity
 
 ```bash
-curl -s -o /dev/null -w '%\{http_code\}' --connect-timeout 10 --max-time 15 \
-  "http://xF5XC_ORIGIN_IPx:xF5XC_ORIGIN_PORTx/"
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' --connect-timeout 10 --max-time 15 \
+  "http://xF5XC_ORIGIN_IPx:xF5XC_ORIGIN_PORTx/")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T3-1",
+  http_code: .http_code,
+  status: (if .http_code >= 200 and .http_code < 600 then "PASS" elif .http_code == 0 then "WARN" else "WARN" end),
+  detail: (
+    if .http_code >= 200 and .http_code < 600 then "Origin responding with HTTP \(.http_code)"
+    elif .http_code == 0 then "Origin unreachable from this network — LB may use a different path"
+    else "Unexpected response code \(.http_code)"
+    end
+  )
+}'
 ```
-
-| Result | Status | Remediation |
-| --- | --- | --- |
-| `200` (or other valid HTTP code) | **PASS** | Origin server is responding |
-| `000` or connection refused | **WARN** | Origin unreachable from this network — this tests client-to-origin connectivity, not LB-to-origin. The LB may use a different network path. If the origin is only reachable via the F5 XC network fabric, this is expected. |
 
 <Aside type="note">
 The default origin for the CSD demo is the Juice Shop application at `44.232.69.192:3000`. If you are using a custom origin (`F5XC_ORIGIN_IP` / `F5XC_ORIGIN_PORT`), verify that it serves an HTML page with form fields — CSD needs form elements to demonstrate detection capabilities.
@@ -452,7 +685,7 @@ belong to T3).
 
 Run the six pre-flight commands from the [Pre-flight Check](#pre-flight-check) section above. Apply the [Decision Logic](#decision-logic) to determine next steps. If objects exist, auto-teardown is performed during Prepare stage (no confirmation needed).
 
-Also check for and delete stale probe objects from prior interrupted pre-flight runs:
+Also check for and delete stale probe objects from prior interrupted pre-flight runs. These probes are only created when the Quota Usage API is unavailable and the [fallback probe-based checks](#fallback-probe-based-quota-checks) were used, or for the protected domain probe (PF-T1-4) which always uses probe-based checking:
 
 ```bash
 # Stale probe cleanup (delete in any order — probes have no dependencies)
@@ -492,18 +725,35 @@ There is no API to query Let's Encrypt rate limit status directly. This check us
 Only run if an HTTPS LB exists from a prior run (PF-T4 found objects):
 
 ```bash
-curl -s \
+CERT_BODY=$(curl -s -w '\n%\{http_code\}' \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
-  | jq '{cert_state: .spec.cert_state}'
-```
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+CERT_HTTP=$(echo "$CERT_BODY" | tail -1)
+CERT_JSON=$(echo "$CERT_BODY" | sed '$d')
 
-| Result | Status | Remediation |
-| --- | --- | --- |
-| `CertificateValid` | **PASS** | Certificate is healthy — HTTPS will work |
-| `AutoCertDomainRateLimited` | **INFO** | Let's Encrypt rate limit hit — plan for HTTP-only demo. The HTTP LB is unaffected. |
-| `DomainChallengePending` / `DomainChallengeStarted` | **INFO** | Certificate provisioning in progress |
-| `404` (no HTTPS LB) | **SKIP** | No existing HTTPS LB — certificate state will be assessed after Phase 1 Step 3 |
+if [ "$CERT_HTTP" = "404" ]; then
+  echo '{"check":"PF-T5-2","cert_state":null,"status":"SKIP","detail":"No HTTPS LB — certificate state assessed after Phase 1 Step 3"}'
+else
+  echo "$CERT_JSON" | jq '{
+    check: "PF-T5-2",
+    cert_state: .spec.cert_state,
+    status: (
+      if .spec.cert_state == "CertificateValid" then "PASS"
+      elif .spec.cert_state == "AutoCertDomainRateLimited" then "INFO"
+      elif (.spec.cert_state | test("Pending|Started")) then "INFO"
+      else "INFO"
+      end
+    ),
+    detail: (
+      if .spec.cert_state == "CertificateValid" then "Certificate healthy — HTTPS will work"
+      elif .spec.cert_state == "AutoCertDomainRateLimited" then "Let'\''s Encrypt rate limit hit — plan for HTTP-only demo"
+      elif (.spec.cert_state | test("Pending|Started")) then "Certificate provisioning in progress"
+      else "Certificate state: \(.spec.cert_state // "unknown")"
+      end
+    )
+  }'
+fi
+```
 
 ### Readiness Report Format
 
@@ -520,15 +770,14 @@ After running all tiers, present a consolidated readiness report:
 | PF-T0-3: CSD API Access | 200 | PASS |
 
 ### T1: Quotas & Capacity
-| Check | Result | Status |
-|---|---|---|
-| PF-T1-0: Quota Snapshot | virtual_host / healthcheck / endpoint returned | PASS |
-| PF-T1-1: Healthcheck Quota | remaining: 1 of 150 | PASS |
-| PF-T1-2: Origin Pool Count | 14 (limit: unlimited) | PASS |
-| PF-T1-3: HTTP LB Count | 1 (limit: unlimited) | PASS |
-| PF-T1-4: Endpoint Quota | remaining: 99 of 500 | PASS |
-| PF-T1-5: HTTP LB Quota | remaining: 99 of 500 (Virtual Host) | PASS |
-| PF-T1-6: Protected Domain Quota | Probe created | PASS |
+| Check | Kind | Limit | Usage | Remaining | Needed | Status |
+|---|---|---|---|---|---|---|
+| PF-T1-0: Quota Usage Gate | `healthcheck` | 150 | 148 | 2 | 1 | PASS |
+| PF-T1-0: Quota Usage Gate | `origin_pool` | unlimited | 420 | unlimited | 1 | PASS |
+| PF-T1-0: Quota Usage Gate | `endpoint` | 500 | 498 | 2 | 1 | PASS |
+| PF-T1-0: Quota Usage Gate | `http_loadbalancer` | unlimited | 116 | unlimited | 2 | PASS |
+| PF-T1-0: Quota Usage Gate | **gate** | — | — | — | — | **PASS** |
+| PF-T1-4: Protected Domain | — | — | — | — | 1 | PASS (probe) |
 
 ### T2: Platform Prerequisites
 | Check | Result | Status |
@@ -888,7 +1137,7 @@ The `single_lb_app` object has its own required `oneOf` groups. Setting `single_
 - **404 Not Found** — namespace or object name is incorrect. List objects with `GET /api/config/namespaces/\{namespace\}/\{object_type\}`.
 - **409 Conflict** — object already exists. For protected domains, a `409` with "domain already exists (in uriList)" means the root domain is already registered on the tenant — this is a success condition, not an error. For other objects, delete first or use `PUT` to update.
 - **422 Unprocessable Entity** — JSON schema validation failed. Common causes: missing `oneOf` choice, multiple choices set in same group, wrong field type. Check the error message for the specific field.
-- **Object limit exhausted** (error code `8`, message `"Object kind {kind} has exhausted limits({N})"`) — tenant has hit an object quota limit. The API returns HTTP 200 with a JSON error body containing `"code": 8`, not HTTP 429. Behavior depends on the object type:
+- **Object limit exhausted** (error code `8`, message `"Object kind {kind} has exhausted limits({N})"`) — tenant has hit an object quota limit. The API returns HTTP 200 with a JSON error body containing `"code": 8`, not HTTP 429. You can proactively check quota capacity before encountering this error using the [Quota Usage API](#pf-t1-0-quota-usage-query) (`GET /api/web/namespaces/system/quota/usage?namespace=system`). Behavior depends on the object type:
   - **Healthcheck** (limit ~150): **Non-blocking** — skip Phase 1 Step 1 and create the origin pool without a healthcheck reference. CSD does not depend on health monitoring.
   - **Endpoint** (limit ~500): **Blocking** — endpoints are sub-objects created inside origin pools. If this limit is hit, origin pool creation fails. Delete unused origin pools (which frees their endpoint sub-objects) or contact your administrator to increase the tenant limit.
   - **Origin pool**: **Blocking** — delete unused origin pools or contact your administrator.

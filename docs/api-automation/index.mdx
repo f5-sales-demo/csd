@@ -153,52 +153,46 @@ curl -s -o /dev/null -w '%\{http_code\}' \
 
 ### T1: Quotas &amp; Capacity
 
-These checks verify the tenant has room to create the objects Phase 1 needs. PF-T1-1 is WARN because healthchecks are optional for CSD. PF-T1-4 through PF-T1-6 are **FAIL** because origin pools, load balancers, and protected domains are required — if any of these hit quota limits, the demo cannot proceed.
+These checks verify the tenant has room to create the objects Phase 1 needs. PF-T1-1 is WARN because healthchecks are optional for CSD. PF-T1-4 through PF-T1-6 are **FAIL** because endpoints, load balancers, and protected domains are required — if any of these hit quota limits, the demo cannot proceed.
 
-#### PF-T1-1: Healthcheck Quota
+T1 uses a **quota snapshot**: a single `GET /api/web/namespaces/system/quota/usage` call (PF-T1-0) returns `limit.maximum` and `usage.current` for all resource types. Each subsequent check reads from that snapshot — no throwaway objects are created or deleted.
 
-Create and immediately delete a probe healthcheck to test whether the tenant has capacity. If the creation returns error code `8` with "exhausted limits", the quota is full.
+#### PF-T1-0: Quota Snapshot
+
+Fetch the org-wide quota snapshot used by all subsequent T1 checks. Note: this endpoint uses the `system` namespace, not `xF5XC_NAMESPACEx`.
 
 ```bash
-# Create probe
-curl -s -X POST \
+curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "metadata": {
-      "name": "preflight-quota-probe",
-      "namespace": "xF5XC_NAMESPACEx"
-    },
-    "spec": {
-      "http_health_check": {
-        "use_origin_server_name": {},
-        "path": "/",
-        "use_http2": false
-      },
-      "timeout": 3,
-      "interval": 15,
-      "unhealthy_threshold": 1,
-      "healthy_threshold": 3
-    }
-  }' \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks" \
-  | jq '{name: .metadata.name, code: .code, message: .message}'
-
-# Cleanup probe
-curl -s -X DELETE \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/preflight-quota-probe" \
-  > /dev/null
+  "xF5XC_API_URLx/api/web/namespaces/system/quota/usage" \
+  | jq '{
+      virtual_host: (.quota_usage["Virtual Host"] // {}) | {limit: (.limit.maximum // 0), used: (.usage.current // 0), remaining: ((.limit.maximum // 0) - (.usage.current // 0))},
+      healthcheck:  (.quota_usage["Healthcheck"]  // {}) | {limit: (.limit.maximum // 0), used: (.usage.current // 0), remaining: ((.limit.maximum // 0) - (.usage.current // 0))},
+      endpoint:     (.quota_usage["Endpoint"]     // {}) | {limit: (.limit.maximum // 0), used: (.usage.current // 0), remaining: ((.limit.maximum // 0) - (.usage.current // 0))}
+    }'
 ```
 
 | Result | Status | Remediation |
 | --- | --- | --- |
-| Probe created (name returned, no error code) | **PASS** | Healthcheck quota available |
-| `"code": 8` with "exhausted limits" | **WARN** | Quota full — Phase 1 Step 1 will be skipped automatically (CSD does not require a healthcheck). Demo proceeds normally. Delete unused healthchecks to free capacity for future runs. |
+| JSON with `virtual_host`, `healthcheck`, `endpoint` keys | **PASS** | Snapshot available — proceed with T1-1 through T1-5 |
+| `403` or `404` | **WARN** | Token may lack `web` API scope — fall back to probe-and-delete for all T1 checks (see legacy probe steps in `docs/api-automation/index.mdx` git history) |
 
-<Aside type="note">
-The probe creates a real object and deletes it immediately. If the deletion fails (e.g., network issue), a stale `preflight-quota-probe` healthcheck may remain — the next pre-flight run will detect and clean it.
-</Aside>
+#### PF-T1-1: Healthcheck Quota
+
+Read from the T1-0 snapshot. `remaining = Healthcheck.limit - Healthcheck.used`.
+
+```bash
+# Read from snapshot output — example jq against stored response
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/system/quota/usage" \
+  | jq '(.quota_usage["Healthcheck"] // {}) | {limit: (.limit.maximum // 0), used: (.usage.current // 0), remaining: ((.limit.maximum // 0) - (.usage.current // 0))}'
+```
+
+| Result | Status | Remediation |
+| --- | --- | --- |
+| `remaining >= 1` | **PASS** | Healthcheck quota available |
+| `remaining == 0` | **WARN** | Quota full — Phase 1 Step 1 will be skipped automatically (CSD does not require a healthcheck). Demo proceeds normally. Delete unused healthchecks to free capacity for future runs. |
 
 #### PF-T1-2: Origin Pool Capacity
 
@@ -211,7 +205,7 @@ curl -s \
 
 | Result | Status | Remediation |
 | --- | --- | --- |
-| Count returned | **PASS** (informational) | Note the current count for awareness |
+| Count returned | **PASS** (informational) | Note the current count for awareness. Origin pool quota is unlimited (`limit: -1`) on this tenant — the binding constraint is endpoint quota (PF-T1-4). |
 | API error | **FAIL** | Permissions issue — see PF-T0-2 |
 
 #### PF-T1-3: HTTP Load Balancer Capacity
@@ -225,122 +219,41 @@ curl -s \
 
 | Result | Status | Remediation |
 | --- | --- | --- |
-| Count returned | **PASS** (informational) | Note the current count — the demo creates 2 LBs |
+| Count returned | **PASS** (informational) | Note the current count — the demo creates 2 LBs. `HTTP Load Balancer` quota is unlimited (`limit: -1`) on this tenant — the binding constraint is `Virtual Host` quota (PF-T1-5). |
 | API error | **FAIL** | Permissions issue — see PF-T0-2 |
 
-#### PF-T1-4: Origin Pool &amp; Endpoint Quota
+#### PF-T1-4: Endpoint Quota
 
-Create and immediately delete a probe origin pool to test whether the tenant has capacity for both origin pool and endpoint objects. The origin pool requires at least one origin server entry, which creates an endpoint sub-object — this single probe tests both quotas simultaneously.
+Read from the T1-0 snapshot. `remaining = Endpoint.limit - Endpoint.used`. Each origin pool requires at least one endpoint sub-object — this is the binding quota constraint for origin pool creation.
 
 ```bash
-# Create probe
-curl -s -X POST \
+curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "metadata": {
-      "name": "preflight-origin-probe",
-      "namespace": "xF5XC_NAMESPACEx"
-    },
-    "spec": {
-      "origin_servers": [{
-        "public_ip": { "ip": "192.0.2.1" },
-        "labels": {}
-      }],
-      "no_tls": {},
-      "port": 80,
-      "same_as_endpoint_port": {},
-      "healthcheck": [],
-      "loadbalancer_algorithm": "LB_OVERRIDE",
-      "endpoint_selection": "LOCAL_PREFERRED"
-    }
-  }' \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools" \
-  | jq '{name: .metadata.name, code: .code, message: .message}'
-
-# Cleanup probe
-curl -s -X DELETE \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/preflight-origin-probe" \
-  > /dev/null
+  "xF5XC_API_URLx/api/web/namespaces/system/quota/usage" \
+  | jq '(.quota_usage["Endpoint"] // {}) | {limit: (.limit.maximum // 0), used: (.usage.current // 0), remaining: ((.limit.maximum // 0) - (.usage.current // 0))}'
 ```
 
 | Result | Status | Remediation |
 | --- | --- | --- |
-| Probe created (name returned, no error code) | **PASS** | Origin pool and endpoint quota available |
-| `"code": 8` with "endpoint has exhausted limits" | **FAIL** | Endpoint quota full — origin pools are required for the demo and cannot be created. Delete unused origin pools in other namespaces to free endpoint capacity, or contact your administrator to increase the tenant limit. |
-| `"code": 8` with "origin_pool has exhausted limits" | **FAIL** | Origin pool quota full — delete unused origin pools or contact your administrator. |
-
-<Aside type="note">
-The probe uses RFC 5737 TEST-NET IP `192.0.2.1` as the origin server — this is a documentation-only address that will not generate real traffic. The origin pool API requires at least one origin server entry (`origin_servers` minimum is 1), so this probe inherently tests both origin pool and endpoint sub-object quota in a single API call.
-</Aside>
+| `remaining >= 1` | **PASS** | Endpoint quota available |
+| `remaining == 0` | **FAIL** | Endpoint quota exhausted — origin pools cannot be created. Delete unused origin pools in other namespaces to free endpoint capacity, or contact your F5 Distributed Cloud (F5 XC) administrator to increase the tenant limit. |
 
 #### PF-T1-5: HTTP Load Balancer Quota
 
-Create and immediately delete a probe HTTP load balancer to test whether the tenant has capacity. This probe uses `default_route_pools: []` (no origin pool dependency) and `dns_volterra_managed: false` (no DNS record creation). One probe covers both HTTP and HTTPS LBs since they share the same API object kind (`http_loadbalancers`).
+Read from the T1-0 snapshot. `remaining = Virtual Host.limit - Virtual Host.used`. The `HTTP Load Balancer` quota is unlimited on this tenant — `Virtual Host` is the binding constraint. The demo creates 2 load balancers (http + https).
 
 ```bash
-# Create probe
-curl -s -X POST \
+curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "metadata": {
-      "name": "preflight-lb-probe",
-      "namespace": "xF5XC_NAMESPACEx",
-      "disable": false
-    },
-    "spec": {
-      "domains": ["preflight-probe.example.com"],
-      "http": {
-        "dns_volterra_managed": false,
-        "port": 80
-      },
-      "advertise_on_public_default_vip": {},
-      "default_route_pools": [],
-      "disable_rate_limit": {},
-      "no_service_policies": {},
-      "round_robin": {},
-      "disable_waf": {},
-      "no_challenge": {},
-      "disable_bot_defense": {},
-      "disable_api_definition": {},
-      "disable_api_discovery": {},
-      "disable_ip_reputation": {},
-      "disable_malicious_user_detection": {},
-      "single_lb_app": {
-        "disable_discovery": {},
-        "disable_ddos_detection": {},
-        "disable_malicious_user_detection": {}
-      },
-      "disable_trust_client_ip_headers": {},
-      "user_id_client_ip": {},
-      "disable_threat_mesh": {},
-      "l7_ddos_action_default": {},
-      "system_default_timeouts": {},
-      "default_sensitive_data_policy": {},
-      "disable_malware_protection": {},
-      "disable_api_testing": {}
-    }
-  }' \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers" \
-  | jq '{name: .metadata.name, code: .code, message: .message}'
-
-# Cleanup probe
-curl -s -X DELETE \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/preflight-lb-probe" \
-  > /dev/null
+  "xF5XC_API_URLx/api/web/namespaces/system/quota/usage" \
+  | jq '(.quota_usage["Virtual Host"] // {}) | {limit: (.limit.maximum // 0), used: (.usage.current // 0), remaining: ((.limit.maximum // 0) - (.usage.current // 0))}'
 ```
 
 | Result | Status | Remediation |
 | --- | --- | --- |
-| Probe created (name returned, no error code) | **PASS** | HTTP load balancer quota available |
-| `"code": 8` with "exhausted limits" | **FAIL** | Load balancer quota full — LBs are required for the demo. Delete unused load balancers or contact your administrator. |
-
-<Aside type="note">
-The probe uses `dns_volterra_managed: false` to prevent DNS record creation and `default_route_pools: []` to avoid requiring an origin pool. The domain `preflight-probe.example.com` uses the RFC 2606 reserved `example.com` to avoid conflicts with real domains.
-</Aside>
+| `remaining >= 2` | **PASS** | Load balancer quota available for both HTTP and HTTPS LBs |
+| `remaining == 1` | **WARN** | Only 1 Virtual Host slot available — HTTP LB can be created but HTTPS LB will fail. Consider proceeding with HTTP-only demo. |
+| `remaining == 0` | **FAIL** | Load balancer quota exhausted. Delete unused load balancers or contact your administrator. |
 
 #### PF-T1-6: Protected Domain Quota
 
@@ -609,11 +522,12 @@ After running all tiers, present a consolidated readiness report:
 ### T1: Quotas & Capacity
 | Check | Result | Status |
 |---|---|---|
-| PF-T1-1: Healthcheck Quota | Probe created | PASS |
-| PF-T1-2: Origin Pool Count | 14 | PASS |
-| PF-T1-3: HTTP LB Count | 1 | PASS |
-| PF-T1-4: Origin Pool & Endpoint Quota | Probe created | PASS |
-| PF-T1-5: HTTP LB Quota | Probe created | PASS |
+| PF-T1-0: Quota Snapshot | virtual_host / healthcheck / endpoint returned | PASS |
+| PF-T1-1: Healthcheck Quota | remaining: 1 of 150 | PASS |
+| PF-T1-2: Origin Pool Count | 14 (limit: unlimited) | PASS |
+| PF-T1-3: HTTP LB Count | 1 (limit: unlimited) | PASS |
+| PF-T1-4: Endpoint Quota | remaining: 99 of 500 | PASS |
+| PF-T1-5: HTTP LB Quota | remaining: 99 of 500 (Virtual Host) | PASS |
 | PF-T1-6: Protected Domain Quota | Probe created | PASS |
 
 ### T2: Platform Prerequisites

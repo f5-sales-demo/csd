@@ -25,8 +25,10 @@
 
 ### T0: Connectivity & Auth
 
-FAIL in any T0 check blocks all subsequent tiers. Each check captures
-the HTTP status code and pipes it through a jq filter that computes a
+FAIL in any T0 check blocks all subsequent tiers. WARN in T0 (e.g.,
+namespace does not exist) does **not** block — the demo can proceed
+and Phase 1 Step 0 will create the namespace. Each check captures the
+HTTP status code and pipes it through a jq filter that computes a
 deterministic `{check, http_code, status, detail}` object — no
 operator interpretation required.
 
@@ -37,11 +39,13 @@ operator interpretation required.
 2. **PF-T0-2: Namespace Access** — GET
    `/api/config/namespaces/{namespace}/http_loadbalancers`. jq
    computes: `200` → PASS, `403` → FAIL (missing role binding),
-   `404` → FAIL (namespace does not exist), all others → FAIL.
+   `404` → WARN (namespace does not exist — will be created in
+   Phase 1 Step 0), all others → FAIL.
 3. **PF-T0-3: CSD API Access** — GET
    `/api/shape/csd/namespaces/{namespace}/status`. jq computes:
-   `200` → PASS, `403` → FAIL (missing CSD role binding), all
-   others → FAIL.
+   `200` → PASS, `403` → FAIL (missing CSD role binding), `404`
+   → WARN (namespace does not exist — CSD access will be verified
+   after namespace creation in Phase 1), all others → FAIL.
 
 ### T1: Quotas & Capacity
 
@@ -151,6 +155,10 @@ never respond to connectivity tests.
     WARN deterministically.
 
 ### T4: Environment Clean
+
+If PF-T0-2 returned `404` (namespace does not exist), skip T4 and
+report status as `CLEAN` — a non-existent namespace cannot contain
+leftover objects.
 
 Executes auto-teardown if leftover objects are found. The pre-flight
 check computes a deterministic `{objects, any_infra_exists,

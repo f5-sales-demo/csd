@@ -20,12 +20,13 @@ Phase 4 removes all objects created during the exercise in reverse dependency or
 Remove objects in **reverse creation order** — delete objects that depend on other objects first:
 
 1. **Mitigated Domains** — delete all CSD mitigated domains created in Phase 3
-2. **HTTPS Load Balancer** (`${F5XC_LB_NAME}-https`) — strip to skeleton (preserve Let's Encrypt certificate); full DELETE only on explicit request
+2. **HTTPS Load Balancer** (`${F5XC_LB_NAME}-https`) — strip to skeleton (preserve Let's Encrypt certificate); full DELETE if `NAMESPACE_CREATED=true` or on explicit request
 3. **HTTP Load Balancer** (`${F5XC_LB_NAME}-http`) — depends on Origin Pool
 4. **Origin Pool** — depends on Healthcheck (if created)
 5. **DNS zone cleanup** — the HTTPS LB skeleton retains its managed A and ACME records (this is desired — it keeps the certificate valid). The HTTP LB's managed records auto-clean on deletion. Manual records in `default_rr_set_group` need manual cleanup via `PUT`
 6. **Healthcheck** — only if created in Phase 1 Step 1
 7. **Protected Domain** — delete the CSD protected domain registration
+8. **Namespace** — only if created during Phase 1 Step 0 (`NAMESPACE_CREATED=true`)
 
 <Aside type="caution">
 **Do not delete the DNS zone.** The DNS zone is shared infrastructure supporting many other DNS records across the platform and should never be deleted. Only clean up records you added manually to the `default_rr_set_group`. The protected domain, however, is a CSD configuration object tied to this deployment and **should** be deleted when fully tearing down.
@@ -56,9 +57,16 @@ curl -s \
 The mitigated domains list may return a phantom entry (count = 1) with null metadata after all mitigated domains are deleted. This is a backend artifact that appears when the CSD service state is between configurations — it does not represent a real mitigation and can be ignored. Attempting to delete this phantom entry returns `"Delete list when service not configured"`.
 </Aside>
 
-## Strip HTTPS Load Balancer to Skeleton
+## HTTPS Load Balancer
 
-Instead of deleting the HTTPS LB, strip it to a **skeleton** state — remove the origin pool reference and CSD configuration while preserving the domain binding, `https_auto_cert` settings, and the Let's Encrypt certificate. This avoids triggering a new certificate request on the next demo run (Let's Encrypt enforces a limit of 5 duplicate certificates per exact identifier set per 7 days).
+The HTTPS LB teardown behavior depends on whether the namespace was created during this demo session (`NAMESPACE_CREATED` variable from Phase 1 Step 0):
+
+- **`NAMESPACE_CREATED=false`** (pre-existing namespace) — strip to **skeleton** state, preserving the Let's Encrypt certificate for reuse
+- **`NAMESPACE_CREATED=true`** (namespace created during demo) — **full DELETE**, since the namespace itself will be deleted and the certificate cannot be preserved
+
+### Path A: Strip to Skeleton (Pre-existing Namespace)
+
+When the namespace is pre-existing, strip the HTTPS LB to a **skeleton** state — remove the origin pool reference and CSD configuration while preserving the domain binding, `https_auto_cert` settings, and the Let's Encrypt certificate. This avoids triggering a new certificate request on the next demo run (Let's Encrypt enforces a limit of 5 duplicate certificates per exact identifier set per 7 days).
 
 **Step 1 — GET the current HTTPS LB config:**
 
@@ -101,8 +109,9 @@ curl -s \
 
 Expected: `has_origin_pools: false`, `has_csd: false`, `domains` still populated, `cert_state` unchanged (e.g., `CertificateValid`).
 
-<Aside type="tip">
-**Full teardown option.** To completely delete the HTTPS LB (e.g., when decommissioning the demo domain permanently or when the operator explicitly requests "full teardown" or "force delete"), use the DELETE command instead:
+### Path B: Full Delete (Namespace Created During Demo)
+
+When the namespace was created during this demo session, the HTTPS LB must be fully deleted — skeleton preservation is unnecessary because the namespace itself will be removed at the end of teardown.
 
 ```bash
 curl -s -X DELETE \
@@ -110,7 +119,10 @@ curl -s -X DELETE \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https"
 ```
 
-Only use full DELETE when the domain will not be reused within 7 days, or when explicitly requested. Deleting the HTTPS LB triggers a new Let's Encrypt certificate request on the next demo run.
+Verify: `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` should not contain `${F5XC_LB_NAME}-https`.
+
+<Aside type="tip">
+**Full teardown option (pre-existing namespace).** Even when the namespace is pre-existing, you can fully delete the HTTPS LB if decommissioning the demo domain permanently or if the operator explicitly requests "full teardown" or "force delete". Only use full DELETE when the domain will not be reused within 7 days. Deleting the HTTPS LB triggers a new Let's Encrypt certificate request on the next demo run.
 </Aside>
 
 ## Delete HTTP Load Balancer
@@ -168,18 +180,51 @@ curl -s -X GET \
 The individual GET endpoint (`/protected_domains/\{name\}`) may return "API Group could not be determined." If the DELETE endpoint returns the same error, use the list endpoint to verify that the domain no longer appears, or delete the protected domain through the F5 Distributed Cloud (F5 XC) Console UI instead.
 </Aside>
 
+## Delete Namespace (Conditional)
+
+This step runs **only** if the namespace was created during Phase 1 Step 0 (`NAMESPACE_CREATED=true`). If the namespace was pre-existing (`NAMESPACE_CREATED=false`), skip this step entirely — the namespace is shared infrastructure that must not be deleted.
+
+<Aside type="caution">
+**Cascade delete removes all namespace-scoped objects.** The cascade delete endpoint removes the namespace and every object within it. All infrastructure objects (load balancers, origin pools, healthchecks) should already be deleted by the preceding teardown steps. The cascade delete acts as a final cleanup to catch any remaining objects and remove the namespace itself.
+</Aside>
+
+```bash
+if [ "$NAMESPACE_CREATED" = "true" ]; then
+  curl -s -X POST \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d '{"name": "xF5XC_NAMESPACEx"}' \
+    "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx/cascade_delete" | jq .
+fi
+```
+
+<Aside type="note">
+The standard `DELETE /api/web/namespaces/{name}` endpoint returns `"Not Implemented"` (error code `12`). You **must** use the cascade delete endpoint (`POST .../cascade_delete`) to delete a namespace.
+</Aside>
+
+Verify: Confirm the namespace no longer exists:
+
+```bash
+curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx"
+```
+
+Expected: `404` if `NAMESPACE_CREATED=true`, `200` if `NAMESPACE_CREATED=false`.
+
 ## Phase 4 Evidence Summary
 
 | Object | Delete Status | Verify Status |
 | --- | --- | --- |
 | Mitigated Domains (6) | All `200` (empty `\{\}`) or skipped if Phase 3 not run | Count 0 (or 1 phantom) — PASS |
-| HTTPS Load Balancer (`-https`) | `200` (skeleton PUT) | Skeleton verified: no origin pools, no CSD, domains/cert intact — PASS |
+| HTTPS Load Balancer (`-https`) | `200` (skeleton PUT) or `200` (full DELETE if `NAMESPACE_CREATED=true`) | Skeleton verified or not in list — PASS |
 | HTTP Load Balancer (`-http`) | `200` (empty `\{\}`) | Not in list — PASS |
 | Origin Pool | `200` (empty `\{\}`) | Not in list — PASS |
 | Healthcheck | `200` (empty `\{\}`) or skipped | Not in list — PASS |
 | Protected Domain | `200` (empty `\{\}`) | Not in list — PASS |
 | DNS zone | NOT deleted (shared infra) | Zone still exists — PASS |
+| Namespace | `200` (cascade delete) if `NAMESPACE_CREATED=true`, skipped otherwise | `404` if deleted, `200` if preserved — PASS |
 
 ---
 
-**Teardown complete.** All deployment objects have been removed except the HTTPS LB skeleton, which preserves the Let's Encrypt certificate and domain binding for the next demo run. The DNS zone and its non-managed records remain intact.
+**Teardown complete.** When the namespace was pre-existing (`NAMESPACE_CREATED=false`), all deployment objects have been removed except the HTTPS LB skeleton, which preserves the Let's Encrypt certificate and domain binding for the next demo run. When the namespace was created during the demo (`NAMESPACE_CREATED=true`), all objects including the HTTPS LB and namespace have been fully deleted. The DNS zone and its non-managed records remain intact in both cases.

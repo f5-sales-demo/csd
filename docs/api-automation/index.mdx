@@ -223,6 +223,109 @@ echo "{\"http_code\": $HTTP_CODE}" | jq '{
 }'
 ```
 
+#### PF-T0-4: RBAC Permission Matrix
+
+Non-destructive probes test read and write permissions for every object type the demo needs. Read is tested via `GET` on list endpoints. Write is tested via `DELETE` on known-nonexistent objects — the API returns `403` if RBAC denies the operation, or `404` if the operation is allowed but the object doesn't exist. This zero-side-effect technique avoids creating temporary probe objects.
+
+```bash
+PROBE_NAME="rbac-probe-nonexistent"
+
+# Read probes
+NS_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx")
+HC_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks")
+OP_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools")
+LB_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers")
+CSD_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status")
+PD_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains")
+MD_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains")
+
+# Write probes (non-destructive: DELETE/cascade_delete on non-existent objects)
+NS_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X POST -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{\"name\":\"$PROBE_NAME\"}" \
+  "xF5XC_API_URLx/api/web/namespaces/$PROBE_NAME/cascade_delete")
+HC_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/$PROBE_NAME")
+OP_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/$PROBE_NAME")
+LB_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/$PROBE_NAME")
+PD_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/$PROBE_NAME.example.com")
+MD_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/$PROBE_NAME.example.com")
+
+# Compute deterministic permission matrix
+jq -n \
+  --argjson ns_r "$NS_R" --argjson ns_w "$NS_W" \
+  --argjson hc_r "$HC_R" --argjson hc_w "$HC_W" \
+  --argjson op_r "$OP_R" --argjson op_w "$OP_W" \
+  --argjson lb_r "$LB_R" --argjson lb_w "$LB_W" \
+  --argjson csd_r "$CSD_R" \
+  --argjson pd_r "$PD_R" --argjson pd_w "$PD_W" \
+  --argjson md_r "$MD_R" --argjson md_w "$MD_W" \
+'{
+  check: "PF-T0-4",
+  permissions: [
+    { object: "namespace",          read: ($ns_r != 403),  write: ($ns_w != 403),  required: false, note: "conditional — only if ns must be created" },
+    { object: "healthcheck",        read: ($hc_r != 403),  write: ($hc_w != 403),  required: false, note: "optional for CSD" },
+    { object: "origin_pool",        read: ($op_r != 403),  write: ($op_w != 403),  required: true,  note: "" },
+    { object: "http_loadbalancer",  read: ($lb_r != 403),  write: ($lb_w != 403),  required: true,  note: "" },
+    { object: "csd_status",         read: ($csd_r != 403), write: true,            required: true,  note: "read-only check" },
+    { object: "protected_domain",   read: ($pd_r != 403),  write: ($pd_w != 403),  required: true,  note: "" },
+    { object: "mitigated_domain",   read: ($md_r != 403),  write: ($md_w != 403),  required: false, note: "Phase 3 only" }
+  ],
+  status: (
+    if [
+      ($op_r == 403), ($op_w == 403),
+      ($lb_r == 403), ($lb_w == 403),
+      ($csd_r == 403),
+      ($pd_r == 403), ($pd_w == 403)
+    ] | any then "FAIL"
+    elif ($ns_w == 403 or $hc_w == 403 or $md_w == 403) then "WARN"
+    else "PASS"
+    end
+  ),
+  detail: (
+    [
+      (if ($op_r == 403 or $op_w == 403) then "Origin pool: permission denied" else null end),
+      (if ($lb_r == 403 or $lb_w == 403) then "Load balancer: permission denied" else null end),
+      (if $csd_r == 403 then "CSD API: permission denied — CSD may not be enabled for this namespace" else null end),
+      (if ($pd_r == 403 or $pd_w == 403) then "Protected domain: permission denied" else null end),
+      (if $ns_w == 403 then "Namespace: write denied — namespace must already exist (cannot create)" else null end),
+      (if $hc_w == 403 then "Healthcheck: write denied — will skip healthcheck creation" else null end),
+      (if $md_w == 403 then "Mitigated domain: write denied — Phase 3 mitigation will be skipped" else null end)
+    ] | map(select(. != null)) | join("; ")
+  )
+}'
+```
+
+<Aside type="note">
+**Namespace + RBAC interaction.** If PF-T0-2 returned `404` (namespace does not exist) AND PF-T0-4 shows namespace write is denied, the demo **cannot proceed** — the namespace doesn't exist and cannot be created. If PF-T0-2 returned `200` (namespace exists) and namespace write is denied, this is only a warning — the demo can use the pre-existing namespace.
+
+**CSD + RBAC.** If CSD endpoints return `403`, the CSD service may not be enabled for this namespace or tenant (Plan-Based Access Control). Since CSD is the core feature being demonstrated, this is always a FAIL.
+</Aside>
+
 ### T1: Quotas &amp; Capacity
 
 These checks query the tenant's Quota Usage API to determine limits, current usage, and remaining capacity for each object kind the demo needs. This replaces probe-and-delete testing with a single read-only API call that reports exact numbers.

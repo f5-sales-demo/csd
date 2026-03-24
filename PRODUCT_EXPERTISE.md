@@ -89,6 +89,16 @@ All API calls use:
 Authorization: APIToken <token>
 ```
 
+**User Info:** `GET /api/web/custom/namespaces/system/whoami` — returns
+the current user's email, tenant, `namespace_roles` array, and
+`domain_owner` status. Useful for understanding RBAC context.
+
+**RBAC Probe Technique:** To test write permissions non-destructively,
+attempt `DELETE` on a known-nonexistent object. The API returns `403` if
+RBAC denies the operation, or `404` if the operation is allowed but the
+object doesn't exist. This zero-side-effect pattern works for all object
+types and avoids creating temporary probe objects.
+
 ## CSD API Reference
 
 **Base path:** `/api/shape/csd/namespaces/{namespace}/`

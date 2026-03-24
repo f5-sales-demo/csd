@@ -46,6 +46,27 @@ operator interpretation required.
    `200` → PASS, `403` → FAIL (missing CSD role binding), `404`
    → WARN (namespace does not exist — CSD access will be verified
    after namespace creation in Phase 1), all others → FAIL.
+4. **PF-T0-4: RBAC Permission Matrix** — non-destructive probes
+   test read and write permissions for every object type the demo
+   needs. Read is tested via `GET` on list endpoints. Write is
+   tested via `DELETE` on known-nonexistent objects — `403` means
+   denied, `404` means allowed (RBAC passed but object doesn't
+   exist). The probe computes a deterministic
+   `{check, permissions, status, detail}` object via jq. `status`
+   is PASS if all required objects (origin pool, load balancer,
+   CSD status, protected domain) have full CRUD. WARN if only
+   optional objects (namespace, healthcheck, mitigated domain) are
+   restricted. FAIL if any required object is denied.
+
+   **Namespace special case:** if namespace write is denied but
+   PF-T0-2 returned `200` (namespace exists), this is WARN not
+   FAIL — the demo can proceed with the pre-existing namespace.
+   If PF-T0-2 returned `404` AND namespace write is denied, this
+   is FAIL — the namespace doesn't exist and cannot be created.
+
+   **CSD special case:** if CSD endpoints return `403`, the CSD
+   service may not be enabled for this tenant or namespace
+   (Plan-Based Access Control). This is always FAIL for the demo.
 
 ### T1: Quotas & Capacity
 

@@ -15,11 +15,11 @@
 | LOCAL-DIAGNOSTICS | `docs/diagnostics.mdx` | Troubleshooting, diagnostic tests |
 | LOCAL-REFERENCES | `docs/references.mdx` | External links, further reading |
 | LOCAL-API-REF | `docs/api-reference.mdx` | CSD API endpoints, request/response |
-| LOCAL-API-AUTO | `docs/api-automation/index.mdx` | API automation overview, variable resolution |
-| LOCAL-PHASE1 | `docs/api-automation/phase-1-build.mdx` | Phase 1 build, provisioning |
-| LOCAL-PHASE2 | `docs/api-automation/phase-2-attack.mdx` | Phase 2 attack simulation |
-| LOCAL-PHASE3 | `docs/api-automation/phase-3-mitigate.mdx` | Phase 3 mitigation, allow/mitigate |
-| LOCAL-PHASE4 | `docs/api-automation/phase-4-teardown.mdx` | Phase 4 teardown, cleanup |
+| LOCAL-API-AUTO | `docs/demo/index.mdx` | API automation overview, variable resolution |
+| LOCAL-PHASE1 | `docs/demo/phase-1-build.mdx` | Phase 1 build, provisioning |
+| LOCAL-PHASE2 | `docs/demo/phase-2-attack.mdx` | Phase 2 attack simulation |
+| LOCAL-PHASE3 | `docs/demo/phase-3-mitigate.mdx` | Phase 3 mitigation, allow/mitigate |
+| LOCAL-PHASE4 | `docs/demo/phase-4-teardown.mdx` | Phase 4 teardown, cleanup |
 | LOCAL-FAQ | `docs/faq.mdx` | Frequently asked questions — alerts, logging, SIEM, mitigation behavior, detection timing |
 
 ## F5 API Documentation

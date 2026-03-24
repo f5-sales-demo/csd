@@ -25,7 +25,7 @@ at in plain language**, **(3) connect it to the customer's concern**,
    after the attack
 
 Supporting pages: `attack-scripts.mdx`, `diagnostics.mdx`,
-`api-automation/`, `api-reference.mdx`, `references.mdx`
+`demo/`, `api-reference.mdx`, `references.mdx`
 
 ## Attack / Trigger Simulation
 

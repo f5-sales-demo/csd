@@ -194,7 +194,7 @@ MITIGATIONS_ONLY.
   and CSD objects (protected domains, mitigated domains) have count 0.
   This is a **clean-equivalent** state — the skeleton preserves the
   Let's Encrypt certificate from a prior teardown. See
-  [Phase 4 — Teardown](/csd/api-automation/phase-4-teardown/) for why
+  [Phase 4 — Teardown](/csd/demo/phase-4-teardown/) for why
   the HTTPS LB is preserved.
 - `ALL_EXIST` — both HTTP LB and origin pool exist.
 - `TEARDOWN_NEEDED` — partial infra exists (not a skeleton).
@@ -221,7 +221,7 @@ MITIGATIONS_ONLY.
 18. **Auto-teardown if needed** — if `status` is not CLEAN and not
     `HTTPS_SKELETON` (any non-skeleton objects exist), run the full
     Phase 4 teardown by reading and executing commands from
-    `docs/api-automation/phase-4-teardown.mdx`. No confirmation
+    `docs/demo/phase-4-teardown.mdx`. No confirmation
     needed — Prepare is pre-meeting cleanup. If `status` is
     `HTTPS_SKELETON`, no teardown is needed — the skeleton is
     preserved by design and Phase 1 will restore it via PUT.

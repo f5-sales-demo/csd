@@ -47,6 +47,18 @@ MD_COUNT=$(curl -s -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
   | jq '[.items // [] | .[] | select(.metadata.name != null)] | length')
 
+# If HTTPS LB exists, fetch body to detect skeleton state
+HTTPS_IS_SKELETON="false"
+if [ "$HTTPS_LB" = "200" ]; then
+  HTTPS_LB_BODY=$(curl -s \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+  HTTPS_IS_SKELETON=$(echo "$HTTPS_LB_BODY" | jq '
+    ((.spec.default_route_pools // []) | length == 0) and
+    (.spec.client_side_defense == null)
+  ')
+fi
+
 # Compute deterministic environment status
 jq -n \
   --argjson http_lb "$HTTP_LB" \
@@ -55,30 +67,33 @@ jq -n \
   --argjson hc "$HC" \
   --argjson pd "$PD_COUNT" \
   --argjson md "$MD_COUNT" \
+  --argjson https_skeleton "$HTTPS_IS_SKELETON" \
 '{
   objects: [
     { name: "http_lb",           http_code: $http_lb, exists: ($http_lb == 200) },
-    { name: "https_lb",          http_code: $https_lb, exists: ($https_lb == 200) },
+    { name: "https_lb",          http_code: $https_lb, exists: ($https_lb == 200), is_skeleton: $https_skeleton },
     { name: "origin_pool",       http_code: $origin, exists: ($origin == 200) },
     { name: "healthcheck",       http_code: $hc, exists: ($hc == 200) },
     { name: "protected_domains", count: $pd, exists: ($pd > 0) },
     { name: "mitigated_domains", count: $md, exists: ($md > 0) }
   ],
-  any_infra_exists: ($http_lb == 200 or $https_lb == 200 or $origin == 200 or $hc == 200),
+  any_infra_exists: ($http_lb == 200 or ($https_lb == 200 and ($https_skeleton | not)) or $origin == 200 or $hc == 200),
   any_csd_exists: ($pd > 0 or $md > 0),
   status: (
     if ($http_lb == 404 and $https_lb == 404 and $origin == 404 and $hc == 404 and $pd == 0 and $md == 0) then "CLEAN"
+    elif ($https_lb == 200 and $https_skeleton and $http_lb == 404 and $origin == 404 and $hc == 404 and $pd == 0 and $md == 0) then "HTTPS_SKELETON"
     elif ($http_lb == 200 and $origin == 200) then "ALL_EXIST"
-    elif ($http_lb == 200 or $https_lb == 200 or $origin == 200 or $hc == 200) then "TEARDOWN_NEEDED"
-    elif ($md > 0 and $http_lb == 404 and $https_lb == 404 and $origin == 404 and $hc == 404) then "MITIGATIONS_ONLY"
+    elif ($http_lb == 200 or ($https_lb == 200 and ($https_skeleton | not)) or $origin == 200 or $hc == 200) then "TEARDOWN_NEEDED"
+    elif ($md > 0 and $http_lb == 404 and ($https_lb == 404 or ($https_lb == 200 and $https_skeleton)) and $origin == 404 and $hc == 404) then "MITIGATIONS_ONLY"
     else "TEARDOWN_NEEDED"
     end
   ),
   action: (
     if ($http_lb == 404 and $https_lb == 404 and $origin == 404 and $hc == 404 and $pd == 0 and $md == 0) then "Proceed to Phase 1"
+    elif ($https_lb == 200 and $https_skeleton and $http_lb == 404 and $origin == 404 and $hc == 404 and $pd == 0 and $md == 0) then "Proceed to Phase 1 (HTTPS LB skeleton will be restored via PUT)"
     elif ($http_lb == 200 and $origin == 200) then "All Phase 1 objects exist — verify health, optionally skip to Phase 2"
-    elif ($http_lb == 200 or $https_lb == 200 or $origin == 200 or $hc == 200) then "Run Phase 4 Teardown first, then re-check"
-    elif ($md > 0 and $http_lb == 404 and $https_lb == 404 and $origin == 404 and $hc == 404) then "Delete mitigated domains inline, then proceed"
+    elif ($http_lb == 200 or ($https_lb == 200 and ($https_skeleton | not)) or $origin == 200 or $hc == 200) then "Run Phase 4 Teardown first, then re-check"
+    elif ($md > 0 and $http_lb == 404 and ($https_lb == 404 or ($https_lb == 200 and $https_skeleton)) and $origin == 404 and $hc == 404) then "Delete mitigated domains inline, then proceed"
     else "Run Phase 4 Teardown first, then re-check"
     end
   )

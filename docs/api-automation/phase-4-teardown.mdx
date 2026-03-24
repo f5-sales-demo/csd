@@ -20,10 +20,10 @@ Phase 4 removes all objects created during the exercise in reverse dependency or
 Remove objects in **reverse creation order** — delete objects that depend on other objects first:
 
 1. **Mitigated Domains** — delete all CSD mitigated domains created in Phase 3
-2. **HTTPS Load Balancer** (`${F5XC_LB_NAME}-https`) — depends on Origin Pool
+2. **HTTPS Load Balancer** (`${F5XC_LB_NAME}-https`) — strip to skeleton (preserve Let's Encrypt certificate); full DELETE only on explicit request
 3. **HTTP Load Balancer** (`${F5XC_LB_NAME}-http`) — depends on Origin Pool
 4. **Origin Pool** — depends on Healthcheck (if created)
-5. **DNS zone cleanup** — managed records (A and ACME) auto-clean when the LBs are deleted; manual records in `default_rr_set_group` need manual cleanup via `PUT`
+5. **DNS zone cleanup** — the HTTPS LB skeleton retains its managed A and ACME records (this is desired — it keeps the certificate valid). The HTTP LB's managed records auto-clean on deletion. Manual records in `default_rr_set_group` need manual cleanup via `PUT`
 6. **Healthcheck** — only if created in Phase 1 Step 1
 7. **Protected Domain** — delete the CSD protected domain registration
 
@@ -56,9 +56,53 @@ curl -s \
 The mitigated domains list may return a phantom entry (count = 1) with null metadata after all mitigated domains are deleted. This is a backend artifact that appears when the CSD service state is between configurations — it does not represent a real mitigation and can be ignored. Attempting to delete this phantom entry returns `"Delete list when service not configured"`.
 </Aside>
 
-## Delete HTTPS Load Balancer
+## Strip HTTPS Load Balancer to Skeleton
 
-Delete the secondary HTTPS LB first:
+Instead of deleting the HTTPS LB, strip it to a **skeleton** state — remove the origin pool reference and CSD configuration while preserving the domain binding, `https_auto_cert` settings, and the Let's Encrypt certificate. This avoids triggering a new certificate request on the next demo run (Let's Encrypt enforces a limit of 5 duplicate certificates per exact identifier set per 7 days).
+
+**Step 1 — GET the current HTTPS LB config:**
+
+```bash
+HTTPS_LB_JSON=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+```
+
+**Step 2 — Strip to skeleton via jq and PUT back:**
+
+```bash
+echo "$HTTPS_LB_JSON" | jq '{
+  metadata: .metadata,
+  spec: (.spec | del(.client_side_defense) | .disable_client_side_defense = {} | .default_route_pools = [])
+}' | curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d @- \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq .
+```
+
+The jq filter preserves the entire spec (domains, `https_auto_cert`, `advertise_on_public_default_vip`, and all disabled feature flags) while removing `client_side_defense` (replaced with `disable_client_side_defense: {}`) and clearing `default_route_pools` to an empty array. The certificate and DNS bindings remain intact.
+
+**Verify** the HTTPS LB is now a skeleton:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{
+    name: .metadata.name,
+    domains: .spec.domains,
+    has_origin_pools: ((.spec.default_route_pools // []) | length > 0),
+    has_csd: (.spec.client_side_defense != null),
+    cert_state: .spec.cert_state
+  }'
+```
+
+Expected: `has_origin_pools: false`, `has_csd: false`, `domains` still populated, `cert_state` unchanged (e.g., `CertificateValid`).
+
+<Aside type="tip">
+**Full teardown option.** To completely delete the HTTPS LB (e.g., when decommissioning the demo domain permanently or when the operator explicitly requests "full teardown" or "force delete"), use the DELETE command instead:
 
 ```bash
 curl -s -X DELETE \
@@ -66,7 +110,8 @@ curl -s -X DELETE \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https"
 ```
 
-Verify: `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` should not contain `${F5XC_LB_NAME}-https`. If the object still appears in the list after DELETE returned `200`, wait 30 seconds and re-check once. If still present after the second check, report to operator — do not proceed.
+Only use full DELETE when the domain will not be reused within 7 days, or when explicitly requested. Deleting the HTTPS LB triggers a new Let's Encrypt certificate request on the next demo run.
+</Aside>
 
 ## Delete HTTP Load Balancer
 
@@ -128,7 +173,7 @@ The individual GET endpoint (`/protected_domains/\{name\}`) may return "API Grou
 | Object | Delete Status | Verify Status |
 | --- | --- | --- |
 | Mitigated Domains (6) | All `200` (empty `\{\}`) or skipped if Phase 3 not run | Count 0 (or 1 phantom) — PASS |
-| HTTPS Load Balancer (`-https`) | `200` (empty `\{\}`) | Not in list — PASS |
+| HTTPS Load Balancer (`-https`) | `200` (skeleton PUT) | Skeleton verified: no origin pools, no CSD, domains/cert intact — PASS |
 | HTTP Load Balancer (`-http`) | `200` (empty `\{\}`) | Not in list — PASS |
 | Origin Pool | `200` (empty `\{\}`) | Not in list — PASS |
 | Healthcheck | `200` (empty `\{\}`) or skipped | Not in list — PASS |
@@ -137,4 +182,4 @@ The individual GET endpoint (`/protected_domains/\{name\}`) may return "API Grou
 
 ---
 
-**Teardown complete.** All deployment objects have been removed. The DNS zone and its non-managed records remain intact.
+**Teardown complete.** All deployment objects have been removed except the HTTPS LB skeleton, which preserves the Let's Encrypt certificate and domain binding for the next demo run. The DNS zone and its non-managed records remain intact.

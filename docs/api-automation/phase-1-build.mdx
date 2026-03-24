@@ -269,7 +269,99 @@ If the response contains `"code": 8` with a message like `"Object kind http_load
 
 ### HTTPS Load Balancer (Secondary)
 
-This is the **secondary** load balancer. It uses `https_auto_cert` on port 443 with automatic Let's Encrypt certificate provisioning. This LB is optional for demo progression — if the certificate hits rate limits (`AutoCertDomainRateLimited`), the demo continues using the HTTP LB.
+This is the **secondary** load balancer. It uses `https_auto_cert` on port 443 with automatic Let's Encrypt certificate provisioning. Before creating it, check if a **skeleton HTTPS LB** exists from a previous teardown — if so, restore it via PUT instead of POST to preserve the existing Let's Encrypt certificate and avoid rate limits (5 duplicate certificates per exact identifier set per 7 days).
+
+**Check if the HTTPS LB already exists:**
+
+```bash
+HTTPS_CHECK=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+```
+
+If `HTTPS_CHECK` is `200`, a skeleton HTTPS LB exists — use **Path A (PUT)**. If `404`, use **Path B (POST)**.
+
+#### Path A: Restore Skeleton via PUT (HTTPS LB exists)
+
+When a skeleton HTTPS LB exists from a prior teardown, restore the full configuration via PUT. This re-attaches the origin pool and re-enables CSD **without triggering a new Let's Encrypt certificate request** — the existing certificate remains valid.
+
+```bash
+curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_LB_NAMEx-https",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "HTTPS LB with Client-Side Defense enabled (secondary, cert-dependent)",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["xF5XC_DOMAINNAMEx"],
+      "https_auto_cert": {
+        "http_redirect": false,
+        "add_hsts": false,
+        "port": 443,
+        "default_header": {},
+        "enable_path_normalize": {},
+        "no_mtls": {},
+        "default_loadbalancer": {}
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [{
+        "pool": {
+          "namespace": "xF5XC_NAMESPACEx",
+          "name": "xF5XC_ORIGIN_POOLx",
+          "kind": "origin_pool"
+        },
+        "weight": 1,
+        "priority": 1
+      }],
+      "client_side_defense": {
+        "policy": {
+          "js_insert_all_pages": {}
+        }
+      },
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq .
+```
+
+A `200` response confirms the skeleton was restored with the full configuration. The certificate state should remain `CertificateValid` — no new Let's Encrypt provisioning is triggered.
+
+<Aside type="note">
+**Skeleton restoration.** PUT replaces the entire object spec. The skeleton HTTPS LB retained its domain binding and certificate during teardown. This PUT restores the origin pool reference and re-enables Client-Side Defense without triggering a new Let's Encrypt certificate request. HTTPS is available immediately.
+</Aside>
+
+#### Path B: Create New via POST (HTTPS LB does not exist)
+
+When no HTTPS LB exists (first run or after a full teardown), create it via POST. This triggers Let's Encrypt certificate provisioning, which may take 5–10 minutes.
 
 ```bash
 curl -s -X POST \
@@ -339,10 +431,14 @@ curl -s -X POST \
   | jq .
 ```
 
-A `200` response confirms the HTTPS load balancer was created.
+A `200` response confirms the HTTPS load balancer was created. Certificate provisioning begins automatically.
 
 <Aside type="caution">
 If the response contains `"code": 8` with "exhausted limits", the HTTPS LB cannot be created. The HTTPS LB is optional — the demo proceeds using the HTTP LB. Note the quota limitation in the Phase 1 Evidence Summary as INFO.
+</Aside>
+
+<Aside type="note">
+**Let's Encrypt rate limits.** Creating a new HTTPS LB triggers a Let's Encrypt certificate request. Let's Encrypt allows only 5 duplicate certificates per exact identifier set per 7 days. If `cert_state` shows `AutoCertDomainRateLimited`, the demo continues using the HTTP LB. To avoid hitting this limit, the default teardown preserves the HTTPS LB as a skeleton — see [Phase 4 — Teardown](/csd/api-automation/phase-4-teardown/).
 </Aside>
 
 ### Evidence
@@ -381,8 +477,9 @@ curl -s \
 | `name` | `${F5XC_LB_NAME}-https` | PASS |
 | `domains` | Contains `F5XC_DOMAINNAME` | PASS |
 | `csd_enabled` | `true` | PASS — CSD is configured on this LB |
-| `state` | `VIRTUAL_HOST_PENDING_A_RECORD` | Expected at this point — DNS not yet configured |
-| `cert_state` | `PreDomainChallengePending` | Expected — ACME challenge not started. Informational only — does not block demo progression |
+| `creation_method` | PUT (restored skeleton) or POST (new) | INFO — PUT preserves existing certificate |
+| `state` | `VIRTUAL_HOST_READY` (PUT) or `VIRTUAL_HOST_PENDING_A_RECORD` (POST) | Expected — PUT path may already be READY since DNS persisted from skeleton |
+| `cert_state` | `CertificateValid` (PUT) or `PreDomainChallengePending` (POST) | PUT preserves existing cert; POST triggers new provisioning |
 
 ## Step 4: Configure DNS
 

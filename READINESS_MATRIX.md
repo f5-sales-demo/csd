@@ -67,7 +67,7 @@ not accessible.
    | `healthcheck` | 1 | No | 0 |
    | `origin_pool` | 1 | Yes | 1 |
    | `endpoint` | 1 | Yes | 1 |
-   | `http_loadbalancer` | 2 | Yes | 1 |
+   | `http_loadbalancer` | 2 (or 1 if HTTPS LB skeleton exists) | Yes | 1 |
 
    For each kind, the jq filter calculates:
    - `remaining = limit - usage` (unlimited if limit is `-1`)
@@ -87,7 +87,7 @@ not accessible.
    If creation returns error code `8`, record as FAIL. A `409`
    (domain already exists) counts as PASS.
 
-**Fallback: Probe-Based Quota Checks**
+### Fallback: Probe-Based Quota Checks
 
 If PF-T1-0 fails (403, 404, or unexpected format), fall back to
 probe-and-delete for all object kinds. Create and immediately
@@ -155,12 +155,31 @@ never respond to connectivity tests.
 Executes auto-teardown if leftover objects are found. The pre-flight
 check computes a deterministic `{objects, any_infra_exists,
 any_csd_exists, status, action}` object via jq. The `status` field
-is one of: CLEAN, ALL_EXIST, TEARDOWN_NEEDED, or MITIGATIONS_ONLY.
+is one of: CLEAN, HTTPS_SKELETON, ALL_EXIST, TEARDOWN_NEEDED, or
+MITIGATIONS_ONLY.
+
+- `CLEAN` — all objects return 404, all counts are 0.
+- `HTTPS_SKELETON` — only the HTTPS LB exists and it is in skeleton
+  state (empty `default_route_pools`, no `client_side_defense`). All
+  other infra objects (HTTP LB, origin pool, healthcheck) return 404,
+  and CSD objects (protected domains, mitigated domains) have count 0.
+  This is a **clean-equivalent** state — the skeleton preserves the
+  Let's Encrypt certificate from a prior teardown. See
+  [Phase 4 — Teardown](/csd/api-automation/phase-4-teardown/) for why
+  the HTTPS LB is preserved.
+- `ALL_EXIST` — both HTTP LB and origin pool exist.
+- `TEARDOWN_NEEDED` — partial infra exists (not a skeleton).
+- `MITIGATIONS_ONLY` — only mitigated domains remain.
 
 16. Run the six pre-flight commands (HTTP LB, HTTPS LB, Origin Pool,
     Healthcheck, protected domains, mitigated domains). Capture each
     HTTP status code and domain count, then pipe all six through jq
-    to compute environment status deterministically.
+    to compute environment status deterministically. When the HTTPS LB
+    returns `200`, also fetch the full object body to determine if it
+    is a **skeleton** (empty `default_route_pools` and no
+    `client_side_defense`) or a fully-configured LB. This distinction
+    determines whether the status is `HTTPS_SKELETON`
+    (clean-equivalent) or `TEARDOWN_NEEDED`.
 17. Also check for stale probe objects from a prior interrupted
     pre-flight run — delete if found. These probes are only created
     when the Quota Usage API was unavailable and fallback
@@ -170,13 +189,19 @@ is one of: CLEAN, ALL_EXIST, TEARDOWN_NEEDED, or MITIGATIONS_ONLY.
     - `preflight-lb-probe` (HTTP load balancer)
     - `preflight-origin-probe` (origin pool)
     - `preflight-probe.example.com` (protected domain)
-18. **Auto-teardown if needed** — if `status` is not CLEAN (any
-    objects exist), run the full Phase 4 teardown by reading and
-    executing commands from `docs/api-automation/phase-4-teardown.mdx`.
-    No confirmation needed — Prepare is pre-meeting cleanup.
+18. **Auto-teardown if needed** — if `status` is not CLEAN and not
+    `HTTPS_SKELETON` (any non-skeleton objects exist), run the full
+    Phase 4 teardown by reading and executing commands from
+    `docs/api-automation/phase-4-teardown.mdx`. No confirmation
+    needed — Prepare is pre-meeting cleanup. If `status` is
+    `HTTPS_SKELETON`, no teardown is needed — the skeleton is
+    preserved by design and Phase 1 will restore it via PUT.
 19. **Re-run pre-flight** — execute the same pre-flight checks to
-    confirm `status` is CLEAN (`404` on all objects, counts are 0).
-    If any object still exists, report failure and stop.
+    confirm `status` is CLEAN or `HTTPS_SKELETON`. For CLEAN: `404`
+    on all objects, counts are 0. For `HTTPS_SKELETON`: HTTPS LB
+    returns `200` with skeleton state, all other objects return `404`,
+    counts are 0. If any unexpected object still exists, report
+    failure and stop.
 
 ### T5: Certificate Readiness
 
@@ -186,9 +211,11 @@ objects.
 20. **PF-T5-1: Recent Certificate Issuance History** — there is no
     API to query Let's Encrypt rate limits directly. Note as INFO
     that frequent create/destroy cycles can exhaust the weekly limit
-    (5 duplicate certificates per week per domain). If this demo
-    domain has been torn down and rebuilt multiple times recently,
-    include a warning that HTTPS may be rate-limited.
+    (5 duplicate certificates per exact identifier set per 7 days).
+    The default teardown behavior preserves the HTTPS LB as a skeleton
+    to avoid triggering new certificate requests. If the HTTPS LB was
+    fully deleted and rebuilt multiple times recently, include a
+    warning that HTTPS may be rate-limited.
 21. **PF-T5-2: Cert State** — captures HTTP code and response body.
     jq computes `{check, cert_state, status, detail}`:
     - HTTP `404` → SKIP (no HTTPS LB exists)
@@ -196,3 +223,10 @@ objects.
     - `AutoCertDomainRateLimited` → INFO (plan for HTTP-only)
     - `Pending`/`Started` → INFO (provisioning in progress)
     - All others → INFO with raw `cert_state` value
+
+    When the HTTPS LB exists as a skeleton from a prior teardown,
+    PF-T5-2 should still run and report the certificate state. A
+    `CertificateValid` result confirms the skeleton preservation
+    strategy is working — HTTPS will be available immediately after
+    Phase 1 restores the LB via PUT, with no Let's Encrypt
+    provisioning delay.

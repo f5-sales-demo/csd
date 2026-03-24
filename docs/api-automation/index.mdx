@@ -182,11 +182,16 @@ HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' \
 echo "{\"http_code\": $HTTP_CODE}" | jq '{
   check: "PF-T0-2",
   http_code: .http_code,
-  status: (if .http_code == 200 then "PASS" else "FAIL" end),
+  status: (
+    if .http_code == 200 then "PASS"
+    elif .http_code == 404 then "WARN"
+    else "FAIL"
+    end
+  ),
   detail: (
     if .http_code == 200 then "Token has namespace access"
     elif .http_code == 403 then "Token lacks permissions for namespace — check role bindings"
-    elif .http_code == 404 then "Namespace does not exist"
+    elif .http_code == 404 then "Namespace does not exist — will be created in Phase 1 Step 0"
     else "Unexpected HTTP \(.http_code)"
     end
   )
@@ -202,10 +207,16 @@ HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' \
 echo "{\"http_code\": $HTTP_CODE}" | jq '{
   check: "PF-T0-3",
   http_code: .http_code,
-  status: (if .http_code == 200 then "PASS" else "FAIL" end),
+  status: (
+    if .http_code == 200 then "PASS"
+    elif .http_code == 404 then "WARN"
+    else "FAIL"
+    end
+  ),
   detail: (
     if .http_code == 200 then "Token has CSD/Shape API permissions"
     elif .http_code == 403 then "Token lacks CSD role binding — contact tenant administrator"
+    elif .http_code == 404 then "Namespace does not exist — CSD access will be verified after namespace creation in Phase 1"
     else "Unexpected HTTP \(.http_code)"
     end
   )
@@ -697,6 +708,10 @@ T4 is about object-level cleanup: whether API objects that would
 conflict with Phase 1 creation still exist. It does not test IP
 addresses, network connectivity, or origin health (those concerns
 belong to T3).
+
+<Aside type="note">
+**Skip T4 when namespace does not exist.** If PF-T0-2 returned `404` (namespace does not exist), skip the T4 environment check entirely and report status as `CLEAN`. A non-existent namespace cannot contain leftover objects. Phase 1 Step 0 will create the namespace before any objects are created.
+</Aside>
 
 Run the six pre-flight commands from the [Pre-flight Check](#pre-flight-check) section above. Apply the [Decision Logic](#decision-logic) to determine next steps. If objects exist, auto-teardown is performed during Prepare stage (no confirmation needed).
 

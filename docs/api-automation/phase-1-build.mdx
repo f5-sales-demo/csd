@@ -9,6 +9,46 @@ import { Aside, Steps } from "@astrojs/starlight/components";
 
 Phase 1 deploys and validates the full CSD infrastructure. Complete all steps in order — each step must PASS before proceeding. Return to the [index](/csd/api-automation/) to complete Environment Setup and variable resolution before running these commands.
 
+## Step 0: Check & Create Namespace (Conditional)
+
+Check if the target namespace already exists on the tenant. If it does not exist, create it. Track the result in the `NAMESPACE_CREATED` shell variable — Phase 4 teardown uses this to decide whether to delete the namespace.
+
+```bash
+NS_CHECK=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx")
+
+NAMESPACE_CREATED="false"
+if [ "$NS_CHECK" = "404" ]; then
+  curl -s -X POST \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d '{"metadata": {"name": "xF5XC_NAMESPACEx"}, "spec": {}}' \
+    "xF5XC_API_URLx/api/web/namespaces" | jq .
+  NAMESPACE_CREATED="true"
+fi
+```
+
+<Aside type="note">
+**The `spec` field is required.** The F5 XC namespace API requires a `spec` field in the request body even when no configuration is needed — pass an empty object `{}`. Omitting `spec` returns error code `3` ("spec should not be empty in request").
+</Aside>
+
+### Evidence
+
+Confirm the namespace exists and record whether it was created:
+
+```bash
+curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx"
+echo "NAMESPACE_CREATED=$NAMESPACE_CREATED"
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| HTTP Status | `200` | PASS if returned, FAIL if `404` or other |
+| `NAMESPACE_CREATED` | `true` (created) or `false` (pre-existing) | Informational — used by Phase 4 teardown |
+
 ## Step 1: Create Healthcheck (Optional)
 
 Create an HTTP healthcheck that the origin pool can use to monitor backend health.

@@ -109,6 +109,18 @@ Authorization: APIToken <token>
 
 **LB API:** `/api/config/namespaces/{namespace}/http_loadbalancers/{name}`
 
+**Namespace API:** `/api/web/namespaces/`
+
+| Operation | Method | Path | Body |
+| --------- | ------ | ---- | ---- |
+| List namespaces | `GET` | `/api/web/namespaces` | — |
+| Get namespace | `GET` | `/api/web/namespaces/{name}` | — |
+| Create namespace | `POST` | `/api/web/namespaces` | `{"metadata": {"name": "..."}, "spec": {}}` |
+| Cascade delete namespace | `POST` | `/api/web/namespaces/{name}/cascade_delete` | `{"name": "..."}` |
+
+Note: The `spec` field is required for creation (empty `{}` is valid).
+Standard `DELETE` returns "Not Implemented" — use cascade delete.
+
 ## API Conventions
 
 - **POST** returns the created object as JSON

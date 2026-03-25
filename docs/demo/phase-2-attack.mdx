@@ -115,6 +115,10 @@ var _poll = _si(function() {
 **Saving native `fetch` in the initScript** — the initScript saves `window.fetch.bind(window)` before zone.js patches it. This ensures fetch calls work correctly without zone.js `Cannot read properties of undefined` errors. The same initScript (with native `fetch` saved) is used for both Phase 2 and Phase 3 attack runs — CSD mitigation does not intercept `fetch()` calls, so saving the native reference does not affect mitigation behavior.
 </Aside>
 
+<Aside type="caution">
+**Transient origin 404** — on first navigation to the Angular application, `polyfills.js` or other app scripts may return a transient HTTP 404 from the origin server. This causes Angular to fail bootstrapping, resulting in a blank page with no login form. The 404 is ephemeral — subsequent requests return 200 or 304. **Recovery:** navigate to `about:blank`, wait 2 seconds, then retry the navigation. If the issue persists across multiple retries, check origin health via the load balancer path (`curl -s -o /dev/null -w '%{http_code}' http://$F5XC_DOMAINNAME/polyfills.js`).
+</Aside>
+
 ### Manual Execution
 
 Operators without browser automation tools perform the steps manually:
@@ -140,6 +144,8 @@ may cause some to fail with `ERR_INSUFFICIENT_RESOURCES` or timeout.
 The simulation succeeds if **any** CDN script loads. CSD detects the
 injection attempt regardless of whether the script loads successfully —
 the `&lt;script&gt;` tag creation itself is the detection signal.
+
+In severe cases, `ERR_INSUFFICIENT_RESOURCES` can escalate to a page-level failure — the entire page goes blank, screenshots timeout, and `take_snapshot` fails. This typically occurs after multiple navigations with heavy initScripts accumulate in the same browser context. **Recovery:** use `new_page` with `isolatedContext` to create a fresh browser context, then retry from the `about:blank` → `navigate_page` with initScript sequence. This is distinct from individual CDN script failures, which do not affect simulation success.
 </Aside>
 
 <Aside type="tip">

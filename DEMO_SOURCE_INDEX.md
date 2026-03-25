@@ -74,6 +74,7 @@
 | PCI-BLOG | <https://www.f5.com/company/blog/pci-dss-v4-0-browser-based-attacks> | PCI DSS v4.0, browser attacks, 6.4.3, 11.6.1 |
 | F5-PCI-BLOG | <https://www.f5.com/company/blog/distributed-cloud-client-side-defense-prepares-customers-for-pci-dss> | PCI DSS v4.0.1 CSD compliance mapping |
 | PCI-SSC-LIBRARY | <https://www.pcisecuritystandards.org/document_library/> | PCI DSS v4.0 standard documents |
+| PCI-DSS-V4-STANDARD | <https://www.pcisecuritystandards.org/document_library/?document=pci_dss> | PCI DSS v4.0.1 full standard — Section 6.4.3 (script inventory), Section 11.6.1 (tamper detection) |
 
 ## Threat Research & Standards
 
@@ -90,7 +91,8 @@
 | MITRE-EXFILTRATION | <https://attack.mitre.org/tactics/TA0010/> | Data exfiltration tactic TA0010 |
 | MITRE-RESOURCE-HIJACK | <https://attack.mitre.org/techniques/T1496/> | Resource hijacking T1496, cryptojacking |
 | AKAMAI-WEB-SKIMMING | <https://www.akamai.com/glossary/what-is-web-skimming> | Web skimming, digital skimming definition |
-| SANSEC-MAGECART | <https://sansec.io/what-is-magecart> | Magecart, formjacking, e-commerce skimming |
+| SANSEC-MAGECART | <https://sansec.io/what-is-magecart> | Magecart, formjacking, e-commerce skimming, group taxonomy, notable breaches (BA, Ticketmaster, NewEgg) |
+| ANGULAR-ZONE-JS | <https://angular.dev/guide/zone> | Angular zone.js API patching, browser API interception, implications for browser automation |
 | F5-CSD-PRIVACY | <https://www.f5.com/company/policies/f5-distributed-cloud-client-side-defense-privacy-statement> | CSD data collection, privacy, what telemetry contains |
 
 ## Question Routing Guide
@@ -104,6 +106,7 @@
 | "Can CSD detect X?" | LOCAL-OVERVIEW (boundaries) | F5-CSD-ABOUT |
 | "How do I automate X?" | LOCAL-API-AUTO | F5-COMMUNITY-AUTOMATION |
 | "What is Magecart?" | F5-ATTACK-VECTORS | WebSearch fallback |
+| "Walk me through a Magecart attack" | LOCAL-EXPERTISE (Magecart Kill Chain) | SANSEC-MAGECART |
 | "How do I configure X?" | LOCAL-XC-CONFIG | F5-CSD-HOWTO |
 | "What does the dashboard show?" | LOCAL-CSD-CONSOLE | F5-CSD-ABOUT |
 | "How does telemetry work?" | LOCAL-TELEMETRY | F5-CSD-ABOUT |

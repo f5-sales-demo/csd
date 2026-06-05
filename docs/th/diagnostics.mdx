@@ -1,0 +1,1241 @@
+---
+title: การวินิจฉัยและการตรวจสอบ
+description: การตรวจสอบสุขภาพ การทดสอบการเชื่อมต่อ และขั้นตอนการตรวจสอบสำหรับการปรับใช้ CSD
+sidebar:
+  order: 8
+  label: การวินิจฉัยและการตรวจสอบ
+i18n:
+  sourceHash: 754ac3ee6525
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+หน้านี้มีเมตริกซ์การตรวจสอบ UAT แบบเลเยอร์สำหรับการตรวจสอบการปรับใช้ Client-Side Defense แบบต้นจนปลาย แต่ละกรณีทดสอบเป็นไปตามห่วงโซ่การพึ่งพาโครงสร้างพื้นฐาน — จากการแก้ไข DNS ผ่านการวัดระยะไกล CSD — เพื่อให้คุณสามารถพิสูจน์ได้อย่างเป็นระบบว่าทุกคอมโพเนนต์ทำงานอย่างถูกต้อง
+
+คำสั่งเหล่านี้เป็นคำสั่ง **API equivalent** ของ [CSD Console Walkthrough](/csd/csd-console/) — ใช้คำสั่งเหล่านี้เมื่อคุณต้องการตรวจสอบจากเทอร์มินัล ทำการติดตามแบบอัตโนมัติ หรือแสดงความสามารถของ CSD โดยไม่ต้องใช้ UI
+
+## ข้อกำหนดเบื้องต้น
+
+ตั้งค่าตัวแปรสภาพแวดล้อมของคุณตามที่อธิบายไว้ใน [API Automation &mdash; Environment Setup](/csd/demo/#environment-setup):
+
+```bash
+set -a && source .env && set +a
+```
+
+คำสั่งทั้งหมดด้านล่างใช้รูปแบบตัวยึด `xTOKENx` แทนที่ด้วยตัวแปรสภาพแวดล้อมของคุณ (`$F5XC_API_TOKEN`, `$F5XC_NAMESPACE` เป็นต้น) หรือใช้แบบฟอร์มแบบโต้ตอบที่ด้านบนของหน้า
+
+## หมายเหตุเกี่ยวกับพฤติกรรม API
+
+<Aside type="note">
+**PUT และ DELETE ส่งกลับ `\{\}` ว่าง** บน HTTP 200 — นี่คือการตอบสนองความสำเร็จที่คาดไว้ ไม่ใช่ข้อผิดพลาด เฉพาะ **POST** เท่านั้นที่จะส่งคืนอ็อบเจ็กต์ที่สร้างขึ้น **เอนพอยต์รายการ** (เช่น `/healthchecks`) และ **เอนพอยต์ GET แต่ละรายการ** (เช่น `/healthchecks/\{name\}`) ส่งคืนโครงสร้างการตอบสนองที่แตกต่างกัน — ดู [API Reference &mdash; API Conventions](/csd/api-reference/#api-conventions) สำหรับรายละเอียดเกี่ยวกับเส้นทาง `jq` ที่ถูกต้องสำหรับแต่ละรายการ
+</Aside>
+
+## ตัวช่วยช่วงเวลา
+
+เอนพอยต์ CSD จำนวนมากต้องการการประทับเวลา epoch (วินาทีนับจากยุค Unix) บรรทัดเหล่านี้จะคำนวณเวลาเริ่มต้น/สิ้นสุดสำหรับช่วงทั่วไป
+
+**ข้ามแพลตฟอร์ม** (macOS + Linux):
+
+```bash
+# เวลาปัจจุบันเป็นวินาที epoch
+NOW=$(date +%s)
+
+# 1 ชั่วโมงที่แล้ว
+START_1H=$(( NOW - 3600 ))
+
+# 24 ชั่วโมงที่แล้ว
+START_24H=$(( NOW - 86400 ))
+
+# 7 วันที่แล้ว
+START_7D=$(( NOW - 604800 ))
+
+# 30 วันที่แล้ว
+START_30D=$(( NOW - 2592000 ))
+```
+
+| การตั้งค่าล่วงหน้า | วินาที | นิพจน์ Shell |
+| --- | --- | --- |
+| 1 ชั่วโมง | 3,600 | `$(( $(date +%s) - 3600 ))` |
+| 24 ชั่วโมง | 86,400 | `$(( $(date +%s) - 86400 ))` |
+| 7 วัน | 604,800 | `$(( $(date +%s) - 604800 ))` |
+| 30 วัน | 2,592,000 | `$(( $(date +%s) - 2592000 ))` |
+
+<Aside type="note">
+เอนพอยต์ CSD (`/api/shape/csd/`) ใช้ **วินาที epoch** (เช่น `1710000000`) เอนพอยต์บันทึกการเข้าถึง (`/api/data/`) ใช้การประทับเวลา **ISO 8601** (เช่น `2024-03-10T00:00:00Z`) คำสั่งในแต่ละส่วนใช้รูปแบบที่ถูกต้องสำหรับเอนพอยต์นั้น
+</Aside>
+
+## รูปแบบกรณีทดสอบ
+
+แต่ละการทดสอบด้านล่างเป็นไปตามโครงสร้างนี้:
+
+| ช่อง | คำอธิบาย |
+| --- | --- |
+| **Test ID** | หมายเลขเลเยอร์ + ID ลำดับ (เช่น DNS-1, TLS-2) |
+| **สิ่งที่พิสูจน์** | ข้อเท็จจริงของโครงสร้างพื้นฐานเฉพาะที่กำลังตรวจสอบ |
+| **คำสั่ง** | คำสั่ง `curl` หรือ `dig` พร้อมใช้งาน |
+| **PASS / FAIL** | ผลลัพธ์ที่คาดไว้สำหรับสถานะที่แข็งแรงเทียบกับสถานะที่ไม่แข็งแรง |
+| **Fix** | ลิงก์ไปยังส่วนการตั้งค่าหรือการแก้ไขปัญหาที่เกี่ยวข้อง |
+
+---
+
+## เลเยอร์ 1: การแก้ไข DNS
+
+DNS เป็นรากฐาน — หากโดเมนไม่ได้แก้ไขเป็นที่อยู่ IP เสมือนของตัวโหลดบาลานเซอร์ ก็จะไม่มีอะไรทำงาน
+
+### DNS-1: การแก้ไข A Record
+
+**สิ่งที่พิสูจน์:** โดเมนแก้ไขเป็นที่อยู่ IP เสมือนของตัวโหลดบาลานเซอร์
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; ส่งคืน VIP IP (เช่น `72.19.3.185`) | โดเมนแก้ไขเป็น IP เสมือนของ LB |
+| **FAIL** &mdash; การตอบสนองว่าง | A record ของ DNS ไม่ได้ถูกกำหนดค่า |
+
+**Fix:** [API Automation &mdash; Step 4: Configure DNS](/csd/demo/phase-1-build/#step-4-configure-dns)
+
+<Aside type="tip">
+**DNS cache เชิงลบ:** หากโดเมนส่งคืน `NXDOMAIN` ก่อนหน้านี้ ตัวแก้ไข DNS แบบเรียกซ้ำอาจแคชผลลัพธ์นั้น ตรวจสอบกับเซิร์ฟเวอร์ชื่อโดเมนที่เป็นผู้มีอำนาจเพื่อแยกแคชเก่าออก: `dig +short xF5XC_DOMAINNAMEx A @ns1.f5clouddns.com` หรือใช้ตัวแก้ไขสาธารณะเช่น `@8.8.8.8`
+</Aside>
+
+### DNS-2: บันทึก ACME Challenge
+
+**สิ่งที่พิสูจน์:** บันทึก ACME challenge มีอยู่เพื่อการจัดเตรียมใบรับรอง TLS อัตโนมัติ
+
+```bash
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx TXT
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; CNAME ถึง `*.autocerts.ves.volterra.io.` (DNS ภายนอก) | CNAME ของ ACME challenge อยู่ในตำแหน่ง |
+| **PASS** &mdash; บันทึก TXT ที่มีค่าโดเมน (DNS ที่จัดการโดย F5 Distributed Cloud (F5 XC)) | ACME challenge ที่จัดการโดยแพลตฟอร์มผ่านบันทึก TXT |
+| **FAIL** &mdash; ทั้งคู่ว่าง | บันทึก ACME ไม่ได้ถูกกำหนดค่า ใบรับรองจะคงอยู่ใน `PreDomainChallengePending` |
+
+<Aside type="note">
+เมื่อใช้ DNS ที่จัดการโดย F5 XC โดยเปิดใช้งาน `allow_http_lb_managed_records` แพลตฟอร์มจะสร้างบันทึก **TXT** โดยอัตโนมัติ (ไม่ใช่ CNAME) ในกลุ่มชุด RR `x-ves-io-managed` การตรวจสอบสิทธิ์ ACME ที่ใช้ TXT นี้จะจัดการภายในระบบ เมื่อใช้ DNS ภายนอก คุณต้องสร้างบันทึก CNAME ไปยัง `*.autocerts.ves.volterra.io` ด้วยตนเอง
+</Aside>
+
+**Fix:** สำหรับ DNS ภายนอก สร้างบันทึก CNAME: `_acme-challenge.xF5XC_DOMAINNAMEx` &rarr; `*.autocerts.ves.volterra.io` สำหรับ DNS ที่จัดการโดย F5 XC ให้เปิดใช้งาน `allow_http_lb_managed_records` บนโซน DNS — ดู [DNS-4](#dns-4-f5-xc-managed-records-enabled) ดู [API Automation &mdash; Step 4](/csd/demo/phase-1-build/#step-4-configure-dns)
+
+### DNS-3: ผู้มีอำนาจเซิร์ฟเวอร์ชื่อโดเมน
+
+**สิ่งที่พิสูจน์:** ว่า F5 XC เป็นผู้ให้บริการ DNS ที่มีอำนาจสำหรับโดเมนรูท
+
+```bash
+dig +short NS xF5XC_ROOT_DOMAINx
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| รวม `ns1.f5clouddns.com` และ `ns2.f5clouddns.com` | DNS ที่จัดการโดย F5 XC — บันทึกสามารถสร้างได้โดยอัตโนมัติ |
+| เซิร์ฟเวอร์ชื่อโดเมนอื่น ๆ | DNS ภายนอก — บันทึกต้องสร้างด้วยตนเอง |
+
+**Fix:** [API Automation &mdash; Detect DNS Authority](/csd/demo/phase-1-build/#detect-dns-authority)
+
+### DNS-4: เปิดใช้งานบันทึก F5 XC ที่จัดการ
+
+**สิ่งที่พิสูจน์:** โซน DNS ของ F5 XC อนุญาตให้สร้างบันทึกโดยอัตโนมัติสำหรับตัวโหลดบาลานเซอร์ (DNS ที่จัดการโดย F5 XC เท่านั้น)
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq '.spec.primary.allow_http_lb_managed_records'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; `true` | แพลตฟอร์มจะสร้างบันทึก A และ ACME สำหรับ LB โดยอัตโนมัติ |
+| **FAIL** &mdash; `false` หรือ `null` | บันทึกที่จัดการปิดใช้งาน ให้เปิดใช้งานผ่านการอัปเดตโซน |
+
+<Aside type="caution">
+ผลลัพธ์ `false` เป็นการกำหนดค่าผิดพลาดทั่วไปเมื่อใช้ DNS ที่จัดการโดย F5 XC หากไม่มีการเปิดใช้งานบันทึกที่จัดการ แพลตฟอร์มจะไม่สามารถสร้างบันทึก A (ชี้ไปยัง VIP) หรือบันทึก ACME challenge CNAME (จำเป็นสำหรับการจัดเตรียมใบรับรอง TLS) ได้ สิ่งนี้ทำให้ตัวโหลดบาลานเซอร์ติดอยู่ใน `VIRTUAL_HOST_PENDING_A_RECORD` และใบรับรองคงอยู่ใน `PreDomainChallengePending` ให้เปิดใช้งานบันทึกที่จัดการบนโซน DNS หรือสร้างบันทึกด้วยตนเอง
+</Aside>
+
+**Fix:** [API Automation &mdash; Option A: F5 XC Managed DNS](/csd/demo/phase-1-build/#option-a-f5-xc-managed-dns)
+
+---
+
+## เลเยอร์ 2: ใบรับรอง TLS
+
+หลังจากแก้ไข DNS แล้ว ตัวโหลดบาลานเซอร์ต้องมีใบรับรอง TLS ที่ถูกต้อง
+
+### TLS-1: สถานะใบรับรอง
+
+<Aside type="note">
+**การทดสอบนี้ใช้กับ HTTPS LB (`${F5XC_LB_NAME}-https`) เท่านั้น** LB ของ HTTP ไม่มีใบรับรอง ในสภาพแวดล้อมสาธารณะ TLS-1 เป็นข้อมูลเท่านั้น — หากแสดง `AutoCertDomainRateLimited` สาธารณะเดินหน้าตามปกติโดยใช้ URL `http://` ผ่าน HTTP LB
+</Aside>
+
+**สิ่งที่พิสูจน์:** ใบรับรอง TLS อัตโนมัติได้รับการออกบน HTTPS LB
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '.spec.cert_state'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; `"CertificateValid"` หรือ `"AutoCertRenewing"` | ใบรับรองใช้งานได้และใช้งานอยู่ |
+| **WARN** &mdash; `"DomainChallengePending"` หรือ `"DomainChallengeStarted"` | ACME challenge ที่กำลังดำเนิน — รอ 5–10 นาที |
+| **INFO** &mdash; `"AutoCertDomainRateLimited"` | พบขีดจำกัดอัตราของ Let's Encrypt — คาดหวังในสภาพแวดล้อมสาธารณะ ไม่ส่งผลต่อ HTTP LB |
+| **FAIL** &mdash; `"PreDomainChallengePending"` | บันทึก ACME challenge ที่หายไป — ดู [DNS-2](#dns-2-acme-challenge-record) |
+
+**Fix:** ตรวจสอบให้แน่ใจว่าบันทึก ACME challenge อยู่ในตำแหน่ง (CNAME สำหรับ DNS ภายนอก หรือเปิดใช้งานบันทึกที่จัดการสำหรับ DNS ของ F5 XC) การจัดเตรียมใบรับรองใช้เวลา **5–10 นาที** หลังจากกำหนดค่าบันทึก หากติดอยู่เกิน 15 นาที ดู [Certificate Stuck &mdash; Clean Recreation](/csd/demo/#certificate-stuck--clean-recreation-optional) หากกำหนดขีดจำกัดอัตรา HTTP LB จะไม่ได้รับผลกระทบ
+
+### TLS-2: รายละเอียดใบรับรอง
+
+**สิ่งที่พิสูจน์:** ใบรับรองครอบคลุมโดเมนที่คาดไว้และแสดงข้อมูลหมดอายุ ใช้ได้เฉพาะ HTTPS LB เท่านั้น
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{
+    cert_state: .spec.cert_state,
+    auto_cert_info: .spec.auto_cert_info
+  }'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; `auto_cert_info` ประกอบด้วย `dns_records` และข้อมูลเมตาใบรับรอง | มีข้อมูลรายละเอียดการจัดเตรียมใบรับรอง |
+| **FAIL** &mdash; `auto_cert_info` เป็น `null` หรือว่าง | ยังไม่ได้จัดเตรียมใบรับรอง |
+
+### TLS-3: การทำ TLS Handshake แบบสด
+
+**สิ่งที่พิสูจน์:** ใบรับรอง TLS ใช้งานได้และการทำ handshake เสร็จสิ้นจากฝั่งไคลเอนต์ ใช้ได้เฉพาะเมื่อ HTTPS LB มีใบรับรองที่ถูกต้องเท่านั้น
+
+<Aside type="note">
+ในสภาพแวดล้อมสาธารณะ ให้ใช้ `curl http://xF5XC_DOMAINNAMEx/` (HTTP ไม่ใช่ HTTPS) เป็นเส้นทางการตรวจสอบหลัก การทดสอบการทำ TLS handshake เป็นทางเลือก — ทำงานได้เฉพาะเมื่อ HTTPS LB certificate เป็น `CertificateValid` เท่านั้น
+</Aside>
+
+```bash
+curl -sv "https://xF5XC_DOMAINNAMEx/" 2>&1 \
+  | grep -E 'SSL connection|subject:|expire date:|issuer:'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; แสดง `SSL connection using TLSv1.3` subject และวันหมดอายุที่ถูกต้อง | TLS แบบต้นจนปลายทำงาน |
+| **FAIL** &mdash; การเชื่อมต่อปฏิเสธหรือข้อผิดพลาดใบรับรอง | ตรวจสอบการแก้ไข DNS และสถานะใบรับรอง หากกำหนดขีดจำกัดอัตรา ให้ใช้ HTTP แทน |
+
+### TLS-4: เป้าหมายบันทึก ACME จาก LB
+
+**สิ่งที่พิสูจน์:** HTTPS load balancer รายงานเป้าหมาย ACME ที่ถูกต้องสำหรับการตรวจสอบใบรับรอง
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{
+    vip_ip: .spec.dns_info[0].ip_address,
+    acme_target: .spec.auto_cert_info.dns_records
+  }'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; `vip_ip` และ `acme_target` ถูกกรอก | บันทึก DNS สามารถตรวจสอบได้กับค่าเหล่านี้ |
+| **FAIL** &mdash; ค่า `null` | LB อาจไม่มีการกำหนดค่า `https_auto_cert` |
+
+---
+
+## เลเยอร์ 3: HTTP Load Balancer
+
+ตัวโหลดบาลานเซอร์ต้องอยู่ในสถานะพร้อมใช้งานและได้รับการกำหนดค่าอย่างถูกต้อง
+
+### LB-1: สถานะการทำงาน
+
+**สิ่งที่พิสูจน์:** HTTP load balancer (หลัก) ทำงานเต็มรูปแบบและยอมรับการไหลของข้อมูล
+
+<Aside type="note">
+**HTTP LB เป็นเป้าหมายการตรวจสอบหลัก** ในสภาพแวดล้อมสาธารณะ ตรวจสอบ HTTP LB (`${F5XC_LB_NAME}-http`) ก่อน — มันถึง `VIRTUAL_HOST_READY` ทันทีที่แก้ไข DNS ได้ โดยไม่ขึ้นอยู่กับใบรับรอง ใช้ `curl http://xF5XC_DOMAINNAMEx/` สำหรับการตรวจสอบหลักแบบ HTTP
+</Aside>
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '.spec.state'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; `"VIRTUAL_HOST_READY"` | LB ทำงาน |
+| **FAIL** &mdash; `"VIRTUAL_HOST_PENDING_A_RECORD"` | A record ของ DNS ไม่ได้ถูกกำหนดค่า — ดู [DNS-1](#dns-1-a-record-resolution) |
+
+**Fix:** [LB Stuck in VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record)
+
+### LB-2: การกำหนดค่าโดเมน
+
+**สิ่งที่พิสูจน์:** HTTP load balancer ได้รับการกำหนดค่าสำหรับโดเมนที่ถูกต้อง
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '.spec.domains'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; อาร์เรย์มี FQDN ของคุณ (เช่น `["app.example.com"]`) | LB ได้รับการกำหนดค่าสำหรับโดเมนที่คาดไว้ |
+| **FAIL** &mdash; โดเมนที่หายไปหรือไม่ถูกต้อง | อัปเดตสเปค LB ด้วยโดเมนที่ถูกต้อง |
+
+### LB-3: เปิดใช้งาน CSD บน LB
+
+**สิ่งที่พิสูจน์:** Client-Side Defense เปิดใช้งานบนตัวโหลดบาลานเซอร์ด้วยนโยบายการฉีด JS ที่ถูกต้อง
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{
+    csd_enabled: (if .spec.client_side_defense then true else false end),
+    js_policy: .spec.client_side_defense.policy
+  }'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; `csd_enabled: true` พร้อมกับ `js_insert_all_pages` ในนโยบาย | CSD ใช้งานอยู่พร้อมการฉีด JS บนทุกหน้า |
+| **FAIL** &mdash; `csd_enabled: false` | CSD ไม่ได้ถูกกำหนดค่าบน LB |
+
+**Fix:** [API Reference &mdash; Enable CSD on a Load Balancer](/csd/api-reference/#enable-csd-on-a-load-balancer)
+
+### LB-4: Default Route Pool
+
+**สิ่งที่พิสูจน์:** ตัวโหลดบาลานเซอร์อ้างอิงกับพูลต้นทางที่ถูกต้องพร้อมน้ำหนักและลำดับความสำคัญที่คาดไว้
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '.spec.default_route_pools[] | {
+    pool: .pool.name,
+    namespace: .pool.namespace,
+    weight: .weight,
+    priority: .priority
+  }'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; แสดงชื่อพูลต้นทางของคุณพร้อมน้ำหนัก/ลำดับความสำคัญ | LB กำลังกำหนดเส้นทางไปยังแบ็กเอนด์ที่ถูกต้อง |
+| **FAIL** &mdash; ว่างหรือพูลผิด | อัปเดตการกำหนดค่า `default_route_pools` ของ LB |
+
+### LB-5: สถานะการปรับใช้ (เงื่อนไขต่อไซต์)
+
+**สิ่งที่พิสูจน์:** ตัวโหลดบาลานเซอร์ปรับใช้แล้วและรายงานสถานะที่เป็นอยู่ดีที่สุดในทุกไซต์
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{
+    state: .spec.state,
+    dns_info: .spec.dns_info,
+    host_name: .spec.host_name
+  }'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; `state` คือ `VIRTUAL_HOST_READY`, `dns_info` ถูกกรอก | LB ปรับใช้เต็มรูปแบบพร้อมการมอบหมายแบบ VIP |
+| **FAIL** &mdash; สถานะค้างอยู่หรือ `dns_info` ว่าง | DNS หรือปัญหาใบรับรองบล็อกการปรับใช้ |
+
+<Aside type="tip">
+เมื่อ LB ไม่อยู่ในสถานะ `VIRTUAL_HOST_READY` ให้ตรวจสอบ `.status[].virtual_host_status.error_description` สำหรับรายละเอียดข้อผิดพลาดเดียวกับที่แสดงในหน้า UI ของคอนโซล F5 XC:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '[.status[]? | select(.virtual_host_status != null) | .virtual_host_status | {state, error_description, suggested_action}]'
+```
+</Aside>
+
+### LB-6: สรุป LB เต็ม
+
+**สิ่งที่พิสูจน์:** ภาพรวมอย่างครบถ้วนของการกำหนดค่า LB ทั้งสองสำหรับการแก้จุดบกพร่อง
+
+**HTTP LB (หลัก):**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{
+    name: .metadata.name,
+    state: .spec.state,
+    domains: .spec.domains,
+    csd_enabled: (if .spec.client_side_defense then true else false end),
+    route_pools: [.spec.default_route_pools[] | .pool.name],
+    advertise: (if .spec.advertise_on_public_default_vip then "public_default_vip" else "custom" end)
+  }'
+```
+
+**HTTPS LB (รอง — รวมสถานะใบรับรอง):**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{
+    name: .metadata.name,
+    state: .spec.state,
+    cert_state: .spec.cert_state,
+    domains: .spec.domains,
+    csd_enabled: (if .spec.client_side_defense then true else false end),
+    route_pools: [.spec.default_route_pools[] | .pool.name]
+  }'
+```
+
+---
+
+## เลเยอร์ 4: Origin Pool
+
+พูลต้นทาง (origin pool) กำหนดเซิร์ฟเวอร์แบ็กเอนด์ที่ตัวโหลดบาลานเซอร์กำหนดเส้นทางการไหลของข้อมูลไปยังเซิร์ฟเวอร์นั้น
+
+### OP-1: การกำหนดค่า Origin Pool
+
+**สิ่งที่พิสูจน์:** พูลต้นทางมีอยู่จริงพร้อมเซิร์ฟเวอร์แบ็กเอนด์ พอร์ต และอัลกอริทึม LB ที่ถูกต้อง
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '{
+    name: .metadata.name,
+    origin_servers: [.spec.origin_servers[] | {
+      ip: .public_ip.ip,
+      labels: .labels
+    }],
+    port: .spec.port,
+    lb_algorithm: .spec.loadbalancer_algorithm,
+    endpoint_selection: .spec.endpoint_selection
+  }'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; แสดง IP ที่ถูกต้อง พอร์ต และอัลกอริทึม | พูลต้นทางได้รับการกำหนดค่าอย่างถูกต้อง |
+| **FAIL** &mdash; `404` หรือค่าผิด | พูลต้นทางหายไปหรือกำหนดค่าผิด |
+
+**Fix:** [API Automation &mdash; Step 2: Create Origin Pool](/csd/demo/phase-1-build/#step-2-create-origin-pool)
+
+### OP-2: TLS สู่ Origin
+
+**สิ่งที่พิสูจน์:** ว่า TLS ได้รับการกำหนดค่าสำหรับการเชื่อมต่อระหว่าง LB และเซิร์ฟเวอร์ต้นทาง
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '{
+    tls_config: (if .spec.no_tls then "no_tls (plaintext)" elif .spec.use_tls then "use_tls (encrypted)" else "unknown" end)
+  }'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| `no_tls (plaintext)` | LB เชื่อมต่อไปยังต้นทางผ่าน HTTP (คาดไว้สำหรับสาธารณะ Juice Shop) |
+| `use_tls (encrypted)` | LB เชื่อมต่อไปยังต้นทางผ่าน HTTPS |
+
+### OP-3: ความเกี่ยวข้องกับการตรวจสอบสุขภาพ
+
+**สิ่งที่พิสูจน์:** พูลต้นทางมีการตรวจสอบสุขภาพที่ถูกต้องเชื่อมโยงอยู่ (หากมี)
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '.spec.healthcheck'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; อาร์เรย์พร้อมการอ้างอิงการตรวจสอบสุขภาพ (ชื่อ เนมสเปซ ประเภท) | เชื่อมโยงการตรวจสอบสุขภาพแล้ว |
+| **OK** &mdash; อาร์เรย์ว่าง `[]` | ไม่มีการตรวจสอบสุขภาพ (ยอมรับได้ — CSD ไม่ต้องการการตรวจสอบสุขภาพ) |
+| **FAIL** &mdash; คาดหวังการตรวจสอบสุขภาพแต่อาร์เรย์ว่าง | การตรวจสอบสุขภาพไม่พบในขณะสร้าง — ดู [Healthcheck Not Linked](/csd/demo/#healthcheck-not-linked-to-origin-pool) |
+
+### OP-4: ความเชื่อมต่อต้นทาง
+
+**สิ่งที่พิสูจน์:** เซิร์ฟเวอร์ต้นทางสามารถเข้าถึงได้จากฝั่งไคลเอนต์ (ไม่ทดสอบเส้นทาง LB-to-origin)
+
+```bash
+curl -s -o /dev/null -w '%{http_code}' \
+  "http://xF5XC_ORIGIN_IPx:xF5XC_ORIGIN_PORTx/"
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; `200` (หรือรหัส HTTP ที่ถูกต้องอื่น ๆ) | เซิร์ฟเวอร์ต้นทางกำลังตอบสนอง |
+| **FAIL** &mdash; `000` หรือการเชื่อมต่อปฏิเสธ | เซิร์ฟเวอร์ต้นทางไม่สามารถเข้าถึงได้จากเครือข่ายนี้ |
+
+<Aside type="note">
+การทดสอบนี้ทดสอบความเชื่อมต่อไคลเอนต์-ถึง-ต้นทาง โดยตรง เส้นทาง LB-to-origin อาจใช้เส้นทางเครือข่ายที่แตกต่างกัน การล้มเหลวในที่นี้ไม่จำเป็นหมายความว่า LB ไม่สามารถเข้าถึงต้นทางได้
+</Aside>
+
+---
+
+## เลเยอร์ 5: Health Check
+
+การตรวจสอบสุขภาพจะตรวจสอบความพร้อมของแบ็กเอนด์ เป็นทางเลือกสำหรับ CSD แต่มีประโยชน์สำหรับการปรับใช้ระบบจริง
+
+### HC-1: การกำหนดค่า Healthcheck
+
+**สิ่งที่พิสูจน์:** healthcheck มีอยู่จริงพร้อมประเภท เส้นทาง การหมดเวลา และเกณฑ์ที่ถูกต้อง
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx" \
+  | jq '{
+    name: .metadata.name,
+    type: (if .spec.http_health_check then "HTTP" elif .spec.tcp_health_check then "TCP" else "unknown" end),
+    path: .spec.http_health_check.path,
+    expected_status: .spec.http_health_check.expected_status_codes,
+    timeout: .spec.timeout,
+    interval: .spec.interval,
+    unhealthy_threshold: .spec.unhealthy_threshold,
+    healthy_threshold: .spec.healthy_threshold
+  }'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; แสดงประเภท HTTP พร้อมเส้นทาง `/` และคาดหวัง `200` | Healthcheck ได้รับการกำหนดค่าอย่างถูกต้อง |
+| **FAIL** &mdash; การตอบสนอง `404` | Healthcheck ไม่มีอยู่ (อาจถูกข้าม — ดู [Phase 1 Step 1](/csd/demo/phase-1-build/#step-1-create-healthcheck-optional)) |
+
+### HC-2: แสดงรายชื่อ Healthchecks ทั้งหมด
+
+**สิ่งที่พิสูจน์:** แจกแจง healthchecks ทั้งหมดในเนมสเปซเพื่อตรวจสอบการตั้งชื่อและจำนวน
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks" \
+  | jq -r '
+    ["NAME", "NAMESPACE", "DESCRIPTION"],
+    (.items[] | [
+      .name,
+      .namespace,
+      (.description | if length == 0 then "—" else . end)
+    ])
+    | @tsv' | column -t
+```
+
+<Aside type="note">
+เอนพอยต์รายการส่งคืนข้อมูลสรุปเท่านั้น (ชื่อ เนมสเปซ คำอธิบาย) เพื่อดูรายละเอียดการกำหนดค่าแบบเต็ม (ประเภท เส้นทาง ช่วงเวลา การหมดเวลา) ให้ค้นหา healthcheck แต่ละรายการโดยใช้ [HC-1](#hc-1-healthcheck-configuration)
+</Aside>
+
+---
+
+## เลเยอร์ 6: การกำหนดค่า CSD
+
+CSD ต้องเปิดใช้งานที่ระดับผู้เช่าและมีแท็กการฉีด JavaScript ที่ได้รับการกำหนดค่า
+
+### CSD-1: สถานะ CSD ของผู้เช่า
+
+**สิ่งที่พิสูจน์:** CSD ได้รับการกำหนดค่าและเปิดใช้งานสำหรับผู้เช่า
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq '{isConfigured, isEnabled}'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; ทั้งคู่เป็น `true` | CSD ใช้งานอยู่สำหรับผู้เช่านี้ |
+| **FAIL** &mdash; `isConfigured: false` | CSD ไม่เปิดใช้งานที่ระดับผู้เช่า — ติดต่อผู้ดูแลระบบ F5 XC |
+| **FAIL** &mdash; `isEnabled: false` | CSD ได้รับการกำหนดค่าแต่ไม่ใช้งาน |
+
+### CSD-2: แท็กการฉีด JS
+
+**สิ่งที่พิสูจน์:** แท็กการฉีด JavaScript ของ CSD ถูกสร้างและพร้อมสำหรับการฉีด
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq '{has_script_tag: (.scriptTag | length > 0)}'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; `has_script_tag: true` | แท็กการฉีด JS ได้รับการกำหนดค่า |
+| **FAIL** &mdash; `has_script_tag: false` | ไม่มีแท็กสคริปต์ — ตรวจสอบว่า CSD เปิดใช้งานและโดเมนที่ได้รับการป้องกันลงทะเบียน |
+
+### CSD-3: เนื้อหาแท็ก JS
+
+**สิ่งที่พิสูจน์:** แสดงแท็กสคริปต์เต็มสำหรับการตรวจสอบหรือการฉีดด้วยตนเอง
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq '.scriptTag'
+```
+
+### CSD-4: การลงทะเบียนโดเมนที่ได้รับการป้องกัน
+
+**สิ่งที่พิสูจน์:** โดเมนรูทได้รับการลงทะเบียนเป็นโดเมนที่ได้รับการป้องกันโดย CSD บนผู้เช่า
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '.items[] | {name, namespace, description}'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; แสดงรายการที่มี `name` ที่ไม่ว่าง | โดเมนได้รับการป้องกัน |
+| **FAIL** &mdash; รายการมี `name` และ `namespace` ว่าง | ไม่มีโดเมนที่ได้รับการป้องกันลงทะเบียน — ดู [Phase 1 Step 6](/csd/demo/phase-1-build/#step-6-register-protected-domain) |
+
+<Aside type="note">
+เอนพอยต์รายชื่อโดเมนที่ได้รับการป้องกันส่งคืนข้อมูลสรุปเท่านั้น รายการที่มีฟิลด์ว่างทั้งหมดบ่งชี้ว่าไม่มีการกำหนดค่าโดเมนที่ได้รับการป้องกัน แท็ก JavaScript ของ CSD ([CSD-2](#csd-2-js-injection-tag)) เป็นตัวบ่งชี้ที่เชื่อถือได้มากกว่าว่าการป้องกันโดเมนใช้งานอยู่
+</Aside>
+
+### CSD-5: การตรวจสอบการฉีด JS แบบสด
+
+**สิ่งที่พิสูจน์:** JavaScript ของ CSD ถูกฉีดลงในการตอบสนองของหน้าเว็บที่ให้บริการโดยตัวโหลดบาลานเซอร์
+
+```bash
+curl -s "http://xF5XC_DOMAINNAMEx/" \
+  | grep -oE '(zeronaught|shape)\.com[^"]*' | head -1
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; ส่งคืน URL fragment ของ `zeronaught.com` หรือ `shape.com` (เช่น `zeronaught.com/__imp_apg__/js/...`) | JavaScript ของ CSD ถูกฉีดลงในหน้าเว็บ |
+| **FAIL** &mdash; ผลลัพธ์ว่าง | ไม่ได้ฉีด JS — ตรวจสอบ [LB-3](#lb-3-csd-enabled-on-lb) และ [CSD-1](#csd-1-tenant-csd-status) |
+
+---
+
+## เลเยอร์ 7: การตรวจสอบการไหลของข้อมูล
+
+ตรวจสอบว่าการไหลของข้อมูลแบบสดเข้าถึงตัวโหลดบาลานเซอร์และถูกประมวลผลอย่างถูกต้อง
+
+### TV-1: จำนวนคำขอ (24 ชั่วโมงที่ผ่านมา)
+
+**สิ่งที่พิสูจน์:** การไหลของข้อมูลเข้าถึงตัวโหลดบาลานเซอร์ ผลลัพธ์เป็นศูนย์หมายความว่าไม่มีการไหลของข้อมูลเข้ามา
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start_time": "'"$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)"'",
+    "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"
+  }' \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs/aggregation" \
+  | jq '{total_requests: .total_hits}'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; `total_requests` เป็นสตริงที่ไม่ใช่ศูนย์ (เช่น `"380"`) | การไหลของข้อมูลไหลผ่าน LB |
+| **FAIL** &mdash; `"0"` หรือไม่มีข้อมูล | ไม่มีการไหลของข้อมูลเข้าถึง LB — ตรวจสอบ [DNS-1](#dns-1-a-record-resolution) และ [LB-1](#lb-1-operational-state) |
+
+<Aside type="note">
+ค่า `total_hits` ส่งคืนเป็น **สตริง** (เช่น `"380"`) ไม่ใช่จำนวนเต็ม เนมสเปซจะอนุมานจากเส้นทาง URL — อย่าใส่ไว้ในเนื้อหาคำขอ
+</Aside>
+
+### TV-2: การแจกแจงรหัสสถานะ
+
+**สิ่งที่พิสูจน์:** การแจกแจงของรหัสสถานะการตอบสนองเผยให้เห็นรูปแบบข้อผิดพลาด
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start_time": "'"$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)"'",
+    "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",
+    "sort": "DESCENDING",
+    "limit": 100
+  }' \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs" \
+  | jq -r '
+    [.logs[] | fromjson | .rsp_code_class]
+    | group_by(.) | map({class: .[0], count: length})
+    | sort_by(-.count)
+    | ["STATUS_CLASS", "COUNT"], (.[] | [.class, .count])
+    | @tsv' | column -t
+```
+
+<Aside type="note">
+เอนพอยต์การรวบรวม (aggregation) ไม่รองรับการแบ่งกลุ่มเงื่อนไข — `aggs` ส่งคืนว่างเสมอ คำสั่งนี้เรียก 100 รายการบันทึกล่าสุดและคำนวณการแจกแจงจากฝั่งไคลเอนต์ แต่ละรายการบันทึกเป็น **สตริง JSON** ที่ต้องแยกวิเคราะห์ด้วย `fromjson`
+</Aside>
+
+ผลลัพธ์ที่คาดไว้สำหรับไซต์ที่แข็งแรง:
+
+```
+STATUS_CLASS                  COUNT
+2xx                           82
+downstream_remote_disconnect  18
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; ส่วนใหญ่เป็น `2xx` | ไซต์เสิร์ฟการตอบสนองที่สำเร็จ |
+| **WARN** &mdash; จำนวน `4xx` สูง | ข้อผิดพลาดของไคลเอนต์ (URL ผิด ทรัพยากรหายไป) |
+| **FAIL** &mdash; จำนวน `5xx` สูง | ข้อผิดพลาดของเซิร์ฟเวอร์ — ตรวจสอบสุขภาพของเซิร์ฟเวอร์ต้นทาง |
+
+คลาส `downstream_remote_disconnect` บ่งชี้ว่าไคลเอนต์ปิดการเชื่อมต่อก่อนที่การตอบสนองจะเสร็จสิ้น (ทั่วไปสำหรับคำขอ long-polling หรือการอัปเกรด WebSocket)
+
+### TV-3: ตัวอย่างคำขอล่าสุด
+
+**สิ่งที่พิสูจน์:** คำขอแต่ละรายการถูกบันทึกด้วยฟิลด์ที่ถูกต้อง
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start_time": "'"$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-1H +%Y-%m-%dT%H:%M:%SZ)"'",
+    "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",
+    "sort": "DESCENDING",
+    "limit": 10
+  }' \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs" \
+  | jq -r '
+    ["TIMESTAMP", "METHOD", "PATH", "STATUS", "SRC_IP"],
+    (.logs[] | fromjson | [.["@timestamp"], .method, .req_path, .rsp_code, .src_ip])
+    | @tsv' | column -t
+```
+
+<Aside type="caution">
+แต่ละรายการในอาร์เรย์ `.logs[]` เป็น **สตริง JSON** ไม่ใช่ออบเจ็กต์ที่แยกวิเคราะห์แล้ว คุณต้องท่อผ่าน `fromjson` ใน jq ก่อนที่จะเข้าถึงฟิลด์ (เช่น `.logs[] | fromjson | .method`)
+</Aside>
+
+### TV-4: การฉีด CSD JS ในบันทึกการเข้าถึง
+
+**สิ่งที่พิสูจน์:** บันทึกการเข้าถึงยืนยันว่า JavaScript ของ CSD ถูกฉีดลงในการตอบสนอง
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start_time": "'"$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-1H +%Y-%m-%dT%H:%M:%SZ)"'",
+    "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",
+    "sort": "DESCENDING",
+    "limit": 20
+  }' \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs" \
+  | jq '[.logs[] | fromjson | select(.csd_js_injection == "true")] | length as $injected |
+    {injected_count: $injected, total_sampled: 20}'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; `injected_count` > 0 | JavaScript ของ CSD ถูกฉีดลงในการตอบสนองของหน้า |
+| **FAIL** &mdash; `injected_count: 0` | ไม่ได้ฉีด JS — ตรวจสอบ [CSD-1](#csd-1-tenant-csd-status) และ [LB-3](#lb-3-csd-enabled-on-lb) |
+
+<Aside type="note">
+ฟิลด์ `csd_js_injection` ปรากฏเฉพาะในรายการบันทึกที่เกิดการฉีด ในการทดสอบ 40% ของรายการบันทึกตัวอย่างมี `csd_js_injection: "true"` (คำขอหน้า HTML) ในขณะที่ 60% มีฟิลด์ที่หายไป (สินทรัพย์แบบคงที่เช่น `.ico`, `.js`, `.css` ไฟล์และการเชื่อมต่อ WebSocket) การขอหน้า HTML ควรแสดงการฉีด API call และคำขอสินทรัพย์แบบคงที่โดยทั่วไปจะไม่แสดง
+</Aside>
+
+### TV-5: การทดสอบการเชื่อมต่อแบบต้นจนปลาย
+
+**สิ่งที่พิสูจน์:** คำขอที่สมบูรณ์ไหลจากไคลเอนต์ผ่าน DNS, LB และต้นทาง และส่งคืนการตอบสนองที่ถูกต้อง
+
+```bash
+curl -sv "http://xF5XC_DOMAINNAMEx/" 2>&1 \
+  | grep -E 'Connected to|< HTTP|< content-type'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; แสดงการเชื่อมต่อ HTTP 200 และ content-type | สแต็กเต็มทำงาน |
+| **FAIL** &mdash; การเชื่อมต่อปฏิเสธหรือข้อผิดพลาด DNS | เริ่มแก้จุดบกพร่องที่ [Layer 1: DNS](#layer-1-dns-resolution) |
+
+<Aside type="tip">
+สำหรับการทดสอบแบบต้นจนปลาย HTTPS (เฉพาะเมื่อ HTTPS LB certificate ใช้งานได้) ให้ใช้ `curl -sv "https://xF5XC_DOMAINNAMEx/"` และตรวจสอบ `SSL connection` ในผลลัพธ์
+</Aside>
+
+---
+
+## เลเยอร์ 8: การวัดระยะไกล CSD และนโยบายโดเมน
+
+คำสั่งเหล่านี้ค้นหาข้อมูลเดียวกับที่แสดงในแดชบอร์ด [CSD Console](/csd/csd-console/) มุมมองรายชื่อสคริปต์ ช่องแบบฟอร์ม และมุมมองเครือข่าย
+
+### TEL-1: สินค้าคงคลัง Script
+
+**สิ่งที่พิสูจน์:** CSD กำลังตรวจจับและแคตตาล็อกสคริปต์ที่ทำงานบนโดเมนที่ได้รับการป้องกัน
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"startTime\": \"${START}\",
+    \"endTime\": \"${NOW}\"
+  }" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq -r '
+    ["SCRIPT", "RISK", "STATUS", "FIELDS", "USERS"],
+    (.scripts[] | [
+      (.script_name | if length > 50 then .[:47] + "..." else . end),
+      .risk_level,
+      .status,
+      (.form_fields_read // 0),
+      (.affected_users_count // 0)
+    ])
+    | @tsv' | column -t
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; สคริปต์ที่อยู่ในรายชื่อพร้อมระดับความเสี่ยง | CSD กำลังตรวจสอบสคริปต์อย่างแข็งขัน |
+| **FAIL** &mdash; อาร์เรย์ว่าง | ดู [Troubleshooting: Empty Scripts Array](#empty-scripts-array) |
+
+<Aside type="tip">
+ชื่อสคริปต์เป็น URL เต็มและสามารถยาวมาก คำสั่งด้านบนตัดชื่อให้อยู่ 50 ตัวอักษรเพื่อความสามารถในการอ่านเทอร์มินัล ลบตัวกรองการตัดเพื่อดู URL เต็ม
+</Aside>
+
+### TEL-2: โดเมนที่ตรวจพบ
+
+**สิ่งที่พิสูจน์:** CSD ได้ตรวจพบโดเมนแหล่งสคริปต์และจัดประเภทตามสถานะ
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{
+    summary: {
+      action_needed: .domain_summary.actionNeededCount.count,
+      mitigated: .domain_summary.mitigatedDomains.count,
+      allowed: .domain_summary.allowedDomains.count,
+      total: .domain_summary.totalDomains.count
+    },
+    domains: [.domains_list[] | {
+      domain: .domain,
+      category: .category,
+      status: .status,
+      first_seen: (.firstSeenDate | tonumber | todate),
+      latest_seen: (.latestSeenDate | tonumber | todate)
+    }]
+  }'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; `total` > 0 พร้อมโดเมนที่อยู่ในรายชื่อ | CSD กำลังติดตามโดเมนสคริปต์ |
+| **WARN** &mdash; `action_needed` > 0 | โดเมนบางตัวต้องได้รับการตรวจสอบ |
+| **FAIL** &mdash; การตอบสนองว่าง | ไม่มีข้อมูลการวัดระยะไกล — ตรวจสอบ [CSD-5](#csd-5-live-js-injection-verification) |
+
+### TEL-3: สถานะนโยบายโดเมน
+
+**สิ่งที่พิสูจน์:** แสดงการแจกแจงของโดเมนที่อนุญาตเทียบกับโดเมนที่ลดบัญชี และว่านโยบายสอดคล้องกันหรือไม่
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{
+    action_needed: .domain_summary.actionNeededCount.count,
+    mitigated: .domain_summary.mitigatedDomains.count,
+    allowed: .domain_summary.allowedDomains.count,
+    total: .domain_summary.totalDomains.count,
+    domains_needing_action: [.domains_list[] | select(.status == "AN") | .domain]
+  }'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; `action_needed: 0` | โดเมนทั้งหมดได้รับการตรวจสอบและจัดประเภท |
+| **WARN** &mdash; `action_needed` > 0 | โดเมนที่อยู่ใน `domains_needing_action` ต้องการการตรวจสอบ |
+
+### TEL-4: สินค้าคงคลัง Form Field
+
+**สิ่งที่พิสูจน์:** CSD ได้ตรวจพบช่องแบบฟอร์มที่สคริปต์อ่านด้วยการจัดประเภทความไว
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields?startTime=${START}&endTime=${NOW}" \
+  | jq -r '
+    ["FIELD", "SENSITIVITY", "SCRIPTS"],
+    (.form_fields[] | [
+      .name,
+      .analysis,
+      (.scripts_count // 0)
+    ])
+    | @tsv' | column -t
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; ช่องแบบฟอร์มที่อยู่ในรายชื่อพร้อมความไว | CSD กำลังติดตามการเข้าถึงช่องแบบฟอร์ม |
+| **INFO** &mdash; อาร์เรย์ว่าง | ไม่มีการตรวจพบช่องแบบฟอร์ม (คาดไว้หากไม่มีแบบฟอร์มบนไซต์) |
+
+### TEL-5: ศึกษาสคริปต์เชิงลึก
+
+**สิ่งที่พิสูจน์:** ข้อมูลโดยละเอียดเกี่ยวกับสคริปต์เฉพาะ รวมถึงความเสี่ยง พฤติกรรม และการโต้ตอบเครือข่าย
+
+ก่อนอื่น ให้รับ script ID จาก [TEL-1](#tel-1-script-inventory) จากนั้นค้นหารายละเอียด:
+
+```bash
+SCRIPT_ID="your-script-id"
+
+# ภาพรวม (ระดับความเสี่ยง ประเภท โดเมนแหล่ง)
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/dashboard" \
+  | jq '{script_name, risk_level, type, source_domain, status}'
+
+# พฤติกรรมเมื่อเวลาผ่านไป
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/behaviors" \
+  | jq '.behaviors'
+
+# ปฏิสัมพันธ์เครือข่าย (โดเมนที่สคริปต์สื่อสารกับ)
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/networkInteractions" \
+  | jq '.network_interactions'
+```
+
+### TEL-6: ผู้ใช้ที่ได้รับผลกระทบ
+
+**สิ่งที่พิสูจน์:** แสดงผู้ใช้ที่ได้รับผลกระทบจากสคริปต์เฉพาะ พร้อมขอบเขตของการเปิดเผย
+
+```bash
+SCRIPT_ID="your-script-id"
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"startTime\": \"${START}\",
+    \"endTime\": \"${NOW}\"
+  }" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/affectedUsers" \
+  | jq -r '
+    ["IP_ADDRESS", "DEVICE_ID", "GEO", "CHANNEL", "USER_AGENT"],
+    (.affected_users[] | [
+      .ip_address,
+      (.device_id | if length > 12 then .[:12] + "..." else . end),
+      .geolocation,
+      .channel,
+      (.user_agent | if length > 30 then .[:27] + "..." else . end)
+    ])
+    | @tsv' | column -t
+```
+
+### TEL-7: จำนวนสคริปต์ตามระดับความเสี่ยง
+
+**สิ่งที่พิสูจน์:** การแจกแจงความเสี่ยงแบบรวมทั้งหมดสคริปต์ที่ตรวจพบ
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"startTime\": \"${START}\",
+    \"endTime\": \"${NOW}\"
+  }" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq '[.scripts[] | .risk_level] | group_by(.) | map({risk_level: .[0], count: length}) | sort_by(-.count)'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; ทั้งหมดเป็น `No Risk` | ไม่มีการตรวจพบสคริปต์เสี่ยง |
+| **WARN** &mdash; มี `Low Risk` หรือ `High Risk` | ตรวจสอบสคริปต์ที่ทำเครื่องหมายไว้ใน [TEL-5](#tel-5-script-deep-dive) |
+
+### TEL-8: ความเป็นปัจจุบันของการวัดระยะไกล
+
+**สิ่งที่พิสูจน์:** ข้อมูลการวัดระยะไกล CSD เป็นปัจจุบัน ยืนยันการติดตามอย่างแข็งขัน
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{
+    total_domains: .domain_summary.totalDomains.count,
+    latest_update: (.domain_summary.totalDomains.lastUpdated // "unknown"),
+    most_recent_domain: (.domains_list | sort_by(.latestSeenDate) | last | {
+      domain: .domain,
+      latest_seen: (.latestSeenDate | tonumber | todate)
+    })
+  }'
+```
+
+| ผลลัพธ์ | ความหมาย |
+| --- | --- |
+| **PASS** &mdash; `latest_seen` อยู่ในช่วง 24 ชั่วโมงที่ผ่านมา | การวัดระยะไกลกำลังเก็บข้อมูลอย่างแข็งขัน |
+| **WARN** &mdash; `latest_seen` เก่ากว่า 24 ชั่วโมง | การไหลของข้อมูลอาจหยุดลงหรือการประมวลผล CSD ล่าช้า |
+
+---
+
+## แดชบอร์ด Full-Stack
+
+เรียกใช้คำสั่งเดียวที่ตรวจสอบตัวบ่งชี้สุขภาพวิกฤตทั้งหมดในทุกเลเยอร์และสร้างตารางสรุป:
+
+```bash
+echo "=== CSD Verification Dashboard ==="
+echo ""
+
+# Layer 1: DNS
+DNS_A=$(dig +short xF5XC_DOMAINNAMEx A | head -1)
+DNS_ACME=$(dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME | head -1)
+
+# Layers 2-3: LB + TLS
+LB=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http")
+LB_HTTPS=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+
+LB_STATE=$(echo "$LB" | jq -r '.spec.state // "UNKNOWN"')
+CERT_STATE=$(echo "$LB_HTTPS" | jq -r '.spec.cert_state // "UNKNOWN"')
+CSD_ON_LB=$(echo "$LB" | jq -r 'if .spec.client_side_defense then "ENABLED" else "DISABLED" end')
+DOMAINS=$(echo "$LB" | jq -r '.spec.domains | join(", ")')
+ROUTE_POOL=$(echo "$LB" | jq -r '[.spec.default_route_pools[] | .pool.name] | join(", ")')
+
+# Layer 6: CSD status
+CSD=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status")
+
+CSD_CONFIGURED=$(echo "$CSD" | jq -r '.isConfigured // false')
+CSD_ENABLED=$(echo "$CSD" | jq -r '.isEnabled // false')
+
+# Layer 6: JS config
+JS_TAG=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq -r 'if (.scriptTag | length) > 0 then "PRESENT" else "MISSING" end')
+
+# Layer 7: Traffic (last 24h)
+TRAFFIC=$(curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"start_time\": \"$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)\",
+    \"end_time\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+  }" \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs/aggregation" \
+  | jq -r '.total_hits // "0"')
+
+printf "%-28s %s\n" "CHECK" "STATUS"
+printf "%-28s %s\n" "----------------------------" "----------------------------"
+printf "%-28s %s\n" "[DNS] A Record" "${DNS_A:-NOT_FOUND}"
+printf "%-28s %s\n" "[DNS] ACME CNAME" "${DNS_ACME:-NOT_FOUND}"
+printf "%-28s %s\n" "[TLS] Certificate" "$CERT_STATE"
+printf "%-28s %s\n" "[LB] State" "$LB_STATE"
+printf "%-28s %s\n" "[LB] Domains" "$DOMAINS"
+printf "%-28s %s\n" "[LB] Route Pool" "$ROUTE_POOL"
+printf "%-28s %s\n" "[LB] CSD on LB" "$CSD_ON_LB"
+printf "%-28s %s\n" "[CSD] Configured (tenant)" "$CSD_CONFIGURED"
+printf "%-28s %s\n" "[CSD] Enabled" "$CSD_ENABLED"
+printf "%-28s %s\n" "[CSD] JS Script Tag" "$JS_TAG"
+printf "%-28s %s\n" "[Traffic] Requests (24h)" "$TRAFFIC"
+```
+
+---
+
+## การอ้างอิงฟิลด์บันทึกการเข้าถึง
+
+<Aside type="caution">
+แต่ละรายการในอาร์เรย์ `.logs[]` เป็น **สตริง JSON** ไม่ใช่ออบเจ็กต์ที่แยกวิเคราะห์แล้ว คุณต้องท่อผ่าน `fromjson` ใน jq ก่อนที่จะเข้าถึงฟิลด์ (เช่น `.logs[] | fromjson | .method`)
+</Aside>
+
+| ฟิลด์ | ประเภท | คำอธิบาย |
+| --- | --- | --- |
+| `@timestamp` | สตริง | การประทับเวลาคำขอ (ISO 8601) โปรดทราบคำนำหน้า `@` — เข้าถึงด้วย `.["@timestamp"]` ใน jq |
+| `method` | สตริง | วิธี HTTP (GET, POST เป็นต้น) |
+| `req_path` | สตริง | เส้นทาง URI ของคำขอ |
+| `rsp_code` | สตริง | รหัสสถานะการตอบสนอง HTTP เป็นสตริง (เช่น `"200"`, `"404"`) |
+| `rsp_code_class` | สตริง | คลาสรหัสสถานะ (`2xx`, `3xx`, `4xx`, `5xx` หรือ `downstream_remote_disconnect`) |
+| `src_ip` | สตริง | ที่อยู่ IP ต้นทางของไคลเอนต์ |
+| `dst_ip` | สตริง | ที่อยู่ IP ปลายทาง (VIP) |
+| `domain` | สตริง | ค่า Host header ของคำขอ |
+| `user_agent` | สตริง | สตริง User-Agent ของไคลเอนต์ |
+| `rsp_size` | สตริง | ขนาดเนื้อหาการตอบสนองในไบต์ (ส่งคืนเป็นสตริง) |
+| `req_size` | สตริง | ขนาดเนื้อหาคำขอในไบต์ (ส่งคืนเป็นสตริง) |
+| `duration_with_data_tx_delay` | สตริง | ระยะเวลาคำขอทั้งหมดในวินาที (ส่งคืนเป็นสตริง เช่น `"0.024219"`) |
+| `csd_js_injection` | สตริง | `"true"` เมื่อ JavaScript ของ CSD ถูกฉีด (ปรากฏเฉพาะเมื่อใช้งาน) |
+
+## การอ้างอิงฟิลด์การวัดระยะไกล CSD
+
+| ฟิลด์ | เอนพอยต์ | คำอธิบาย |
+| --- | --- | --- |
+| `isConfigured` | status | CSD เปิดใช้งานในระดับผู้เช่า |
+| `isEnabled` | status | CSD ใช้งานอยู่สำหรับเนมสเปซนี้ |
+| `scripts[]` | scripts | อาร์เรย์ของออบเจ็กต์สคริปต์ที่ตรวจพบ |
+| `.script_name` | scripts | URL เต็มของไฟล์ JavaScript |
+| `.risk_level` | scripts | ระดับความเสี่ยง (No Risk, Low Risk, High Risk) |
+| `.status` | scripts | AN (Action Needed) หรือ NA (No Action Needed) |
+| `.form_fields_read` | scripts | จำนวนช่องแบบฟอร์มที่สคริปต์อ่าน |
+| `.affected_users_count` | scripts | จำนวนผู้ใช้/เซสชันที่ไม่ซ้ำกันที่ได้รับผลกระทบ |
+| `domain_summary` | detected_domains | นับตามสถานะ: `.actionNeededCount.count`, `.mitigatedDomains.count`, `.allowedDomains.count`, `.totalDomains.count` (แต่ละรายการมี `.count` และ `.lastUpdated`) |
+| `domains_list[]` | detected_domains | อาร์เรย์ของออบเจ็กต์โดเมนที่ตรวจพบพร้อม `.domain`, `.status`, `.category`, `.firstSeenDate`, `.latestSeenDate` (วินาทีสมบูรณ์เป็นสตริง) |
+| `form_fields[]` | formFields | อาร์เรย์ของออบเจ็กต์ช่องแบบฟอร์มที่ตรวจพบ |
+| `.analysis` | formFields | การจัดประเภทความไว (Sensitive, Not Sensitive) |
+
+## การแก้ไขปัญหา
+
+### บันทึกการเข้าถึงเป็นศูนย์
+
+หากการทดสอบ [TV-1](#tv-1-request-count-last-24-hours) ส่งคืน `0`:
+
+<Steps>
+1. **ตรวจสอบการแก้ไข DNS** — ตรวจสอบว่าโดเมนแก้ไขเป็นแบบ VIP ของ LB:
+   ```bash
+   dig +short xF5XC_DOMAINNAMEx A
+   ```
+   หากว่าง DNS ไม่ได้ถูกกำหนดค่า ดู [API Automation &mdash; Step 4](/csd/demo/phase-1-build/#step-4-configure-dns)
+
+2. **ตรวจสอบสถานะ LB** — ตัวโหลดบาลานเซอร์ต้องเป็น `VIRTUAL_HOST_READY`:
+   ```bash
+   curl -s \
+     -H "Authorization: APIToken xF5XC_API_TOKENx" \
+     "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+     | jq '.spec.state'
+   ```
+
+3. **ส่งคำขอทดสอบ** — สร้างการไหลของข้อมูลเพื่อยืนยันความเชื่อมต่อแบบต้นจนปลาย:
+   ```bash
+   curl -sv "http://xF5XC_DOMAINNAMEx/" 2>&1 | head -20
+   ```
+   มองหาการตอบสนอง HTTP ที่สำเร็จ ใช้ `https://` เฉพาะเมื่อใบรับรอง HTTPS LB ใช้งานได้
+</Steps>
+
+### บันทึกที่จัดการปิดใช้งานบนโซน DNS
+
+หากการทดสอบ [DNS-4](#dns-4-f5-xc-managed-records-enabled) ส่งคืน `false` การสร้างบันทึกอัตโนมัติจะถูกปิดใช้งาน แม้ว่า F5 XC เป็นผู้ให้บริการ DNS ที่มีอำนาจก็ตาม นี่คือการกำหนดค่าผิดพลาดทั่วไปที่ทำให้บันทึก A และ CNAME ของ ACME หายไป ซึ่งบล็อกตัวโหลดบาลานเซอร์จากการถึง `VIRTUAL_HOST_READY` และใบรับรองจากการออก
+
+เพื่อเปิดใช้งานบันทึกที่จัดการ ให้อัปเดตการกำหนดค่าโซน DNS เพื่อตั้งค่า `allow_http_lb_managed_records: true` ดู [API Automation &mdash; Option A: F5 XC Managed DNS](/csd/demo/phase-1-build/#option-a-f5-xc-managed-dns) สำหรับการเรียก API
+
+### LB ติดอยู่ใน VIRTUAL_HOST_PENDING_A_RECORD
+
+ตัวโหลดบาลานเซอร์กำลังรอบันทึก DNS A ชี้ไปยัง VIP ของมัน ดู [LB Stuck in VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record) สำหรับขั้นตอนการแก้ไขโดยละเอียด
+
+### ใบรับรองติดอยู่ใน PreDomainChallengePending
+
+ใบรับรอง TLS อัตโนมัติต้องใช้บันทึก ACME challenge วิธีขึ้นอยู่กับผู้ให้บริการ DNS ของคุณ:
+
+**DNS ที่จัดการโดย F5 XC:** เปิดใช้งาน `allow_http_lb_managed_records` บนโซน DNS ([DNS-4](#dns-4-f5-xc-managed-records-enabled)) แพลตฟอร์มจะสร้างบันทึก ACME challenge ที่ใช้ TXT โดยอัตโนมัติในกลุ่มชุด RR `x-ves-io-managed` หากใบรับรองยังคงติดอยู่หลังจากเปิดใช้งานบันทึกที่จัดการ ให้ลบและสร้างตัวโหลดบาลานเซอร์ใหม่เพื่อเรียกใช้คำขอใบรับรองสด
+
+**DNS ภายนอก:** สร้างบันทึก CNAME ที่ผู้ให้บริการ DNS ของคุณ:
+
+```
+_acme-challenge.xF5XC_DOMAINNAMEx  CNAME  *.autocerts.ves.volterra.io
+```
+
+ตรวจสอบว่าบันทึกมีอยู่:
+
+```bash
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx TXT
+```
+
+หากทั้งคู่ว่าง บันทึก ACME ไม่ได้ถูกกำหนดค่า การจัดเตรียมใบรับรองใช้เวลา 5–10 นาทีหลังจากบันทึกอยู่ในตำแหน่ง ตรวจสอบสถานะข้อผิดพลาด LB สำหรับข้อผิดพลาดการตรวจสอบสิทธิ์ ACME เฉพาะ:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '[.status[]? | select(.virtual_host_status != null) | .virtual_host_status.error_description]'
+```
+
+### CSD isConfigured เป็น false
+
+CSD ต้องเปิดใช้งานในระดับผู้เช่าโดยผู้ดูแลระบบ F5 XC นี่คือการตั้งค่าแบบผู้เช่าที่ไม่สามารถกำหนดค่าได้ผ่าน API เนมสเปซ ติดต่อผู้ดูแลระบบของคุณเพื่อเปิดใช้งาน Client-Side Defense
+
+### อาร์เรย์สคริปต์ว่าง
+
+หากการทดสอบ [TEL-1](#tel-1-script-inventory) ส่งคืนอาร์เรย์ว่าง:
+
+<Steps>
+1. **ตรวจสอบโดเมนที่ได้รับการป้องกัน** — CSD ตรวจสอบสคริปต์เฉพาะบนโดเมนที่ลงทะเบียน:
+   ```bash
+   curl -s \
+     -H "Authorization: APIToken xF5XC_API_TOKENx" \
+     "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+     | jq '.items[] | {name, namespace}'
+   ```
+
+2. **ตรวจสอบการฉีด JS** — ยืนยันว่าแท็กสคริปต์ CSD ถูกฉีดลงในหน้า:
+   ```bash
+   curl -s "http://xF5XC_DOMAINNAMEx/" | grep -oE '(zeronaught|shape)\.com[^"]*' | head -1
+   ```
+   หากไม่มีการจับคู่ JavaScript ของ CSD จะไม่ถูกฉีด ตรวจสอบว่า LB มีการเปิดใช้งาน `client_side_defense`
+
+3. **อนุญาตเวลาประมวลผล** — หลังจากเปิดใช้งาน CSD เป็นครั้งแรกหรือลงทะเบียนโดเมนที่ได้รับการป้องกันใหม่ การตรวจพบสคริปต์สามารถใช้เวลา 5–15 นาที สร้างการไหลของข้อมูลไปยังไซต์แล้วรอก่อนที่จะตรวจสอบใหม่
+</Steps>
+
+## การอ้างอิงด่วน
+
+### การตั้งค่าช่วงเวลาล่วงหน้า
+
+| ระยะเวลา | Epoch offset | ISO 8601 (Linux) | ISO 8601 (macOS) |
+| --- | --- | --- | --- |
+| 1 ชั่วโมง | `$(( $(date +%s) - 3600 ))` | `date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ` | `date -u -v-1H +%Y-%m-%dT%H:%M:%SZ` |
+| 24 ชั่วโมง | `$(( $(date +%s) - 86400 ))` | `date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ` | `date -u -v-24H +%Y-%m-%dT%H:%M:%SZ` |
+| 7 วัน | `$(( $(date +%s) - 604800 ))` | `date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ` | `date -u -v-7d +%Y-%m-%dT%H:%M:%SZ` |
+| 30 วัน | `$(( $(date +%s) - 2592000 ))` | `date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ` | `date -u -v-30d +%Y-%m-%dT%H:%M:%SZ` |
+
+### สรุปเลเยอร์การตรวจสอบ
+
+| เลเยอร์ | การทดสอบ | สิ่งที่ครอบคลุม |
+| --- | --- | --- |
+| [1. การแก้ไข DNS](#layer-1-dns-resolution) | DNS-1 ถึง DNS-4 | A record, ACME CNAME, ผู้มีอำนาจเซิร์ฟเวอร์ชื่อโดเมน, บันทึกที่จัดการ |
+| [2. ใบรับรอง TLS](#layer-2-tls-certificate) | TLS-1 ถึง TLS-4 | สถานะใบรับรอง รายละเอียดใบรับรอง, handshake แบบสด, เป้าหมาย ACME |
+| [3. HTTP Load Balancer](#layer-3-http-load-balancer) | LB-1 ถึง LB-6 | สถานะ โดเมน ธง CSD, route pools, การปรับใช้, สรุป |
+| [4. Origin Pool](#layer-4-origin-pool) | OP-1 ถึง OP-4 | การกำหนดค่า โหมด TLS, ความเกี่ยวข้องกับ HC, ความเชื่อมต่อต้นทาง |
+| [5. Health Check](#layer-5-health-check) | HC-1 ถึง HC-2 | การกำหนดค่า HC, แสดงรายชื่อ HC ทั้งหมด |
+| [6. การกำหนดค่า CSD](#layer-6-csd-configuration) | CSD-1 ถึง CSD-5 | สถานะผู้เช่า, แท็ก JS, โดเมนที่ได้รับการป้องกัน, การฉีดแบบสด |
+| [7. การตรวจสอบการไหลของข้อมูล](#layer-7-traffic-verification) | TV-1 ถึง TV-5 | จำนวนคำขอ, รหัสสถานะ, ตัวอย่าง, JS ในบันทึก, การทดสอบ E2E |
+| [8. การวัดระยะไกล CSD](#layer-8-csd-telemetry-amp-domain-policy) | TEL-1 ถึง TEL-8 | สคริปต์, โดเมน, นโยบาย, ช่องแบบฟอร์ม, ศึกษาเชิงลึก, ผู้ใช้, ความเสี่ยง, ความเป็นปัจจุบัน |
+
+### สรุปเอนพอยต์
+
+| การวินิจฉัย | เอนพอยต์ | วิธี | รูปแบบเวลา |
+| --- | --- | --- | --- |
+| จำนวนคำขอ | `/api/data/namespaces/\{ns\}/access_logs/aggregation` | POST | ISO 8601 |
+| รหัสสถานะ | `/api/data/namespaces/\{ns\}/access_logs` | POST | ISO 8601 |
+| คำขอล่าสุด | `/api/data/namespaces/\{ns\}/access_logs` | POST | ISO 8601 |
+| สถานะ LB | `/api/config/namespaces/\{ns\}/http_loadbalancers/\{name\}` | GET | ไม่มี |
+| Origin pool | `/api/config/namespaces/\{ns\}/origin_pools/\{name\}` | GET | ไม่มี |
+| Healthcheck | `/api/config/namespaces/\{ns\}/healthchecks/\{name\}` | GET | ไม่มี |
+| โซน DNS | `/api/config/dns/namespaces/system/dns_zones/\{zone\}` | GET | ไม่มี |
+| สถานะ CSD | `/api/shape/csd/namespaces/\{ns\}/status` | GET | ไม่มี |
+| การกำหนดค่า JS | `/api/shape/csd/namespaces/\{ns\}/js_configuration` | GET | ไม่มี |
+| โดเมนที่ได้รับการป้องกัน | `/api/shape/csd/namespaces/\{ns\}/protected_domains` | GET | ไม่มี |
+| รายชื่อสคริปต์ | `/api/shape/csd/namespaces/\{ns\}/scripts` | POST | วินาทีสมบูรณ์ |
+| โดเมนที่ตรวจพบ | `/api/shape/csd/namespaces/\{ns\}/detected_domains` | GET | ไม่มี |
+| ช่องแบบฟอร์ม | `/api/shape/csd/namespaces/\{ns\}/formFields` | GET | วินาทีสมบูรณ์ (ตัวแปรการค้นหา) |
+| รายละเอียดสคริปต์ | `/api/shape/csd/namespaces/\{ns\}/scripts/\{id\}/dashboard` | GET | ไม่มี |
+| พฤติกรรมสคริปต์ | `/api/shape/csd/namespaces/\{ns\}/scripts/\{id\}/behaviors` | GET | ไม่มี |
+| เครือข่ายสคริปต์ | `/api/shape/csd/namespaces/\{ns\}/scripts/\{id\}/networkInteractions` | GET | ไม่มี |
+| ผู้ใช้ที่ได้รับผลกระทบ | `/api/shape/csd/namespaces/\{ns\}/scripts/\{id\}/affectedUsers` | POST | วินาทีสมบูรณ์ |

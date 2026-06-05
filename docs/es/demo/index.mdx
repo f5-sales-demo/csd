@@ -1,0 +1,1364 @@
+---
+title: Demostración
+description: >-
+  Descripción general del ejercicio de demostración de 4 fases — Construir,
+  Atacar, Mitigar, Desmantelar
+sidebar:
+  order: 1
+  label: Descripción general
+i18n:
+  sourceHash: abcf919aeb10
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Esta guía te guía a través de un **ejercicio completo de Defensa del Lado del Cliente** en F5 Distributed Cloud utilizando la API — estructurado como cuatro fases que un asistente de IA u operador humano puede ejecutar de extremo a extremo. Cada paso incluye un comando `curl` listo para ejecutar con valores de marcador de posición que puedes personalizar usando el formulario en la parte superior de la página, un archivo `.env`, o cualquier herramienta de automatización.
+
+<Aside type="caution">
+El formulario de marcador de posición almacena valores — incluido tu token de API — en el `localStorage` del navegador. No utilices tokens de producción en máquinas compartidas o públicas.
+</Aside>
+
+## Fases del Ejercicio
+
+| Fase | Objetivo | Pasos |
+| --- | --- | --- |
+| [Fase 1 — Construir](/csd/demo/phase-1-build/) | Implementar y validar la infraestructura completa de CSD | Pasos 1–7 |
+| [Fase 2 — Atacar](/csd/demo/phase-2-attack/) | Generar tráfico de ataque simulado y confirmar que CSD lo detectó | Pasos 8–9 |
+| [Fase 3 — Mitigar](/csd/demo/phase-3-mitigate/) | Prueba de mitigación antes/después — ejecutar ataque, aplicar mitigaciones, re-ejecutar ataque, comparar | Pasos 1–6 |
+| [Fase 4 — Desmantelar](/csd/demo/phase-4-teardown/) | Eliminar todos los objetos de implementación después de confirmación explícita | Desmantelar |
+
+## Verificación Previa
+
+Antes de iniciar la Fase 1, verifica que el entorno esté limpio. Ejecuta estas verificaciones de API para determinar si existen objetos residuales de una ejecución anterior:
+
+```bash
+# Verificar todos los objetos de la Fase 1 y computar estado del entorno
+HTTP_LB=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http")
+HTTPS_LB=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+ORIGIN=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx")
+HC=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx")
+PD_COUNT=$(curl -s -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '[.items // [] | .[] | select(.metadata.name != null)] | length')
+MD_COUNT=$(curl -s -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '[.items // [] | .[] | select(.metadata.name != null)] | length')
+
+# Si el HTTPS LB existe, obtener el cuerpo para detectar estado esqueleto
+HTTPS_IS_SKELETON="false"
+if [ "$HTTPS_LB" = "200" ]; then
+  HTTPS_LB_BODY=$(curl -s \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+  HTTPS_IS_SKELETON=$(echo "$HTTPS_LB_BODY" | jq '
+    ((.spec.default_route_pools // []) | length == 0) and
+    (.spec.client_side_defense == null)
+  ')
+fi
+
+# Computar estado determinístico del entorno
+jq -n \
+  --argjson http_lb "$HTTP_LB" \
+  --argjson https_lb "$HTTPS_LB" \
+  --argjson origin "$ORIGIN" \
+  --argjson hc "$HC" \
+  --argjson pd "$PD_COUNT" \
+  --argjson md "$MD_COUNT" \
+  --argjson https_skeleton "$HTTPS_IS_SKELETON" \
+'{
+  objects: [
+    { name: "http_lb",           http_code: $http_lb, exists: ($http_lb == 200) },
+    { name: "https_lb",          http_code: $https_lb, exists: ($https_lb == 200), is_skeleton: $https_skeleton },
+    { name: "origin_pool",       http_code: $origin, exists: ($origin == 200) },
+    { name: "healthcheck",       http_code: $hc, exists: ($hc == 200) },
+    { name: "protected_domains", count: $pd, exists: ($pd > 0) },
+    { name: "mitigated_domains", count: $md, exists: ($md > 0) }
+  ],
+  any_infra_exists: ($http_lb == 200 or ($https_lb == 200 and ($https_skeleton | not)) or $origin == 200 or $hc == 200),
+  any_csd_exists: ($pd > 0 or $md > 0),
+  status: (
+    if ($http_lb == 404 and $https_lb == 404 and $origin == 404 and $hc == 404 and $pd == 0 and $md == 0) then "CLEAN"
+    elif ($https_lb == 200 and $https_skeleton and $http_lb == 404 and $origin == 404 and $hc == 404 and $pd == 0 and $md == 0) then "HTTPS_SKELETON"
+    elif ($http_lb == 200 and $origin == 200) then "ALL_EXIST"
+    elif ($http_lb == 200 or ($https_lb == 200 and ($https_skeleton | not)) or $origin == 200 or $hc == 200) then "TEARDOWN_NEEDED"
+    elif ($md > 0 and $http_lb == 404 and ($https_lb == 404 or ($https_lb == 200 and $https_skeleton)) and $origin == 404 and $hc == 404) then "MITIGATIONS_ONLY"
+    else "TEARDOWN_NEEDED"
+    end
+  ),
+  action: (
+    if ($http_lb == 404 and $https_lb == 404 and $origin == 404 and $hc == 404 and $pd == 0 and $md == 0) then "Proceed to Phase 1"
+    elif ($https_lb == 200 and $https_skeleton and $http_lb == 404 and $origin == 404 and $hc == 404 and $pd == 0 and $md == 0) then "Proceed to Phase 1 (HTTPS LB skeleton will be restored via PUT)"
+    elif ($http_lb == 200 and $origin == 200) then "All Phase 1 objects exist — verify health, optionally skip to Phase 2"
+    elif ($http_lb == 200 or ($https_lb == 200 and ($https_skeleton | not)) or $origin == 200 or $hc == 200) then "Run Phase 4 Teardown first, then re-check"
+    elif ($md > 0 and $http_lb == 404 and ($https_lb == 404 or ($https_lb == 200 and $https_skeleton)) and $origin == 404 and $hc == 404) then "Delete mitigated domains inline, then proceed"
+    else "Run Phase 4 Teardown first, then re-check"
+    end
+  )
+}'
+```
+
+### Verificación para Saltar Adelante
+
+Cuando todos los objetos de la Fase 1 existen (`200`) y planeas saltar a la Fase 2,
+ejecuta los **comandos de verificación del Paso 7 de la Fase 1** para confirmar la salud de la infraestructura
+antes de saltar. Usa los comandos exactos de
+[Fase 1 — Paso 7: Verificar](/csd/demo/phase-1-build/#step-7-verify):
+
+1. Resolución DNS: `dig +short xF5XC_DOMAINNAMEx A`
+2. Estado del HTTP LB: `GET .../http_loadbalancers/xF5XC_LB_NAMEx-http` canalizado
+   a `jq '{state: .spec.state}'` — debe mostrar `VIRTUAL_HOST_READY`
+3. Configuración JS de CSD: `GET .../js_configuration` — debe contener
+   `scriptTag`
+4. Estado de CSD: `GET .../status` canalizado a `jq '{configured: .isConfigured,
+   enabled: .isEnabled}'` — ambos deben ser `true`
+
+Todas las verificaciones requeridas (DNS-1, LB-1, CSD-1, CSD-2) deben PASAR antes
+de saltar a la Fase 2. Si alguna verificación falla, ejecuta la Fase 1 comenzando desde
+el paso fallido.
+
+<Aside type="note">
+La lista de dominios mitigados puede devolver un recuento de 1 con metadatos nulos incluso cuando no existen mitigaciones reales. Esto es un artefacto del backend. Regla de decisión: si el elemento único tiene metadatos nulos (el nombre es nulo o vacío), considéralo como 0. Si tiene metadatos reales, elimina cada elemento por nombre antes de proceder.
+</Aside>
+
+<Aside type="note">
+Las detecciones de CSD persisten en todas las desmontajes/reconstrucciones de infraestructura cuando el mismo dominio protegido se vuelve a registrar en el mismo inquilino. Después de un desmontaje y reconstrucción, consulta `/detected_domains` una vez. Si la respuesta contiene elementos, procede inmediatamente — no es necesario esperar. Si la respuesta está vacía, espera 30 segundos y consulta una vez más. Si aún está vacía después de la segunda consulta, procede de todas formas — las detecciones aparecerán una vez que se ejecute la simulación.
+</Aside>
+
+## Matriz de Verificación de Preparación
+
+La verificación previa anterior verifica que el entorno esté **limpio**. La matriz de preparación a continuación verifica que el entorno esté **capacitado** — que todos los requisitos previos, cuotas, conectividad y servicios de plataforma estén en su lugar para una demostración exitosa. Ejecuta esta matriz antes de cada reunión como parte de la etapa Preparar.
+
+Cada verificación tiene un ID de prueba, un nivel (T0–T5), un criterio APROBADO/FALLIDO/ADVERTENCIA, y una ruta de remediación. Los niveles son secuenciales — un FALLO en un nivel anterior bloquea los niveles posteriores de ejecutarse.
+
+### Resumen de Niveles
+
+| Nivel | Categoría | ¿Bloquea la Demostración? | Propósito |
+| --- | --- | --- | --- |
+| T0 | Conectividad y Autenticación | **Sí** | ¿Podemos alcanzar la plataforma y autenticarnos? |
+| T1 | Cuotas y Capacidad | **Sí** (si está en el límite) | ¿Hay espacio para crear objetos de demostración? |
+| T2 | Requisitos Previos de la Plataforma | **Sí** | ¿Están configurados los servicios a nivel de inquilino? |
+| T3 | Salud de Origen | **Advertencia** | ¿Está respondiendo la aplicación de backend? |
+| T4 | Entorno Limpio | Auto-remediar | ¿Hay objetos residuales de una ejecución anterior? |
+| T5 | Preparación de Certificados | Informativo | ¿Funcionará HTTPS, o debemos planificar solo HTTP? |
+
+### T0: Conectividad y Autenticación
+
+Estas verificaciones confirman que el host de ejecución puede alcanzar la API de F5 XC y que las credenciales son válidas.
+
+#### PF-T0-1: Conectividad de API
+
+```bash
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' --connect-timeout 10 --max-time 15 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T0-1",
+  http_code: .http_code,
+  status: (
+    if .http_code == 200 then "PASS"
+    elif .http_code == 401 then "FAIL"
+    else "FAIL"
+    end
+  ),
+  detail: (
+    if .http_code == 200 then "API reachable, token valid"
+    elif .http_code == 401 then "Token expired or invalid — regenerate under Administration > Credentials > API Credentials"
+    elif .http_code == 0 then "Network unreachable — check connectivity, VPN, or TLS compatibility (try --tlsv1.2 --tls-max 1.2)"
+    else "Unexpected HTTP \(.http_code)"
+    end
+  )
+}'
+```
+
+#### PF-T0-2: Acceso al Espacio de Nombres
+
+```bash
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T0-2",
+  http_code: .http_code,
+  status: (
+    if .http_code == 200 then "PASS"
+    elif .http_code == 404 then "WARN"
+    else "FAIL"
+    end
+  ),
+  detail: (
+    if .http_code == 200 then "Token has namespace access"
+    elif .http_code == 403 then "Token lacks permissions for namespace — check role bindings"
+    elif .http_code == 404 then "Namespace does not exist — will be created in Phase 1 Step 0"
+    else "Unexpected HTTP \(.http_code)"
+    end
+  )
+}'
+```
+
+#### PF-T0-3: Acceso a la API de CSD
+
+```bash
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T0-3",
+  http_code: .http_code,
+  status: (
+    if .http_code == 200 then "PASS"
+    elif .http_code == 404 then "WARN"
+    else "FAIL"
+    end
+  ),
+  detail: (
+    if .http_code == 200 then "Token has CSD/Shape API permissions"
+    elif .http_code == 403 then "Token lacks CSD role binding — contact tenant administrator"
+    elif .http_code == 404 then "Namespace does not exist — CSD access will be verified after namespace creation in Phase 1"
+    else "Unexpected HTTP \(.http_code)"
+    end
+  )
+}'
+```
+
+#### PF-T0-4: Matriz de Permisos RBAC
+
+Las pruebas no destructivas prueban permisos de lectura y escritura para cada tipo de objeto que la demostración necesita. La lectura se prueba mediante `GET` en puntos finales de lista. La escritura se prueba mediante `DELETE` en objetos conocidos inexistentes — la API devuelve `403` si RBAC deniega la operación, o `404` si la operación está permitida pero el objeto no existe. Esta técnica de efecto cero secundario evita crear objetos de prueba temporales.
+
+```bash
+PROBE_NAME="rbac-probe-nonexistent"
+
+# Pruebas de lectura
+NS_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx")
+HC_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks")
+OP_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools")
+LB_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers")
+CSD_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status")
+PD_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains")
+MD_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains")
+
+# Pruebas de escritura (no destructivas: DELETE/cascade_delete en objetos no existentes)
+NS_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X POST -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{\"name\":\"$PROBE_NAME\"}" \
+  "xF5XC_API_URLx/api/web/namespaces/$PROBE_NAME/cascade_delete")
+HC_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/$PROBE_NAME")
+OP_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/$PROBE_NAME")
+LB_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/$PROBE_NAME")
+PD_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/$PROBE_NAME.example.com")
+MD_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/$PROBE_NAME.example.com")
+
+# Computar matriz de permisos determinística
+jq -n \
+  --argjson ns_r "$NS_R" --argjson ns_w "$NS_W" \
+  --argjson hc_r "$HC_R" --argjson hc_w "$HC_W" \
+  --argjson op_r "$OP_R" --argjson op_w "$OP_W" \
+  --argjson lb_r "$LB_R" --argjson lb_w "$LB_W" \
+  --argjson csd_r "$CSD_R" \
+  --argjson pd_r "$PD_R" --argjson pd_w "$PD_W" \
+  --argjson md_r "$MD_R" --argjson md_w "$MD_W" \
+'{
+  check: "PF-T0-4",
+  permissions: [
+    { object: "namespace",          read: ($ns_r != 403),  write: ($ns_w != 403),  required: false, note: "conditional — only if ns must be created" },
+    { object: "healthcheck",        read: ($hc_r != 403),  write: ($hc_w != 403),  required: false, note: "optional for CSD" },
+    { object: "origin_pool",        read: ($op_r != 403),  write: ($op_w != 403),  required: true,  note: "" },
+    { object: "http_loadbalancer",  read: ($lb_r != 403),  write: ($lb_w != 403),  required: true,  note: "" },
+    { object: "csd_status",         read: ($csd_r != 403), write: true,            required: true,  note: "read-only check" },
+    { object: "protected_domain",   read: ($pd_r != 403),  write: ($pd_w != 403),  required: true,  note: "" },
+    { object: "mitigated_domain",   read: ($md_r != 403),  write: ($md_w != 403),  required: false, note: "Phase 3 only" }
+  ],
+  status: (
+    if [
+      ($op_r == 403), ($op_w == 403),
+      ($lb_r == 403), ($lb_w == 403),
+      ($csd_r == 403),
+      ($pd_r == 403), ($pd_w == 403)
+    ] | any then "FAIL"
+    elif ($ns_w == 403 or $hc_w == 403 or $md_w == 403) then "WARN"
+    else "PASS"
+    end
+  ),
+  detail: (
+    [
+      (if ($op_r == 403 or $op_w == 403) then "Origin pool: permission denied" else null end),
+      (if ($lb_r == 403 or $lb_w == 403) then "Load balancer: permission denied" else null end),
+      (if $csd_r == 403 then "CSD API: permission denied — CSD may not be enabled for this namespace" else null end),
+      (if ($pd_r == 403 or $pd_w == 403) then "Protected domain: permission denied" else null end),
+      (if $ns_w == 403 then "Namespace: write denied — namespace must already exist (cannot create)" else null end),
+      (if $hc_w == 403 then "Healthcheck: write denied — will skip healthcheck creation" else null end),
+      (if $md_w == 403 then "Mitigated domain: write denied — Phase 3 mitigation will be skipped" else null end)
+    ] | map(select(. != null)) | join("; ")
+  )
+}'
+```
+
+<Aside type="note">
+**Interacción Espacio de Nombres + RBAC.** Si PF-T0-2 devolvió `404` (el espacio de nombres no existe) Y PF-T0-4 muestra que la escritura en el espacio de nombres está denegada, la demostración **no puede proceder** — el espacio de nombres no existe y no puede ser creado. Si PF-T0-2 devolvió `200` (el espacio de nombres existe) y la escritura en el espacio de nombres está denegada, esto es solo una advertencia — la demostración puede usar el espacio de nombres preexistente.
+
+**CSD + RBAC.** Si los puntos finales de CSD devuelven `403`, el servicio de CSD puede no estar habilitado para este espacio de nombres o inquilino (Control de Acceso Basado en Planes). Puesto que CSD es la característica principal que se está demostrando, esto siempre es un FALLO.
+</Aside>
+
+### T1: Cuotas y Capacidad
+
+Estas verificaciones consultan la API de Uso de Cuotas del inquilino para determinar límites, uso actual y capacidad restante para cada tipo de objeto que la demostración necesita. Esto reemplaza las pruebas de prueba y eliminación con una única llamada de API de solo lectura que reporta números exactos.
+
+#### PF-T1-0: Puerta de Uso de Cuota
+
+Consulta el punto final de uso de cuota a nivel de inquilino y computa un estado APROBADO/ADVERTENCIA/FALLIDO determinístico para cada tipo de objeto que la demostración necesita. Este punto final requiere el espacio de nombres `system`. Una única llamada de API verifica todas las cuotas a nivel de plataforma de una vez.
+
+La puerta define una matriz `demo_needs` que especifica cuántos de cada tipo de objeto necesitará la demostración, si el tipo es requerido, y el mínimo necesario para que la demostración proceda. El filtro jq compara `remaining` contra `needed` y computa el campo `status` determinísticamente — no se requiere interpretación del operador.
+
+```bash
+# Paso 1: Obtener datos de cuota
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/system/quota/usage?namespace=system" \
+  > /tmp/quota.json
+
+# Paso 2: Computar estado de la puerta
+jq '
+  . as $data |
+  [
+    { kind: "healthcheck",       needed: 1, required: false, min_proceed: 0 },
+    { kind: "origin_pool",       needed: 1, required: true,  min_proceed: 1 },
+    { kind: "endpoint",          needed: 1, required: true,  min_proceed: 1 },
+    { kind: "http_loadbalancer", needed: 2, required: true,  min_proceed: 1 }
+  ] | map(
+    . as $req |
+    $data.objects[$req.kind] as $obj |
+    $obj.limit.maximum as $limit |
+    $obj.usage.current as $usage |
+    (if $limit == -1 then null else ($limit - $usage) end) as $remaining |
+    {
+      kind:      $req.kind,
+      limit:     (if $limit == -1 then "unlimited" else $limit end),
+      usage:     $usage,
+      remaining: (if $remaining == null then "unlimited" else $remaining end),
+      needed:    $req.needed,
+      status:    (
+        if $remaining == null then "PASS"
+        elif $remaining >= $req.needed then "PASS"
+        elif $remaining >= $req.min_proceed then "WARN"
+        else
+          (if $req.required then "FAIL" else "WARN" end)
+        end
+      )
+    }
+  )
+  | {
+      checks: .,
+      gate: (if any(.[]; .status == "FAIL") then "FAIL"
+             elif any(.[]; .status == "WARN") then "WARN"
+             else "PASS" end)
+    }
+' /tmp/quota.json
+```
+
+**Salida de la puerta** — el campo `gate` es el veredicto determinístico único:
+
+- **`PASS`** — todos los tipos de objeto tienen `remaining >= needed`. La demostración puede proceder.
+- **`WARN`** — al menos un tipo tiene capacidad reducida pero se cumple el mínimo para proceder (por ejemplo, solo 1 ranura LB disponible en lugar de 2, o cuota de healthcheck agotada). La demostración puede proceder con limitaciones.
+- **`FAIL`** — al menos un tipo requerido tiene `remaining < min_proceed`. La demostración no puede proceder hasta que se libere la cuota.
+
+**Ejemplo de salida** (ADVERTENCIA — endpoint en capacidad, healthcheck casi lleno):
+
+```json
+{
+  "checks": [
+    { "kind": "healthcheck",       "limit": 150,         "usage": 149, "remaining": 1,           "needed": 1, "status": "PASS" },
+    { "kind": "origin_pool",       "limit": "unlimited", "usage": 420, "remaining": "unlimited", "needed": 1, "status": "PASS" },
+    { "kind": "endpoint",          "limit": 500,         "usage": 500, "remaining": 0,           "needed": 1, "status": "FAIL" },
+    { "kind": "http_loadbalancer", "limit": "unlimited", "usage": 116, "remaining": "unlimited", "needed": 2, "status": "PASS" }
+  ],
+  "gate": "FAIL"
+}
+```
+
+| Valor `gate` | Acción |
+| --- | --- |
+| **PASS** | Proceder a PF-T1-4 (verificación de dominio protegido), luego T2 |
+| **WARN** | Anotar limitaciones en el informe de preparación, proceder con capacidad reducida |
+| **FAIL** | Detener — reportar qué tipos están agotados y pasos de remediación a continuación |
+
+**Remediación por tipo:**
+
+| Tipo | Remediación |
+| --- | --- |
+| `healthcheck` | Eliminar healthchecks no utilizados para liberar capacidad. La demostración procede sin healthcheck (CSD no requiere uno). |
+| `origin_pool` | Eliminar origin pools no utilizados o contactar al administrador para aumentar el límite del inquilino. |
+| `endpoint` | Eliminar origin pools no utilizados en otros espacios de nombres para liberar capacidad de endpoint (los endpoints son sub-objetos de origin pools), o contactar al administrador. |
+| `http_loadbalancer` | Eliminar load balancers no utilizados o contactar al administrador. Si solo 1 ranura está disponible, el HTTP LB (principal) será creado pero el HTTPS LB (secundario) será omitido. |
+
+<Aside type="note">
+La API de Uso de Cuota devuelve totales a nivel de inquilino en todos los espacios de nombres, no recuentos por espacio de nombres. Un valor `limit` de `-1` (mostrado como `"unlimited"`) significa que la cuota no está limitada para ese tipo de objeto. Si la API devuelve `403`, `404`, o un formato inesperado, retrocede a las [verificaciones basadas en pruebas](#fallback-probe-based-quota-checks) a continuación.
+</Aside>
+
+#### PF-T1-4: Cuota de Dominio Protegido
+
+Los dominios protegidos de CSD no aparecen en la API de Uso de Cuota de la plataforma. Usa una verificación basada en pruebas: crea y elimina inmediatamente un dominio protegido de prueba.
+
+```bash
+# Crear prueba y capturar código HTTP y cuerpo de respuesta
+PROBE_BODY=$(curl -s -w '\n%\{http_code\}' -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "preflight-probe.example.com",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "protected_domain": "example.com"
+    }
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains")
+PROBE_HTTP=$(echo "$PROBE_BODY" | tail -1)
+PROBE_JSON=$(echo "$PROBE_BODY" | sed '$d')
+
+# Computar estado
+echo "$PROBE_JSON" | jq --argjson http "$PROBE_HTTP" '{
+  check: "PF-T1-4",
+  http_code: $http,
+  status: (
+    if $http == 409 then "PASS"
+    elif (.code // 0) == 8 then "FAIL"
+    elif .metadata.name then "PASS"
+    else "FAIL"
+    end
+  ),
+  detail: (
+    if $http == 409 then "example.com already registered — quota not exhausted"
+    elif (.code // 0) == 8 then "Protected domain quota exhausted — delete unused protected domains"
+    elif .metadata.name then "Probe created — quota available"
+    else "Unexpected response"
+    end
+  )
+}'
+
+# Limpiar prueba (404 es esperado si ocurrió 409)
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/preflight-probe.example.com" \
+  > /dev/null
+```
+
+<Aside type="note">
+La prueba usa el dominio reservado de RFC 2606 `example.com`. Una respuesta `409` es un APROBADO válido — significa que el dominio ya está registrado, lo que demuestra que la cuota no está agotada. El DELETE puede devolver `404` si ocurrió `409` (la prueba nunca fue creada), que es esperado.
+</Aside>
+
+#### Alternativa: Verificaciones de Cuota Basadas en Pruebas
+
+Si PF-T1-0 falla (la API de Uso de Cuota devuelve `403`, `404`, o un formato inesperado), retrocede a verificaciones basadas en pruebas para healthcheck, origin pool, endpoint, y cuotas de load balancer. Estas verificaciones crean un objeto temporal e inmediatamente lo eliminan — si la creación devuelve código de error `8` con "exhausted limits", la cuota está llena.
+
+<Aside type="caution">
+Las verificaciones basadas en pruebas crean objetos reales en el inquilino y los eliminan inmediatamente. Si la eliminación falla (por ejemplo, problema de red), objetos de prueba obsoletos pueden permanecer. La [limpieza de prueba T4 obsoleta](#t4-environment-clean) detectará y eliminará los objetos en la siguiente ejecución de pre-vuelo.
+</Aside>
+
+Cada prueba de alternativa usa el mismo patrón: crear un objeto temporal, computar un estado determinístico de la respuesta, luego eliminar la prueba. El campo `status` es `PASS` si el objeto fue creado (`.metadata.name` presente), `WARN` o `FAIL` si código de error `8` (límites agotados), dependiendo de si el tipo es requerido.
+
+**Prueba de Healthcheck** (ADVERTENCIA si está agotado — los healthchecks son opcionales para CSD):
+
+```bash
+RESULT=$(curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "preflight-quota-probe",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "http_health_check": {
+        "use_origin_server_name": {},
+        "path": "/",
+        "use_http2": false
+      },
+      "timeout": 3,
+      "interval": 15,
+      "unhealthy_threshold": 1,
+      "healthy_threshold": 3
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks")
+echo "$RESULT" | jq '{
+  check: "fallback-healthcheck",
+  status: (if .metadata.name then "PASS" elif (.code // 0) == 8 then "WARN" else "FAIL" end),
+  detail: (if .metadata.name then "Quota available" elif (.code // 0) == 8 then "Quota full — healthcheck optional, demo proceeds" else "Unexpected: \(.message // "unknown error")" end)
+}'
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/preflight-quota-probe" \
+  > /dev/null
+```
+
+**Prueba de Origin Pool y Endpoint** (FALLO si está agotado — ambos son requeridos):
+
+```bash
+RESULT=$(curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "preflight-origin-probe",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "origin_servers": [{
+        "public_ip": { "ip": "192.0.2.1" },
+        "labels": {}
+      }],
+      "no_tls": {},
+      "port": 80,
+      "same_as_endpoint_port": {},
+      "healthcheck": [],
+      "loadbalancer_algorithm": "LB_OVERRIDE",
+      "endpoint_selection": "LOCAL_PREFERRED"
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools")
+echo "$RESULT" | jq '{
+  check: "fallback-origin-pool",
+  status: (if .metadata.name then "PASS" elif (.code // 0) == 8 then "FAIL" else "FAIL" end),
+  detail: (if .metadata.name then "Quota available" elif (.code // 0) == 8 then "Quota exhausted — \(.message // "limit reached")" else "Unexpected: \(.message // "unknown error")" end)
+}'
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/preflight-origin-probe" \
+  > /dev/null
+```
+
+**Prueba de Load Balancer HTTP** (FALLO si está agotado — los LBs son requeridos):
+
+```bash
+RESULT=$(curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "preflight-lb-probe",
+      "namespace": "xF5XC_NAMESPACEx",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["preflight-probe.example.com"],
+      "http": {
+        "dns_volterra_managed": false,
+        "port": 80
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [],
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers")
+echo "$RESULT" | jq '{
+  check: "fallback-http-lb",
+  status: (if .metadata.name then "PASS" elif (.code // 0) == 8 then "FAIL" else "FAIL" end),
+  detail: (if .metadata.name then "Quota available" elif (.code // 0) == 8 then "Quota exhausted — \(.message // "limit reached")" else "Unexpected: \(.message // "unknown error")" end)
+}'
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/preflight-lb-probe" \
+  > /dev/null
+```
+
+### T2: Requisitos Previos de la Plataforma
+
+Estas verificaciones verifican servicios a nivel de inquilino que la demostración depende.
+
+#### PF-T2-1: Estado del Inquilino de CSD
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq '{
+    check: "PF-T2-1",
+    configured: .isConfigured,
+    enabled: .isEnabled,
+    status: (if .isConfigured and .isEnabled then "PASS" else "FAIL" end),
+    detail: (
+      if .isConfigured and .isEnabled then "CSD is active"
+      elif (.isConfigured | not) then "CSD not enabled at tenant level — contact F5 XC administrator"
+      else "CSD configured but not active — contact administrator"
+      end
+    )
+  }'
+```
+
+#### PF-T2-2: Zona DNS Existe
+
+```bash
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T2-2",
+  http_code: .http_code,
+  status: (
+    if .http_code == 200 then "PASS"
+    elif .http_code == 404 then "WARN"
+    elif .http_code == 403 then "WARN"
+    else "FAIL"
+    end
+  ),
+  detail: (
+    if .http_code == 200 then "DNS zone exists in F5 XC"
+    elif .http_code == 404 then "No F5 XC DNS zone — external DNS may be in use"
+    elif .http_code == 403 then "Token lacks DNS zone read access (system namespace)"
+    else "Unexpected HTTP \(.http_code)"
+    end
+  )
+}'
+```
+
+#### PF-T2-3: Registros DNS Administrados Habilitados
+
+Solo ejecuta si PF-T2-2 devolvió `200` (la zona DNS de F5 XC existe).
+
+**Verificar estado actual:**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq '{
+    check: "PF-T2-3",
+    managed_records: (.spec.primary.allow_http_lb_managed_records // false),
+    status: (if .spec.primary.allow_http_lb_managed_records == true then "PASS" else "WARN" end),
+    detail: (if .spec.primary.allow_http_lb_managed_records == true then "LB-managed DNS records enabled" else "Managed records not enabled — auto-remediation may be needed" end)
+  }'
+```
+
+**Auto-remediar si es necesario:** Si el `status` es `WARN` Y PF-T2-4 muestra servidores de nombres de F5 XC (`ns1.f5clouddns.com`, `ns2.f5clouddns.com`), auto-habilita registros administrados usando GET+PUT:
+
+```bash
+# Obtener configuración actual de la zona
+ZONE_CONFIG=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx")
+
+# Actualizar con registros administrados habilitados
+echo "$ZONE_CONFIG" \
+  | jq '.spec.primary.allow_http_lb_managed_records = true' \
+  | curl -s -X PUT \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d @- \
+    "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq .
+```
+
+Luego reintenta para confirmar que la actualización fue efectiva:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq '.spec.primary.allow_http_lb_managed_records'
+```
+
+<Aside type="caution">
+La especificación de zona contiene un rr_set_group `x-ves-io-managed` con registros administrados por la plataforma. La carga útil `PUT` **debe preservar este grupo** — omitirlo causa HTTP 403 "reserved for internal purposes". Siempre recupera la configuración de zona actual con `GET` primero, modifica solo el campo `allow_http_lb_managed_records`, y devuelve la especificación completa.
+</Aside>
+
+| Resultado | Autoridad DNS | Estado | Remediación |
+| --- | --- | --- | --- |
+| `true` | Cualquiera | **APROBADO** | Los registros DNS administrados por LB se crearán automáticamente |
+| `false`/`null` | F5 XC | **Auto-remediar** | Habilitar mediante GET+PUT, verificar, reportar resultado |
+| `false`/`null` | Externo | **INFORMACIÓN** | Los registros administrados no aplican para DNS externo — el Paso 4 de la Fase 1 usará [Opción B](/csd/demo/phase-1-build/#option-b-external-dns-provider) (creación de registros manual) |
+| Auto-remediación falló | F5 XC | **FALLO** | El token puede carecer de acceso de escritura al espacio de nombres del sistema — contacta al administrador del inquilino |
+
+#### PF-T2-4: Autoridad del Servidor de Nombres DNS
+
+```bash
+NS_RECORDS=$(dig +short NS xF5XC_ROOT_DOMAINx)
+echo "$NS_RECORDS" | jq -Rs '{
+  check: "PF-T2-4",
+  nameservers: (split("\n") | map(select(length > 0))),
+  status: (
+    if (split("\n") | map(select(length > 0)) | length) == 0 then "FAIL"
+    elif test("f5clouddns\\.com") then "PASS"
+    else "INFO"
+    end
+  ),
+  detail: (
+    if (split("\n") | map(select(length > 0)) | length) == 0 then "No NS records — DNS is broken for this domain"
+    elif test("f5clouddns\\.com") then "F5 XC is authoritative — automatic DNS management available"
+    else "External DNS provider — Phase 1 Step 4 will use Option B (manual record creation)"
+    end
+  )
+}'
+```
+
+### T3: Salud de Origen
+
+Estas verificaciones verifican que la aplicación de backend sea alcanzable.
+
+<Aside type="tip" title="Direcciones TEST-NET de RFC 5737">
+Los rangos IP `192.0.2.0/24` (TEST-NET-1), `198.51.100.0/24`
+(TEST-NET-2), y `203.0.113.0/24` (TEST-NET-3) están reservados por
+[RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) para uso en
+documentación y ejemplos. Estos **no son enrutables** en internet público
+y nunca responderán a pruebas de conectividad. Cuando
+`F5XC_ORIGIN_IP` está establecido en una dirección en uno de estos rangos,
+es un marcador de posición de documentación intencional — no una
+configuración errónea.
+</Aside>
+
+**Verificación de condición de omisión:** Computa si la IP de origen es una dirección TEST-NET de RFC 5737 antes de ejecutar pruebas de conectividad:
+
+```bash
+echo "xF5XC_ORIGIN_IPx" | jq -Rs '{
+  check: "PF-T3-skip",
+  origin_ip: (rtrimstr("\n")),
+  is_test_net: (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")),
+  status: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "SKIP" else "CONTINUE" end),
+  detail: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "RFC 5737 TEST-NET address — not routable, connectivity testing skipped" else "Routable IP — proceed with connectivity tests" end)
+}'
+```
+
+Si `status` es `SKIP`, registra PF-T3-1 y PF-T3-2 como OMITIDO y avanza a T4. De lo contrario, ejecuta las verificaciones a continuación.
+
+#### PF-T3-1: Conectividad del Servidor de Origen
+
+```bash
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' --connect-timeout 10 --max-time 15 \
+  "http://xF5XC_ORIGIN_IPx:xF5XC_ORIGIN_PORTx/")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T3-1",
+  http_code: .http_code,
+  status: (if .http_code >= 200 and .http_code < 600 then "PASS" elif .http_code == 0 then "WARN" else "WARN" end),
+  detail: (
+    if .http_code >= 200 and .http_code < 600 then "Origin responding with HTTP \(.http_code)"
+    elif .http_code == 0 then "Origin unreachable from this network — LB may use a different path"
+    else "Unexpected response code \(.http_code)"
+    end
+  )
+}'
+```
+
+<Aside type="note">
+El origen predeterminado para la demostración de CSD es la aplicación Juice Shop en `44.232.69.192:3000`. Si estás usando un origen personalizado (`F5XC_ORIGIN_IP` / `F5XC_ORIGIN_PORT`), verifica que sirva una página HTML con campos de formulario — CSD necesita elementos de formulario para demostrar capacidades de detección.
+</Aside>
+
+#### PF-T3-2: El Origen Sirve Contenido HTML
+
+Solo ejecuta si PF-T3-1 devolvió un código de estado HTTP válido:
+
+```bash
+curl -s --max-time 10 "http://xF5XC_ORIGIN_IPx:xF5XC_ORIGIN_PORTx/" \
+  | grep -qi '</html>' && echo "PASS: HTML content" || echo "WARN: No HTML detected"
+```
+
+| Resultado | Estado | Remediación |
+| --- | --- | --- |
+| `PASS: HTML content` | **APROBADO** | El origen sirve páginas HTML (requerido para inyección JS de CSD) |
+| `WARN: No HTML detected` | **ADVERTENCIA** | El origen puede ser un servicio solo API o devolver contenido no HTML — la inyección JS de CSD requiere respuestas de página HTML |
+
+### T4: Entorno Limpio
+
+Estas verificaciones verifican que ningún **objeto de configuración F5 XC con nombre**
+permanezca de una ejecución anterior de demostración — load balancers HTTP, load balancers HTTPS,
+origin pools, healthchecks, dominios protegidos, y dominios mitigados.
+T4 trata sobre limpieza a nivel de objeto: si los objetos API que entrarían en conflicto
+con la creación de la Fase 1 aún existen. No prueba direcciones IP,
+conectividad de red, o salud de origen (esas preocupaciones
+pertenecen a T3).
+
+<Aside type="note">
+**Omitir T4 cuando el espacio de nombres no existe.** Si PF-T0-2 devolvió `404` (el espacio de nombres no existe), omite completamente la verificación del entorno T4 e reporta estado como `LIMPIO`. Un espacio de nombres inexistente no puede contener objetos residuales. El Paso 0 de la Fase 1 creará el espacio de nombres antes de que se creen objetos.
+</Aside>
+
+Ejecuta los seis comandos de pre-vuelo de la sección [Verificación Previa](#pre-flight-check) arriba. Aplica la [Lógica de Decisión](#decision-logic) para determinar los próximos pasos. Si existen objetos, el desmontaje automático se realiza durante la etapa Preparar (no se requiere confirmación).
+
+También verifica y elimina objetos de prueba obsoletos de ejecuciones de pre-vuelo anteriores interrumpidas. Estas pruebas solo se crean cuando la API de Uso de Cuota no está disponible y se utilizaron las [verificaciones basadas en pruebas de alternativa](#fallback-probe-based-quota-checks), o para la prueba de dominio protegido (PF-T1-4) que siempre utiliza verificación basada en pruebas:
+
+```bash
+# Limpieza de prueba obsoleta (eliminar en cualquier orden — las pruebas no tienen dependencias)
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/preflight-quota-probe" \
+  > /dev/null
+
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/preflight-lb-probe" \
+  > /dev/null
+
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/preflight-origin-probe" \
+  > /dev/null
+
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/preflight-probe.example.com" \
+  > /dev/null
+```
+
+Cada DELETE devuelve `200` (vacío `{}`) si el objeto existía, o `404` si no existía — ambos son esperados.
+
+### T5: Preparación de Certificados
+
+Estas verificaciones evalúan si HTTPS funcionará o la demostración debe planificar solo HTTP.
+
+#### PF-T5-1: Historial Reciente de Emisión de Certificados
+
+Verifica si un certificado Let's Encrypt fue emitido recientemente para el dominio de demostración. Los ciclos frecuentes de crear/destruir pueden agotar el límite de velocidad semanal (5 certificados duplicados por semana por dominio).
+
+<Aside type="note">
+No hay una API para consultar directamente el estado del límite de velocidad de Let's Encrypt. Esta verificación usa el estado del certificado del HTTPS LB como sustituto. Si no existe un HTTPS LB aún (entorno limpio), esta verificación se omite — el riesgo se anota como informativo basado en la frecuencia reciente de demostración.
+</Aside>
+
+#### PF-T5-2: Estado del Certificado del HTTPS LB Existente
+
+Solo ejecuta si un HTTPS LB existe de una ejecución anterior (PF-T4 encontró objetos):
+
+```bash
+CERT_BODY=$(curl -s -w '\n%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+CERT_HTTP=$(echo "$CERT_BODY" | tail -1)
+CERT_JSON=$(echo "$CERT_BODY" | sed '$d')
+
+if [ "$CERT_HTTP" = "404" ]; then
+  echo '{"check":"PF-T5-2","cert_state":null,"status":"SKIP","detail":"No HTTPS LB — certificate state assessed after Phase 1 Step 3"}'
+else
+  echo "$CERT_JSON" | jq '{
+    check: "PF-T5-2",
+    cert_state: .spec.cert_state,
+    status: (
+      if .spec.cert_state == "CertificateValid" then "PASS"
+      elif .spec.cert_state == "AutoCertDomainRateLimited" then "INFO"
+      elif (.spec.cert_state | test("Pending|Started")) then "INFO"
+      else "INFO"
+      end
+    ),
+    detail: (
+      if .spec.cert_state == "CertificateValid" then "Certificate healthy — HTTPS will work"
+      elif .spec.cert_state == "AutoCertDomainRateLimited" then "Let'\''s Encrypt rate limit hit — plan for HTTP-only demo"
+      elif (.spec.cert_state | test("Pending|Started")) then "Certificate provisioning in progress"
+      else "Certificate state: \(.spec.cert_state // "unknown")"
+      end
+    )
+  }'
+fi
+```
+
+### Formato del Informe de Preparación
+
+Después de ejecutar todos los niveles, presenta un informe de preparación consolidado:
+
+```
+## Preparación de Demostración: LISTO / NO LISTO / LISTO CON ADVERTENCIAS
+
+### T0: Conectividad y Autenticación
+| Verificación | Resultado | Estado |
+|---|---|---|
+| PF-T0-1: Conectividad de API | 200 | APROBADO |
+| PF-T0-2: Acceso al Espacio de Nombres | 200 | APROBADO |
+| PF-T0-3: Acceso a la API de CSD | 200 | APROBADO |
+
+### T1: Cuotas y Capacidad
+| Verificación | Tipo | Límite | Uso | Restante | Necesario | Estado |
+|---|---|---|---|---|---|---|
+| PF-T1-0: Puerta de Uso de Cuota | `healthcheck` | 150 | 148 | 2 | 1 | APROBADO |
+| PF-T1-0: Puerta de Uso de Cuota | `origin_pool` | unlimited | 420 | unlimited | 1 | APROBADO |
+| PF-T1-0: Puerta de Uso de Cuota | `endpoint` | 500 | 498 | 2 | 1 | APROBADO |
+| PF-T1-0: Puerta de Uso de Cuota | `http_loadbalancer` | unlimited | 116 | unlimited | 2 | APROBADO |
+| PF-T1-0: Puerta de Uso de Cuota | **puerta** | — | — | — | — | **APROBADO** |
+| PF-T1-4: Dominio Protegido | — | — | — | — | 1 | APROBADO (prueba) |
+
+### T2: Requisitos Previos de la Plataforma
+| Verificación | Resultado | Estado |
+|---|---|---|
+| PF-T2-1: Estado del Inquilino de CSD | configured + enabled | APROBADO |
+| PF-T2-2: Zona DNS Existe | 200 | APROBADO |
+| PF-T2-3: Registros DNS Administrados | true | APROBADO |
+| PF-T2-4: Autoridad del Servidor de Nombres DNS | f5clouddns.com | APROBADO |
+
+### T3: Salud de Origen
+| Verificación | Resultado | Estado |
+|---|---|---|
+| PF-T3-1: Conectividad del Origen | TEST-NET address (192.0.2.1) | OMITIDO |
+| PF-T3-2: Contenido HTML | TEST-NET address | OMITIDO |
+
+### T4: Entorno Limpio
+| Verificación | Resultado | Estado |
+|---|---|---|
+| HTTP LB | 404 | APROBADO |
+| HTTPS LB | 404 | APROBADO |
+| Origin Pool | 404 | APROBADO |
+| Healthcheck | 404 | APROBADO |
+| Dominios Protegidos | 0 | APROBADO |
+| Dominios Mitigados | 0 | APROBADO |
+
+### T5: Preparación de Certificados
+| Verificación | Resultado | Estado |
+|---|---|---|
+| PF-T5-2: Estado del Certificado | OMITIDO (no HTTPS LB) | INFORMACIÓN |
+
+### Advertencias
+- (lista cualquier elemento ADVERTENCIA o INFORMACIÓN con contexto)
+```
+
+**Reglas de estado general:**
+
+| Condición | Estado |
+| --- | --- |
+| Todas las verificaciones T0–T4 APROBADO | **LISTO** |
+| Todas las verificaciones T0–T4 APROBADO pero T3 o T5 tiene ADVERTENCIA/INFORMACIÓN | **LISTO CON ADVERTENCIAS** |
+| Cualquier verificación T0, T1, o T2 es FALLO | **NO LISTO** — resolver antes de proceder |
+| T4 tiene objetos residuales | Auto-remediar (desmontaje), luego re-verificar |
+
+## Protocolo de Ejecución del Asistente de IA
+
+Esta sección define un **flujo de trabajo determinístico** para asistentes de IA (Claude Code, Copilot, etc.) ejecutando los pasos de automatización de API. Seguir este protocolo elimina la incertidumbre — cada punto de decisión tiene una ruta de resolución definida.
+
+### Protocolo de Resolución de Variables
+
+Resuelve cada variable en este orden exacto. Detente en la primera fuente que proporcione un valor sin marcador de posición:
+
+1. **Verifica archivo `.env`** — busca `.env` en la raíz del repositorio. Si existe, analiza todos los pares `KEY=VALUE`.
+2. **Verifica entorno de shell** — ejecuta `env | grep F5XC_` para encontrar valores ya exportados en la sesión actual.
+3. **Identifica valores faltantes** — compara valores resueltos contra la tabla requerida/opcional a continuación. Un valor está "faltante" si está ausente, vacío, o aún está establecido en un marcador de posición predeterminado (por ejemplo, `example-api-token`, `example-tenant`, `example-namespace`, `app.example.com`, `user@example.com`).
+4. **Solicita al operador humano** — para cada variable **requerida** faltante, pide al operador que proporcione el valor. No procedas hasta que todas las variables requeridas estén resueltas.
+5. **Aplica valores predeterminados** — para cada variable **opcional** faltante, usa el valor predeterminado de la tabla a continuación sin solicitar.
+
+> **Cadena vacía = faltante:** Una variable exportada con un valor vacío
+> (por ejemplo, `F5XC_HC_NAME=""`) se trata igual que una variable no establecida —
+> aplica el valor predeterminado. Usa expansión de parámetro de shell
+> (`${F5XC_HC_NAME:-csd-hc}`) para aplicar valores predeterminados en un paso.
+
+6. **Mostrar confirmación** — muestra la tabla de variables resueltas final al operador y espera aprobación antes de ejecutar cualquier llamada de API.
+
+> **Anulación de etapa de Preparación:** Durante la Etapa 1 Preparar, omite la espera en
+> el paso 6. Muestra la tabla de variables resueltas para el registro, luego
+> procede inmediatamente. Los pasos 1–5 todavía aplican — si alguna variable requerida
+> está faltante después de verificar `.env` y shell, detente e informa las
+> variables faltantes.
+
+### Variables Requeridas vs Opcionales
+
+| Variable | Requerida | Valor Predeterminado | Marcador de Posición (trata como faltante) |
+| --- | --- | --- | --- |
+| `F5XC_API_TOKEN` | **Sí** | — | `example-api-token` |
+| `F5XC_API_URL` | **Sí** | — | `https://example-tenant.console.ves.volterra.io` |
+| `F5XC_NAMESPACE` | **Sí** | — | `example-namespace` |
+| `F5XC_DOMAINNAME` | **Sí** | — | `app.example.com` |
+| `F5XC_ROOT_DOMAIN` | **Sí** | — | `example.com` |
+| `F5XC_LB_NAME` | **Sí** | — | `example-lb-name`, `example-lb` |
+| `F5XC_EMAIL` | **Sí** | — | `user@example.com` |
+| `F5XC_HC_NAME` | Opcional | `csd-hc` | — |
+| `F5XC_ORIGIN_IP` | Opcional | `44.232.69.192` | — |
+| `F5XC_ORIGIN_POOL` | Opcional | `csd-origin` | — |
+| `F5XC_ORIGIN_PORT` | Opcional | `3000` | — |
+
+### Modos de Ejecución
+
+El asistente de IA funciona en uno de tres modos durante la demostración:
+
+| Modo | Cuándo está activo | Comportamiento |
+| --- | --- | --- |
+| Normal | Predeterminado durante Preparar, Ejecutar, Desmantelar | Solo comandos documentados al pie de la letra |
+| Depuración | Se activa automáticamente al fallar | Solución de problemas creativa, actualizar documentos |
+| P&R | Durante la etapa P&R | Improvisacional — se permiten comandos ad-hoc para responder preguntas de la audiencia |
+
+**Modo Normal** (predeterminado):
+
+- Cada llamada de API, consulta de verificación, y comando de shell **debe provenir exactamente de los archivos de fase** (Fase 1–4) o de la sección de Verificación Previa arriba
+- Sustituye solo marcadores de posición `xTOKENx` con valores de variables resueltas
+- No construyas puntos finales de API, filtros jq, o comandos cURL desde conocimiento general o inferencia
+- Si un comando necesario no está documentado, detente e informa al operador: "Este paso de verificación no está cubierto por la documentación de fase"
+
+**Modo Depuración** (se activa automáticamente al fallar):
+
+- Se activa automáticamente cuando un comando documentado produce un resultado inesperado: respuesta HTTP no 2xx, error de análisis jq, tiempo de espera de comando, o cuerpo de respuesta que contradice la tabla de evidencia
+- En modo depuración, el asistente de IA puede construir comandos de diagnóstico, inspeccionar respuestas de API sin procesar, probar variaciones de punto final, y usar solución de problemas creativa para encontrar la causa raíz
+- Prefija todo resultado de depuración con `[DEBUG]` para que el operador pueda distinguir actividad de diagnóstico de ejecución normal
+- **Documenta lo que aprendes**: después de resolver un problema, actualiza el archivo de fase relevante o sección de solución de problemas con:
+  1. El escenario de fallo (qué salió mal)
+  2. Lo que se intentó y NO funcionó (para que futuras ejecuciones no lo repitan)
+  3. La resolución funcional (el comando o arreglo que lo solucionó)
+- El objetivo del modo depuración es **eliminarse a sí mismo** — cada sesión de depuración debe producir una actualización de documentación que haga la próxima ejecución completamente determinística
+- Una vez que la documentación está actualizada y el problema está resuelto, retorna al modo normal y reanuda desde el último paso documentado exitoso
+- Si el modo depuración no puede resolver el problema, reporta hallazgos al operador y detente — no continúes a la próxima fase
+
+**Modo P&R** (durante la etapa P&R):
+
+- Activo solo durante la etapa de reunión P&R, después de la conclusión de la demostración
+- El asistente de IA puede construir llamadas de API ad-hoc, ejecutar comandos de diagnóstico, navegar a páginas no guionizadas, y modificar el entorno de demostración activo para ilustrar respuestas a preguntas de la audiencia
+- Sin prefijo `[DEBUG]` — este es comportamiento improvisacional intencional, no recuperación de errores
+- Usa la sección de Experiencia del Producto de CSD en `DEMO_EXECUTOR.md` como base de conocimiento para preguntas sobre productos
+
+### Gestión del Contexto del Navegador
+
+La acumulación de initScript es una fuente común de fallos de demostración. Cada llamada `navigate_page` con parámetro `initScript` agrega el script a una lista persistente que se ejecuta en cada carga de documento posterior. Sigue estas reglas:
+
+- **Siempre navega a `about:blank`** antes de cualquier navegación con `initScript` para limpiar scripts acumulados de ejecuciones anteriores
+- **Usa `new_page` con `isolatedContext`** cuando cambies entre fases de demostración (por ejemplo, Fase 2 → Fase 3) para asegurar un estado de navegador completamente limpio
+- **Recuperación de páginas sin respuesta** — si `take_screenshot` o `take_snapshot` se agota el tiempo, el contexto del navegador está exhausto de recursos. Usa `new_page` con `isolatedContext` para crear un contexto nuevo, luego reintenta desde el paso de navegación `about:blank`
+- Ver los apéndices de [simulación de ataque de Fase 2](/csd/demo/phase-2-attack/) para orientación detallada sobre fallos de origen transitorios y recuperación de exhaustión de recursos
+
+### Protocolo de Visualización de Evidencia
+
+Después de cada llamada de API, el asistente de IA debe presentar evidencia estructurada al operador humano usando este formato:
+
+**Pasos de creación** (POST):
+
+| Campo | Valor | Estado |
+| --- | --- | --- |
+| Estado HTTP | `200` | APROBADO |
+| Nombre del Objeto | `csd-origin` | — |
+| Propiedad Clave | _(extraída mediante jq)_ | — |
+
+Después de cada paso de creación, ejecuta una **GET** para confirmar que el objeto existe y muestra sus propiedades clave. Si la GET devuelve `404`, reporta FALLO y detente.
+
+**Pasos de verificación** (GET/dig):
+
+| Prueba | Resultado | Estado |
+| --- | --- | --- |
+| DNS-1: Registro A | `198.51.100.10` | APROBADO |
+| LB-1: Estado del HTTP LB | `VIRTUAL_HOST_READY` | APROBADO |
+| LB-2: Estado del HTTPS LB | `VIRTUAL_HOST_READY` | INFORMACIÓN (opcional) |
+| TLS-1: Estado del Certificado | `CertificateValid` | INFORMACIÓN (opcional) |
+| CSD-1: Etiqueta JS | `scriptTag` presente | APROBADO |
+
+Referencia los IDs de caso de prueba de [Diagnósticos y Verificación](/csd/diagnostics/) (DNS-1, TLS-1, LB-1, CSD-1, etc.) como el estándar de verificación para cada capa.
+
+### Resumen del Flujo de Ejecución
+
+**La ejecución de fase es secuencial y limitada:** cada fase debe alcanzar APROBADO en todas las verificaciones requeridas antes de que la próxima fase comience. La demostración sigue un ciclo de vida de reunión de cuatro etapas — ver la sección Etapas de Reunión en `DEMO_EXECUTOR.md` para frases de activación y reglas de comportamiento.
+
+El asistente de IA sigue esta secuencia:
+
+1. **Preparar** — resolver variables, ejecutar verificaciones previas, confirmar entorno limpio (puede ejecutarse por separado antes de la reunión)
+2. **Introducción** — el SE se presenta a sí mismo y establece objetivos de resultado (visibilidad en amenazas del lado del cliente, cumplimiento de PCI, detección en tiempo real)
+3. **Ejecutar Fase 1** (Pasos 1–7) — creación de infraestructura (healthcheck, origin pool, HTTP LB + HTTPS LB), configuración de DNS, habilitar CSD, registrar dominio protegido, verificar todos los componentes. El HTTP LB es el objetivo principal de demostración; el HTTPS LB es opcional.
+4. **Ejecutar Fase 2** (Pasos 8–9) — ejecutar simulación de ataque en un navegador usando URLs `http://`, esperar 5–10 minutos, verificar detecciones mediante API (`/scripts`, `/detected_domains`, `/formFields`)
+5. **Ejecutar Fase 3** — confirmar línea base limpia, ejecutar ataque (prueba anterior), POST cada dominio a `/mitigated_domains`, verificar que mitigaciones se aplicaron, re-ejecutar ataque usando URLs `http://` (prueba posterior), presentar comparación antes/después
+6. **Conclusión** — reiterar objetivos de resultado, resumir evidencia de cada fase, destacar detecciones y mitigaciones clave
+7. **P&R** — etapa improvisacional, demostración permanece activa, el SE responde preguntas de audiencia y hace preguntas de retorno
+8. **Desmantelar** (post-reunión) — Fase 4, requiere confirmación explícita del operador humano, eliminar todos los objetos en orden de dependencia inversa, confirmar entorno limpio
+
+Si algún paso devuelve FALLO, detente e informa el fallo con el enlace de sección de solución de problemas relevante antes de continuar.
+
+## Requisitos Previos
+
+- Un **token de API de F5 XC** — genera uno en **Administración** → **Credenciales** → **Credenciales de API**
+- `curl` y `jq` instalados localmente
+- Un espacio de nombres con permisos para crear healthchecks, origin pools, y load balancers HTTP
+
+## Configuración del Entorno
+
+Crea un archivo `.env` con tus valores de entorno. Una plantilla se proporciona en el repositorio:
+
+```bash
+cp .env.example .env
+```
+
+Edita `.env` con tus valores reales:
+
+```bash title=".env"
+# Requerido — tu entorno
+F5XC_API_TOKEN=example-api-token
+F5XC_API_URL=https://example-tenant.console.ves.volterra.io
+F5XC_DOMAINNAME=app.example.com
+F5XC_EMAIL=user@example.com
+F5XC_LB_NAME=example-lb-name
+F5XC_NAMESPACE=example-namespace
+F5XC_ROOT_DOMAIN=example.com
+
+# Opcional — los valores predeterminados de demostración de Juice Shop se usan cuando no se establecen
+# F5XC_HC_NAME=csd-hc
+# F5XC_ORIGIN_IP=44.232.69.192
+# F5XC_ORIGIN_POOL=csd-origin
+# F5XC_ORIGIN_PORT=3000
+```
+
+<Aside type="caution">
+El archivo `.env` contiene tu token de API. Está listado en `.gitignore` y nunca debe ser comprometido al control de versiones.
+</Aside>
+
+Obtén el archivo para cargar variables en tu sesión de shell:
+
+```bash
+set -a && source .env && set +a
+```
+
+<Aside type="tip">
+Si tu token de API contiene caracteres `/` o `=`, envuelve el valor en comillas simples en `.env` (por ejemplo, `F5XC_API_TOKEN='abc/def='`) para prevenir interpretación de shell cuando se obtiene el archivo.
+
+Algunos tiempos de ejecución de contenedor e injectors de secretos inyectan caracteres de comilla literal en valores de variables de entorno. Si las llamadas de API devuelven `401 Unauthorized` a pesar de un token válido, quita comillas errantes antes de usarlas:
+
+```bash
+export F5XC_API_TOKEN=$(echo "$F5XC_API_TOKEN" | tr -d "'")
+```
+</Aside>
+
+Cada marcador de posición `xTOKENx` en los comandos curl se mapea directamente a una variable de entorno — por ejemplo, `xF5XC_API_TOKENx` corresponde a `$F5XC_API_TOKEN`. Puedes sustituir estos valores usando el formulario interactivo en la parte superior de la página, o dejar que un asistente de IA como Claude Code lea tu `.env` y construya los comandos para ti.
+
+## Tokens de Marcador de Posición
+
+| Token | Predeterminado | Descripción |
+| --- | --- | --- |
+| `xF5XC_API_URLx` | `https://example-tenant.console.ves.volterra.io` | URL de API de XC Console |
+| `xF5XC_API_TOKENx` | `example-api-token` | Token de credencial de API |
+| `xF5XC_EMAILx` | `user@example.com` | Dirección de correo electrónico de notificación de CSD |
+| `xF5XC_NAMESPACEx` | `example-namespace` | Espacio de nombres |
+| `xF5XC_LB_NAMEx` | `example-lb` | Nombre base del Load Balancer HTTP (crea `${name}-http` y `${name}-https`) |
+| `xF5XC_DOMAINNAMEx` | `app.example.com` | FQDN a proteger |
+| `xF5XC_ROOT_DOMAINx` | `example.com` | Dominio raíz (eTLD+1) para dominio protegido de CSD |
+| `xF5XC_ORIGIN_POOLx` | `csd-origin` | Nombre del origin pool |
+| `xF5XC_ORIGIN_IPx` | `44.232.69.192` | IP del servidor de origen |
+| `xF5XC_ORIGIN_PORTx` | `3000` | Puerto del servidor de origen |
+| `xF5XC_HC_NAMEx` | `csd-hc` | Nombre del Healthcheck |
+
+<Aside type="tip">
+**El inquilino es automático**: El identificador del inquilino se deriva de tu URL de API (por ejemplo, `f5-amer-ent` de `https://f5-amer-ent.console.ves.volterra.io`). No necesitas proporcionarlo — la plataforma rellena referencias de inquilino automáticamente al crear objetos.
+</Aside>
+
+## Referencia de Automatización
+
+Esta sección resume el flujo de trabajo completo del ejercicio para scripting o automatización.
+
+### Inicio Rápido
+
+1. Clona el repositorio y copia la plantilla de entorno: `cp .env.example .env`
+2. Edita `.env` con tu URL de inquilino, token de API, espacio de nombres, y valores de dominio
+3. Obtén el entorno: `set -a && source .env && set +a`
+4. Ejecuta cada fase en orden, verificando APROBADO en cada bloque de Evidencia antes de proceder a la próxima fase
+
+### Resolución de Variables
+
+Los valores se resuelven usando el protocolo determinístico definido en [Protocolo de Ejecución del Asistente de IA](#variable-resolution-protocol):
+
+1. **Archivo `.env`** — analiza pares `KEY=VALUE` de la raíz del repositorio
+2. **Entorno de shell** — comprueba `env | grep F5XC_` para valores exportados
+3. **Detección de marcador de posición** — marca cualquier valor que coincida con un predeterminado de marcador de posición (por ejemplo, `example-api-token`, `example-namespace`) como faltante
+4. **Solicitar operador** — pide cada variable **requerida** faltante
+5. **Aplicar valores predeterminados** — usa valores predeterminados incorporados para variables **opcionales** faltantes
+6. **Confirmar** — muestra la tabla de variables resueltas y espera aprobación del operador
+
+### Orden de Ejecución
+
+<Steps>
+1. **Fase 1 — Construir**: Implementar infraestructura (healthcheck, origin pool, HTTP LB + HTTPS LB), configurar DNS, habilitar CSD, registrar dominio protegido, verificar todos los componentes. El HTTP LB es el objetivo principal de demostración; el HTTPS LB es opcional.
+2. **Fase 2 — Atacar**: Ejecutar simulación de ataque en navegador usando URLs `http://`, esperar 5–10 minutos, verificar detecciones mediante API (`/scripts`, `/detected_domains`, `/formFields`)
+3. **Fase 3 — Mitigar**: Confirmar línea base limpia, ejecutar ataque (prueba anterior), POST cada dominio a `/mitigated_domains`, verificar que mitigaciones se aplicaron, re-ejecutar ataque usando URLs `http://` (prueba posterior), presentar comparación antes/después
+4. **Fase 4 — Desmantelar** _(requiere confirmación explícita del operador humano)_: Eliminar HTTPS LB → HTTP LB → origin pool → limpieza de zona DNS (solo registros manuales) → healthcheck → dominio protegido. **No** elimines la zona DNS.
+</Steps>
+
+### Variables
+
+| Token | Descripción | Predeterminado |
+| --- | --- | --- |
+| `xF5XC_API_URLx` | URL de API de XC Console | `https://example-tenant.console.ves.volterra.io` |
+| `xF5XC_API_TOKENx` | Token de credencial de API | (proporcionado por el usuario) |
+| `xF5XC_EMAILx` | Correo electrónico de notificación de CSD | `user@example.com` |
+| `xF5XC_NAMESPACEx` | Espacio de nombres | `example-namespace` |
+| `xF5XC_LB_NAMEx` | Nombre base del Load Balancer HTTP (crea `${name}-http` y `${name}-https`) | `example-lb` |
+| `xF5XC_DOMAINNAMEx` | FQDN a proteger | `app.example.com` |
+| `xF5XC_ROOT_DOMAINx` | Dominio raíz (eTLD+1) | `example.com` |
+| `xF5XC_ORIGIN_POOLx` | Nombre del origin pool | `csd-origin` |
+| `xF5XC_ORIGIN_IPx` | IP del servidor de origen | `44.232.69.192` |
+| `xF5XC_ORIGIN_PORTx` | Puerto del servidor de origen | `3000` |
+| `xF5XC_HC_NAMEx` | Nombre del Healthcheck | `csd-hc` |
+
+### Grupos de Elección oneOf
+
+La especificación del Load Balancer HTTP usa grupos de elección `oneOf` donde exactamente una opción debe establecerse por grupo. Establecer cero o más de una opción en un grupo causa error `422`.
+
+**Opciones clave relacionadas con CSD:**
+
+| Grupo de Elección | Opciones | Predeterminado de CSD |
+| --- | --- | --- |
+| `client_side_defense_choice` | `client_side_defense`, `disable_client_side_defense` | `client_side_defense` |
+| `java_script_choice` (anidado en CSD) | `disable_js_insert`, `js_insert_all_pages`, `js_insert_all_pages_except`, `js_insertion_rules` | `js_insert_all_pages` |
+
+**Elección del tipo de oyente (HTTP vs HTTPS):**
+
+La demostración crea dos LBs con configuraciones de oyente diferentes:
+
+| LB | Elección de Oyente | Configuración |
+| --- | --- | --- |
+| `${F5XC_LB_NAME}-http` (principal) | `http` | `"http": { "dns_volterra_managed": true, "port": 80 }` |
+| `${F5XC_LB_NAME}-https` (secundario) | `https_auto_cert` | `"https_auto_cert": { "http_redirect": true, "port": 443, ... }` |
+
+Las claves `http` y `https_auto_cert` son mutuamente excluyentes — cada LB usa exactamente una.
+
+**Opciones anidadas de auto-cert HTTPS** (solo LB secundario):
+
+| Grupo de Elección | Opciones | Predeterminado |
+| --- | --- | --- |
+| puerto | `port` (número) | `443` |
+| `server_header_choice` | `default_header`, `server_name`, `append_server_name` | `default_header` |
+| `path_normalize_choice` | `enable_path_normalize`, `disable_path_normalize` | `enable_path_normalize` |
+| `mtls_choice` | `no_mtls`, `use_mtls` | `no_mtls` |
+| `default_loadbalancer_choice` | `default_loadbalancer`, `non_default_loadbalancer` | `default_loadbalancer` |
+
+**Opciones anidadas de `single_lb_app`** (configuración ML):
+
+El objeto `single_lb_app` tiene sus propios grupos `oneOf` requeridos. Establecer `single_lb_app: \{\}` sin estas opciones anidadas causa error `400`.
+
+| Grupo de Elección | Opciones | Predeterminado |
+| --- | --- | --- |
+| `api_discovery_choice` | `disable_discovery`, `enable_discovery` | `disable_discovery` |
+| `ddos_detection_choice` | `disable_ddos_detection`, `enable_ddos_detection` | `disable_ddos_detection` |
+| `malicious_user_detection_choice` | `disable_malicious_user_detection`, `enable_malicious_user_detection` | `disable_malicious_user_detection` |
+
+**Otras opciones a nivel de LB** (todas establecidas para deshabilitar/predeterminado):
+
+`disable_rate_limit` · `no_service_policies` · `round_robin` · `disable_waf` · `no_challenge` · `disable_bot_defense` · `disable_api_definition` · `disable_api_discovery` · `disable_ip_reputation` · `disable_malicious_user_detection` · `single_lb_app` · `disable_trust_client_ip_headers` · `user_id_client_ip` · `disable_threat_mesh` · `l7_ddos_action_default` · `system_default_timeouts` · `default_sensitive_data_policy` · `disable_malware_protection` · `disable_api_testing`
+
+### Manejo de Errores
+
+- **401 No Autorizado** — el token de API es inválido o ha expirado. Regenera en **Administración** → **Credenciales**.
+- **403 Prohibido** — el token carece de permisos para el espacio de nombres. Comprueba enlaces de rol.
+- **404 No Encontrado** — el nombre del espacio de nombres u objeto es incorrecto. Lista objetos con `GET /api/config/namespaces/\{namespace\}/\{object_type\}`.
+- **409 Conflicto** — el objeto ya existe. Para dominios protegidos, un `409` con "domain already exists (in uriList)" significa que el dominio raíz ya está registrado en el inquilino — esto es una condición de éxito, no un error. Para otros objetos, elimina primero o usa `PUT` para actualizar.
+- **422 Entidad No Procesable** — la validación del esquema JSON falló. Causas comunes: opción `oneOf` faltante, múltiples opciones establecidas en el mismo grupo, tipo de campo incorrecto. Verifica el mensaje de error para el campo específico.
+- **Límite de objetos agotado** (código de error `8`, mensaje `"Object kind {kind} has exhausted limits({N})"`) — el inquilino ha golpeado un límite de cuota de objeto. La API devuelve HTTP 200 con un cuerpo JSON de error que contiene `"code": 8`, no HTTP 429. Puedes verificar proactivamente la capacidad de cuota antes de encontrar este error usando la [API de Uso de Cuota](#pf-t1-0-quota-usage-query) (`GET /api/web/namespaces/system/quota/usage?namespace=system`). El comportamiento depende del tipo de objeto:
+  - **Healthcheck** (límite ~150): **No bloqueante** — omite Paso 1 de la Fase 1 y crea el origin pool sin una referencia de healthcheck. CSD no depende de monitoreo de salud.
+  - **Endpoint** (límite ~500): **Bloqueante** — los endpoints son sub-objetos creados dentro de origin pools. Si se golpea este límite, la creación de origin pool falla. Elimina origin pools no utilizados (que libera sus sub-objetos endpoint) o contacta al administrador para aumentar el límite del inquilino.
+  - **Origin pool**: **Bloqueante** — elimina origin pools no utilizados o contacta al administrador.
+  - **Load Balancer HTTP**: **Bloqueante** — elimina load balancers no utilizados o contacta al administrador.
+  - **Dominio protegido**: **Bloqueante** — elimina dominios protegidos no utilizados o contacta al administrador.
+
+## Solución de Problemas
+
+### Healthcheck No Vinculado al Origin Pool
+
+Si Paso 2 de la Fase 1 (Verificar que Healthcheck está Vinculado) muestra una matriz vacía `[]`:
+
+1. Elimina el origin pool: `DELETE /api/config/namespaces/{namespace}/origin_pools/{pool_name}`
+2. Verifica que el healthcheck existe: `GET /api/config/namespaces/{namespace}/healthchecks/{hc_name}`
+3. Recrea el origin pool con la referencia de healthcheck correcta
+
+### LB Atrapado en VIRTUAL_HOST_PENDING_A_RECORD
+
+Si el estado del load balancer permanece `VIRTUAL_HOST_PENDING_A_RECORD` después del Paso 4 de la Fase 1:
+
+1. **Verifica que la zona DNS existe** (solo DNS administrado de F5 XC):
+   ```bash
+   curl -s \
+     -H "Authorization: APIToken xF5XC_API_TOKENx" \
+     "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+     | jq '.metadata.name'
+   ```
+   Un `404` significa que la zona DNS no ha sido creada en F5 XC.
+
+2. **Comprueba `allow_http_lb_managed_records`** — si la zona existe pero el LB está pendiente, los registros administrados pueden estar deshabilitados:
+   ```bash
+   curl -s \
+     -H "Authorization: APIToken xF5XC_API_TOKENx" \
+     "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+     | jq '.spec.primary.allow_http_lb_managed_records'
+   ```
+   Si es `false` o `null`, habilítalo usando el comando `PUT` en [Paso 4 de la Fase 1, Opción A](/csd/demo/phase-1-build/#option-a-f5-xc-managed-dns).
+
+3. **DNS Externo** — si F5 XC no es autoritario, crea los registros A y ACME CNAME manualmente en tu proveedor de DNS (ver [Paso 4 de la Fase 1, Opción B](/csd/demo/phase-1-build/#option-b-external-dns-provider)).
+
+4. **Verifica resolución** — después de arreglar DNS, confirma:
+   ```bash
+   dig +short xF5XC_DOMAINNAMEx A
+   ```
+   Si el registro A se resuelve, el LB transiciona a `VIRTUAL_HOST_READY`. Consulta cada 30 segundos, hasta 4 iteraciones (2 minutos total). Si aún está `VIRTUAL_HOST_PENDING_A_RECORD` después de 2 minutos, recomprueba propagación de DNS e informa al operador.
+
+### El Estado de CSD Muestra isConfigured: false
+
+CSD debe estar habilitado a nivel de inquilino. Contacta al administrador de F5 XC para habilitar Client-Side Defense para tu inquilino. Esta es una configuración a nivel de inquilino que no se puede configurar a través de API.
+
+### La Inyección JS No Funciona
+
+1. Verifica que CSD está habilitado a nivel de inquilino (Paso 5 de la Fase 1)
+2. Confirma que el load balancer tiene `client_side_defense` establecido en la especificación
+3. Comprueba que el punto final de configuración JS devuelve un `scriptTag`
+4. Visita el dominio protegido en un navegador y ve la fuente de la página para confirmar que el script se inyecta
+
+### El Registro del Dominio Protegido Devuelve 409
+
+Un `409` con "domain already exists (in uriList)" significa que el dominio raíz ya está registrado en el inquilino. Los dominios protegidos son **con alcance de inquilino** — no pertenecen a un espacio de nombres único. Esta es una condición de éxito: el dominio ya está protegido y no se requiere acción adicional. Continúa al Paso 7 de la Fase 1.
+
+### AutoCertDomainRateLimited
+
+Si el `cert_state` del HTTPS LB muestra `AutoCertDomainRateLimited`, esto significa que Let's Encrypt ha limitado por velocidad la emisión de certificados para este dominio. Esto es **esperado en entornos de demostración** donde la infraestructura se crea y destruye frecuentemente.
+
+**Impacto:** El HTTPS LB no servirá tráfico hasta que se reinicie el límite de velocidad (típicamente 1 hora). El HTTP LB está completamente no afectado — todo el tráfico de demostración procede normalmente sobre `http://`.
+
+**Resolución:** No se requiere acción para progresión de demostración. El HTTP LB (`${F5XC_LB_NAME}-http`) es el objetivo principal de demostración y no tiene dependencia de provisión de certificado. Si se desea HTTPS, espera a que el límite de velocidad se reinicie y el certificado se aprovisionará automáticamente.
+
+### Certificado Atrapado — Recreación Limpia (Opcional)
+
+<Aside type="note">
+Este paso de solución de problemas aplica solo al **HTTPS LB** (`${F5XC_LB_NAME}-https`) y es **opcional para progresión de demostración**. El HTTP LB no tiene dependencia de certificado.
+</Aside>
+
+Cuando el certificado del HTTPS LB está atrapado en `DomainChallengePending` o `PreDomainChallengePending` durante más de 15 minutos, la ruta de recuperación más rápida es eliminar el HTTPS LB y recrearlo. Con la zona DNS ya configurada (registros administrados habilitados), la recreación limpia típicamente produce `CertificateValid` en 5–7 minutos — a menos que esté limitado por velocidad.
+
+1. Elimina el Load Balancer HTTPS: `DELETE .../http_loadbalancers/${F5XC_LB_NAME}-https`
+2. Espera 30 segundos para limpieza de plataforma
+3. Recrea el Load Balancer HTTPS ([Paso 3 de la Fase 1](/csd/demo/phase-1-build/#step-3-create-http-load-balancers-with-csd))
+4. Monitorea estado del certificado ([Paso 7 de la Fase 1](/csd/demo/phase-1-build/#step-7-verify)) — espera `CertificateValid` dentro de 5–10 minutos
+
+<Aside type="tip">
+No necesitas reconfigurar la zona DNS, volver a registrar el dominio protegido, o tocar el HTTP LB. Estos son recursos persistentes no afectados por recreación del HTTPS LB.
+</Aside>
+
+## Referencia de OpenAPI
+
+La especificación canónica de la API de F5 Distributed Cloud está disponible en:
+
+`https://docs.cloud.f5.com/docs-v2/downloads/f5-distributed-cloud-open-api.zip`
+
+Este ZIP contiene especificaciones OpenAPI 3.0 para todos los grupos de API incluyendo `ves.io.schema.views.http_loadbalancer`, `ves.io.schema.healthcheck`, `ves.io.schema.origin_pool`, y `ves.io.schema.shape.csd`. Usa estas especificaciones para validar cargas útiles JSON y descubrir campos adicionales.

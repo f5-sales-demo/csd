@@ -1,0 +1,1241 @@
+---
+title: التشخيص والتحقق
+description: فحوصات الصحة واختبارات الاتصال وإجراءات التحقق لنشر دفاع جانب العميل
+sidebar:
+  order: 8
+  label: التشخيص والتحقق
+i18n:
+  sourceHash: 754ac3ee6525
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+توفر هذه الصفحة **مصفوفة التحقق من الاختبار المستوى الموسع** للتحقق من نشر دفاع جانب العميل من البداية إلى النهاية. يتبع كل حالة اختبار سلسلة تبعيات البنية الأساسية — من دقة أسماء النطاقات من خلال قياس دفاع جانب العميل — بحيث يمكنك إثبات أن كل مكون يعمل بشكل صحيح بشكل منهجي.
+
+هذه الأوامر هي **المكافئ الواجهة البرمجية** من [جولة وحدة تحكم دفاع جانب العميل](/csd/csd-console/) — استخدمها عندما تحتاج إلى التحقق من الطرفية أو أتمتة المراقبة أو إظهار إمكانيات دفاع جانب العميل بدون واجهة المستخدم.
+
+## المتطلبات الأساسية
+
+قم بإعداد متغيرات البيئة الخاصة بك كما هو موضح في [أتمتة واجهة برمجية &mdash; إعداد البيئة](/csd/demo/#environment-setup):
+
+```bash
+set -a && source .env && set +a
+```
+
+تستخدم جميع الأوامر أدناه تنسيق العنصر النائب `xTOKENx`. استبدل بمتغيرات البيئة الخاصة بك (`$F5XC_API_TOKEN`، `$F5XC_NAMESPACE`، إلخ) أو استخدم النموذج التفاعلي في أعلى الصفحة.
+
+## ملاحظات سلوك واجهة برمجية التطبيقات
+
+<Aside type="note">
+**PUT و DELETE تُرجع `\{\}` فارغة** على HTTP 200 — هذا هو رد النجاح المتوقع وليس خطأ. فقط **POST** ترجع الكائن المُنشأ. **تصفح نقاط النهاية** (على سبيل المثال، `/healthchecks`) و **نقاط نهاية GET الفردية** (على سبيل المثال، `/healthchecks/\{name\}`) ترجع هياكل استجابة مختلفة — راجع [مرجع واجهة برمجية التطبيقات &mdash; اتفاقيات واجهة برمجية التطبيقات](/csd/api-reference/#api-conventions) للحصول على التفاصيل حول مسارات `jq` الصحيحة لكل منها.
+</Aside>
+
+## مساعدات نطاق الوقت
+
+تتطلب العديد من نقاط نهاية دفاع جانب العميل طوابع زمنية epoch (ثواني منذ Unix epoch). تحسب هذه الأوامر أوقات البداية والنهاية للنطاقات الشائعة.
+
+**متعدد المنصات** (macOS + Linux):
+
+```bash
+# الوقت الحالي كثواني epoch
+NOW=$(date +%s)
+
+# منذ ساعة
+START_1H=$(( NOW - 3600 ))
+
+# منذ 24 ساعة
+START_24H=$(( NOW - 86400 ))
+
+# منذ 7 أيام
+START_7D=$(( NOW - 604800 ))
+
+# منذ 30 يوم
+START_30D=$(( NOW - 2592000 ))
+```
+
+| التحديد | الثواني | تعبير Shell |
+| --- | --- | --- |
+| ساعة واحدة | 3,600 | `$(( $(date +%s) - 3600 ))` |
+| 24 ساعة | 86,400 | `$(( $(date +%s) - 86400 ))` |
+| 7 أيام | 604,800 | `$(( $(date +%s) - 604800 ))` |
+| 30 يوم | 2,592,000 | `$(( $(date +%s) - 2592000 ))` |
+
+<Aside type="note">
+تستخدم نقاط نهاية دفاع جانب العميل (`/api/shape/csd/`) **ثواني epoch** (على سبيل المثال، `1710000000`). تستخدم نقاط نهاية سجل الوصول (`/api/data/`) طوابع زمنية **ISO 8601** (على سبيل المثال، `2024-03-10T00:00:00Z`). تستخدم الأوامر في كل قسم الصيغة الصحيحة لتلك النقطة النهائية.
+</Aside>
+
+## تنسيق حالة الاختبار
+
+يتبع كل اختبار أدناه هذا الهيكل:
+
+| الحقل | الوصف |
+| --- | --- |
+| **معرّف الاختبار** | رقم الطبقة + معرّف متسلسل (على سبيل المثال، DNS-1، TLS-2) |
+| **ما يثبته** | الحقيقة المحددة في البنية الأساسية التي يتم التحقق منها |
+| **الأمر** | أمر `curl` أو `dig` جاهز للتشغيل |
+| **نجح / فشل** | النتيجة المتوقعة للحالة الصحية مقابل غير الصحية |
+| **الإصلاح** | رابط إلى قسم الإعداد أو استكشاف الأخطاء والإصلاح ذي الصلة |
+
+---
+
+## الطبقة 1: دقة أسماء النطاقات
+
+DNS هي الأساس — إذا لم ينحل اسم المجال إلى عنوان IP الافتراضي لموازن التحميل، فلن يعمل أي شيء آخر.
+
+### DNS-1: دقة سجل A
+
+**ما يثبته:** ينحل اسم المجال إلى عنوان IP الافتراضي لموازن التحميل.
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; تم إرجاع عنوان IP الافتراضي (على سبيل المثال، `72.19.3.185`) | ينحل اسم المجال إلى عنوان IP الافتراضي لموازن التحميل |
+| **فشل** &mdash; استجابة فارغة | لم يتم تكوين سجل DNS A |
+
+**الإصلاح:** [أتمتة واجهة برمجية التطبيقات &mdash; الخطوة 4: تكوين DNS](/csd/demo/phase-1-build/#step-4-configure-dns)
+
+<Aside type="tip">
+**ذاكرة تخزين مؤقت DNS السلبية:** إذا عاد اسم المجال سابقاً `NXDOMAIN`، فقد تخزن الموصلات العودية ذلك الناتج مؤقتاً. تحقق من خادم أسماء السلطة للقضاء على ذاكرة التخزين المؤقت العالقة: `dig +short xF5XC_DOMAINNAMEx A @ns1.f5clouddns.com` أو استخدم موصل عام مثل `@8.8.8.8`.
+</Aside>
+
+### DNS-2: سجل تحدي ACME
+
+**ما يثبته:** سجل تحدي ACME موجود لتوفير شهادات TLS التلقائية.
+
+```bash
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx TXT
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; CNAME إلى `*.autocerts.ves.volterra.io.` (DNS خارجي) | تحدي ACME CNAME في مكانه |
+| **نجح** &mdash; سجل TXT برقم مجال (F5 Distributed Cloud (F5 XC) DNS مُدار) | تحقق تحدي ACME بناءً على منصة TXT من خلال سجل TXT |
+| **فشل** &mdash; كلاهما فارغ | لم يتم تكوين سجل ACME؛ ستبقى الشهادة في `PreDomainChallengePending` |
+
+<Aside type="note">
+عند استخدام F5 XC DNS مُدار مع تفعيل `allow_http_lb_managed_records`، تقوم المنصة بإنشاء سجل **TXT** تلقائياً (وليس CNAME) في مجموعة مجموعة RR `x-ves-io-managed`. يتم التعامل مع التحقق من صحة ACME المبني على TXT داخلياً. عند استخدام DNS الخارجي، يجب عليك إنشاء CNAME يدويًا إلى `*.autocerts.ves.volterra.io`.
+</Aside>
+
+**الإصلاح:** لـ DNS الخارجي، أنشئ CNAME: `_acme-challenge.xF5XC_DOMAINNAMEx` &rarr; `*.autocerts.ves.volterra.io`. لـ F5 XC DNS مُدار، فعّل `allow_http_lb_managed_records` على منطقة DNS — راجع [DNS-4](#dns-4-f5-xc-managed-records-enabled). راجع [أتمتة واجهة برمجية التطبيقات &mdash; الخطوة 4](/csd/demo/phase-1-build/#step-4-configure-dns).
+
+### DNS-3: سلطة خادم الأسماء
+
+**ما يثبته:** ما إذا كانت F5 XC هي موفر DNS سلطة النطاق الجذر.
+
+```bash
+dig +short NS xF5XC_ROOT_DOMAINx
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| يتضمن `ns1.f5clouddns.com` و `ns2.f5clouddns.com` | F5 XC DNS مُدار — يمكن إنشاء السجلات تلقائياً |
+| خوادم أسماء أخرى | DNS الخارجي — يجب إنشاء السجلات يدويًا |
+
+**الإصلاح:** [أتمتة واجهة برمجية التطبيقات &mdash; الكشف عن سلطة DNS](/csd/demo/phase-1-build/#detect-dns-authority)
+
+### DNS-4: تفعيل سجلات F5 XC المُدارة
+
+**ما يثبته:** منطقة F5 XC DNS تسمح بإنشاء السجلات التلقائي لموازنات التحميل (F5 XC DNS مُدار فقط).
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq '.spec.primary.allow_http_lb_managed_records'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; `true` | ستقوم المنصة بإنشاء سجلات A و ACME تلقائياً لموازنات التحميل |
+| **فشل** &mdash; `false` أو `null` | تم تعطيل السجلات المُدارة؛ فعّل عبر تحديث المنطقة |
+
+<Aside type="caution">
+نتيجة `false` هي خطأ شائع في التكوين عند استخدام F5 XC DNS مُدار. بدون تفعيل السجلات المُدارة، لا يمكن للمنصة إنشاء سجل A تلقائياً (يشير إلى عنوان IP الافتراضي) أو CNAME تحدي ACME (مطلوب لتوفير شهادة TLS). هذا يجعل موازن التحميل عالقاً في `VIRTUAL_HOST_PENDING_A_RECORD` والشهادة تبقى في `PreDomainChallengePending`. فعّل السجلات المُدارة على منطقة DNS أو أنشئ السجلات يدويًا.
+</Aside>
+
+**الإصلاح:** [أتمتة واجهة برمجية التطبيقات &mdash; الخيار A: F5 XC DNS مُدار](/csd/demo/phase-1-build/#option-a-f5-xc-managed-dns)
+
+---
+
+## الطبقة 2: شهادة TLS
+
+بعد أن ينحل DNS، يجب أن يحصل موازن التحميل على شهادة TLS صالحة.
+
+### TLS-1: حالة الشهادة
+
+<Aside type="note">
+**ينطبق هذا الاختبار على موازن التحميل HTTPS فقط (`${F5XC_LB_NAME}-https`).** موازن التحميل HTTP ليس لديه شهادة. في بيئات العرض التوضيحي، يكون TLS-1 معلوماتياً — إذا أظهر `AutoCertDomainRateLimited`، يتابع العرض التوضيحي عادةً باستخدام `http://` عناوين URL عبر موازن التحميل HTTP.
+</Aside>
+
+**ما يثبته:** تم إصدار شهادة TLS تلقائية على موازن التحميل HTTPS.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '.spec.cert_state'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; `"CertificateValid"` أو `"AutoCertRenewing"` | الشهادة صالحة وفعالة |
+| **تحذير** &mdash; `"DomainChallengePending"` أو `"DomainChallengeStarted"` | تحدي ACME قيد المعالجة &mdash; انتظر 5&ndash;10 دقائق |
+| **معلومة** &mdash; `"AutoCertDomainRateLimited"` | تم ضرب حد معدل Let's Encrypt &mdash; متوقع في بيئات العرض التوضيحي، لا يؤثر على موازن التحميل HTTP |
+| **فشل** &mdash; `"PreDomainChallengePending"` | سجل تحدي ACME مفقود &mdash; راجع [DNS-2](#dns-2-acme-challenge-record) |
+
+**الإصلاح:** تأكد من وجود سجل تحدي ACME (CNAME لـ DNS الخارجي، أو فعّل السجلات المُدارة لـ F5 XC DNS). يستغرق توفير الشهادة **5&ndash;10 دقائق** بعد تكوين السجل. إذا عالقت بعد 15 دقيقة، راجع [شهادة عالقة &mdash; إعادة إنشاء نظيفة](/csd/demo/#certificate-stuck--clean-recreation-optional). إذا تم تقييد المعدل، فموازن التحميل HTTP غير متأثر.
+
+### TLS-2: تفاصيل الشهادة
+
+**ما يثبته:** الشهادة تغطي اسم المجال المتوقع وتظهر معلومات انتهاء الصلاحية. ينطبق فقط على موازن التحميل HTTPS.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{
+    cert_state: .spec.cert_state,
+    auto_cert_info: .spec.auto_cert_info
+  }'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; `auto_cert_info` يحتوي على `dns_records` وبيانات وصفية للشهادة | تفاصيل توفير الشهادة متاحة |
+| **فشل** &mdash; `auto_cert_info` هو `null` أو فارغ | لم تتم معالجة الشهادة بعد |
+
+### TLS-3: بدء TLS مباشر
+
+**ما يثبته:** شهادة TLS صالحة وينتهي بدء التشغيل بنجاح من جانب العميل. ينطبق فقط عندما يكون لموازن التحميل HTTPS شهادة صالحة.
+
+<Aside type="note">
+في بيئات العرض التوضيحي، استخدم `curl http://xF5XC_DOMAINNAMEx/` (HTTP وليس HTTPS) كمسار التحقق الأساسي. اختبار بدء TLS اختياري — يعمل فقط عندما تكون شهادة موازن التحميل HTTPS `CertificateValid`.
+</Aside>
+
+```bash
+curl -sv "https://xF5XC_DOMAINNAMEx/" 2>&1 \
+  | grep -E 'SSL connection|subject:|expire date:|issuer:'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; يظهر `SSL connection using TLSv1.3`، موضوع صالح وانتهاء صلاحية | بدء TLS الشامل يعمل |
+| **فشل** &mdash; الاتصال مرفوض أو خطأ شهادة | تحقق من دقة اسم المجال وحالة الشهادة؛ إذا تم تقييد المعدل، استخدم HTTP بدلاً من ذلك |
+
+### TLS-4: هدف سجل ACME من موازن التحميل
+
+**ما يثبته:** موازن التحميل HTTPS يبلغ عن هدف ACME الصحيح للتحقق من الشهادة.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{
+    vip_ip: .spec.dns_info[0].ip_address,
+    acme_target: .spec.auto_cert_info.dns_records
+  }'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; `vip_ip` و `acme_target` مملوء | يمكن التحقق من سجلات DNS مقابل هذه القيم |
+| **فشل** &mdash; قيم `null` | قد لا يكون لموازن التحميل `https_auto_cert` مكوّن |
+
+---
+
+## الطبقة 3: موازن التحميل HTTP
+
+يجب أن يكون موازن التحميل في حالة جاهزة ومكوّن بشكل صحيح.
+
+### LB-1: حالة التشغيل
+
+**ما يثبته:** موازن التحميل HTTP (الأساسي) قيد التشغيل الكامل ويقبل حركة المرور.
+
+<Aside type="note">
+**موازن التحميل HTTP هو هدف التحقق الأساسي.** في بيئات العرض التوضيحي، تحقق من موازن التحميل HTTP (`${F5XC_LB_NAME}-http`) أولاً — فهو يصل إلى `VIRTUAL_HOST_READY` بمجرد انحلال DNS، بدون تبعية شهادة. استخدم `curl http://xF5XC_DOMAINNAMEx/` للتحقق الأساسي القائم على HTTP.
+</Aside>
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '.spec.state'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; `"VIRTUAL_HOST_READY"` | موازن التحميل قيد التشغيل |
+| **فشل** &mdash; `"VIRTUAL_HOST_PENDING_A_RECORD"` | لم يتم تكوين سجل DNS A &mdash; راجع [DNS-1](#dns-1-a-record-resolution) |
+
+**الإصلاح:** [موازن التحميل عالق في VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record)
+
+### LB-2: تكوين المجال
+
+**ما يثبته:** موازن التحميل HTTP مكوّن لاسم (أسماء) المجال الصحيح.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '.spec.domains'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; تحتوي المصفوفة على اسم نطاقك المؤهل الكامل (على سبيل المثال، `["app.example.com"]`) | موازن التحميل مكوّن للمجال المتوقع |
+| **فشل** &mdash; مجال مفقود أو خاطئ | حدّث مواصفات موازن التحميل بالمجال الصحيح |
+
+### LB-3: تفعيل دفاع جانب العميل على موازن التحميل
+
+**ما يثبته:** دفاع جانب العميل مُفعّل على موازن التحميل بسياسة حقن JS الصحيحة.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{
+    csd_enabled: (if .spec.client_side_defense then true else false end),
+    js_policy: .spec.client_side_defense.policy
+  }'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; `csd_enabled: true` مع `js_insert_all_pages` في السياسة | دفاع جانب العميل نشط مع حقن JS على جميع الصفحات |
+| **فشل** &mdash; `csd_enabled: false` | دفاع جانب العميل غير مكوّن على موازن التحميل |
+
+**الإصلاح:** [مرجع واجهة برمجية التطبيقات &mdash; تفعيل دفاع جانب العميل على موازن التحميل](/csd/api-reference/#enable-csd-on-a-load-balancer)
+
+### LB-4: مجموعة المسار الافتراضي
+
+**ما يثبته:** يشير موازن التحميل إلى مجموعة الأصل الصحيحة بوزن والأولوية المتوقعة.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '.spec.default_route_pools[] | {
+    pool: .pool.name,
+    namespace: .pool.namespace,
+    weight: .weight,
+    priority: .priority
+  }'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; يظهر اسم مجموعة الأصل مع الوزن/الأولوية | موازن التحميل يوجه حركة المرور إلى الواجهة الخلفية الصحيحة |
+| **فشل** &mdash; فارغ أو مجموعة خاطئة | حدّث تكوين `default_route_pools` لموازن التحميل |
+
+### LB-5: حالة النشر (شروط حسب الموقع)
+
+**ما يثبته:** موازن التحميل مشروح وتقارير حالات صحية عبر جميع المواقع.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{
+    state: .spec.state,
+    dns_info: .spec.dns_info,
+    host_name: .spec.host_name
+  }'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; `state` هو `VIRTUAL_HOST_READY`، `dns_info` مملوء | موازن التحميل مشروح بالكامل مع عنوان IP الافتراضي |
+| **فشل** &mdash; حالة قيد الانتظار أو `dns_info` فارغ | مشكلة DNS أو شهادة تحجب النشر |
+
+<Aside type="tip">
+عندما لا يكون موازن التحميل في حالة `VIRTUAL_HOST_READY`، تحقق من `.status[].virtual_host_status.error_description` للحصول على نفس تفاصيل الخطأ المعروضة في واجهة مستخدم F5 XC:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '[.status[]? | select(.virtual_host_status != null) | .virtual_host_status | {state, error_description, suggested_action}]'
+```
+</Aside>
+
+### LB-6: ملخص موازن التحميل الكامل
+
+**ما يثبته:** لقطة شاملة لتكوينات موازن التحميل لاستكشاف الأخطاء.
+
+**موازن التحميل HTTP (الأساسي):**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{
+    name: .metadata.name,
+    state: .spec.state,
+    domains: .spec.domains,
+    csd_enabled: (if .spec.client_side_defense then true else false end),
+    route_pools: [.spec.default_route_pools[] | .pool.name],
+    advertise: (if .spec.advertise_on_public_default_vip then "public_default_vip" else "custom" end)
+  }'
+```
+
+**موازن التحميل HTTPS (الثانوي — يتضمن حالة الشهادة):**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{
+    name: .metadata.name,
+    state: .spec.state,
+    cert_state: .spec.cert_state,
+    domains: .spec.domains,
+    csd_enabled: (if .spec.client_side_defense then true else false end),
+    route_pools: [.spec.default_route_pools[] | .pool.name]
+  }'
+```
+
+---
+
+## الطبقة 4: مجموعة الأصل
+
+تحدد مجموعة الأصل خوادم الواجهة الخلفية التي يوجه موازن التحميل حركة المرور إليها.
+
+### OP-1: تكوين مجموعة الأصل
+
+**ما يثبته:** مجموعة الأصل موجودة مع خادم الواجهة الخلفية والمنفذ والخوارزمية الصحيحة.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '{
+    name: .metadata.name,
+    origin_servers: [.spec.origin_servers[] | {
+      ip: .public_ip.ip,
+      labels: .labels
+    }],
+    port: .spec.port,
+    lb_algorithm: .spec.loadbalancer_algorithm,
+    endpoint_selection: .spec.endpoint_selection
+  }'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; يظهر عنوان IP والمنفذ والخوارزمية الصحيحة | مجموعة الأصل مكوّنة بشكل صحيح |
+| **فشل** &mdash; `404` أو قيم خاطئة | مجموعة الأصل مفقودة أو غير مكوّنة |
+
+**الإصلاح:** [أتمتة واجهة برمجية التطبيقات &mdash; الخطوة 2: إنشاء مجموعة الأصل](/csd/demo/phase-1-build/#step-2-create-origin-pool)
+
+### OP-2: TLS إلى الأصل
+
+**ما يثبته:** ما إذا تم تكوين TLS للاتصال بين موازن التحميل وخادم الأصل.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '{
+    tls_config: (if .spec.no_tls then "no_tls (plaintext)" elif .spec.use_tls then "use_tls (encrypted)" else "unknown" end)
+  }'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| `no_tls (plaintext)` | يتصل موازن التحميل بالأصل عبر HTTP (متوقع لعرض Juice Shop التوضيحي) |
+| `use_tls (encrypted)` | يتصل موازن التحميل بالأصل عبر HTTPS |
+
+### OP-3: ارتباط فحص الصحة
+
+**ما يثبته:** مجموعة الأصل لديها فحص الصحة الصحيح المرتبط (إن أمكن).
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '.spec.healthcheck'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; مصفوفة مع مرجع فحص الصحة (الاسم والمساحة النطاقية والنوع) | فحص الصحة مرتبط |
+| **حسناً** &mdash; مصفوفة فارغة `[]` | لا يوجد فحص صحة (مقبول &mdash; دفاع جانب العميل لا يتطلبه) |
+| **فشل** &mdash; كان يجب أن يكون هناك فحص صحة ولكن المصفوفة فارغة | لم يتم العثور على فحص الصحة عند الإنشاء &mdash; راجع [فحص الصحة غير مرتبط بمجموعة الأصل](/csd/demo/#healthcheck-not-linked-to-origin-pool) |
+
+### OP-4: اتصال الأصل
+
+**ما يثبته:** خادم الأصل قابل للوصول من جانب العميل (لا يختبر مسار LB-to-origin).
+
+```bash
+curl -s -o /dev/null -w '%{http_code}' \
+  "http://xF5XC_ORIGIN_IPx:xF5XC_ORIGIN_PORTx/"
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; `200` (أو رمز HTTP صالح آخر) | خادم الأصل يستجيب |
+| **فشل** &mdash; `000` أو رفض الاتصال | خادم الأصل غير قابل للوصول من هذه الشبكة |
+
+<Aside type="note">
+يختبر هذا اتصال العميل المباشر إلى الأصل. قد يستخدم مسار LB-to-origin مسار شبكة مختلفاً. الفشل هنا لا يعني بالضرورة أن موازن التحميل لا يمكنه الوصول إلى الأصل.
+</Aside>
+
+---
+
+## الطبقة 5: فحص الصحة
+
+تراقب فحوصات الصحة توفر الواجهة الخلفية. إنها اختيارية لدفاع جانب العميل ولكنها مفيدة لنشرات الإنتاج.
+
+### HC-1: تكوين فحص الصحة
+
+**ما يثبته:** فحص الصحة موجود مع النوع والمسار والتوقيت والعتبات الصحيحة.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx" \
+  | jq '{
+    name: .metadata.name,
+    type: (if .spec.http_health_check then "HTTP" elif .spec.tcp_health_check then "TCP" else "unknown" end),
+    path: .spec.http_health_check.path,
+    expected_status: .spec.http_health_check.expected_status_codes,
+    timeout: .spec.timeout,
+    interval: .spec.interval,
+    unhealthy_threshold: .spec.unhealthy_threshold,
+    healthy_threshold: .spec.healthy_threshold
+  }'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; يظهر نوع HTTP مع المسار `/` و `200` متوقع | فحص الصحة مكوّن بشكل صحيح |
+| **فشل** &mdash; رد `404` | فحص الصحة غير موجود (قد يكون قد تم تخطيه &mdash; راجع [المرحلة 1 الخطوة 1](/csd/demo/phase-1-build/#step-1-create-healthcheck-optional)) |
+
+### HC-2: قائمة جميع فحوصات الصحة
+
+**ما يثبته:** يحسب جميع فحوصات الصحة في المساحة النطاقية للتحقق من التسمية والعد.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks" \
+  | jq -r '
+    ["NAME", "NAMESPACE", "DESCRIPTION"],
+    (.items[] | [
+      .name,
+      .namespace,
+      (.description | if length == 0 then "—" else . end)
+    ])
+    | @tsv' | column -t
+```
+
+<Aside type="note">
+نقطة نهاية القائمة ترجع بيانات ملخصة فقط (الاسم والمساحة النطاقية والوصف). لرؤية تفاصيل التكوين الكاملة (النوع والمسار والفاصل الزمني والمهلة الزمنية)، ابحث عن فحص صحة فردي باستخدام [HC-1](#hc-1-healthcheck-configuration).
+</Aside>
+
+---
+
+## الطبقة 6: تكوين دفاع جانب العميل
+
+يجب تفعيل دفاع جانب العميل على مستوى المستأجر وتكوين علامة حقن JavaScript.
+
+### CSD-1: حالة دفاع جانب العميل للمستأجر
+
+**ما يثبته:** تم تكوين دفاع جانب العميل وتفعيله للمستأجر.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq '{isConfigured, isEnabled}'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; كلاهما `true` | دفاع جانب العميل نشط لهذا المستأجر |
+| **فشل** &mdash; `isConfigured: false` | دفاع جانب العميل غير مفعّل على مستوى المستأجر &mdash; اتصل بمسؤول F5 XC |
+| **فشل** &mdash; `isEnabled: false` | تم تكوين دفاع جانب العميل ولكنه غير نشط |
+
+### CSD-2: علامة حقن JS
+
+**ما يثبته:** تم إنشاء علامة حقن JavaScript دفاع جانب العميل وجاهزة للحقن.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq '{has_script_tag: (.scriptTag | length > 0)}'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; `has_script_tag: true` | علامة حقن JS مكوّنة |
+| **فشل** &mdash; `has_script_tag: false` | لا توجد علامة script &mdash; تحقق من تفعيل دفاع جانب العميل وتسجيل مجال محمي |
+
+### CSD-3: محتوى علامة JS
+
+**ما يثبته:** يعرض علامة script الكاملة للتحقق أو الحقن اليدوي.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq '.scriptTag'
+```
+
+### CSD-4: تسجيل المجال المحمي
+
+**ما يثبته:** تم تسجيل اسم النطاق الجذر كمجال محمي بدفاع جانب العميل على المستأجر.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '.items[] | {name, namespace, description}'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; يظهر عنصر باسم غير فارغ | المجال محمي |
+| **فشل** &mdash; العناصر بها حقول اسم ومساحة نطاقية فارغة | لا توجد مجالات محمية مسجلة &mdash; راجع [المرحلة 1 الخطوة 6](/csd/demo/phase-1-build/#step-6-register-protected-domain) |
+
+<Aside type="note">
+نقطة نهاية قائمة المجالات المحمية ترجع بيانات ملخصة. العناصر التي تحتوي على جميع الحقول الفارغة تشير إلى عدم تكوين أي مجالات محمية. علامة JavaScript دفاع جانب العميل ([CSD-2](#csd-2-js-injection-tag)) هي مؤشر أكثر موثوقية على أن حماية المجال نشطة.
+</Aside>
+
+### CSD-5: التحقق من حقن JS مباشر
+
+**ما يثبته:** JavaScript دفاع جانب العميل يتم حقنه بالفعل في استجابات الصفحات التي يخدمها موازن التحميل.
+
+```bash
+curl -s "http://xF5XC_DOMAINNAMEx/" \
+  | grep -oE '(zeronaught|shape)\.com[^"]*' | head -1
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; ترجع جزء عنوان URL `zeronaught.com` أو `shape.com` (على سبيل المثال، `zeronaught.com/__imp_apg__/js/...`) | يتم حقن JavaScript دفاع جانب العميل في الصفحات |
+| **فشل** &mdash; مخرجات فارغة | لم يتم حقن JS &mdash; تحقق من [LB-3](#lb-3-csd-enabled-on-lb) و [CSD-1](#csd-1-tenant-csd-status) |
+
+---
+
+## الطبقة 7: التحقق من حركة المرور
+
+تحقق من أن حركة المرور الفعلية تصل إلى موازن التحميل ويتم معالجتها بشكل صحيح.
+
+### TV-1: عدد الطلبات (آخر 24 ساعة)
+
+**ما يثبته:** حركة المرور تصل إلى موازن التحميل. النتائج الفارغة تعني عدم وصول حركة المرور.
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start_time": "'"$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)"'",
+    "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"
+  }' \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs/aggregation" \
+  | jq '{total_requests: .total_hits}'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; `total_requests` هو سلسلة غير صفرية (على سبيل المثال، `"380"`) | حركة المرور تتدفق عبر موازن التحميل |
+| **فشل** &mdash; `"0"` أو بدون بيانات | لا توجد حركة مرور تصل إلى موازن التحميل &mdash; تحقق من [DNS-1](#dns-1-a-record-resolution) و [LB-1](#lb-1-operational-state) |
+
+<Aside type="note">
+تُرجع قيمة `total_hits` كـ **سلسلة** (على سبيل المثال، `"380"`)، وليس عدداً صحيحاً. يتم استنتاج المساحة النطاقية من مسار عنوان URL — لا تدرجها في نص الطلب.
+</Aside>
+
+### TV-2: توزيع رمز الحالة
+
+**ما يثبته:** توزيع رموز الحالة الرد يكشف عن أنماط الخطأ.
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start_time": "'"$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)"'",
+    "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",
+    "sort": "DESCENDING",
+    "limit": 100
+  }' \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs" \
+  | jq -r '
+    [.logs[] | fromjson | .rsp_code_class]
+    | group_by(.) | map({class: .[0], count: length})
+    | sort_by(-.count)
+    | ["STATUS_CLASS", "COUNT"], (.[] | [.class, .count])
+    | @tsv' | column -t
+```
+
+<Aside type="note">
+نقطة النهاية aggregation لا تدعم bucketing `terms` — تُرجع `aggs` دائماً فارغة. يجلب هذا الأمر أحدث 100 إدخال سجل ويحسب التوزيع من جانب العميل. كل إدخال سجل هو **سلسلة JSON** يجب تحليلها باستخدام `fromjson`.
+</Aside>
+
+الناتج المتوقع لموقع صحي:
+
+```
+STATUS_CLASS                  COUNT
+2xx                           82
+downstream_remote_disconnect  18
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; معظمها `2xx` | الموقع يخدم استجابات ناجحة |
+| **تحذير** &mdash; عدد `4xx` مرتفع | أخطاء العميل (عناوين URL سيئة، موارد مفقودة) |
+| **فشل** &mdash; عدد `5xx` مرتفع | أخطاء الخادم &mdash; تحقق من صحة خادم الأصل |
+
+تشير فئة `downstream_remote_disconnect` إلى أن العميل أغلق الاتصال قبل اكتمال الرد (شائع لطلبات المراقبة الطويلة أو طلبات ترقية WebSocket).
+
+### TV-3: عينات الطلب الحديثة
+
+**ما يثبته:** يتم تسجيل الطلبات الفردية بالحقول الصحيحة.
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start_time": "'"$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-1H +%Y-%m-%dT%H:%M:%SZ)"'",
+    "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",
+    "sort": "DESCENDING",
+    "limit": 10
+  }' \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs" \
+  | jq -r '
+    ["TIMESTAMP", "METHOD", "PATH", "STATUS", "SRC_IP"],
+    (.logs[] | fromjson | [.["@timestamp"], .method, .req_path, .rsp_code, .src_ip])
+    | @tsv' | column -t
+```
+
+<Aside type="caution">
+كل إدخال في المصفوفة `.logs[]` هو **سلسلة JSON**، وليس كائناً محللاً. يجب عليك نقل `fromjson` في jq قبل الوصول إلى الحقول (على سبيل المثال، `.logs[] | fromjson | .method`).
+</Aside>
+
+### TV-4: حقن JS دفاع جانب العميل في سجلات الوصول
+
+**ما يثبته:** تؤكد سجلات الوصول أن JavaScript دفاع جانب العميل يتم حقنه في الاستجابات.
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start_time": "'"$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-1H +%Y-%m-%dT%H:%M:%SZ)"'",
+    "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",
+    "sort": "DESCENDING",
+    "limit": 20
+  }' \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs" \
+  | jq '[.logs[] | fromjson | select(.csd_js_injection == "true")] | length as $injected |
+    {injected_count: $injected, total_sampled: 20}'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; `injected_count` > 0 | يتم حقن JS دفاع جانب العميل في استجابات الصفحات |
+| **فشل** &mdash; `injected_count: 0` | لم يتم حقن JS &mdash; تحقق من [CSD-1](#csd-1-tenant-csd-status) و [LB-3](#lb-3-csd-enabled-on-lb) |
+
+<Aside type="note">
+حقل `csd_js_injection` موجود فقط على إدخالات السجل حيث حدث الحقن. في الاختبار، كان 40% من إدخالات السجل المأخوذة عينات `csd_js_injection: "true"` (طلبات صفحات HTML)، بينما 60% كان الحقل غائباً (موارد ثابتة مثل `.ico`، `.js`، `.css` الملفات واتصالات WebSocket). يجب أن تُظهر طلبات صفحات HTML الحقن؛ عادةً ما لا تُظهر استدعاءات API وطلبات الموارد الثابتة.
+</Aside>
+
+### TV-5: اختبار اتصال من البداية إلى النهاية
+
+**ما يثبته:** طلب كامل يتدفق من خلال DNS والعميل وموازن التحميل والأصل وترجع استجابة صالحة.
+
+```bash
+curl -sv "http://xF5XC_DOMAINNAMEx/" 2>&1 \
+  | grep -E 'Connected to|< HTTP|< content-type'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; يظهر اتصال و HTTP 200 و content-type | المكدس الكامل يعمل بشكل صحيح |
+| **فشل** &mdash; رفض الاتصال أو خطأ DNS | ابدأ استكشاف الأخطاء في [الطبقة 1: دقة أسماء النطاقات](#layer-1-dns-resolution) |
+
+<Aside type="tip">
+لاختبار بدء TLS الشامل (فقط عندما تكون شهادة موازن التحميل HTTPS صالحة)، استخدم `curl -sv "https://xF5XC_DOMAINNAMEx/"` وتحقق من `SSL connection` في الناتج.
+</Aside>
+
+---
+
+## الطبقة 8: قياس دفاع جانب العميل والسياسة الخاصة بالمجال
+
+تستعلم هذه الأوامر نفس البيانات المعروضة في لوحة معلومات [وحدة تحكم دفاع جانب العميل](/csd/csd-console/)، وقائمة النصوص البرمجية، وحقول النموذج، وعروض الشبكة.
+
+### TEL-1: جرد البرامج النصية
+
+**ما يثبته:** دفاع جانب العميل يكتشف ويفهرس البرامج النصية التي تعمل على المجال المحمي.
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"startTime\": \"${START}\",
+    \"endTime\": \"${NOW}\"
+  }" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq -r '
+    ["SCRIPT", "RISK", "STATUS", "FIELDS", "USERS"],
+    (.scripts[] | [
+      (.script_name | if length > 50 then .[:47] + "..." else . end),
+      .risk_level,
+      .status,
+      (.form_fields_read // 0),
+      (.affected_users_count // 0)
+    ])
+    | @tsv' | column -t
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; النصوص البرمجية مدرجة مع مستويات الخطر | يراقب دفاع جانب العميل البرامج النصية بنشاط |
+| **فشل** &mdash; مصفوفة فارغة | راجع [استكشاف الأخطاء: مصفوفة البرامج النصية الفارغة](#empty-scripts-array) |
+
+<Aside type="tip">
+أسماء البرامج النصية عبارة عن عناوين URL كاملة وقد تكون طويلة جداً. يختصر الأمر أعلاه الأسماء إلى 50 حرفاً لسهولة القراءة في الطرفية. أزل مرشح الاختزال لرؤية عناوين URL الكاملة.
+</Aside>
+
+### TEL-2: المجالات المكتشفة
+
+**ما يثبته:** اكتشف دفاع جانب العميل مجالات مصدر البرامج النصية وصنفها حسب الحالة.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{
+    summary: {
+      action_needed: .domain_summary.actionNeededCount.count,
+      mitigated: .domain_summary.mitigatedDomains.count,
+      allowed: .domain_summary.allowedDomains.count,
+      total: .domain_summary.totalDomains.count
+    },
+    domains: [.domains_list[] | {
+      domain: .domain,
+      category: .category,
+      status: .status,
+      first_seen: (.firstSeenDate | tonumber | todate),
+      latest_seen: (.latestSeenDate | tonumber | todate)
+    }]
+  }'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; `total` > 0 مع المجالات المدرجة | يتتبع دفاع جانب العميل مجالات البرامج النصية |
+| **تحذير** &mdash; `action_needed` > 0 | بعض المجالات تحتاج إلى مراجعة |
+| **فشل** &mdash; استجابة فارغة | لا توجد بيانات قياس &mdash; تحقق من [CSD-5](#csd-5-live-js-injection-verification) |
+
+### TEL-3: حالة سياسة المجال
+
+**ما يثبته:** يعرض توزيع المجالات المسموح مقابل المخفف وما إذا كانت السياسة متسقة.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{
+    action_needed: .domain_summary.actionNeededCount.count,
+    mitigated: .domain_summary.mitigatedDomains.count,
+    allowed: .domain_summary.allowedDomains.count,
+    total: .domain_summary.totalDomains.count,
+    domains_needing_action: [.domains_list[] | select(.status == "AN") | .domain]
+  }'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; `action_needed: 0` | تم مراجعة جميع المجالات وتصنيفها |
+| **تحذير** &mdash; `action_needed` > 0 | المجالات المدرجة في `domains_needing_action` تتطلب مراجعة |
+
+### TEL-4: جرد حقول النموذج
+
+**ما يثبته:** اكتشف دفاع جانب العميل حقول النموذج التي تقرأها البرامج النصية، مع تصنيف الحساسية.
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields?startTime=${START}&endTime=${NOW}" \
+  | jq -r '
+    ["FIELD", "SENSITIVITY", "SCRIPTS"],
+    (.form_fields[] | [
+      .name,
+      .analysis,
+      (.scripts_count // 0)
+    ])
+    | @tsv' | column -t
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; حقول النموذج مدرجة مع الحساسية | يتتبع دفاع جانب العميل الوصول إلى حقول النموذج |
+| **معلومة** &mdash; مصفوفة فارغة | لم يتم اكتشاف حقول نموذج (متوقع إذا لم يكن هناك نماذج على الموقع) |
+
+### TEL-5: دراسة البرنامج النصي العميقة
+
+**ما يثبته:** معلومات مفصلة عن برنامج نصي محدد بما في ذلك الخطر والسلوكيات والتفاعلات الشبكية.
+
+أولاً، احصل على معرّف برنامج نصي من [TEL-1](#tel-1-script-inventory)، ثم ابحث عن تفاصيله:
+
+```bash
+SCRIPT_ID="your-script-id"
+
+# نظرة عامة (مستوى الخطر والنوع ومجال المصدر)
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/dashboard" \
+  | jq '{script_name, risk_level, type, source_domain, status}'
+
+# السلوكيات عبر الوقت
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/behaviors" \
+  | jq '.behaviors'
+
+# التفاعلات الشبكية (المجالات التي يتصل بها البرنامج النصي)
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/networkInteractions" \
+  | jq '.network_interactions'
+```
+
+### TEL-6: المستخدمون المتأثرون
+
+**ما يثبته:** يسرد المستخدمين المتأثرين ببرنامج نصي محدد، مما يوضح نطاق التعرض.
+
+```bash
+SCRIPT_ID="your-script-id"
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"startTime\": \"${START}\",
+    \"endTime\": \"${NOW}\"
+  }" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/affectedUsers" \
+  | jq -r '
+    ["IP_ADDRESS", "DEVICE_ID", "GEO", "CHANNEL", "USER_AGENT"],
+    (.affected_users[] | [
+      .ip_address,
+      (.device_id | if length > 12 then .[:12] + "..." else . end),
+      .geolocation,
+      .channel,
+      (.user_agent | if length > 30 then .[:27] + "..." else . end)
+    ])
+    | @tsv' | column -t
+```
+
+### TEL-7: عدد البرامج النصية حسب مستوى الخطر
+
+**ما يثبته:** توزيع الخطر المجمع عبر جميع البرامج النصية المكتشفة.
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"startTime\": \"${START}\",
+    \"endTime\": \"${NOW}\"
+  }" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq '[.scripts[] | .risk_level] | group_by(.) | map({risk_level: .[0], count: length}) | sort_by(-.count)'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; الكل `No Risk` | لم يتم اكتشاف برامج نصية خطرة |
+| **تحذير** &mdash; `Low Risk` أو `High Risk` حالية | راجع البرامج النصية المُشارة في [TEL-5](#tel-5-script-deep-dive) |
+
+### TEL-8: حداثة القياس
+
+**ما يثبته:** بيانات قياس دفاع جانب العميل حديثة، مما يؤكد المراقبة النشطة.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{
+    total_domains: .domain_summary.totalDomains.count,
+    latest_update: (.domain_summary.totalDomains.lastUpdated // "unknown"),
+    most_recent_domain: (.domains_list | sort_by(.latestSeenDate) | last | {
+      domain: .domain,
+      latest_seen: (.latestSeenDate | tonumber | todate)
+    })
+  }'
+```
+
+| النتيجة | المعنى |
+| --- | --- |
+| **نجح** &mdash; `latest_seen` خلال آخر 24 ساعة | يجمع القياس بنشاط بيانات |
+| **تحذير** &mdash; `latest_seen` أقدم من 24 ساعة | قد تكون حركة المرور توقفت أو معالجة دفاع جانب العميل متأخرة |
+
+---
+
+## لوحة المعلومات الشاملة
+
+قم بتشغيل أمر واحد يتحقق من جميع مؤشرات الصحة الحرجة عبر كل طبقة وينتج جدول ملخص:
+
+```bash
+echo "=== لوحة معلومات التحقق من دفاع جانب العميل ==="
+echo ""
+
+# الطبقة 1: DNS
+DNS_A=$(dig +short xF5XC_DOMAINNAMEx A | head -1)
+DNS_ACME=$(dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME | head -1)
+
+# الطبقات 2-3: موازن التحميل + TLS
+LB=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http")
+LB_HTTPS=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+
+LB_STATE=$(echo "$LB" | jq -r '.spec.state // "UNKNOWN"')
+CERT_STATE=$(echo "$LB_HTTPS" | jq -r '.spec.cert_state // "UNKNOWN"')
+CSD_ON_LB=$(echo "$LB" | jq -r 'if .spec.client_side_defense then "ENABLED" else "DISABLED" end')
+DOMAINS=$(echo "$LB" | jq -r '.spec.domains | join(", ")')
+ROUTE_POOL=$(echo "$LB" | jq -r '[.spec.default_route_pools[] | .pool.name] | join(", ")')
+
+# الطبقة 6: حالة دفاع جانب العميل
+CSD=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status")
+
+CSD_CONFIGURED=$(echo "$CSD" | jq -r '.isConfigured // false')
+CSD_ENABLED=$(echo "$CSD" | jq -r '.isEnabled // false')
+
+# الطبقة 6: تكوين JS
+JS_TAG=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq -r 'if (.scriptTag | length) > 0 then "PRESENT" else "MISSING" end')
+
+# الطبقة 7: حركة المرور (آخر 24 ساعة)
+TRAFFIC=$(curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"start_time\": \"$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)\",
+    \"end_time\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+  }" \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs/aggregation" \
+  | jq -r '.total_hits // "0"')
+
+printf "%-28s %s\n" "CHECK" "STATUS"
+printf "%-28s %s\n" "----------------------------" "----------------------------"
+printf "%-28s %s\n" "[DNS] A Record" "${DNS_A:-NOT_FOUND}"
+printf "%-28s %s\n" "[DNS] ACME CNAME" "${DNS_ACME:-NOT_FOUND}"
+printf "%-28s %s\n" "[TLS] Certificate" "$CERT_STATE"
+printf "%-28s %s\n" "[LB] State" "$LB_STATE"
+printf "%-28s %s\n" "[LB] Domains" "$DOMAINS"
+printf "%-28s %s\n" "[LB] Route Pool" "$ROUTE_POOL"
+printf "%-28s %s\n" "[LB] CSD on LB" "$CSD_ON_LB"
+printf "%-28s %s\n" "[CSD] Configured (tenant)" "$CSD_CONFIGURED"
+printf "%-28s %s\n" "[CSD] Enabled" "$CSD_ENABLED"
+printf "%-28s %s\n" "[CSD] JS Script Tag" "$JS_TAG"
+printf "%-28s %s\n" "[Traffic] Requests (24h)" "$TRAFFIC"
+```
+
+---
+
+## مرجع حقل سجل الوصول
+
+<Aside type="caution">
+كل إدخال في المصفوفة `.logs[]` هو **سلسلة JSON**، وليس كائناً محللاً. يجب عليك نقل `fromjson` في jq قبل الوصول إلى الحقول (على سبيل المثال، `.logs[] | fromjson | .method`).
+</Aside>
+
+| الحقل | النوع | الوصف |
+| --- | --- | --- |
+| `@timestamp` | سلسلة | طابع زمني للطلب (ISO 8601). لاحظ بادئة `@` — الوصول مع `.["@timestamp"]` في jq |
+| `method` | سلسلة | طريقة HTTP (GET، POST، إلخ) |
+| `req_path` | سلسلة | مسار طلب URI |
+| `rsp_code` | سلسلة | رمز حالة استجابة HTTP كسلسلة (على سبيل المثال، `"200"`، `"404"`) |
+| `rsp_code_class` | سلسلة | فئة رمز الحالة (`2xx`، `3xx`، `4xx`، `5xx`، أو `downstream_remote_disconnect`) |
+| `src_ip` | سلسلة | عنوان IP مصدر العميل |
+| `dst_ip` | سلسلة | عنوان IP الوجهة (الافتراضي) |
+| `domain` | سلسلة | قيمة رأس Host للطلب |
+| `user_agent` | سلسلة | سلسلة User-Agent للعميل |
+| `rsp_size` | سلسلة | حجم نص استجابة بالبايت (مُرجع كسلسلة) |
+| `req_size` | سلسلة | حجم نص الطلب بالبايت (مُرجع كسلسلة) |
+| `duration_with_data_tx_delay` | سلسلة | إجمالي مدة الطلب بالثواني (مُرجع كسلسلة، على سبيل المثال، `"0.024219"`) |
+| `csd_js_injection` | سلسلة | `"true"` عند حقن JavaScript دفاع جانب العميل (موجود فقط عند النشاط) |
+
+## مرجع حقل قياس دفاع جانب العميل
+
+| الحقل | نقطة النهاية | الوصف |
+| --- | --- | --- |
+| `isConfigured` | الحالة | تم تفعيل دفاع جانب العميل على مستوى المستأجر |
+| `isEnabled` | الحالة | دفاع جانب العميل نشط لهذه المساحة النطاقية |
+| `scripts[]` | البرامج النصية | مصفوفة كائنات البرامج النصية المكتشفة |
+| `.script_name` | البرامج النصية | عنوان URL الكامل لملف JavaScript |
+| `.risk_level` | البرامج النصية | مستوى الخطر (No Risk، Low Risk، High Risk) |
+| `.status` | البرامج النصية | AN (حاجة إلى إجراء) أو NA (لا حاجة إلى إجراء) |
+| `.form_fields_read` | البرامج النصية | عدد حقول النموذج التي يقرأها البرنامج النصي |
+| `.affected_users_count` | البرامج النصية | عدد المستخدمين/الجلسات الفريدة المتأثرة |
+| `domain_summary` | detected_domains | العد حسب الحالة: `.actionNeededCount.count`، `.mitigatedDomains.count`، `.allowedDomains.count`، `.totalDomains.count` (لكل منها `.count` و `.lastUpdated`) |
+| `domains_list[]` | detected_domains | مصفوفة كائنات المجال المكتشفة مع `.domain`، `.status`، `.category`، `.firstSeenDate`، `.latestSeenDate` (ثواني epoch كسلاسل) |
+| `form_fields[]` | formFields | مصفوفة كائنات حقل النموذج المكتشفة |
+| `.analysis` | formFields | تصنيف الحساسية (حساس، غير حساس) |
+
+## استكشاف الأخطاء
+
+### سجلات الوصول الصفرية
+
+إذا عاد [TV-1](#tv-1-request-count-last-24-hours) `0`:
+
+<Steps>
+1. **تحقق من دقة DNS** — تحقق من انحلال اسم المجال إلى عنوان IP الافتراضي لموازن التحميل:
+   ```bash
+   dig +short xF5XC_DOMAINNAMEx A
+   ```
+   إذا كان فارغاً، لم يتم تكوين DNS. راجع [أتمتة واجهة برمجية التطبيقات &mdash; الخطوة 4](/csd/demo/phase-1-build/#step-4-configure-dns).
+
+2. **تحقق من حالة موازن التحميل** — يجب أن يكون موازن التحميل `VIRTUAL_HOST_READY`:
+   ```bash
+   curl -s \
+     -H "Authorization: APIToken xF5XC_API_TOKENx" \
+     "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+     | jq '.spec.state'
+   ```
+
+3. **أرسل طلب اختبار** — أنشئ حركة المرور للتحقق من الاتصال الشامل:
+   ```bash
+   curl -sv "http://xF5XC_DOMAINNAMEx/" 2>&1 | head -20
+   ```
+   ابحث عن استجابة HTTP ناجحة. استخدم `https://` فقط إذا كانت شهادة موازن التحميل HTTPS صالحة.
+</Steps>
+
+### السجلات المُدارة معطلة على منطقة DNS
+
+إذا عاد [DNS-4](#dns-4-f5-xc-managed-records-enabled) `false`، فإن إنشاء السجل التلقائي معطّل حتى على الرغم من أن F5 XC هي موفر DNS السلطة. هذا خطأ شائع في التكوين يسبب فقدان كل من سجل A و CNAME ACME، مما يمنع موازن التحميل من الوصول إلى `VIRTUAL_HOST_READY` والشهادة من الإصدار.
+
+لتفعيل السجلات المُدارة، حدّث تكوين منطقة DNS لتعيين `allow_http_lb_managed_records: true`. راجع [أتمتة واجهة برمجية التطبيقات &mdash; الخيار A: F5 XC DNS مُدار](/csd/demo/phase-1-build/#option-a-f5-xc-managed-dns) لاستدعاء واجهة برمجية التطبيقات.
+
+### موازن التحميل عالق في VIRTUAL_HOST_PENDING_A_RECORD
+
+ينتظر موازن التحميل سجل DNS A يشير إلى عنوانه الافتراضي. راجع [موازن التحميل عالق في VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record) لخطوات الحل التفصيلية.
+
+### شهادة عالقة في PreDomainChallengePending
+
+تتطلب شهادة TLS التلقائية سجل تحدي ACME. تعتمد الطريقة على موفر DNS الخاص بك:
+
+**F5 XC DNS مُدار:** فعّل `allow_http_lb_managed_records` على منطقة DNS ([DNS-4](#dns-4-f5-xc-managed-records-enabled)). تنشئ المنصة تلقائياً سجل **TXT** (وليس CNAME) في مجموعة مجموعة RR `x-ves-io-managed`. إذا بقيت الشهادة عالقة بعد تفعيل السجلات المُدارة، احذف وأعد إنشاء موازن التحميل لتشغيل طلب شهادة جديد.
+
+**DNS الخارجي:** أنشئ سجل CNAME لدى موفر DNS الخاص بك:
+
+```
+_acme-challenge.xF5XC_DOMAINNAMEx  CNAME  *.autocerts.ves.volterra.io
+```
+
+تحقق من وجود السجل:
+
+```bash
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx TXT
+```
+
+إذا كان كلاهما فارغاً، فلم يتم تكوين سجل ACME. يستغرق توفير الشهادة 5&ndash;10 دقائق بعد وضع السجل في المكان. تحقق من حالة الخطأ في موازن التحميل لأخطاء التحقق من صحة ACME المحددة:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '[.status[]? | select(.virtual_host_status != null) | .virtual_host_status.error_description]'
+```
+
+### isConfigured هو false
+
+يجب تفعيل دفاع جانب العميل على مستوى المستأجر من قبل مسؤول F5 XC. هذا إعداد على مستوى المستأجر لا يمكن تكوينه عبر واجهة برمجية التطبيقات للمساحة النطاقية. اتصل بالمسؤول الخاص بك لتفعيل دفاع جانب العميل.
+
+### مصفوفة البرامج النصية الفارغة
+
+إذا عادت [TEL-1](#tel-1-script-inventory) مصفوفة فارغة:
+
+<Steps>
+1. **تحقق من المجال المحمي** — يراقب دفاع جانب العميل البرامج النصية فقط على المجالات المسجلة:
+   ```bash
+   curl -s \
+     -H "Authorization: APIToken xF5XC_API_TOKENx" \
+     "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+     | jq '.items[] | {name, namespace}'
+   ```
+
+2. **تحقق من حقن JS** — أكد حقن علامة script دفاع جانب العميل في الصفحات:
+   ```bash
+   curl -s "http://xF5XC_DOMAINNAMEx/" | grep -oE '(zeronaught|shape)\.com[^"]*' | head -1
+   ```
+   إذا لم يكن هناك تطابق، فلم يتم حقن JavaScript دفاع جانب العميل. تحقق من أن موازن التحميل به تفعيل `client_side_defense`.
+
+3. **السماح بوقت المعالجة** — بعد تفعيل دفاع جانب العميل أولاً أو تسجيل مجال محمي جديد، يمكن أن يستغرق اكتشاف البرنامج النصي 5&ndash;15 دقيقة. أنشئ حركة مرور إلى الموقع وانتظر قبل إعادة الفحص.
+</Steps>
+
+## مرجع سريع
+
+### توقيت مسبقات النطاق
+
+| الفترة | إزاحة Epoch | ISO 8601 (Linux) | ISO 8601 (macOS) |
+| --- | --- | --- | --- |
+| ساعة واحدة | `$(( $(date +%s) - 3600 ))` | `date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ` | `date -u -v-1H +%Y-%m-%dT%H:%M:%SZ` |
+| 24 ساعة | `$(( $(date +%s) - 86400 ))` | `date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ` | `date -u -v-24H +%Y-%m-%dT%H:%M:%SZ` |
+| 7 أيام | `$(( $(date +%s) - 604800 ))` | `date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ` | `date -u -v-7d +%Y-%m-%dT%H:%M:%SZ` |
+| 30 يوم | `$(( $(date +%s) - 2592000 ))` | `date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ` | `date -u -v-30d +%Y-%m-%dT%H:%M:%SZ` |
+
+### ملخص طبقة التحقق
+
+| الطبقة | الاختبارات | ما يغطيه |
+| --- | --- | --- |
+| [1. دقة أسماء النطاقات](#layer-1-dns-resolution) | DNS-1 من خلال DNS-4 | سجل A و ACME CNAME وسلطة nameserver والسجلات المُدارة |
+| [2. شهادة TLS](#layer-2-tls-certificate) | TLS-1 من خلال TLS-4 | حالة الشهادة وتفاصيل الشهادة وبدء TLS مباشر وهدف ACME |
+| [3. موازن التحميل HTTP](#layer-3-http-load-balancer) | LB-1 من خلال LB-6 | الحالة والمجالات وعلم دفاع جانب العميل ومجموعات المسار والنشر والملخص |
+| [4. مجموعة الأصل](#layer-4-origin-pool) | OP-1 من خلال OP-4 | التكوين وموضع TLS وارتباط HC واتصال الأصل |
+| [5. فحص الصحة](#layer-5-health-check) | HC-1 من خلال HC-2 | تكوين HC، قائمة جميع HCs |
+| [6. تكوين دفاع جانب العميل](#layer-6-csd-configuration) | CSD-1 من خلال CSD-5 | حالة المستأجر وعلامة JS والمجالات المحمية والحقن المباشر |
+| [7. التحقق من حركة المرور](#layer-7-traffic-verification) | TV-1 من خلال TV-5 | عدد الطلبات ورموز الحالة والعينات و JS في السجلات واختبار E2E |
+| [8. قياس دفاع جانب العميل](#layer-8-csd-telemetry-amp-domain-policy) | TEL-1 من خلال TEL-8 | البرامج النصية والمجالات والسياسة وحقول النموذج والدراسة العميقة والمستخدمون والخطر والحداثة |
+
+### ملخص نقطة النهاية
+
+| التشخيص | نقطة النهاية | الطريقة | صيغة الوقت |
+| --- | --- | --- | --- |
+| عدد الطلبات | `/api/data/namespaces/\{ns\}/access_logs/aggregation` | POST | ISO 8601 |
+| رموز الحالة | `/api/data/namespaces/\{ns\}/access_logs` | POST | ISO 8601 |
+| الطلبات الحديثة | `/api/data/namespaces/\{ns\}/access_logs` | POST | ISO 8601 |
+| حالة موازن التحميل | `/api/config/namespaces/\{ns\}/http_loadbalancers/\{name\}` | GET | بلا |
+| مجموعة الأصل | `/api/config/namespaces/\{ns\}/origin_pools/\{name\}` | GET | بلا |
+| فحص الصحة | `/api/config/namespaces/\{ns\}/healthchecks/\{name\}` | GET | بلا |
+| منطقة DNS | `/api/config/dns/namespaces/system/dns_zones/\{zone\}` | GET | بلا |
+| حالة دفاع جانب العميل | `/api/shape/csd/namespaces/\{ns\}/status` | GET | بلا |
+| تكوين JS | `/api/shape/csd/namespaces/\{ns\}/js_configuration` | GET | بلا |
+| المجالات المحمية | `/api/shape/csd/namespaces/\{ns\}/protected_domains` | GET | بلا |
+| قائمة البرامج النصية | `/api/shape/csd/namespaces/\{ns\}/scripts` | POST | ثواني Epoch |
+| المجالات المكتشفة | `/api/shape/csd/namespaces/\{ns\}/detected_domains` | GET | بلا |
+| حقول النموذج | `/api/shape/csd/namespaces/\{ns\}/formFields` | GET | ثواني Epoch (معاملات query) |
+| تفاصيل البرنامج النصي | `/api/shape/csd/namespaces/\{ns\}/scripts/\{id\}/dashboard` | GET | بلا |
+| سلوكيات البرنامج النصي | `/api/shape/csd/namespaces/\{ns\}/scripts/\{id\}/behaviors` | GET | بلا |
+| شبكة البرنامج النصي | `/api/shape/csd/namespaces/\{ns\}/scripts/\{id\}/networkInteractions` | GET | بلا |
+| المستخدمون المتأثرون | `/api/shape/csd/namespaces/\{ns\}/scripts/\{id\}/affectedUsers` | POST | ثواني Epoch |

@@ -1,0 +1,1334 @@
+---
+title: 示範
+description: 4階段示範練習概述 — 建置、攻擊、防護、拆解
+sidebar:
+  order: 1
+  label: 概述
+i18n:
+  sourceHash: abcf919aeb10
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+本指南將帶您完成 F5 Distributed Cloud 上的**完整用戶端側防護練習**，使用 API 進行，結構化為四個階段，AI 助手或人工操作員可以端到端執行。每個步驟都包含準備執行的 `curl` 命令，且佔位符值可以使用頁面頂部的表單、`.env` 檔案或任何自動化工具進行自訂。
+
+<Aside type="caution">
+佔位符表單會將值（包括您的 API 權杖）存儲在瀏覽器的 `localStorage` 中。請勿在共享或公共電腦上使用生產權杖。
+</Aside>
+
+## 練習階段
+
+| 階段 | 目標 | 步驟 |
+| --- | --- | --- |
+| [階段 1 — 建置](/csd/demo/phase-1-build/) | 部署並驗證完整的 CSD 基礎設施 | 步驟 1–7 |
+| [階段 2 — 攻擊](/csd/demo/phase-2-attack/) | 生成模擬攻擊流量並確認 CSD 偵測到它 | 步驟 8–9 |
+| [階段 3 — 防護](/csd/demo/phase-3-mitigate/) | 防護前/後證明 — 執行攻擊、套用防護、重新執行攻擊、比較 | 步驟 1–6 |
+| [階段 4 — 拆解](/csd/demo/phase-4-teardown/) | 在明確確認後移除所有部署物件 | 拆解 |
+
+## 飛行前檢查
+
+開始階段 1 之前，請驗證環境是乾淨的。執行這些 API 檢查以確定先前執行是否存在剩餘物件：
+
+```bash
+# 檢查所有階段 1 物件並計算環境狀態
+HTTP_LB=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http")
+HTTPS_LB=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+ORIGIN=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx")
+HC=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx")
+PD_COUNT=$(curl -s -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '[.items // [] | .[] | select(.metadata.name != null)] | length')
+MD_COUNT=$(curl -s -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '[.items // [] | .[] | select(.metadata.name != null)] | length')
+
+# 如果 HTTPS LB 存在，取得內文以偵測骨架狀態
+HTTPS_IS_SKELETON="false"
+if [ "$HTTPS_LB" = "200" ]; then
+  HTTPS_LB_BODY=$(curl -s \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+  HTTPS_IS_SKELETON=$(echo "$HTTPS_LB_BODY" | jq '
+    ((.spec.default_route_pools // []) | length == 0) and
+    (.spec.client_side_defense == null)
+  ')
+fi
+
+# 計算確定性環境狀態
+jq -n \
+  --argjson http_lb "$HTTP_LB" \
+  --argjson https_lb "$HTTPS_LB" \
+  --argjson origin "$ORIGIN" \
+  --argjson hc "$HC" \
+  --argjson pd "$PD_COUNT" \
+  --argjson md "$MD_COUNT" \
+  --argjson https_skeleton "$HTTPS_IS_SKELETON" \
+'{
+  objects: [
+    { name: "http_lb",           http_code: $http_lb, exists: ($http_lb == 200) },
+    { name: "https_lb",          http_code: $https_lb, exists: ($https_lb == 200), is_skeleton: $https_skeleton },
+    { name: "origin_pool",       http_code: $origin, exists: ($origin == 200) },
+    { name: "healthcheck",       http_code: $hc, exists: ($hc == 200) },
+    { name: "protected_domains", count: $pd, exists: ($pd > 0) },
+    { name: "mitigated_domains", count: $md, exists: ($md > 0) }
+  ],
+  any_infra_exists: ($http_lb == 200 or ($https_lb == 200 and ($https_skeleton | not)) or $origin == 200 or $hc == 200),
+  any_csd_exists: ($pd > 0 or $md > 0),
+  status: (
+    if ($http_lb == 404 and $https_lb == 404 and $origin == 404 and $hc == 404 and $pd == 0 and $md == 0) then "CLEAN"
+    elif ($https_lb == 200 and $https_skeleton and $http_lb == 404 and $origin == 404 and $hc == 404 and $pd == 0 and $md == 0) then "HTTPS_SKELETON"
+    elif ($http_lb == 200 and $origin == 200) then "ALL_EXIST"
+    elif ($http_lb == 200 or ($https_lb == 200 and ($https_skeleton | not)) or $origin == 200 or $hc == 200) then "TEARDOWN_NEEDED"
+    elif ($md > 0 and $http_lb == 404 and ($https_lb == 404 or ($https_lb == 200 and $https_skeleton)) and $origin == 404 and $hc == 404) then "MITIGATIONS_ONLY"
+    else "TEARDOWN_NEEDED"
+    end
+  ),
+  action: (
+    if ($http_lb == 404 and $https_lb == 404 and $origin == 404 and $hc == 404 and $pd == 0 and $md == 0) then "進行階段 1"
+    elif ($https_lb == 200 and $https_skeleton and $http_lb == 404 and $origin == 404 and $hc == 404 and $pd == 0 and $md == 0) then "進行階段 1（HTTPS LB 骨架將透過 PUT 還原）"
+    elif ($http_lb == 200 and $origin == 200) then "所有階段 1 物件都存在 — 驗證健康狀況，可選擇跳至階段 2"
+    elif ($http_lb == 200 or ($https_lb == 200 and ($https_skeleton | not)) or $origin == 200 or $hc == 200) then "先執行階段 4 拆解，然後重新檢查"
+    elif ($md > 0 and $http_lb == 404 and ($https_lb == 404 or ($https_lb == 200 and $https_skeleton)) and $origin == 404 and $hc == 404) then "內聯刪除已防護的網域，然後進行"
+    else "先執行階段 4 拆解，然後重新檢查"
+    end
+  )
+}'
+```
+
+### 跳過前驗證
+
+當所有階段 1 物件都存在（`200`）且您計畫跳至階段 2 時，執行**階段 1 步驟 7 驗證命令**以確認跳過前的基礎設施健康狀況。使用來自 [階段 1 — 步驟 7：驗證](/csd/demo/phase-1-build/#step-7-verify) 的確切命令：
+
+1. DNS 解析：`dig +short xF5XC_DOMAINNAMEx A`
+2. HTTP LB 狀態：`GET .../http_loadbalancers/xF5XC_LB_NAMEx-http` 透過管道傳遞至 `jq '{state: .spec.state}'` — 必須顯示 `VIRTUAL_HOST_READY`
+3. CSD JS 設定：`GET .../js_configuration` — 必須包含 `scriptTag`
+4. CSD 狀態：`GET .../status` 透過管道傳遞至 `jq '{configured: .isConfigured, enabled: .isEnabled}'` — 兩者都必須為 `true`
+
+所有必需檢查（DNS-1、LB-1、CSD-1、CSD-2）都必須通過才能跳至階段 2。如果任何檢查失敗，請從失敗的步驟開始執行階段 1。
+
+<Aside type="note">
+已防護的網域列表可能會傳回計數為 1 且元資料為 null 的情況，即使不存在實際防護。這是後端工件。決策規則：如果單一項目具有 null 元資料（名稱為 null 或空），將其視為 0。如果它具有真實元資料，在進行前依名稱刪除每個項目。
+</Aside>
+
+<Aside type="note">
+當相同的已防護網域在相同租用戶上重新註冊時，CSD 偵測會在基礎設施拆解/重建時保存。拆解並重建後，立即查詢 `/detected_domains` 一次。如果回應包含項目，立即進行 — 無需等待。如果回應為空，等待 30 秒並再查詢一次。如果第二次查詢後仍為空，無論如何都繼續進行 — 一旦模擬執行，偵測將出現。
+</Aside>
+
+## 整備驗證矩陣
+
+上面的飛行前檢查驗證環境是否**乾淨**。下面的整備矩陣驗證環境是否**有能力** — 即所有先決條件、配額、連線和平台服務是否都已就位以進行成功的示範。在每次會議前作為準備階段的一部分執行此矩陣。
+
+每個檢查都有測試 ID、層級（T0–T5）、PASS/FAIL/WARN 條件和補救路徑。層級是順序性的 — 早期層級中的失敗會阻止後期層級執行。
+
+### 層級摘要
+
+| 層級 | 類別 | 阻止示範？ | 用途 |
+| --- | --- | --- | --- |
+| T0 | 連線與驗證 | **是** | 我們能否到達平台並進行驗證？ |
+| T1 | 配額與容量 | **是**（如果達到限制） | 是否有空間來建立示範物件？ |
+| T2 | 平台先決條件 | **是** | 租用戶層級的服務是否已設定？ |
+| T3 | 來源健康狀況 | **警告** | 後端應用是否有反應？ |
+| T4 | 環境乾淨 | 自動補救 | 先前執行中是否有剩餘物件？ |
+| T5 | 憑證整備 | 資訊性 | HTTPS 是否會運作，或我們應計畫僅使用 HTTP？ |
+
+### T0：連線與驗證
+
+這些檢查確認執行主機可以到達 F5 XC API 且認證有效。
+
+#### PF-T0-1：API 連線
+
+```bash
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' --connect-timeout 10 --max-time 15 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T0-1",
+  http_code: .http_code,
+  status: (
+    if .http_code == 200 then "PASS"
+    elif .http_code == 401 then "FAIL"
+    else "FAIL"
+    end
+  ),
+  detail: (
+    if .http_code == 200 then "API 可到達，權杖有效"
+    elif .http_code == 401 then "權杖已過期或無效 — 在 Administration > Credentials > API Credentials 下重新產生"
+    elif .http_code == 0 then "網路無法到達 — 檢查連線、VPN 或 TLS 相容性（嘗試 --tlsv1.2 --tls-max 1.2）"
+    else "非預期的 HTTP \(.http_code)"
+    end
+  )
+}'
+```
+
+#### PF-T0-2：命名空間存取
+
+```bash
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T0-2",
+  http_code: .http_code,
+  status: (
+    if .http_code == 200 then "PASS"
+    elif .http_code == 404 then "WARN"
+    else "FAIL"
+    end
+  ),
+  detail: (
+    if .http_code == 200 then "權杖具有命名空間存取權"
+    elif .http_code == 403 then "權杖缺乏命名空間的權限 — 檢查角色繫結"
+    elif .http_code == 404 then "命名空間不存在 — 將在階段 1 步驟 0 中建立"
+    else "非預期的 HTTP \(.http_code)"
+    end
+  )
+}'
+```
+
+#### PF-T0-3：CSD API 存取
+
+```bash
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T0-3",
+  http_code: .http_code,
+  status: (
+    if .http_code == 200 then "PASS"
+    elif .http_code == 404 then "WARN"
+    else "FAIL"
+    end
+  ),
+  detail: (
+    if .http_code == 200 then "權杖具有 CSD/Shape API 權限"
+    elif .http_code == 403 then "權杖缺乏 CSD 角色繫結 — 請聯繫租用戶管理員"
+    elif .http_code == 404 then "命名空間不存在 — 在階段 1 建立命名空間後將驗證 CSD 存取"
+    else "非預期的 HTTP \(.http_code)"
+    end
+  )
+}'
+```
+
+#### PF-T0-4：RBAC 權限矩陣
+
+非破壞性探測會測試示範所需之每個物件類型的讀取和寫入權限。讀取是透過列表端點上的 `GET` 進行測試。寫入是透過在已知不存在的物件上進行 `DELETE` 進行測試 — 如果 RBAC 拒絕該操作，API 會傳回 `403`，或如果該操作被允許但物件不存在，則傳回 `404`。此零副作用技術避免建立臨時探測物件。
+
+```bash
+PROBE_NAME="rbac-probe-nonexistent"
+
+# 讀取探測
+NS_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx")
+HC_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks")
+OP_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools")
+LB_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers")
+CSD_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status")
+PD_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains")
+MD_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains")
+
+# 寫入探測（非破壞性：DELETE/cascade_delete 在不存在的物件上）
+NS_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X POST -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{\"name\":\"$PROBE_NAME\"}" \
+  "xF5XC_API_URLx/api/web/namespaces/$PROBE_NAME/cascade_delete")
+HC_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/$PROBE_NAME")
+OP_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/$PROBE_NAME")
+LB_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/$PROBE_NAME")
+PD_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/$PROBE_NAME.example.com")
+MD_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/$PROBE_NAME.example.com")
+
+# 計算確定性權限矩陣
+jq -n \
+  --argjson ns_r "$NS_R" --argjson ns_w "$NS_W" \
+  --argjson hc_r "$HC_R" --argjson hc_w "$HC_W" \
+  --argjson op_r "$OP_R" --argjson op_w "$OP_W" \
+  --argjson lb_r "$LB_R" --argjson lb_w "$LB_W" \
+  --argjson csd_r "$CSD_R" \
+  --argjson pd_r "$PD_R" --argjson pd_w "$PD_W" \
+  --argjson md_r "$MD_R" --argjson md_w "$MD_W" \
+'{
+  check: "PF-T0-4",
+  permissions: [
+    { object: "namespace",          read: ($ns_r != 403),  write: ($ns_w != 403),  required: false, note: "conditional — only if ns must be created" },
+    { object: "healthcheck",        read: ($hc_r != 403),  write: ($hc_w != 403),  required: false, note: "optional for CSD" },
+    { object: "origin_pool",        read: ($op_r != 403),  write: ($op_w != 403),  required: true,  note: "" },
+    { object: "http_loadbalancer",  read: ($lb_r != 403),  write: ($lb_w != 403),  required: true,  note: "" },
+    { object: "csd_status",         read: ($csd_r != 403), write: true,            required: true,  note: "read-only check" },
+    { object: "protected_domain",   read: ($pd_r != 403),  write: ($pd_w != 403),  required: true,  note: "" },
+    { object: "mitigated_domain",   read: ($md_r != 403),  write: ($md_w != 403),  required: false, note: "Phase 3 only" }
+  ],
+  status: (
+    if [
+      ($op_r == 403), ($op_w == 403),
+      ($lb_r == 403), ($lb_w == 403),
+      ($csd_r == 403),
+      ($pd_r == 403), ($pd_w == 403)
+    ] | any then "FAIL"
+    elif ($ns_w == 403 or $hc_w == 403 or $md_w == 403) then "WARN"
+    else "PASS"
+    end
+  ),
+  detail: (
+    [
+      (if ($op_r == 403 or $op_w == 403) then "Origin pool: permission denied" else null end),
+      (if ($lb_r == 403 or $lb_w == 403) then "Load balancer: permission denied" else null end),
+      (if $csd_r == 403 then "CSD API: permission denied — CSD may not be enabled for this namespace" else null end),
+      (if ($pd_r == 403 or $pd_w == 403) then "Protected domain: permission denied" else null end),
+      (if $ns_w == 403 then "Namespace: write denied — namespace must already exist (cannot create)" else null end),
+      (if $hc_w == 403 then "Healthcheck: write denied — will skip healthcheck creation" else null end),
+      (if $md_w == 403 then "Mitigated domain: write denied — Phase 3 mitigation will be skipped" else null end)
+    ] | map(select(. != null)) | join("; ")
+  )
+}'
+```
+
+<Aside type="note">
+**命名空間 + RBAC 交互作用。** 如果 PF-T0-2 傳回 `404`（命名空間不存在）且 PF-T0-4 顯示命名空間寫入遭拒，示範**無法進行** — 命名空間不存在且無法建立。如果 PF-T0-2 傳回 `200`（命名空間存在）且命名空間寫入遭拒，這只是警告 — 示範可以使用既存的命名空間。
+
+**CSD + RBAC。** 如果 CSD 端點傳回 `403`，CSD 服務可能未針對此命名空間或租用戶啟用（計畫型存取控制）。由於 CSD 是正在示範的核心功能，這始終是失敗。
+</Aside>
+
+### T1：配額與容量
+
+這些檢查查詢租用戶的配額使用情況 API 以確定示範所需之每個物件種類的限制、目前使用情況和剩餘容量。這用單一唯讀 API 呼叫取代探測和刪除測試，該呼叫報告確切數字。
+
+#### PF-T1-0：配額使用情況閘門
+
+查詢租用戶範圍配額使用情況端點，並為示範需要的每個物件種類計算確定性 PASS/WARN/FAIL 狀態。此端點需要 `system` 命名空間。單一 API 呼叫可一次檢查所有平台層級配額。
+
+閘門定義 `demo_needs` 陣列，指定示範將消耗多少每種物件，該種類是否為必需，以及示範進行所需的最小數量。jq 篩選器將 `remaining` 與 `needed` 進行比較，並確定性地計算 `status` 欄位 — 不需要操作員詮釋。
+
+```bash
+# 步驟 1：取得配額資料
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/system/quota/usage?namespace=system" \
+  > /tmp/quota.json
+
+# 步驟 2：計算閘門狀態
+jq '
+  . as $data |
+  [
+    { kind: "healthcheck",       needed: 1, required: false, min_proceed: 0 },
+    { kind: "origin_pool",       needed: 1, required: true,  min_proceed: 1 },
+    { kind: "endpoint",          needed: 1, required: true,  min_proceed: 1 },
+    { kind: "http_loadbalancer", needed: 2, required: true,  min_proceed: 1 }
+  ] | map(
+    . as $req |
+    $data.objects[$req.kind] as $obj |
+    $obj.limit.maximum as $limit |
+    $obj.usage.current as $usage |
+    (if $limit == -1 then null else ($limit - $usage) end) as $remaining |
+    {
+      kind:      $req.kind,
+      limit:     (if $limit == -1 then "unlimited" else $limit end),
+      usage:     $usage,
+      remaining: (if $remaining == null then "unlimited" else $remaining end),
+      needed:    $req.needed,
+      status:    (
+        if $remaining == null then "PASS"
+        elif $remaining >= $req.needed then "PASS"
+        elif $remaining >= $req.min_proceed then "WARN"
+        else
+          (if $req.required then "FAIL" else "WARN" end)
+        end
+      )
+    }
+  )
+  | {
+      checks: .,
+      gate: (if any(.[]; .status == "FAIL") then "FAIL"
+             elif any(.[]; .status == "WARN") then "WARN"
+             else "PASS" end)
+    }
+' /tmp/quota.json
+```
+
+**閘門輸出** — `gate` 欄位是單一確定性決議：
+
+- **`PASS`** — 所有物件種類都有 `remaining >= needed`。示範可以進行。
+- **`WARN`** — 至少一種具有縮減容量但滿足進行所需的最小值（例如，只有 1 個 LB 插槽可用而非 2 個，或健康檢查配額已滿）。示範可以進行但有限制。
+- **`FAIL`** — 至少一種必需種類具有 `remaining < min_proceed`。示範無法進行，直到配額被釋放。
+
+**範例輸出**（WARN — 端點達到容量，健康檢查幾乎已滿）：
+
+```json
+{
+  "checks": [
+    { "kind": "healthcheck",       "limit": 150,         "usage": 149, "remaining": 1,           "needed": 1, "status": "PASS" },
+    { "kind": "origin_pool",       "limit": "unlimited", "usage": 420, "remaining": "unlimited", "needed": 1, "status": "PASS" },
+    { "kind": "endpoint",          "limit": 500,         "usage": 500, "remaining": 0,           "needed": 1, "status": "FAIL" },
+    { "kind": "http_loadbalancer", "limit": "unlimited", "usage": 116, "remaining": "unlimited", "needed": 2, "status": "PASS" }
+  ],
+  "gate": "FAIL"
+}
+```
+
+| `gate` 值 | 動作 |
+| --- | --- |
+| **PASS** | 進行 PF-T1-4（已防護的網域檢查），然後進行 T2 |
+| **WARN** | 在整備報告中記錄限制，以縮減功能進行 |
+| **FAIL** | 停止 — 報告哪些種類已耗盡以及下面的補救步驟 |
+
+**按種類進行補救：**
+
+| 種類 | 補救 |
+| --- | --- |
+| `healthcheck` | 刪除未使用的健康檢查以釋放容量。示範可在沒有健康檢查的情況下進行（CSD 不需要一個）。 |
+| `origin_pool` | 刪除未使用的來源池或聯繫您的管理員以增加租用戶限制。 |
+| `endpoint` | 刪除其他命名空間中未使用的來源池以釋放端點容量（端點是來源池的子物件），或聯繫您的管理員。 |
+| `http_loadbalancer` | 刪除未使用的負載平衡器或聯繫您的管理員。如果只有 1 個插槽可用，HTTP LB（主要）將被建立但 HTTPS LB（次要）將被跳過。 |
+
+<Aside type="note">
+配額使用情況 API 傳回租用戶範圍的總計，跨所有命名空間而非每個命名空間的計數。`limit` 值為 `-1`（顯示為 `"unlimited"`）表示該物件種類的配額未設上限。如果 API 傳回 `403`、`404` 或非預期格式，回退至下面的[探測型檢查](#fallback-probe-based-quota-checks)。
+</Aside>
+
+#### PF-T1-4：已防護的網域配額
+
+CSD 已防護的網域不會出現在平台配額使用情況 API 中。使用探測型檢查：建立並立即刪除探測已防護的網域。
+
+```bash
+# 建立探測並同時擷取 HTTP 代碼和回應內文
+PROBE_BODY=$(curl -s -w '\n%\{http_code\}' -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "preflight-probe.example.com",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "protected_domain": "example.com"
+    }
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains")
+PROBE_HTTP=$(echo "$PROBE_BODY" | tail -1)
+PROBE_JSON=$(echo "$PROBE_BODY" | sed '$d')
+
+# 計算狀態
+echo "$PROBE_JSON" | jq --argjson http "$PROBE_HTTP" '{
+  check: "PF-T1-4",
+  http_code: $http,
+  status: (
+    if $http == 409 then "PASS"
+    elif (.code // 0) == 8 then "FAIL"
+    elif .metadata.name then "PASS"
+    else "FAIL"
+    end
+  ),
+  detail: (
+    if $http == 409 then "example.com 已註冊 — 配額未耗盡"
+    elif (.code // 0) == 8 then "已防護的網域配額已耗盡 — 刪除未使用的已防護網域"
+    elif .metadata.name then "探測已建立 — 配額可用"
+    else "非預期的回應"
+    end
+  )
+}'
+
+# 清理探測（如果發生 409，404 為預期）
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/preflight-probe.example.com" \
+  > /dev/null
+```
+
+<Aside type="note">
+探測使用 RFC 2606 保留網域 `example.com`。`409` 回應是有效的 PASS — 它表示網域已註冊，證明配額未耗盡。如果 `409` 發生（探測從不建立），DELETE 可能傳回 `404`，這是預期的。
+</Aside>
+
+#### 回退：探測型配額檢查
+
+如果 PF-T1-0 失敗（配額使用情況 API 傳回 `403`、`404` 或非預期格式），回退至健康檢查、來源池、端點和負載平衡器配額的探測和刪除檢查。這些檢查建立臨時物件並立即刪除它 — 如果建立傳回錯誤代碼 `8`（配額已耗盡），配額已滿。
+
+<Aside type="caution">
+探測型檢查在租用戶上建立真實物件並立即刪除它們。如果刪除失敗（例如網路問題），舊探測物件可能保留。下一次飛行前執行時，[T4 舊探測清理](#t4-environment-clean)將偵測並移除它們。
+</Aside>
+
+每個回退探測使用相同的模式：建立臨時物件、從回應計算確定性狀態、然後刪除探測。`status` 欄位為 `PASS`（如果物件已建立，`.metadata.name` 存在），或 `WARN` 或 `FAIL`（如果錯誤代碼 `8`（配額已耗盡），取決於種類是否為必需）。
+
+**健康檢查探測**（如果耗盡則為 WARN — 健康檢查對 CSD 為選項）：
+
+```bash
+RESULT=$(curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "preflight-quota-probe",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "http_health_check": {
+        "use_origin_server_name": {},
+        "path": "/",
+        "use_http2": false
+      },
+      "timeout": 3,
+      "interval": 15,
+      "unhealthy_threshold": 1,
+      "healthy_threshold": 3
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks")
+echo "$RESULT" | jq '{
+  check: "fallback-healthcheck",
+  status: (if .metadata.name then "PASS" elif (.code // 0) == 8 then "WARN" else "FAIL" end),
+  detail: (if .metadata.name then "配額可用" elif (.code // 0) == 8 then "配額已滿 — 健康檢查為選項，示範進行" else "非預期：\(.message // "unknown error")" end)
+}'
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/preflight-quota-probe" \
+  > /dev/null
+```
+
+**來源池與端點探測**（如果耗盡則為 FAIL — 兩者都為必需）：
+
+```bash
+RESULT=$(curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "preflight-origin-probe",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "origin_servers": [{
+        "public_ip": { "ip": "192.0.2.1" },
+        "labels": {}
+      }],
+      "no_tls": {},
+      "port": 80,
+      "same_as_endpoint_port": {},
+      "healthcheck": [],
+      "loadbalancer_algorithm": "LB_OVERRIDE",
+      "endpoint_selection": "LOCAL_PREFERRED"
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools")
+echo "$RESULT" | jq '{
+  check: "fallback-origin-pool",
+  status: (if .metadata.name then "PASS" elif (.code // 0) == 8 then "FAIL" else "FAIL" end),
+  detail: (if .metadata.name then "配額可用" elif (.code // 0) == 8 then "配額已耗盡 — \(.message // "limit reached")" else "非預期：\(.message // "unknown error")" end)
+}'
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/preflight-origin-probe" \
+  > /dev/null
+```
+
+**HTTP 負載平衡器探測**（如果耗盡則為 FAIL — LB 為必需）：
+
+```bash
+RESULT=$(curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "preflight-lb-probe",
+      "namespace": "xF5XC_NAMESPACEx",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["preflight-probe.example.com"],
+      "http": {
+        "dns_volterra_managed": false,
+        "port": 80
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [],
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers")
+echo "$RESULT" | jq '{
+  check: "fallback-http-lb",
+  status: (if .metadata.name then "PASS" elif (.code // 0) == 8 then "FAIL" else "FAIL" end),
+  detail: (if .metadata.name then "配額可用" elif (.code // 0) == 8 then "配額已耗盡 — \(.message // "limit reached")" else "非預期：\(.message // "unknown error")" end)
+}'
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/preflight-lb-probe" \
+  > /dev/null
+```
+
+### T2：平台先決條件
+
+這些檢查驗證示範依賴的租用戶層級服務。
+
+#### PF-T2-1：CSD 租用戶狀態
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq '{
+    check: "PF-T2-1",
+    configured: .isConfigured,
+    enabled: .isEnabled,
+    status: (if .isConfigured and .isEnabled then "PASS" else "FAIL" end),
+    detail: (
+      if .isConfigured and .isEnabled then "CSD 為作用中"
+      elif (.isConfigured | not) then "租用戶層級未啟用 CSD — 聯繫 F5 XC 管理員"
+      else "CSD 已設定但不作用中 — 聯繫管理員"
+      end
+    )
+  }'
+```
+
+#### PF-T2-2：DNS 區域存在
+
+```bash
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T2-2",
+  http_code: .http_code,
+  status: (
+    if .http_code == 200 then "PASS"
+    elif .http_code == 404 then "WARN"
+    elif .http_code == 403 then "WARN"
+    else "FAIL"
+    end
+  ),
+  detail: (
+    if .http_code == 200 then "DNS 區域存在於 F5 XC"
+    elif .http_code == 404 then "沒有 F5 XC DNS 區域 — 可能在使用外部 DNS"
+    elif .http_code == 403 then "權杖缺乏 DNS 區域讀取存取權（system 命名空間）"
+    else "非預期的 HTTP \(.http_code)"
+    end
+  )
+}'
+```
+
+#### PF-T2-3：DNS 受管記錄已啟用
+
+僅在 PF-T2-2 傳回 `200`（F5 XC DNS 區域存在）時執行。
+
+**檢查目前狀態：**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq '{
+    check: "PF-T2-3",
+    managed_records: (.spec.primary.allow_http_lb_managed_records // false),
+    status: (if .spec.primary.allow_http_lb_managed_records == true then "PASS" else "WARN" end),
+    detail: (if .spec.primary.allow_http_lb_managed_records == true then "LB 受管 DNS 記錄已啟用" else "受管記錄未啟用 — 可能需要自動補救" end)
+  }'
+```
+
+**自動補救（如需要）：** 如果 `status` 為 `WARN` 且 PF-T2-4 顯示 F5 XC 名稱伺服器（`ns1.f5clouddns.com`、`ns2.f5clouddns.com`），使用 GET+PUT 自動啟用受管記錄：
+
+```bash
+# 取得目前區域設定
+ZONE_CONFIG=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx")
+
+# 更新為啟用受管記錄
+echo "$ZONE_CONFIG" \
+  | jq '.spec.primary.allow_http_lb_managed_records = true' \
+  | curl -s -X PUT \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d @- \
+    "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq .
+```
+
+然後重新檢查以確認更新生效：
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq '.spec.primary.allow_http_lb_managed_records'
+```
+
+<Aside type="caution">
+區域規格包含具有平台受管記錄的 `x-ves-io-managed` rr_set_group。PUT 承載**必須保留此群組** — 省略會導致 HTTP 403「保留供內部使用」。始終先使用 `GET` 取得目前區域設定，僅修改 `allow_http_lb_managed_records` 欄位，並發回完整規格。
+</Aside>
+
+| 結果 | DNS 授權 | 狀態 | 補救 |
+| --- | --- | --- | --- |
+| `true` | 任何 | **PASS** | LB 受管 DNS 記錄將自動建立 |
+| `false`/`null` | F5 XC | **自動補救** | 透過 GET+PUT 啟用、驗證、報告結果 |
+| `false`/`null` | 外部 | **資訊** | 受管記錄不適用於外部 DNS — 階段 1 步驟 4 將使用[選項 B](/csd/demo/phase-1-build/#option-b-external-dns-provider)（手動記錄建立） |
+| 自動補救失敗 | F5 XC | **失敗** | 權杖可能缺乏 system 命名空間寫入存取權 — 聯繫租用戶管理員 |
+
+#### PF-T2-4：DNS 名稱伺服器授權
+
+```bash
+NS_RECORDS=$(dig +short NS xF5XC_ROOT_DOMAINx)
+echo "$NS_RECORDS" | jq -Rs '{
+  check: "PF-T2-4",
+  nameservers: (split("\n") | map(select(length > 0))),
+  status: (
+    if (split("\n") | map(select(length > 0)) | length) == 0 then "FAIL"
+    elif test("f5clouddns\\.com") then "PASS"
+    else "INFO"
+    end
+  ),
+  detail: (
+    if (split("\n") | map(select(length > 0)) | length) == 0 then "無 NS 記錄 — 此網域的 DNS 已中斷"
+    elif test("f5clouddns\\.com") then "F5 XC 為授權 — 自動 DNS 管理可用"
+    else "外部 DNS 提供者 — 階段 1 步驟 4 將使用選項 B（手動記錄建立）"
+    end
+  )
+}'
+```
+
+### T3：來源健康狀況
+
+這些檢查驗證後端應用可以到達。
+
+<Aside type="tip" title="RFC 5737 TEST-NET 位址">
+IP 範圍 `192.0.2.0/24`（TEST-NET-1）、`198.51.100.0/24`（TEST-NET-2）和 `203.0.113.0/24`（TEST-NET-3）由 [RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) 保留供文件和範例中使用。它們**在公共網際網路上不可路由**，永遠不會回應連線測試。當 `F5XC_ORIGIN_IP` 設定為這些範圍之一的位址時，這是有意的文件佔位符 — 而非誤配置。
+</Aside>
+
+**略過條件檢查：** 在執行連線測試前計算來源 IP 是否為 RFC 5737 TEST-NET 位址：
+
+```bash
+echo "xF5XC_ORIGIN_IPx" | jq -Rs '{
+  check: "PF-T3-skip",
+  origin_ip: (rtrimstr("\n")),
+  is_test_net: (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")),
+  status: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "SKIP" else "CONTINUE" end),
+  detail: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "RFC 5737 TEST-NET 位址 — 不可路由，略過連線測試" else "可路由 IP — 進行連線測試" end)
+}'
+```
+
+如果 `status` 為 `SKIP`，將 PF-T3-1 和 PF-T3-2 記錄為 SKIP 並移至 T4。否則，執行下面的檢查。
+
+#### PF-T3-1：來源伺服器連線
+
+```bash
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' --connect-timeout 10 --max-time 15 \
+  "http://xF5XC_ORIGIN_IPx:xF5XC_ORIGIN_PORTx/")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T3-1",
+  http_code: .http_code,
+  status: (if .http_code >= 200 and .http_code < 600 then "PASS" elif .http_code == 0 then "WARN" else "WARN" end),
+  detail: (
+    if .http_code >= 200 and .http_code < 600 then "來源使用 HTTP \(.http_code) 回應"
+    elif .http_code == 0 then "來源無法從此網路到達 — LB 可能使用不同路徑"
+    else "非預期的回應代碼 \(.http_code)"
+    end
+  )
+}'
+```
+
+<Aside type="note">
+CSD 示範的預設來源是位於 `44.232.69.192:3000` 的 Juice Shop 應用程式。如果您使用自訂來源（`F5XC_ORIGIN_IP` / `F5XC_ORIGIN_PORT`），驗證它服務具有表單欄位的 HTML 頁面 — CSD 需要表單元素以示範偵測功能。
+</Aside>
+
+#### PF-T3-2：來源提供 HTML 內容
+
+僅在 PF-T3-1 傳回有效 HTTP 狀態時執行：
+
+```bash
+curl -s --max-time 10 "http://xF5XC_ORIGIN_IPx:xF5XC_ORIGIN_PORTx/" \
+  | grep -qi '</html>' && echo "PASS: HTML content" || echo "WARN: No HTML detected"
+```
+
+| 結果 | 狀態 | 補救 |
+| --- | --- | --- |
+| `PASS: HTML content` | **PASS** | 來源服務 HTML 頁面（CSD JS 注入所需） |
+| `WARN: No HTML detected` | **WARN** | 來源可能是純 API 服務或傳回非 HTML — CSD JS 注入需要 HTML 頁面回應 |
+
+### T4：環境乾淨
+
+這些檢查驗證**命名**F5 XC 設定物件都沒有保留 — HTTP 負載平衡器、HTTPS 負載平衡器、來源池、健康檢查、已防護的網域和已防護的網域。T4 是關於物件層級清理的：是否來自先前示範執行的會與階段 1 建立衝突的 API 物件仍然存在。它不測試 IP 位址、網路連線或來源健康狀況（這些考量屬於 T3）。
+
+<Aside type="note">
+**命名空間不存在時略過 T4。** 如果 PF-T0-2 傳回 `404`（命名空間不存在），完全略過 T4 環境檢查並將狀態報告為 `CLEAN`。非存在的命名空間無法包含剩餘物件。階段 1 步驟 0 將在建立任何物件前建立命名空間。
+</Aside>
+
+執行上面[飛行前檢查](#pre-flight-check)部分中的六個飛行前命令。應用[決策邏輯](#decision-logic)以確定後續步驟。如果物件存在，自動拆解在準備階段執行（不需要確認）。
+
+同樣檢查並刪除來自先前中斷飛行前執行的舊探測物件。這些探測僅在配額使用情況 API 不可用時建立，且使用了[回退探測型檢查](#fallback-probe-based-quota-checks)，或針對已防護的網域探測（PF-T1-4）始終使用探測型檢查：
+
+```bash
+# 舊探測清理（按任何順序刪除 — 探測無依賴關係）
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/preflight-quota-probe" \
+  > /dev/null
+
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/preflight-lb-probe" \
+  > /dev/null
+
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/preflight-origin-probe" \
+  > /dev/null
+
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/preflight-probe.example.com" \
+  > /dev/null
+```
+
+如果物件存在，每個 DELETE 傳回 `200`（空 `{}`），如果不存在則傳回 `404` — 兩者都為預期。
+
+### T5：憑證整備
+
+這些檢查評估 HTTPS 是否會運作或示範應計畫僅使用 HTTP。
+
+#### PF-T5-1：最近憑證簽發歷記錄
+
+檢查是否最近為示範網域簽發 Let's Encrypt 憑證。頻繁的建立/銷毀週期會導致每週速率限制耗盡（每個網域每週 5 個重複憑證）。
+
+<Aside type="note">
+沒有 API 可直接查詢 Let's Encrypt 速率限制狀態。此檢查使用 HTTPS LB 憑證狀態作為代理。如果先前執行不存在 HTTPS LB（乾淨環境），此檢查被略過 — 風險根據最近示範頻率記錄為資訊性。
+</Aside>
+
+#### PF-T5-2：現有 HTTPS LB 憑證狀態
+
+僅在 HTTPS LB 存在時執行，來自先前執行（PF-T4 發現物件）：
+
+```bash
+CERT_BODY=$(curl -s -w '\n%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+CERT_HTTP=$(echo "$CERT_BODY" | tail -1)
+CERT_JSON=$(echo "$CERT_BODY" | sed '$d')
+
+if [ "$CERT_HTTP" = "404" ]; then
+  echo '{"check":"PF-T5-2","cert_state":null,"status":"SKIP","detail":"No HTTPS LB — certificate state assessed after Phase 1 Step 3"}'
+else
+  echo "$CERT_JSON" | jq '{
+    check: "PF-T5-2",
+    cert_state: .spec.cert_state,
+    status: (
+      if .spec.cert_state == "CertificateValid" then "PASS"
+      elif .spec.cert_state == "AutoCertDomainRateLimited" then "INFO"
+      elif (.spec.cert_state | test("Pending|Started")) then "INFO"
+      else "INFO"
+      end
+    ),
+    detail: (
+      if .spec.cert_state == "CertificateValid" then "憑證健康狀況 — HTTPS 將運作"
+      elif .spec.cert_state == "AutoCertDomainRateLimited" then "Let'\''s Encrypt 速率限制已觸發 — 計畫 HTTP 專用示範"
+      elif (.spec.cert_state | test("Pending|Started")) then "憑證佈建進行中"
+      else "憑證狀態：\(.spec.cert_state // "unknown")"
+      end
+    )
+  }'
+fi
+```
+
+### 整備報告格式
+
+執行所有層級後，呈現綜合整備報告：
+
+```
+## 示範整備：準備就緒 / 未準備好 / 有警告但準備就緒
+
+### T0：連線與驗證
+| 檢查 | 結果 | 狀態 |
+|---|---|---|
+| PF-T0-1：API 連線 | 200 | PASS |
+| PF-T0-2：命名空間存取 | 200 | PASS |
+| PF-T0-3：CSD API 存取 | 200 | PASS |
+
+### T1：配額與容量
+| 檢查 | 種類 | 限制 | 使用 | 剩餘 | 需要 | 狀態 |
+|---|---|---|---|---|---|---|
+| PF-T1-0：配額使用情況閘門 | `healthcheck` | 150 | 148 | 2 | 1 | PASS |
+| PF-T1-0：配額使用情況閘門 | `origin_pool` | unlimited | 420 | unlimited | 1 | PASS |
+| PF-T1-0：配額使用情況閘門 | `endpoint` | 500 | 498 | 2 | 1 | PASS |
+| PF-T1-0：配額使用情況閘門 | `http_loadbalancer` | unlimited | 116 | unlimited | 2 | PASS |
+| PF-T1-0：配額使用情況閘門 | **閘門** | — | — | — | — | **PASS** |
+| PF-T1-4：已防護的網域 | — | — | — | — | 1 | PASS (probe) |
+
+### T2：平台先決條件
+| 檢查 | 結果 | 狀態 |
+|---|---|---|
+| PF-T2-1：CSD 租用戶狀態 | configured + enabled | PASS |
+| PF-T2-2：DNS 區域存在 | 200 | PASS |
+| PF-T2-3：DNS 受管記錄 | true | PASS |
+| PF-T2-4：DNS 名稱伺服器授權 | f5clouddns.com | PASS |
+
+### T3：來源健康狀況
+| 檢查 | 結果 | 狀態 |
+|---|---|---|
+| PF-T3-1：來源連線 | TEST-NET 位址 (192.0.2.1) | SKIP |
+| PF-T3-2：HTML 內容 | TEST-NET 位址 | SKIP |
+
+### T4：環境乾淨
+| 檢查 | 結果 | 狀態 |
+|---|---|---|
+| HTTP LB | 404 | PASS |
+| HTTPS LB | 404 | PASS |
+| 來源池 | 404 | PASS |
+| 健康檢查 | 404 | PASS |
+| 已防護的網域 | 0 | PASS |
+| 已防護的網域 | 0 | PASS |
+
+### T5：憑證整備
+| 檢查 | 結果 | 狀態 |
+|---|---|---|
+| PF-T5-2：憑證狀態 | SKIP（無 HTTPS LB） | INFO |
+
+### 警告
+- （列出任何 WARN 或 INFO 項目及內容）
+```
+
+**整體狀態規則：**
+
+| 條件 | 狀態 |
+| --- | --- |
+| 所有 T0–T4 檢查都通過 | **準備就緒** |
+| 所有 T0–T4 檢查都通過但 T3 或 T5 有 WARN/INFO | **有警告但準備就緒** |
+| 任何 T0、T1 或 T2 檢查為失敗 | **未準備好** — 繼續前解決 |
+| T4 有剩餘物件 | 自動補救（拆解），然後重新檢查 |
+
+## AI 助手執行協議
+
+本部分定義 AI 助手（Claude Code、Copilot 等）執行 API 自動化步驟的**確定性工作流程**。遵循此協議消除猜測 — 每個決策點都有定義的解決路徑。
+
+### 變數解析協議
+
+以此確切順序解析每個變數。在提供非佔位符值的第一個來源停止：
+
+1. **檢查 `.env` 檔案** — 在存放庫根目錄中查找 `.env`。如果存在，解析所有 `KEY=VALUE` 對。
+2. **檢查 shell 環境** — 執行 `env | grep F5XC_` 以尋找目前工作階段中已匯出的任何值。
+3. **識別遺漏值** — 針對解析的值與下面必需/選項表進行比較。值為「遺漏」，如果它不存在、為空或仍設定為佔位符預設值（例如，`example-api-token`、`example-tenant`、`example-namespace`、`app.example.com`、`user@example.com`）。
+4. **提示人工操作員** — 針對每個遺漏的**必需**變數，要求操作員提供值。在所有必需變數解析前勿進行。
+5. **應用預設值** — 針對每個遺漏的**選項**變數，不提示地使用下面表中的預設值。
+
+> **空字串 = 遺漏：** 使用空值匯出的變數（例如，`F5XC_HC_NAME=""`）被視為未設定變數相同 — 應用預設值。使用 shell 參數擴展（`${F5XC_HC_NAME:-csd-hc}`）一步應用預設值。
+
+6. **顯示確認** — 向操作員顯示最終解析變數表並在執行任何 API 呼叫前等待批准。
+
+> **準備階段覆蓋：** 在階段 1 準備期間，略過步驟 6 中的等待。顯示解析的變數表以供記錄，然後立即進行。步驟 1–5 仍適用 — 如果在檢查 `.env` 和 shell 後任何必需變數仍遺漏，停止並報告遺漏的變數。
+
+### 必需與選項變數
+
+| 變數 | 必需 | 預設 | 佔位符（視為遺漏） |
+| --- | --- | --- | --- |
+| `F5XC_API_TOKEN` | **是** | — | `example-api-token` |
+| `F5XC_API_URL` | **是** | — | `https://example-tenant.console.ves.volterra.io` |
+| `F5XC_NAMESPACE` | **是** | — | `example-namespace` |
+| `F5XC_DOMAINNAME` | **是** | — | `app.example.com` |
+| `F5XC_ROOT_DOMAIN` | **是** | — | `example.com` |
+| `F5XC_LB_NAME` | **是** | — | `example-lb-name`、`example-lb` |
+| `F5XC_EMAIL` | **是** | — | `user@example.com` |
+| `F5XC_HC_NAME` | 選項 | `csd-hc` | — |
+| `F5XC_ORIGIN_IP` | 選項 | `44.232.69.192` | — |
+| `F5XC_ORIGIN_POOL` | 選項 | `csd-origin` | — |
+| `F5XC_ORIGIN_PORT` | 選項 | `3000` | — |
+
+### 執行模式
+
+AI 助手在示範中的三個模式之一中操作：
+
+| 模式 | 何時作用中 | 行為 |
+| --- | --- | --- |
+| 正常 | 準備、執行、拆解期間預設 | 僅逐字執行文件化命令 |
+| 除錯 | 失敗時自動啟動 | 創意疑難排解、更新文件 |
+| 問與答 | 問與答階段期間 | 臨時 — 允許臨時命令回答觀眾問題 |
+
+**正常模式**（預設）：
+
+- 每個 API 呼叫、驗證查詢和 shell 命令**必須逐字來自階段檔案**（階段 1–4）或上面的飛行前檢查部分
+- 僅替換 `xTOKENx` 佔位符，具有解析變數值
+- 勿從一般知識或推論構造 API 端點、jq 篩選器或 cURL 命令
+- 如果文件化不涵蓋需要的命令，停止並報告操作員：「此驗證步驟未被階段文件涵蓋」
+
+**除錯模式**（失敗時自動啟動）：
+
+- 當文件化命令產生非預期結果時自動啟動：非 2xx HTTP 回應、jq 解析錯誤、命令逾時或回應內文與證據表矛盾
+- 在除錯模式中，AI 助手可以構造診斷命令、檢查原始 API 回應、測試端點變體並使用創意疑難排解尋找根本原因
+- 使用 `[DEBUG]` 前綴所有除錯輸出，以便操作員可以區別診斷活動和正常執行
+- **記錄您學到的**：在解決問題後，使用以下內容更新相關階段檔案或疑難排解部分：
+  1. 失敗案例（發生了什麼）
+  2. 已嘗試且無法運作的項目（以便未來執行不重複）
+  3. 運作的解決方案（解決它的命令或修正）
+- 除錯模式的目標是**使自己不必要** — 每個除錯工作階段應產生文件更新，使下一次執行完全確定性
+- 一旦文件更新且問題解決，返回正常模式並從最後成功的文件化步驟恢復
+- 如果除錯模式無法解決問題，報告發現給操作員並停止 — 勿繼續至下一階段
+
+**問與答模式**（問與答階段期間）：
+
+- 僅在問與答會議階段作用中，在示範結論後
+- AI 助手可以構造臨時 API 呼叫、執行診斷命令、導覽至非指定稿頁面並修改即時示範環境以說明回答觀眾問題
+- 無 `[DEBUG]` 前綴 — 這是有意的臨時行為，而非錯誤恢復
+- 使用 `DEMO_EXECUTOR.md` 中的 CSD 產品專業知識部分作為產品問題的知識庫
+
+### 瀏覽器內容管理
+
+initScript 累積是示範失敗的常見來源。每個帶有 `initScript` 參數的 `navigate_page` 呼叫將指令碼新增至在每個後續文件載入時執行的持續清單。遵循這些規則：
+
+- **始終導覽至 `about:blank`** 在帶有 `initScript` 的任何導覽前清除來自先前執行的累積指令碼
+- **在階段切換時使用帶有 `isolatedContext` 的 `new_page`**（例如，階段 2 → 階段 3）以確保完全乾淨的瀏覽器狀態
+- **無反應頁面恢復** — 如果 `take_screenshot` 或 `take_snapshot` 逾時發生，瀏覽器內容資源耗盡。使用帶有 `isolatedContext` 的 `new_page` 建立新鮮內容，然後從 `about:blank` 導覽步驟重試
+- 參閱[階段 2 攻擊模擬](/csd/demo/phase-2-attack/)旁白以取得關於暫時來源失敗和資源耗盡恢復的詳細指導
+
+### 證據顯示協議
+
+在每個 API 呼叫後，AI 助手必須使用此格式呈現結構化證據給人工操作員：
+
+**建立步驟** (POST)：
+
+| 欄位 | 值 | 狀態 |
+| --- | --- | --- |
+| HTTP 狀態 | `200` | PASS |
+| 物件名稱 | `csd-origin` | — |
+| 關鍵屬性 | _（透過 jq 擷取）_ | — |
+
+在每個建立步驟之後，執行 **GET** 以確認物件存在並顯示其關鍵屬性。如果 GET 傳回 `404`，報告失敗並停止。
+
+**驗證步驟** (GET/dig)：
+
+| 測試 | 結果 | 狀態 |
+| --- | --- | --- |
+| DNS-1：A 記錄 | `198.51.100.10` | PASS |
+| LB-1：HTTP LB 狀態 | `VIRTUAL_HOST_READY` | PASS |
+| LB-2：HTTPS LB 狀態 | `VIRTUAL_HOST_READY` | INFO（選項） |
+| TLS-1：憑證狀態 | `CertificateValid` | INFO（選項） |
+| CSD-1：JS 標籤 | `scriptTag` 存在 | PASS |
+
+參考[診斷與驗證](/csd/diagnostics/)測試案例 ID（DNS-1、TLS-1、LB-1、CSD-1 等）作為每層驗證標準。
+
+### 執行流程摘要
+
+**階段執行是順序性且閘門式的：** 每個階段必須在下一個階段開始前所有必需檢查達成 PASS。示範遵循四階段會議生命週期 — 請參閱 `DEMO_EXECUTOR.md` 中的會議階段部分以取得觸發短語和行為規則。
+
+AI 助手遵循此順序：
+
+1. **準備** — 解析變數、執行飛行前檢查、確認乾淨環境（可在會議前單獨執行）
+2. **介紹** — SE 介紹自己並陳述結果目標（用戶端側威脅可見性、PCI 合規性、實時偵測）
+3. **執行階段 1**（步驟 1–7） — 基礎設施建立和驗證；所有階段 1 檢查必須通過後才能進行
+4. **執行階段 2**（步驟 8–9） — 在瀏覽器中執行攻擊模擬並透過 API 驗證偵測；具有瀏覽器自動化的 AI 助手直接執行瀏覽器步驟，沒有瀏覽器工具的操作員手動執行
+5. **執行階段 3** — 對所有偵測的網域確認清潔基線、執行攻擊（前證據）、POST 每個網域至 `/mitigated_domains`、驗證防護已套用、重新執行攻擊使用 `http://` URL（後證據）、呈現前/後比較
+6. **結論** — 重申結果目標、摘要每個階段的證據、突顯關鍵偵測和防護
+7. **問與答** — 臨時階段、示範保持作用中、SE 回答觀眾問題並提出返回問題
+8. **拆解**（會議後）— 階段 4、需要明確人工確認、依反向依賴順序刪除所有物件、確認乾淨環境
+
+如果任何步驟傳回失敗，停止並報告失敗及相關疑難排解部分連結後再繼續。
+
+## 先決條件
+
+- **F5 XC API 權杖** — 在 **Administration** → **Credentials** → **API Credentials** 下產生
+- `curl` 和 `jq` 在本機安裝
+- 具有建立健康檢查、來源池和 HTTP 負載平衡器權限的命名空間
+
+## 環境設置
+
+使用您的環境值建立 `.env` 檔案。存放庫中提供範本：
+
+```bash
+cp .env.example .env
+```
+
+使用您的實際值編輯 `.env`：
+
+```bash title=".env"
+# 必需 — 您的環境
+F5XC_API_TOKEN=example-api-token
+F5XC_API_URL=https://example-tenant.console.ves.volterra.io
+F5XC_DOMAINNAME=app.example.com
+F5XC_EMAIL=user@example.com
+F5XC_LB_NAME=example-lb-name
+F5XC_NAMESPACE=example-namespace
+F5XC_ROOT_DOMAIN=example.com
+
+# 選項 — 未設定時使用 Juice Shop 示範預設值
+# F5XC_HC_NAME=csd-hc
+# F5XC_ORIGIN_IP=44.232.69.192
+# F5XC_ORIGIN_POOL=csd-origin
+# F5XC_ORIGIN_PORT=3000
+```
+
+<Aside type="caution">
+`.env` 檔案包含您的 API 權杖。它列在 `.gitignore` 中，且永遠不可提交至版本控制。
+</Aside>
+
+讀取檔案以將變數載入至 shell 工作階段：
+
+```bash
+set -a && source .env && set +a
+```
+
+<Aside type="tip">
+如果您的 API 權杖包含 `/` 或 `=` 字元，在 `.env` 中使用單引號包裝值（例如，`F5XC_API_TOKEN='abc/def='`）以防止 shell 釋義問題，當讀取時。
+
+某些容器執行時和秘密管理員將文字引號字元注入環境變數值。如果 API 呼叫傳回 `401 Unauthorized` 儘管權杖有效，在使用前去除流浪引號：
+
+```bash
+export F5XC_API_TOKEN=$(echo "$F5XC_API_TOKEN" | tr -d "'")
+```
+</Aside>
+
+每個 `xTOKENx` 佔位符在 curl 命令中直接對應至環境變數 — 例如，`xF5XC_API_TOKENx` 對應 `$F5XC_API_TOKEN`。您可以使用頁面頂部的互動表單替換這些值，或允許 Claude Code 等 AI 助手讀取您的 `.env` 並為您建造命令。
+
+## 佔位符權杖
+
+| 權杖 | 預設 | 描述 |
+| --- | --- | --- |
+| `xF5XC_API_URLx` | `https://example-tenant.console.ves.volterra.io` | XC 主控台 API URL |
+| `xF5XC_API_TOKENx` | `example-api-token` | API 認證權杖 |
+| `xF5XC_EMAILx` | `user@example.com` | CSD 通知電子郵件位址 |
+| `xF5XC_NAMESPACEx` | `example-namespace` | 命名空間 |
+| `xF5XC_LB_NAMEx` | `example-lb` | HTTP 負載平衡器基底名稱（建立 `${name}-http` 和 `${name}-https`） |
+| `xF5XC_DOMAINNAMEx` | `app.example.com` | 要保護的 FQDN |
+| `xF5XC_ROOT_DOMAINx` | `example.com` | 根網域（eTLD+1）用於 CSD 已防護網域 |
+| `xF5XC_ORIGIN_POOLx` | `csd-origin` | 來源池名稱 |
+| `xF5XC_ORIGIN_IPx` | `44.232.69.192` | 來源伺服器 IP |
+| `xF5XC_ORIGIN_PORTx` | `3000` | 來源伺服器連埠 |
+| `xF5XC_HC_NAMEx` | `csd-hc` | 健康檢查名稱 |
+
+<Aside type="tip">
+**租用戶是自動的**：租用戶識別碼衍生自您的 API URL（例如，從 `https://f5-amer-ent.console.ves.volterra.io` 的 `f5-amer-ent`）。您不需要提供它 — 建立物件時平台會自動填入租用戶參考。
+</Aside>
+
+## 自動化參考
+
+本部分摘要完整練習工作流程以進行指令碼編寫或自動化。
+
+### 快速開始
+
+1. 複製存放庫並複製環境範本：`cp .env.example .env`
+2. 使用您的租用戶 URL、API 權杖、命名空間和網域值編輯 `.env`
+3. 讀取環境：`set -a && source .env && set +a`
+4. 依序執行每個階段，在繼續至下一階段前驗證每個證據區塊處的 PASS
+
+### 變數解析
+
+使用[AI 助手執行協議](#variable-resolution-protocol)中定義的確定性協議解析值：
+
+1. **`.env` 檔案** — 從存放庫根目錄解析 `KEY=VALUE` 對
+2. **Shell 環境** — 檢查 `env | grep F5XC_` 以查找匯出值
+3. **佔位符偵測** — 標記符合佔位符預設的任何值（例如，`example-api-token`、`example-namespace`）為遺漏
+4. **提示操作員** — 要求每個遺漏的**必需**變數
+5. **應用預設值** — 針對遺漏的**選項**變數使用內建預設值
+6. **確認** — 顯示解析變數表並等待操作員批准
+
+### 執行順序
+
+<Steps>
+1. **階段 1 — 建置**：部署基礎設施（健康檢查、來源池、HTTP LB + HTTPS LB）、設定 DNS、啟用 CSD、註冊已防護網域、驗證所有元件。HTTP LB 是主要示範目標；HTTPS LB 為選項。
+2. **階段 2 — 攻擊**：在瀏覽器中使用 `http://` URL 執行攻擊模擬、等待 5–10 分鐘、透過 API 驗證偵測（`/scripts`、`/detected_domains`、`/formFields`）
+3. **階段 3 — 防護**：確認乾淨基線、執行攻擊（前證據）、POST 每個網域至 `/mitigated_domains`、驗證防護已套用、使用 `http://` URL 重新執行攻擊（後證據）、呈現前/後比較
+4. **階段 4 — 拆解**_（需要明確人工確認）_：刪除 HTTPS LB → HTTP LB → 來源池 → DNS 區域清理（僅手動記錄） → 健康檢查 → 已防護網域。勿刪除 DNS 區域。
+</Steps>
+
+### 變數
+
+| 權杖 | 描述 | 預設 |
+| --- | --- | --- |
+| `xF5XC_API_URLx` | XC 主控台 API URL | `https://example-tenant.console.ves.volterra.io` |
+| `xF5XC_API_TOKENx` | API 認證權杖 | （使用者提供） |
+| `xF5XC_EMAILx` | CSD 通知電子郵件 | `user@example.com` |
+| `xF5XC_NAMESPACEx` | 命名空間 | `example-namespace` |
+| `xF5XC_LB_NAMEx` | HTTP 負載平衡器基底名稱（建立 `${name}-http` 和 `${name}-https`） | `example-lb` |
+| `xF5XC_DOMAINNAMEx` | 要保護的 FQDN | `app.example.com` |
+| `xF5XC_ROOT_DOMAINx` | 根網域（eTLD+1） | `example.com` |
+| `xF5XC_ORIGIN_POOLx` | 來源池名稱 | `csd-origin` |
+| `xF5XC_ORIGIN_IPx` | 來源伺服器 IP | `44.232.69.192` |
+| `xF5XC_ORIGIN_PORTx` | 來源伺服器連埠 | `3000` |
+| `xF5XC_HC_NAMEx` | 健康檢查名稱 | `csd-hc` |
+
+### oneOf 選擇群組
+
+HTTP 負載平衡器規格使用 `oneOf` 選擇群組，其中每個群組必須恰好設定一個選項。在群組中設定零個或多於一個選項會導致 `422` 錯誤。
+
+**關鍵 CSD 相關選擇：**
+
+| 選擇群組 | 選項 | CSD 預設 |
+| --- | --- | --- |
+| `client_side_defense_choice` | `client_side_defense`、`disable_client_side_defense` | `client_side_defense` |
+| `java_script_choice`（巢狀在 CSD 中） | `disable_js_insert`、`js_insert_all_pages`、`js_insert_all_pages_except`、`js_insertion_rules` | `js_insert_all_pages` |
+
+**監聽器類型選擇（HTTP 與 HTTPS）：**
+
+示範建立具有不同監聽器設定的兩個 LB：
+
+| LB | 監聽器選擇 | 設定 |
+| --- | --- | --- |
+| `${F5XC_LB_NAME}-http`（主要） | `http` | `"http": { "dns_volterra_managed": true, "port": 80 }` |
+| `${F5XC_LB_NAME}-https`（次要） | `https_auto_cert` | `"https_auto_cert": { "http_redirect": true, "port": 443, ... }` |
+
+`http` 和 `https_auto_cert` 鍵互斥 — 每個 LB 恰好使用一個。
+
+**HTTPS 自動憑證巢狀選擇**（次要 LB 僅）：
+
+| 選擇群組 | 選項 | 預設 |
+| --- | --- | --- |
+| port | `port`（數字） | `443` |
+| `server_header_choice` | `default_header`、`server_name`、`append_server_name` | `default_header` |
+| `path_normalize_choice` | `enable_path_normalize`、`disable_path_normalize` | `enable_path_normalize` |
+| `mtls_choice` | `no_mtls`、`use_mtls` | `no_mtls` |
+| `default_loadbalancer_choice` | `default_loadbalancer`、`non_default_loadbalancer` | `default_loadbalancer` |
+
+**`single_lb_app` 巢狀選擇**（ML 設定）：
+
+`single_lb_app` 物件有它自己必需的 `oneOf` 群組。設定 `single_lb_app: \{\}` 無這些巢狀選擇會導致 `400` 錯誤。
+
+| 選擇群組 | 選項 | 預設 |
+| --- | --- | --- |
+| `api_discovery_choice` | `disable_discovery`、`enable_discovery` | `disable_discovery` |
+| `ddos_detection_choice` | `disable_ddos_detection`、`enable_ddos_detection` | `disable_ddos_detection` |
+| `malicious_user_detection_choice` | `disable_malicious_user_detection`、`enable_malicious_user_detection` | `disable_malicious_user_detection` |
+
+**其他 LB 層級選擇**（全部設定為停用/預設）：
+
+`disable_rate_limit` · `no_service_policies` · `round_robin` · `disable_waf` · `no_challenge` · `disable_bot_defense` · `disable_api_definition` · `disable_api_discovery` · `disable_ip_reputation` · `disable_malicious_user_detection` · `single_lb_app` · `disable_trust_client_ip_headers` · `user_id_client_ip` · `disable_threat_mesh` · `l7_ddos_action_default` · `system_default_timeouts` · `default_sensitive_data_policy` · `disable_malware_protection` · `disable_api_testing`
+
+### 錯誤處理
+
+- **401 Unauthorized** — API 權杖無效或已過期。在 **Administration** → **Credentials** 下重新產生。
+- **403 Forbidden** — 權杖缺乏命名空間的權限。檢查角色繫結。
+- **404 Not Found** — 命名空間或物件名稱不正確。使用 `GET /api/config/namespaces/\{namespace\}/\{object_type\}` 列出物件。
+- **409 Conflict** — 物件已存在。針對已防護的網域，具有「domain already exists (in uriList)」的 `409` 表示根網域已在租用戶上註冊 — 這是成功條件，而非錯誤。針對其他物件，先刪除或使用 `PUT` 更新。
+- **422 Unprocessable Entity** — JSON 綱要驗證失敗。常見原因：遺漏 `oneOf` 選擇、同一群組中設定多個選擇、錯誤欄位型別。檢查錯誤訊息以取得特定欄位。
+- **物件限制已耗盡**（錯誤代碼 `8`，訊息 `"Object kind {kind} has exhausted limits({N})"`） — 租用戶已達物件配額限制。API 傳回 HTTP 200 與包含 `"code": 8` 的 JSON 錯誤內文，而非 HTTP 429。您可以使用[配額使用情況 API](#pf-t1-0-quota-usage-query)（`GET /api/web/namespaces/system/quota/usage?namespace=system`）主動檢查配額容量後才遇到此錯誤。行為取決於物件類型：
+  - **健康檢查**（限制 ~150）：**非封鎖** — 略過階段 1 步驟 1 並在不參考健康檢查的情況下建立來源池。CSD 不依賴健康監控。
+  - **端點**（限制 ~500）：**封鎖** — 端點是在來源池內建立的子物件。如果此限制被觸及，來源池建立失敗。刪除未使用的來源池（釋放其端點子物件）或聯繫您的管理員以增加租用戶限制。
+  - **來源池**：**封鎖** — 刪除未使用的來源池或聯繫您的管理員。
+  - **HTTP 負載平衡器**：**封鎖** — 刪除未使用的負載平衡器或聯繫您的管理員。
+  - **已防護的網域**：**封鎖** — 刪除未使用的已防護網域或聯繫您的管理員。
+
+## 疑難排解
+
+### 健康檢查未連結至來源池
+
+如果階段 1 步驟 2（驗證健康檢查已連結）顯示空陣列 `[]`：
+
+1. 刪除來源池：`DELETE /api/config/namespaces/{namespace}/origin_pools/{pool_name}`
+2. 驗證健康檢查存在：`GET /api/config/namespaces/{namespace}/healthchecks/{hc_name}`
+3. 使用正確的健康檢查參考重新建立來源池
+
+### LB 卡在 VIRTUAL_HOST_PENDING_A_RECORD
+
+如果負載平衡器 `state` 在階段 1 步驟 4 後保持為 `VIRTUAL_HOST_PENDING_A_RECORD`：
+
+1. **驗證 DNS 區域存在**（F5 XC 受管 DNS 僅）：
+   ```bash
+   curl -s \
+     -H "Authorization: APIToken xF5XC_API_TOKENx" \
+     "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+     | jq '.metadata.name'
+   ```
+   `404` 表示 DNS 區域尚未在 F5 XC 中建立。
+
+2. **檢查 `allow_http_lb_managed_records`** — 如果區域存在但 LB 為待決，受管記錄可能被停用：
+   ```bash
+   curl -s \
+     -H "Authorization: APIToken xF5XC_API_TOKENx" \
+     "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+     | jq '.spec.primary.allow_http_lb_managed_records'
+   ```
+   如果為 `false` 或 `null`，使用[階段 1 步驟 4，選項 A](/csd/demo/phase-1-build/#option-a-f5-xc-managed-dns) 中的 `PUT` 命令啟用它。
+
+3. **外部 DNS** — 如果 F5 XC 不是授權，在您的 DNS 提供者手動建立 A 和 ACME CNAME 記錄（見[階段 1 步驟 4，選項 B](/csd/demo/phase-1-build/#option-b-external-dns-provider)）。
+
+4. **驗證解析** — 修正 DNS 後，確認：
+   ```bash
+   dig +short xF5XC_DOMAINNAMEx A
+   ```
+   如果 A 記錄解析，LB 轉換至 `VIRTUAL_HOST_READY`。每 30 秒輪詢，最多 4 次迭代（共 2 分鐘）。如果 2 分鐘後仍為 `VIRTUAL_HOST_PENDING_A_RECORD`，重新檢查 DNS 傳播並報告給操作員。
+
+### CSD 狀態顯示 isConfigured: false
+
+CSD 必須在租用戶層級啟用。聯繫您的 F5 XC 管理員為您的租用戶啟用用戶端側防護。這是無法透過 API 設定的租用戶範圍設定。
+
+### JS 注入不運作
+
+1. 驗證 CSD 在租用戶層級啟用（階段 1 步驟 5）
+2. 確認負載平衡器在規格中設定了 `client_side_defense`
+3. 檢查 JS 設定端點傳回 `scriptTag`
+4. 在瀏覽器中訪問受保護網域並查看頁面來源以確認指令碼已注入
+
+### 已防護的網域註冊傳回 409
+
+具有「domain already exists (in uriList)」的 `409` 表示根網域已在租用戶上註冊。已防護的網域是**租用戶範圍** — 它們不屬於任何單一命名空間。這是成功條件：網域已受保護且無需進一步動作。繼續至階段 1 步驟 7。
+
+### AutoCertDomainRateLimited
+
+如果 HTTPS LB `cert_state` 顯示 `AutoCertDomainRateLimited`，這表示 Let's Encrypt 已對此網域的憑證簽發進行速率限制。這在頻繁建立和銷毀基礎設施的示範環境中是**預期的**。
+
+**影響：** HTTPS LB 直到速率限制重設（通常 1 小時）才會提供流量。HTTP LB 完全不受影響 — 所有示範流量在 `http://` 上正常進行。
+
+**解決方案：** 示範進行不需要動作。HTTP LB（`${F5XC_LB_NAME}-http`）是主要示範目標且不依賴憑證佈建。如果需要 HTTPS，等待速率限制重設，憑證將自動佈建。
+
+### 憑證卡住 — 清潔重建（選項）
+
+<Aside type="note">
+此疑難排解步驟僅適用於 **HTTPS LB**（`${F5XC_LB_NAME}-https`）且對示範進行**為選項**。HTTP LB 沒有憑證依賴關係。
+</Aside>
+
+當 HTTPS LB 憑證卡在 `DomainChallengePending` 或 `PreDomainChallengePending` 超過 15 分鐘，最快恢復路徑是刪除 HTTPS LB 並重新建立它。已設定 DNS 區域（啟用受管記錄），清潔重建通常在 5–7 分鐘內產生 `CertificateValid` — 除非被速率限制。
+
+1. 刪除 HTTPS 負載平衡器：`DELETE .../http_loadbalancers/${F5XC_LB_NAME}-https`
+2. 等待 30 秒以進行平台清理
+3. 重新建立 HTTPS 負載平衡器（[階段 1 步驟 3](/csd/demo/phase-1-build/#step-3-create-http-load-balancers-with-csd)）
+4. 監控憑證狀態（[階段 1 步驟 7](/csd/demo/phase-1-build/#step-7-verify)） — 預期 `CertificateValid` 在 5–10 分鐘內
+
+<Aside type="tip">
+您不需要重新設定 DNS 區域、重新註冊已防護網域或觸及 HTTP LB。這些是不受 HTTPS LB 重建影響的持續資源。
+</Aside>
+
+## OpenAPI 參考
+
+標準 F5 Distributed Cloud API 規格可在以下位置取得：
+
+`https://docs.cloud.f5.com/docs-v2/downloads/f5-distributed-cloud-open-api.zip`
+
+此 ZIP 包含所有 API 群組的 OpenAPI 3.0 規格，包括 `ves.io.schema.views.http_loadbalancer`、`ves.io.schema.healthcheck`、`ves.io.schema.origin_pool` 和 `ves.io.schema.shape.csd`。使用這些規格驗證 JSON 承載並探索其他欄位。

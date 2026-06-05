@@ -1,0 +1,50 @@
+---
+title: 텔레메트리 비콘
+description: '텔레메트리 비콘 구성, 주입 검증 및 모니터링'
+sidebar:
+  order: 5
+  label: Telemetry Beacons
+i18n:
+  sourceHash: 6c0c3461342a
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+import Screenshot from "@f5xc-salesdemos/docs-theme/components/Screenshot.astro";
+
+CSD 텔레메트리는 두 가지 단계로 작동합니다. 첫 번째로, 계측 스크립트는 표준 **GET** 요청을 통해 애플리케이션 출처에서 로드됩니다 — 이것은 CSD의 모니터링 코드를 페이지에 주입합니다. 스크립트 URL 패턴은 `https://<collection-domain>/__imp_apg__/js/<tenant-script>.js` 형식을 따르지만, 정확한 경로는 배포에 따라 다릅니다. 초기화되면 스크립트는 **POST** 요청으로 알려진 **비콘**을 통해 주기적으로 F5로 텔레메트리를 전송합니다. 이러한 비콘은 F5 운영 신호 수집 도메인(`*.zeronaught.com`)으로 전송되며, 애플리케이션 출처로는 전송되지 않습니다.
+
+| 속성 | 값 |
+| --- | --- |
+| 스크립트 로드 | 애플리케이션 출처에서 `GET` 요청을 통해 로드된 CSD 계측 스크립트 — DevTools에서 `__imp_apg__` 또는 `zeronaught`을 필터링하여 식별 |
+| 비콘 대상 | F5 신호 수집 인프라로의 `POST` (예: `us.gimp.zeronaught.com`, `csd.zeronaught.com`) |
+| 페이로드 형식 | 인코딩된 바이너리 — 인간이 읽을 수 있는 JSON이 아님 |
+| 빈도 | 페이지 수명 중 주기적; 특정 이벤트(폼 필드 액세스, 새로운 스크립트 로드)에서 추가 비콘 전송 |
+
+## 비콘이 보고하는 내용
+
+CSD 비콘은 사용자 입력이 아닌 **스크립트 동작 메타데이터**를 전달합니다:
+
+- **스크립트 인벤토리** — 페이지에 로드된 스크립트 및 로드 출처 도메인
+- **폼 필드 액세스 이벤트** — 어느 스크립트가 어느 입력 필드를 읽거나 상호작용했는지 (필드 이름 및 유형)
+- **페이지 메타데이터** — 현재 URL, 타임스탐프, 페이지 라이프사이클 이벤트
+
+CSD는 사용자가 입력한 폼 데이터가 아닌 스크립트 동작 메타데이터 — 필드 이름, 입력 유형 및 액세스 패턴을 보고하도록 설계되었습니다. [F5 CSD 개인정보 보호 정책](https://www.f5.com/company/policies/f5-distributed-cloud-client-side-defense-privacy-statement)은 CSD를 "다양한 페이지 요소 또는 데이터 구조에 액세스하는 자산에 대한 정보"를 수집하는 것으로 설명하며, 사용자 입력 콘텐츠보다는 스크립트 동작에 중점을 두고 있습니다.
+
+## DevTools에서 비콘 관찰
+
+<Steps>
+1. Chrome DevTools(**F12**)를 열고 **Network** 탭으로 전환합니다
+2. 애플리케이션을 탐색하거나 폼 필드와 상호작용하여 트래픽을 생성합니다
+3. 필터 표시줄에 `zeronaught`을 입력하여 CSD 트래픽을 격리합니다 — `us.gimp.zeronaught.com`으로의 스크립트 로드(`GET`)와 텔레메트리 비콘(`POST`)을 볼 수 있습니다
+4. **Method** 열을 확인합니다: `GET` 항목은 로드되는 CSD 계측 코드이고, `dip`라는 이름의 `POST` 항목은 신호 데이터를 F5로 다시 전달하는 텔레메트리 비콘입니다
+5. `dip` 비콘을 클릭하여 헤더와 페이로드를 검사합니다; 요청 본문은 인코딩된 바이너리이며 인간이 읽을 수 있는 JSON이 아님을 주의합니다
+</Steps>
+
+<Screenshot light="/images/devtools-beacons-light.png" dark="/images/devtools-beacons-dark.png" alt="DevTools Network 탭에 zeronaught으로 필터링되어 GET 스크립트 로드 및 POST 텔레메트리 비콘을 표시" />
+
+<Aside type="tip" title="CSD 비콘 vs 공격 유출">
+CSD 텔레메트리 비콘은 **F5 운영 인프라**(`*.zeronaught.com` 도메인)로 전송되는 POST 요청입니다. 반면 악의적인 formjacking 스크립트는 도난당한 데이터를 **공격자 제어 도메인**으로 유출합니다 — 일반적으로 `fetch()`, `XMLHttpRequest` 또는 이미지 비콘(`new Image().src`)을 통해.
+
+CSD 비콘과 공격 유출은 모두 교차 출처 요청이지만, 주요 차이점은 **대상**과 **내용**입니다: CSD는 **스크립트 동작 메타데이터**를 알려진 F5 인프라로 전송하는 반면, 유출은 **사용자가 입력한 데이터**(암호, 카드 번호)를 공격자의 서버로 전송합니다. 이러한 구분은 CSD가 공격을 감지하는 방식의 핵심입니다 — CSD가 관찰할 수 있고 없는 것에 대해서는 [CSD 기능 — 감지 경계](/csd/overview/#detection-boundaries)를 참조하세요.
+</Aside>

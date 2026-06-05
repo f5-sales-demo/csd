@@ -1,0 +1,1241 @@
+---
+title: 진단 및 검증
+description: 'CSD 배포의 상태 확인, 연결성 테스트, 검증 절차'
+sidebar:
+  order: 8
+  label: 진단 및 검증
+i18n:
+  sourceHash: 754ac3ee6525
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+이 페이지에서는 Client-Side Defense 배포를 엔드-투-엔드로 검증하기 위한 **계층별 UAT 검증 매트릭스**를 제공합니다. 각 테스트 사례는 인프라 종속성 체인을 따릅니다(DNS 해석부터 CSD 텔레메트리까지). 따라서 모든 구성 요소가 올바르게 작동하는지를 체계적으로 증명할 수 있습니다.
+
+이 명령들은 [CSD 콘솔 둘러보기](/csd/csd-console/)의 **API 동등물**입니다. 터미널에서 검증해야 할 때, 모니터링을 자동화할 때, 또는 UI 없이 CSD 기능을 시연해야 할 때 사용하세요.
+
+## 전제 조건
+
+[API 자동화 &mdash; 환경 설정](/csd/demo/#environment-setup)에 설명된 대로 환경 변수를 설정하세요:
+
+```bash
+set -a && source .env && set +a
+```
+
+아래의 모든 명령은 `xTOKENx` 플레이스홀더 형식을 사용합니다. 환경 변수(`$F5XC_API_TOKEN`, `$F5XC_NAMESPACE` 등)로 바꾸거나 페이지 상단의 대화형 양식을 사용하세요.
+
+## API 동작 참고
+
+<Aside type="note">
+**PUT 및 DELETE는 HTTP 200에서 빈 `\{\}`를 반환합니다** — 이는 예상된 성공 응답이며 오류가 아닙니다. **POST만** 생성된 객체를 반환합니다. **목록 엔드포인트**(예: `/healthchecks`) 및 **개별 GET 엔드포인트**(예: `/healthchecks/\{name\}`)는 다른 응답 구조를 반환합니다. 각각에 대한 올바른 `jq` 경로는 [API 참조 &mdash; API 규칙](/csd/api-reference/#api-conventions)을 참조하세요.
+</Aside>
+
+## 시간 범위 헬퍼
+
+많은 CSD 엔드포인트는 에포크 타임스탬프(Unix 에포크 이후 초)를 필요로 합니다. 이 원라이너들은 일반적인 범위에 대한 시작/종료 시간을 계산합니다.
+
+**크로스 플랫폼**(macOS + Linux):
+
+```bash
+# 현재 시간을 에포크 초로
+NOW=$(date +%s)
+
+# 1시간 전
+START_1H=$(( NOW - 3600 ))
+
+# 24시간 전
+START_24H=$(( NOW - 86400 ))
+
+# 7일 전
+START_7D=$(( NOW - 604800 ))
+
+# 30일 전
+START_30D=$(( NOW - 2592000 ))
+```
+
+| 사전 설정 | 초 | 셸 표현식 |
+| --- | --- | --- |
+| 1시간 | 3,600 | `$(( $(date +%s) - 3600 ))` |
+| 24시간 | 86,400 | `$(( $(date +%s) - 86400 ))` |
+| 7일 | 604,800 | `$(( $(date +%s) - 604800 ))` |
+| 30일 | 2,592,000 | `$(( $(date +%s) - 2592000 ))` |
+
+<Aside type="note">
+CSD 엔드포인트(`/api/shape/csd/`)는 **에포크 초**(예: `1710000000`)를 사용합니다. 접근 로그 엔드포인트(`/api/data/`)는 **ISO 8601** 타임스탬프(예: `2024-03-10T00:00:00Z`)를 사용합니다. 각 섹션의 명령은 해당 엔드포인트에 올바른 형식을 사용합니다.
+</Aside>
+
+## 테스트 사례 형식
+
+각 테스트는 다음 구조를 따릅니다:
+
+| 필드 | 설명 |
+| --- | --- |
+| **테스트 ID** | 계층 번호 + 순차 ID(예: DNS-1, TLS-2) |
+| **증명하는 사항** | 검증 중인 특정 인프라 사실 |
+| **명령** | 실행 가능한 `curl` 또는 `dig` 명령 |
+| **PASS / FAIL** | 건강한 상태 vs. 불건강한 상태의 예상 출력 |
+| **수정** | 관련 설정 또는 문제 해결 섹션으로의 링크 |
+
+---
+
+## 계층 1: DNS 해석
+
+DNS는 기초입니다. 도메인이 로드 밸런서 VIP로 해석되지 않으면 다른 모든 것이 작동하지 않습니다.
+
+### DNS-1: A 레코드 해석
+
+**증명하는 사항:** 도메인이 로드 밸런서 VIP IP 주소로 해석됩니다.
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; VIP IP 반환됨(예: `72.19.3.185`) | 도메인이 LB 가상 IP로 해석됨 |
+| **FAIL** &mdash; 빈 응답 | DNS A 레코드가 구성되지 않음 |
+
+**수정:** [API 자동화 &mdash; 단계 4: DNS 구성](/csd/demo/phase-1-build/#step-4-configure-dns)
+
+<Aside type="tip">
+**부정적 DNS 캐시:** 도메인이 이전에 `NXDOMAIN`을 반환한 경우, 재귀 리졸버가 해당 결과를 캐시할 수 있습니다. 오래된 캐시를 배제하려면 권한 있는 네임서버에 대해 확인하세요: `dig +short xF5XC_DOMAINNAMEx A @ns1.f5clouddns.com` 또는 `@8.8.8.8`과 같은 공개 리졸버를 사용하세요.
+</Aside>
+
+### DNS-2: ACME 챌린지 레코드
+
+**증명하는 사항:** ACME 챌린지 레코드가 존재하여 자동 TLS 인증서 프로비저닝이 가능합니다.
+
+```bash
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx TXT
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; `*.autocerts.ves.volterra.io.`에 대한 CNAME(외부 DNS) | ACME 챌린지 CNAME이 준비됨 |
+| **PASS** &mdash; 도메인 값이 있는 TXT 레코드(F5 Distributed Cloud(F5 XC) 관리 DNS) | F5 XC 플랫폼이 관리하는 ACME 챌린지(TXT 레코드) |
+| **FAIL** &mdash; 둘 다 비어있음 | ACME 레코드가 구성되지 않음; 인증서는 `PreDomainChallengePending`에서 유지됨 |
+
+<Aside type="note">
+`allow_http_lb_managed_records`를 활성화한 F5 XC 관리 DNS를 사용할 때, 플랫폼은 `x-ves-io-managed` RR 집합 그룹에 **TXT** 레코드(CNAME이 아님)를 자동으로 생성합니다. 이 TXT 기반 ACME 검증은 내부적으로 처리됩니다. 외부 DNS를 사용할 때는 `*.autocerts.ves.volterra.io`에 대한 CNAME을 수동으로 생성해야 합니다.
+</Aside>
+
+**수정:** 외부 DNS의 경우 CNAME을 생성하세요: `_acme-challenge.xF5XC_DOMAINNAMEx` &rarr; `*.autocerts.ves.volterra.io`. F5 XC 관리 DNS의 경우 DNS 영역에서 `allow_http_lb_managed_records`를 활성화하세요 &mdash; [DNS-4](#dns-4-f5-xc-managed-records-enabled) 참조. [API 자동화 &mdash; 단계 4](/csd/demo/phase-1-build/#step-4-configure-dns) 참조.
+
+### DNS-3: 네임서버 권한
+
+**증명하는 사항:** F5 XC가 루트 도메인의 권한 있는 DNS 공급자인지 여부입니다.
+
+```bash
+dig +short NS xF5XC_ROOT_DOMAINx
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| `ns1.f5clouddns.com` 및 `ns2.f5clouddns.com` 포함 | F5 XC 관리 DNS &mdash; 레코드를 자동으로 생성할 수 있음 |
+| 다른 네임서버 | 외부 DNS &mdash; 레코드를 수동으로 생성해야 함 |
+
+**수정:** [API 자동화 &mdash; DNS 권한 감지](/csd/demo/phase-1-build/#detect-dns-authority)
+
+### DNS-4: F5 XC 관리 레코드 활성화됨
+
+**증명하는 사항:** F5 XC DNS 영역이 로드 밸런서에 대한 자동 레코드 생성을 허용합니다(F5 XC 관리 DNS만 해당).
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq '.spec.primary.allow_http_lb_managed_records'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; `true` | 플랫폼이 LB에 대한 A 레코드 및 ACME 레코드를 자동으로 생성함 |
+| **FAIL** &mdash; `false` 또는 `null` | 관리 레코드 비활성화됨; 영역 업데이트를 통해 활성화 |
+
+<Aside type="caution">
+`false` 결과는 F5 XC 관리 DNS를 사용할 때 일반적인 오구성입니다. 관리 레코드를 활성화하지 않으면 플랫폼이 VIP를 가리키는 A 레코드나 TLS 인증서 프로비저닝에 필요한 ACME 챌린지 CNAME을 자동으로 생성할 수 없습니다. 이로 인해 로드 밸런서가 `VIRTUAL_HOST_PENDING_A_RECORD`에 머물고 인증서는 `PreDomainChallengePending`에 유지됩니다. DNS 영역에서 관리 레코드를 활성화하거나 레코드를 수동으로 생성하세요.
+</Aside>
+
+**수정:** [API 자동화 &mdash; 옵션 A: F5 XC 관리 DNS](/csd/demo/phase-1-build/#option-a-f5-xc-managed-dns)
+
+---
+
+## 계층 2: TLS 인증서
+
+DNS가 해석된 후 로드 밸런서는 유효한 TLS 인증서를 가져야 합니다.
+
+### TLS-1: 인증서 상태
+
+<Aside type="note">
+**이 테스트는 HTTPS LB(`${F5XC_LB_NAME}-https`)에만 적용됩니다.** HTTP LB는 인증서를 가지지 않습니다. 데모 환경에서 TLS-1은 정보 제공용입니다. `AutoCertDomainRateLimited`가 표시되면 데모는 HTTP LB를 통해 `http://` URL을 사용하여 정상적으로 진행됩니다.
+</Aside>
+
+**증명하는 사항:** 자동 TLS 인증서가 HTTPS LB에서 발급되었습니다.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '.spec.cert_state'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; `"CertificateValid"` 또는 `"AutoCertRenewing"` | 인증서는 유효하고 활성화됨 |
+| **WARN** &mdash; `"DomainChallengePending"` 또는 `"DomainChallengeStarted"` | ACME 챌린지 진행 중 &mdash; 5~10분 대기 |
+| **INFO** &mdash; `"AutoCertDomainRateLimited"` | Let's Encrypt 속도 제한 도달 &mdash; 데모 환경에서 예상되며 HTTP LB에 영향을 주지 않음 |
+| **FAIL** &mdash; `"PreDomainChallengePending"` | ACME 챌린지 레코드 누락 &mdash; [DNS-2](#dns-2-acme-challenge-record) 참조 |
+
+**수정:** ACME 챌린지 레코드가 준비되어 있는지 확인하세요(외부 DNS의 경우 CNAME, F5 XC DNS의 경우 관리 레코드 활성화). 인증서 프로비저닝은 레코드가 구성된 후 **5~10분**이 소요됩니다. 15분 이상 유지되면 [인증서 정체 &mdash; 재생성](/csd/demo/#certificate-stuck--clean-recreation-optional)을 참조하세요. 속도 제한을 받으면 HTTP LB는 영향을 받지 않습니다.
+
+### TLS-2: 인증서 세부 정보
+
+**증명하는 사항:** 인증서가 예상된 도메인을 포함하고 만료 정보를 표시합니다. HTTPS LB에만 적용됩니다.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{
+    cert_state: .spec.cert_state,
+    auto_cert_info: .spec.auto_cert_info
+  }'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; `auto_cert_info`가 `dns_records` 및 인증서 메타데이터 포함 | 인증서 프로비저닝 세부 정보 사용 가능 |
+| **FAIL** &mdash; `auto_cert_info`는 `null` 또는 비어있음 | 인증서가 아직 프로비저닝되지 않음 |
+
+### TLS-3: 라이브 TLS 핸드셰이크
+
+**증명하는 사항:** TLS 인증서가 유효하고 클라이언트 측에서 핸드셰이크가 완료됩니다. HTTPS LB가 유효한 인증서를 가지고 있을 때만 적용됩니다.
+
+<Aside type="note">
+데모 환경에서는 `curl http://xF5XC_DOMAINNAMEx/`(HTTPS가 아닌 HTTP)를 주요 검증 경로로 사용하세요. TLS 핸드셰이크 테스트는 선택 사항입니다. HTTPS LB 인증서가 `CertificateValid`일 때만 작동합니다.
+</Aside>
+
+```bash
+curl -sv "https://xF5XC_DOMAINNAMEx/" 2>&1 \
+  | grep -E 'SSL connection|subject:|expire date:|issuer:'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; `SSL connection using TLSv1.3`, 유효한 주제 및 만료 표시 | 엔드-투-엔드 TLS 작동 중 |
+| **FAIL** &mdash; 연결 거부 또는 인증서 오류 | DNS 해석 및 인증서 상태 확인; 속도 제한을 받으면 HTTP 사용 |
+
+### TLS-4: LB의 ACME 레코드 대상
+
+**증명하는 사항:** HTTPS 로드 밸런서가 인증서 검증에 대한 올바른 ACME 대상을 보고합니다.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{
+    vip_ip: .spec.dns_info[0].ip_address,
+    acme_target: .spec.auto_cert_info.dns_records
+  }'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; `vip_ip` 및 `acme_target` 채워짐 | 이러한 값에 대해 DNS 레코드를 검증할 수 있음 |
+| **FAIL** &mdash; `null` 값 | LB에 `https_auto_cert`가 구성되지 않았을 수 있음 |
+
+---
+
+## 계층 3: HTTP 로드 밸런서
+
+로드 밸런서는 준비된 상태여야 하고 올바르게 구성되어야 합니다.
+
+### LB-1: 운영 상태
+
+**증명하는 사항:** HTTP 로드 밸런서(주요)가 완전히 작동하고 트래픽을 수락합니다.
+
+<Aside type="note">
+**HTTP LB는 주요 검증 대상입니다.** 데모 환경에서 HTTP LB(`${F5XC_LB_NAME}-http`)를 먼저 확인하세요. DNS가 해석되는 즉시 `VIRTUAL_HOST_READY`에 도달합니다. 인증서 종속성이 없습니다. `curl http://xF5XC_DOMAINNAMEx/`를 사용하여 주요 HTTP 기반 검증을 수행하세요.
+</Aside>
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '.spec.state'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; `"VIRTUAL_HOST_READY"` | LB 작동 중 |
+| **FAIL** &mdash; `"VIRTUAL_HOST_PENDING_A_RECORD"` | DNS A 레코드가 구성되지 않음 &mdash; [DNS-1](#dns-1-a-record-resolution) 참조 |
+
+**수정:** [LB가 VIRTUAL_HOST_PENDING_A_RECORD에 정체됨](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record)
+
+### LB-2: 도메인 구성
+
+**증명하는 사항:** HTTP 로드 밸런서가 올바른 도메인에 대해 구성되었습니다.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '.spec.domains'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; 배열이 FQDN 포함(예: `["app.example.com"]`) | LB가 예상 도메인으로 구성됨 |
+| **FAIL** &mdash; 도메인 누락 또는 잘못됨 | LB 사양을 올바른 도메인으로 업데이트 |
+
+### LB-3: LB에서 CSD 활성화됨
+
+**증명하는 사항:** Client-Side Defense가 로드 밸런서에서 올바른 JS 삽입 정책으로 활성화되었습니다.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{
+    csd_enabled: (if .spec.client_side_defense then true else false end),
+    js_policy: .spec.client_side_defense.policy
+  }'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; `csd_enabled: true`이고 정책에 `js_insert_all_pages` 포함 | CSD 활성화됨, 모든 페이지에서 JS 삽입 중 |
+| **FAIL** &mdash; `csd_enabled: false` | LB에서 CSD가 구성되지 않음 |
+
+**수정:** [API 참조 &mdash; 로드 밸런서에서 CSD 활성화](/csd/api-reference/#enable-csd-on-a-load-balancer)
+
+### LB-4: 기본 경로 풀
+
+**증명하는 사항:** 로드 밸런서가 예상된 가중치 및 우선순위와 함께 올바른 원본 풀을 참조합니다.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '.spec.default_route_pools[] | {
+    pool: .pool.name,
+    namespace: .pool.namespace,
+    weight: .weight,
+    priority: .priority
+  }'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; 가중치/우선순위와 함께 원본 풀 이름 표시 | LB가 올바른 백엔드로 라우팅됨 |
+| **FAIL** &mdash; 비어있음 또는 잘못된 풀 | LB `default_route_pools` 구성 업데이트 |
+
+### LB-5: 배포 상태(사이트별 조건)
+
+**증명하는 사항:** 로드 밸런서가 배포되고 모든 사이트에서 정상 조건을 보고합니다.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{
+    state: .spec.state,
+    dns_info: .spec.dns_info,
+    host_name: .spec.host_name
+  }'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; `state`는 `VIRTUAL_HOST_READY`, `dns_info` 채워짐 | LB가 완전히 배포됨, VIP 할당됨 |
+| **FAIL** &mdash; 보류 중인 상태 또는 빈 `dns_info` | DNS 또는 인증서 문제로 배포 중단 |
+
+<Aside type="tip">
+LB가 `VIRTUAL_HOST_READY` 상태가 아닐 때, 동일한 오류 세부 정보를 확인하세요 — `.status[].virtual_host_status.error_description`는 F5 XC 콘솔 UI에 표시되는 항목입니다:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '[.status[]? | select(.virtual_host_status != null) | .virtual_host_status | {state, error_description, suggested_action}]'
+```
+</Aside>
+
+### LB-6: 전체 LB 요약
+
+**증명하는 사항:** 디버깅을 위한 두 LB 구성의 종합적인 스냅샷입니다.
+
+**HTTP LB(주요):**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{
+    name: .metadata.name,
+    state: .spec.state,
+    domains: .spec.domains,
+    csd_enabled: (if .spec.client_side_defense then true else false end),
+    route_pools: [.spec.default_route_pools[] | .pool.name],
+    advertise: (if .spec.advertise_on_public_default_vip then "public_default_vip" else "custom" end)
+  }'
+```
+
+**HTTPS LB(보조 &mdash; 인증서 상태 포함):**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{
+    name: .metadata.name,
+    state: .spec.state,
+    cert_state: .spec.cert_state,
+    domains: .spec.domains,
+    csd_enabled: (if .spec.client_side_defense then true else false end),
+    route_pools: [.spec.default_route_pools[] | .pool.name]
+  }'
+```
+
+---
+
+## 계층 4: 원본 풀
+
+원본 풀은 로드 밸런서가 트래픽을 라우팅하는 백엔드 서버를 정의합니다.
+
+### OP-1: 원본 풀 구성
+
+**증명하는 사항:** 원본 풀이 올바른 백엔드 서버, 포트, LB 알고리즘으로 존재합니다.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '{
+    name: .metadata.name,
+    origin_servers: [.spec.origin_servers[] | {
+      ip: .public_ip.ip,
+      labels: .labels
+    }],
+    port: .spec.port,
+    lb_algorithm: .spec.loadbalancer_algorithm,
+    endpoint_selection: .spec.endpoint_selection
+  }'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; 올바른 IP, 포트, 알고리즘 표시 | 원본 풀이 올바르게 구성됨 |
+| **FAIL** &mdash; `404` 또는 잘못된 값 | 원본 풀이 누락되었거나 오구성됨 |
+
+**수정:** [API 자동화 &mdash; 단계 2: 원본 풀 생성](/csd/demo/phase-1-build/#step-2-create-origin-pool)
+
+### OP-2: 원본 TLS
+
+**증명하는 사항:** LB와 원본 서버 간의 연결에 TLS가 구성되었는지 여부입니다.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '{
+    tls_config: (if .spec.no_tls then "no_tls (plaintext)" elif .spec.use_tls then "use_tls (encrypted)" else "unknown" end)
+  }'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| `no_tls (plaintext)` | LB가 HTTP를 통해 원본에 연결함(Juice Shop 데모의 경우 예상됨) |
+| `use_tls (encrypted)` | LB가 HTTPS를 통해 원본에 연결함 |
+
+### OP-3: 상태 검사 연결
+
+**증명하는 사항:** 원본 풀이 올바른 상태 검사를 연결했습니다(해당 경우).
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '.spec.healthcheck'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; 상태 검사 참조(이름, 네임스페이스, 종류) 있는 배열 | 상태 검사가 연결됨 |
+| **OK** &mdash; 빈 배열 `[]` | 상태 검사 없음(수용 가능 &mdash; CSD는 상태 검사를 요구하지 않음) |
+| **FAIL** &mdash; 상태 검사가 예상되었지만 배열이 비어있음 | 생성 시 상태 검사를 찾을 수 없음 &mdash; [상태 검사가 원본 풀에 연결되지 않음](/csd/demo/#healthcheck-not-linked-to-origin-pool) 참조 |
+
+### OP-4: 원본 연결성
+
+**증명하는 사항:** 원본 서버가 클라이언트 측에서 연결 가능합니다(LB-to-원본 경로를 테스트하지 않음).
+
+```bash
+curl -s -o /dev/null -w '%{http_code}' \
+  "http://xF5XC_ORIGIN_IPx:xF5XC_ORIGIN_PORTx/"
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; `200`(또는 다른 유효한 HTTP 코드) | 원본 서버가 응답 중 |
+| **FAIL** &mdash; `000` 또는 연결 거부 | 이 네트워크에서 원본 서버에 연결할 수 없음 |
+
+<Aside type="note">
+이는 직접 클라이언트-원본 연결을 테스트합니다. LB-to-원본 경로는 다른 네트워크 경로를 사용할 수 있습니다. 여기서의 오류가 반드시 LB가 원본에 도달할 수 없음을 의미하지는 않습니다.
+</Aside>
+
+---
+
+## 계층 5: 상태 검사
+
+상태 검사는 백엔드 가용성을 모니터링합니다. CSD에는 선택 사항이지만 프로덕션 배포에 유용합니다.
+
+### HC-1: 상태 검사 구성
+
+**증명하는 사항:** 상태 검사가 올바른 유형, 경로, 타이밍, 임계값으로 존재합니다.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx" \
+  | jq '{
+    name: .metadata.name,
+    type: (if .spec.http_health_check then "HTTP" elif .spec.tcp_health_check then "TCP" else "unknown" end),
+    path: .spec.http_health_check.path,
+    expected_status: .spec.http_health_check.expected_status_codes,
+    timeout: .spec.timeout,
+    interval: .spec.interval,
+    unhealthy_threshold: .spec.unhealthy_threshold,
+    healthy_threshold: .spec.healthy_threshold
+  }'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; HTTP 유형이 경로 `/` 및 예상 `200`으로 표시됨 | 상태 검사가 올바르게 구성됨 |
+| **FAIL** &mdash; `404` 응답 | 상태 검사가 존재하지 않음([단계 1](/csd/demo/phase-1-build/#step-1-create-healthcheck-optional) 건너뛰었을 수 있음) |
+
+### HC-2: 모든 상태 검사 목록 표시
+
+**증명하는 사항:** 네임스페이스의 모든 상태 검사를 열거하여 이름 지정 및 개수를 확인합니다.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks" \
+  | jq -r '
+    ["NAME", "NAMESPACE", "DESCRIPTION"],
+    (.items[] | [
+      .name,
+      .namespace,
+      (.description | if length == 0 then "—" else . end)
+    ])
+    | @tsv' | column -t
+```
+
+<Aside type="note">
+목록 엔드포인트는 요약 데이터만 반환합니다(이름, 네임스페이스, 설명). 전체 구성 세부 정보(유형, 경로, 간격, 타임아웃)를 보려면 [HC-1](#hc-1-healthcheck-configuration)을 사용하여 개별 상태 검사를 쿼리하세요.
+</Aside>
+
+---
+
+## 계층 6: CSD 구성
+
+CSD는 테넌트 수준에서 활성화되어야 하고 JavaScript 삽입 태그가 구성되어야 합니다.
+
+### CSD-1: 테넌트 CSD 상태
+
+**증명하는 사항:** CSD가 구성되고 테넌트에 대해 활성화되었습니다.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq '{isConfigured, isEnabled}'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; 둘 다 `true` | 이 테넌트에 대해 CSD가 활성화됨 |
+| **FAIL** &mdash; `isConfigured: false` | CSD가 테넌트 수준에서 활성화되지 않음 &mdash; F5 XC 관리자에게 문의 |
+| **FAIL** &mdash; `isEnabled: false` | CSD가 구성되었지만 활성화되지 않음 |
+
+### CSD-2: JS 삽입 태그
+
+**증명하는 사항:** CSD JavaScript 삽입 태그가 생성되고 삽입할 준비가 되었습니다.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq '{has_script_tag: (.scriptTag | length > 0)}'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; `has_script_tag: true` | JS 삽입 태그가 구성됨 |
+| **FAIL** &mdash; `has_script_tag: false` | 스크립트 태그 없음 &mdash; CSD가 활성화되었는지 확인하고 보호된 도메인이 등록되었는지 확인 |
+
+### CSD-3: JS 태그 콘텐츠
+
+**증명하는 사항:** 검증 또는 수동 삽입을 위한 전체 스크립트 태그를 표시합니다.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq '.scriptTag'
+```
+
+### CSD-4: 보호된 도메인 등록
+
+**증명하는 사항:** 루트 도메인이 테넌트에서 CSD 보호된 도메인으로 등록되었습니다.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '.items[] | {name, namespace, description}'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; 비어있지 않은 `name`이 있는 항목 표시 | 도메인이 보호됨 |
+| **FAIL** &mdash; 항목의 모든 필드가 비어있음 | 보호된 도메인이 등록되지 않음 &mdash; [단계 6](/csd/demo/phase-1-build/#step-6-register-protected-domain) 참조 |
+
+<Aside type="note">
+보호된 도메인 목록 엔드포인트는 요약 데이터를 반환합니다. 모든 필드가 비어있는 항목은 보호된 도메인이 구성되지 않았음을 나타냅니다. CSD JavaScript 태그([CSD-2](#csd-2-js-injection-tag))가 도메인 보호이 활성화되었는지 확인하는 더 신뢰할 수 있는 지표입니다.
+</Aside>
+
+### CSD-5: 라이브 JS 삽입 검증
+
+**증명하는 사항:** CSD JavaScript가 실제로 로드 밸런서가 제공하는 페이지 응답에 삽입되고 있습니다.
+
+```bash
+curl -s "http://xF5XC_DOMAINNAMEx/" \
+  | grep -oE '(zeronaught|shape)\.com[^"]*' | head -1
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; `zeronaught.com` 또는 `shape.com` URL 조각 반환됨(예: `zeronaught.com/__imp_apg__/js/...`) | CSD JavaScript가 페이지에 삽입되고 있음 |
+| **FAIL** &mdash; 빈 출력 | JS가 삽입되지 않음 &mdash; [LB-3](#lb-3-csd-enabled-on-lb) 및 [CSD-1](#csd-1-tenant-csd-status) 확인 |
+
+---
+
+## 계층 7: 트래픽 검증
+
+라이브 트래픽이 로드 밸런서에 도달하고 올바르게 처리되는지 확인합니다.
+
+### TV-1: 요청 개수(최근 24시간)
+
+**증명하는 사항:** 트래픽이 로드 밸런서에 도달합니다. 0 결과는 트래픽이 도달하지 않음을 의미합니다.
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start_time": "'"$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)"'",
+    "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"
+  }' \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs/aggregation" \
+  | jq '{total_requests: .total_hits}'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; `total_requests`는 0이 아닌 문자열(예: `"380"`) | 트래픽이 LB를 통과함 |
+| **FAIL** &mdash; `"0"` 또는 데이터 없음 | LB에 도달하는 트래픽 없음 &mdash; [DNS-1](#dns-1-a-record-resolution) 및 [LB-1](#lb-1-operational-state) 확인 |
+
+<Aside type="note">
+`total_hits` 값은 **문자열**(예: `"380"`)로 반환되며, 정수가 아닙니다. 네임스페이스는 URL 경로에서 추론됩니다. 요청 본문에 포함하지 마세요.
+</Aside>
+
+### TV-2: 상태 코드 분포
+
+**증명하는 사항:** 응답 상태 코드의 분해는 오류 패턴을 나타냅니다.
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start_time": "'"$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)"'",
+    "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",
+    "sort": "DESCENDING",
+    "limit": 100
+  }' \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs" \
+  | jq -r '
+    [.logs[] | fromjson | .rsp_code_class]
+    | group_by(.) | map({class: .[0], count: length})
+    | sort_by(-.count)
+    | ["STATUS_CLASS", "COUNT"], (.[] | [.class, .count])
+    | @tsv' | column -t
+```
+
+<Aside type="note">
+집계 엔드포인트는 `terms` 버킷팅을 지원하지 않습니다. `aggs`는 항상 빈 값을 반환합니다. 이 명령은 가장 최근의 100개 로그 항목을 가져오고 클라이언트 측에서 분포를 계산합니다. 각 로그 항목은 `fromjson`으로 구문 분석해야 하는 **JSON 문자열**입니다.
+</Aside>
+
+건강한 사이트의 예상 출력:
+
+```
+STATUS_CLASS                  COUNT
+2xx                           82
+downstream_remote_disconnect  18
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; 대부분 `2xx` | 사이트가 성공적인 응답을 제공함 |
+| **WARN** &mdash; 높은 `4xx` 개수 | 클라이언트 오류(잘못된 URL, 누락된 리소스) |
+| **FAIL** &mdash; 높은 `5xx` 개수 | 서버 오류 &mdash; 원본 서버 상태 확인 |
+
+`downstream_remote_disconnect` 클래스는 클라이언트가 응답이 완료되기 전에 연결을 닫았음을 나타냅니다(긴 폴링 또는 WebSocket 업그레이드 요청에 일반적임).
+
+### TV-3: 최근 요청 샘플
+
+**증명하는 사항:** 개별 요청이 올바른 필드로 로깅됩니다.
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start_time": "'"$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-1H +%Y-%m-%dT%H:%M:%SZ)"'",
+    "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",
+    "sort": "DESCENDING",
+    "limit": 10
+  }' \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs" \
+  | jq -r '
+    ["TIMESTAMP", "METHOD", "PATH", "STATUS", "SRC_IP"],
+    (.logs[] | fromjson | [.["@timestamp"], .method, .req_path, .rsp_code, .src_ip])
+    | @tsv' | column -t
+```
+
+<Aside type="caution">
+`.logs[]` 배열의 각 항목은 구문 분석된 객체가 아닌 **JSON 문자열**입니다. jq에서 필드에 액세스하기 전에 `fromjson`을 통해 파이프해야 합니다(예: `.logs[] | fromjson | .method`).
+</Aside>
+
+### TV-4: 접근 로그에서 CSD JS 삽입
+
+**증명하는 사항:** 접근 로그는 CSD JavaScript가 응답에 삽입되고 있음을 확인합니다.
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start_time": "'"$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-1H +%Y-%m-%dT%H:%M:%SZ)"'",
+    "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",
+    "sort": "DESCENDING",
+    "limit": 20
+  }' \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs" \
+  | jq '[.logs[] | fromjson | select(.csd_js_injection == "true")] | length as $injected |
+    {injected_count: $injected, total_sampled: 20}'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; `injected_count` > 0 | CSD JS가 페이지 응답에 삽입됨 |
+| **FAIL** &mdash; `injected_count: 0` | JS가 삽입되지 않음 &mdash; [CSD-1](#csd-1-tenant-csd-status) 및 [LB-3](#lb-3-csd-enabled-on-lb) 확인 |
+
+<Aside type="note">
+`csd_js_injection` 필드는 삽입이 발생한 로그 항목에만 표시됩니다. 테스트에서 샘플링된 로그 항목의 40%는 `csd_js_injection: "true"`을(를) 표시했습니다(HTML 페이지 요청). 60%는 필드가 없었습니다(`.ico`, `.js`, `.css` 파일 및 WebSocket 연결과 같은 정적 자산). HTML 페이지 요청은 삽입을 표시해야 합니다. API 호출 및 정적 자산 요청은 일반적으로 표시하지 않습니다.
+</Aside>
+
+### TV-5: 엔드-투-엔드 연결 테스트
+
+**증명하는 사항:** 완전한 요청이 클라이언트를 통해 DNS, LB, 원본을 통과하고 유효한 응답을 반환합니다.
+
+```bash
+curl -sv "http://xF5XC_DOMAINNAMEx/" 2>&1 \
+  | grep -E 'Connected to|< HTTP|< content-type'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; 연결, HTTP 200, content-type 표시 | 전체 스택이 작동 중 |
+| **FAIL** &mdash; 연결 거부 또는 DNS 오류 | [계층 1: DNS](#layer-1-dns-resolution)에서 디버깅 시작 |
+
+<Aside type="tip">
+HTTPS 엔드-투-엔드 테스트의 경우(HTTPS LB 인증서가 유효할 때만) `curl -sv "https://xF5XC_DOMAINNAMEx/"`를 사용하고 출력에서 `SSL connection`을 확인하세요.
+</Aside>
+
+---
+
+## 계층 8: CSD 텔레메트리 및 도메인 정책
+
+이 명령들은 [CSD 콘솔](/csd/csd-console/) 대시보드, 스크립트 목록, 양식 필드, 네트워크 보기에 표시되는 동일한 데이터를 쿼리합니다.
+
+### TEL-1: 스크립트 인벤토리
+
+**증명하는 사항:** CSD가 보호된 도메인에서 실행되는 스크립트를 감지하고 카탈로깅합니다.
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"startTime\": \"${START}\",
+    \"endTime\": \"${NOW}\"
+  }" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq -r '
+    ["SCRIPT", "RISK", "STATUS", "FIELDS", "USERS"],
+    (.scripts[] | [
+      (.script_name | if length > 50 then .[:47] + "..." else . end),
+      .risk_level,
+      .status,
+      (.form_fields_read // 0),
+      (.affected_users_count // 0)
+    ])
+    | @tsv' | column -t
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; 위험 수준이 있는 스크립트가 나열됨 | CSD가 스크립트를 활발히 모니터링 중 |
+| **FAIL** &mdash; 빈 배열 | [문제 해결: 빈 스크립트 배열](#empty-scripts-array) 참조 |
+
+<Aside type="tip">
+스크립트 이름은 전체 URL이며 매우 길 수 있습니다. 위 명령은 터미널 가독성을 위해 이름을 50자로 자릅니다. 전체 URL을 보려면 자르기 필터를 제거하세요.
+</Aside>
+
+### TEL-2: 감지된 도메인
+
+**증명하는 사항:** CSD가 스크립트 소스 도메인을 감지하고 상태별로 분류했습니다.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{
+    summary: {
+      action_needed: .domain_summary.actionNeededCount.count,
+      mitigated: .domain_summary.mitigatedDomains.count,
+      allowed: .domain_summary.allowedDomains.count,
+      total: .domain_summary.totalDomains.count
+    },
+    domains: [.domains_list[] | {
+      domain: .domain,
+      category: .category,
+      status: .status,
+      first_seen: (.firstSeenDate | tonumber | todate),
+      latest_seen: (.latestSeenDate | tonumber | todate)
+    }]
+  }'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; `total` > 0이고 도메인이 나열됨 | CSD가 스크립트 도메인을 추적 중 |
+| **WARN** &mdash; `action_needed` > 0 | 일부 도메인을 검토해야 함 |
+| **FAIL** &mdash; 빈 응답 | 텔레메트리 데이터 없음 &mdash; [CSD-5](#csd-5-live-js-injection-verification) 확인 |
+
+### TEL-3: 도메인 정책 상태
+
+**증명하는 사항:** 허용된 도메인 vs. 완화된 도메인의 분포와 정책이 일관성이 있는지 여부를 표시합니다.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{
+    action_needed: .domain_summary.actionNeededCount.count,
+    mitigated: .domain_summary.mitigatedDomains.count,
+    allowed: .domain_summary.allowedDomains.count,
+    total: .domain_summary.totalDomains.count,
+    domains_needing_action: [.domains_list[] | select(.status == "AN") | .domain]
+  }'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; `action_needed: 0` | 모든 도메인이 검토되고 분류됨 |
+| **WARN** &mdash; `action_needed` > 0 | `domains_needing_action`에 나열된 도메인을 검토해야 함 |
+
+### TEL-4: 양식 필드 인벤토리
+
+**증명하는 사항:** CSD가 스크립트가 읽는 양식 필드를 감지하고 민감도 분류를 표시합니다.
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields?startTime=${START}&endTime=${NOW}" \
+  | jq -r '
+    ["FIELD", "SENSITIVITY", "SCRIPTS"],
+    (.form_fields[] | [
+      .name,
+      .analysis,
+      (.scripts_count // 0)
+    ])
+    | @tsv' | column -t
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; 민감도가 있는 양식 필드 나열 | CSD가 양식 필드 액세스를 추적 중 |
+| **INFO** &mdash; 빈 배열 | 양식 필드가 감지되지 않음(사이트에 양식이 없으면 예상됨) |
+
+### TEL-5: 스크립트 심층 분석
+
+**증명하는 사항:** 위험도, 동작, 네트워크 상호 작용을 포함한 특정 스크립트에 대한 세부 정보입니다.
+
+먼저 [TEL-1](#tel-1-script-inventory)에서 스크립트 ID를 가져온 후 해당 세부 정보를 쿼리합니다:
+
+```bash
+SCRIPT_ID="your-script-id"
+
+# 개요(위험 수준, 유형, 소스 도메인)
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/dashboard" \
+  | jq '{script_name, risk_level, type, source_domain, status}'
+
+# 시간 경과에 따른 동작
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/behaviors" \
+  | jq '.behaviors'
+
+# 네트워크 상호 작용(스크립트가 통신하는 도메인)
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/networkInteractions" \
+  | jq '.network_interactions'
+```
+
+### TEL-6: 영향을 받는 사용자
+
+**증명하는 사항:** 특정 스크립트의 영향을 받는 사용자를 나열합니다. 노출 범위를 표시합니다.
+
+```bash
+SCRIPT_ID="your-script-id"
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"startTime\": \"${START}\",
+    \"endTime\": \"${NOW}\"
+  }" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/affectedUsers" \
+  | jq -r '
+    ["IP_ADDRESS", "DEVICE_ID", "GEO", "CHANNEL", "USER_AGENT"],
+    (.affected_users[] | [
+      .ip_address,
+      (.device_id | if length > 12 then .[:12] + "..." else . end),
+      .geolocation,
+      .channel,
+      (.user_agent | if length > 30 then .[:27] + "..." else . end)
+    ])
+    | @tsv' | column -t
+```
+
+### TEL-7: 위험 수준별 스크립트 개수
+
+**증명하는 사항:** 감지된 모든 스크립트에서 집계된 위험 분포입니다.
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"startTime\": \"${START}\",
+    \"endTime\": \"${NOW}\"
+  }" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq '[.scripts[] | .risk_level] | group_by(.) | map({risk_level: .[0], count: length}) | sort_by(-.count)'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; 모두 `No Risk` | 위험한 스크립트가 감지되지 않음 |
+| **WARN** &mdash; `Low Risk` 또는 `High Risk` 존재 | [TEL-5](#tel-5-script-deep-dive)에서 플래그된 스크립트 검토 |
+
+### TEL-8: 텔레메트리 신선도
+
+**증명하는 사항:** CSD 텔레메트리 데이터가 최근이며, 활발한 모니터링이 진행 중임을 확인합니다.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{
+    total_domains: .domain_summary.totalDomains.count,
+    latest_update: (.domain_summary.totalDomains.lastUpdated // "unknown"),
+    most_recent_domain: (.domains_list | sort_by(.latestSeenDate) | last | {
+      domain: .domain,
+      latest_seen: (.latestSeenDate | tonumber | todate)
+    })
+  }'
+```
+
+| 결과 | 의미 |
+| --- | --- |
+| **PASS** &mdash; `latest_seen`은 지난 24시간 이내 | 텔레메트리가 활발히 데이터 수집 중 |
+| **WARN** &mdash; `latest_seen`은 24시간 이상 전 | 트래픽이 중지되었거나 CSD 처리가 지연됨 |
+
+---
+
+## 풀스택 대시보드
+
+모든 계층의 모든 중요한 상태 지표를 확인하고 요약 테이블을 생성하는 단일 명령을 실행합니다:
+
+```bash
+echo "=== CSD Verification Dashboard ==="
+echo ""
+
+# 계층 1: DNS
+DNS_A=$(dig +short xF5XC_DOMAINNAMEx A | head -1)
+DNS_ACME=$(dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME | head -1)
+
+# 계층 2-3: LB + TLS
+LB=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http")
+LB_HTTPS=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+
+LB_STATE=$(echo "$LB" | jq -r '.spec.state // "UNKNOWN"')
+CERT_STATE=$(echo "$LB_HTTPS" | jq -r '.spec.cert_state // "UNKNOWN"')
+CSD_ON_LB=$(echo "$LB" | jq -r 'if .spec.client_side_defense then "ENABLED" else "DISABLED" end')
+DOMAINS=$(echo "$LB" | jq -r '.spec.domains | join(", ")')
+ROUTE_POOL=$(echo "$LB" | jq -r '[.spec.default_route_pools[] | .pool.name] | join(", ")')
+
+# 계층 6: CSD 상태
+CSD=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status")
+
+CSD_CONFIGURED=$(echo "$CSD" | jq -r '.isConfigured // false')
+CSD_ENABLED=$(echo "$CSD" | jq -r '.isEnabled // false')
+
+# 계층 6: JS config
+JS_TAG=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq -r 'if (.scriptTag | length) > 0 then "PRESENT" else "MISSING" end')
+
+# 계층 7: 트래픽(최근 24시간)
+TRAFFIC=$(curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"start_time\": \"$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)\",
+    \"end_time\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+  }" \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs/aggregation" \
+  | jq -r '.total_hits // "0"')
+
+printf "%-28s %s\n" "CHECK" "STATUS"
+printf "%-28s %s\n" "----------------------------" "----------------------------"
+printf "%-28s %s\n" "[DNS] A Record" "${DNS_A:-NOT_FOUND}"
+printf "%-28s %s\n" "[DNS] ACME CNAME" "${DNS_ACME:-NOT_FOUND}"
+printf "%-28s %s\n" "[TLS] Certificate" "$CERT_STATE"
+printf "%-28s %s\n" "[LB] State" "$LB_STATE"
+printf "%-28s %s\n" "[LB] Domains" "$DOMAINS"
+printf "%-28s %s\n" "[LB] Route Pool" "$ROUTE_POOL"
+printf "%-28s %s\n" "[LB] CSD on LB" "$CSD_ON_LB"
+printf "%-28s %s\n" "[CSD] Configured (tenant)" "$CSD_CONFIGURED"
+printf "%-28s %s\n" "[CSD] Enabled" "$CSD_ENABLED"
+printf "%-28s %s\n" "[CSD] JS Script Tag" "$JS_TAG"
+printf "%-28s %s\n" "[Traffic] Requests (24h)" "$TRAFFIC"
+```
+
+---
+
+## 접근 로그 필드 참조
+
+<Aside type="caution">
+`.logs[]` 배열의 각 항목은 구문 분석된 객체가 아닌 **JSON 문자열**입니다. jq에서 필드에 액세스하기 전에 `fromjson`을 통해 파이프해야 합니다(예: `.logs[] | fromjson | .method`).
+</Aside>
+
+| 필드 | 유형 | 설명 |
+| --- | --- | --- |
+| `@timestamp` | 문자열 | 요청 타임스탐프(ISO 8601). `@` 접두사를 주의하세요. jq에서는 `.["@timestamp"]`로 액세스합니다 |
+| `method` | 문자열 | HTTP 메서드(GET, POST 등) |
+| `req_path` | 문자열 | 요청 URI 경로 |
+| `rsp_code` | 문자열 | HTTP 응답 상태 코드(문자열로: `"200"`, `"404"`) |
+| `rsp_code_class` | 문자열 | 상태 코드 클래스(`2xx`, `3xx`, `4xx`, `5xx`, 또는 `downstream_remote_disconnect`) |
+| `src_ip` | 문자열 | 클라이언트 소스 IP 주소 |
+| `dst_ip` | 문자열 | 대상(VIP) IP 주소 |
+| `domain` | 문자열 | 요청 Host 헤더 값 |
+| `user_agent` | 문자열 | 클라이언트 User-Agent 문자열 |
+| `rsp_size` | 문자열 | 응답 본문 크기(바이트, 문자열로 반환) |
+| `req_size` | 문자열 | 요청 본문 크기(바이트, 문자열로 반환) |
+| `duration_with_data_tx_delay` | 문자열 | 총 요청 지속 시간(초, 문자열로 반환: `"0.024219"`) |
+| `csd_js_injection` | 문자열 | CSD JavaScript가 삽입되었을 때 `"true"`(활성일 때만 존재) |
+
+## CSD 텔레메트리 필드 참조
+
+| 필드 | 엔드포인트 | 설명 |
+| --- | --- | --- |
+| `isConfigured` | status | 테넌트 수준에서 CSD 활성화됨 |
+| `isEnabled` | status | 이 네임스페이스에 대해 CSD 활성화됨 |
+| `scripts[]` | scripts | 감지된 스크립트 객체 배열 |
+| `.script_name` | scripts | JavaScript 파일의 전체 URL |
+| `.risk_level` | scripts | 위험 수준(No Risk, Low Risk, High Risk) |
+| `.status` | scripts | AN(Action Needed) 또는 NA(No Action Needed) |
+| `.form_fields_read` | scripts | 스크립트가 읽는 양식 필드 개수 |
+| `.affected_users_count` | scripts | 영향을 받는 고유 사용자/세션 개수 |
+| `domain_summary` | detected_domains | 상태별 개수: `.actionNeededCount.count`, `.mitigatedDomains.count`, `.allowedDomains.count`, `.totalDomains.count`(각각 `.count`와 `.lastUpdated` 포함) |
+| `domains_list[]` | detected_domains | `.domain`, `.status`, `.category`, `.firstSeenDate`, `.latestSeenDate`(문자열로 에포크 초)가 있는 감지된 도메인 객체 배열 |
+| `form_fields[]` | formFields | 감지된 양식 필드 객체 배열 |
+| `.analysis` | formFields | 민감도 분류(Sensitive, Not Sensitive) |
+
+## 문제 해결
+
+### 0개의 접근 로그
+
+[TV-1](#tv-1-request-count-last-24-hours)이 `0`을 반환하는 경우:
+
+<Steps>
+1. **DNS 해석 확인** &mdash; 도메인이 LB VIP로 해석되는지 확인합니다:
+   ```bash
+   dig +short xF5XC_DOMAINNAMEx A
+   ```
+   비어있으면 DNS가 구성되지 않았습니다. [API 자동화 &mdash; 단계 4](/csd/demo/phase-1-build/#step-4-configure-dns)를 참조하세요.
+
+2. **LB 상태 확인** &mdash; 로드 밸런서는 `VIRTUAL_HOST_READY`여야 합니다:
+   ```bash
+   curl -s \
+     -H "Authorization: APIToken xF5XC_API_TOKENx" \
+     "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+     | jq '.spec.state'
+   ```
+
+3. **테스트 요청 전송** &mdash; 엔드-투-엔드 연결을 확인하기 위해 트래픽을 생성합니다:
+   ```bash
+   curl -sv "http://xF5XC_DOMAINNAMEx/" 2>&1 | head -20
+   ```
+   성공적인 HTTP 응답을 찾으세요. HTTPS LB 인증서가 유효한 경우에만 `https://`를 사용하세요.
+</Steps>
+
+### DNS 영역에서 관리 레코드 비활성화됨
+
+[DNS-4](#dns-4-f5-xc-managed-records-enabled)이 `false`를 반환하면, F5 XC가 권한 있는 DNS 공급자임에도 불구하고 자동 레코드 생성이 비활성화됨을 의미합니다. 이는 A 레코드와 ACME CNAME이 모두 누락되어 로드 밸런서가 `VIRTUAL_HOST_READY`에 도달하지 못하고 인증서가 발급되지 않도록 하는 일반적인 오구성입니다.
+
+관리 레코드를 활성화하려면 DNS 영역 구성을 업데이트하여 `allow_http_lb_managed_records: true`를 설정하세요. API 호출은 [API 자동화 &mdash; 옵션 A: F5 XC 관리 DNS](/csd/demo/phase-1-build/#option-a-f5-xc-managed-dns)를 참조하세요.
+
+### LB가 VIRTUAL_HOST_PENDING_A_RECORD에 정체됨
+
+로드 밸런서는 VIP를 가리키는 DNS A 레코드를 기다리고 있습니다. 자세한 해결 단계는 [LB가 VIRTUAL_HOST_PENDING_A_RECORD에 정체됨](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record)을 참조하세요.
+
+### 인증서가 PreDomainChallengePending에서 정체됨
+
+자동 TLS 인증서에는 ACME 챌린지 레코드가 필요합니다. 방법은 DNS 공급자에 따라 다릅니다:
+
+**F5 XC 관리 DNS:** DNS 영역에서 `allow_http_lb_managed_records`를 활성화하세요([DNS-4](#dns-4-f5-xc-managed-records-enabled)). 플랫폼이 `x-ves-io-managed` RR 집합 그룹에 **TXT** 레코드(CNAME이 아님) 기반 ACME 챌린지 레코드를 자동으로 생성합니다. 관리 레코드를 활성화한 후에도 인증서가 정체되면 로드 밸런서를 삭제하고 다시 생성하여 새 인증서 요청을 트리거하세요.
+
+**외부 DNS:** DNS 공급자에서 CNAME 레코드를 생성하세요:
+
+```
+_acme-challenge.xF5XC_DOMAINNAMEx  CNAME  *.autocerts.ves.volterra.io
+```
+
+레코드가 존재하는지 확인하세요:
+
+```bash
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx TXT
+```
+
+둘 다 비어있으면 ACME 레코드가 구성되지 않았습니다. 인증서 프로비저닝은 레코드가 준비된 후 5~10분이 소요됩니다. LB 오류 상태에서 특정 ACME 검증 오류를 확인하세요:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '[.status[]? | select(.virtual_host_status != null) | .virtual_host_status.error_description]'
+```
+
+### CSD isConfigured가 false임
+
+CSD는 테넌트 수준에서 F5 XC 관리자가 활성화해야 합니다. 이는 네임스페이스 API를 통해 구성할 수 없는 테넌트 전체 설정입니다. 관리자에게 문의하여 Client-Side Defense를 활성화하세요.
+
+### 빈 스크립트 배열
+
+[TEL-1](#tel-1-script-inventory)이 빈 배열을 반환하는 경우:
+
+<Steps>
+1. **보호된 도메인 확인** &mdash; CSD는 등록된 도메인에서만 스크립트를 모니터링합니다:
+   ```bash
+   curl -s \
+     -H "Authorization: APIToken xF5XC_API_TOKENx" \
+     "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+     | jq '.items[] | {name, namespace}'
+   ```
+
+2. **JS 삽입 확인** &mdash; CSD 스크립트 태그가 페이지에 삽입되는지 확인합니다:
+   ```bash
+   curl -s "http://xF5XC_DOMAINNAMEx/" | grep -oE '(zeronaught|shape)\.com[^"]*' | head -1
+   ```
+   일치 항목이 없으면 CSD JavaScript가 삽입되지 않습니다. LB에 `client_side_defense`가 활성화되어 있는지 확인하세요.
+
+3. **처리 시간 허용** &mdash; CSD를 처음 활성화하거나 새 보호된 도메인을 등록한 후 스크립트 감지에 5~15분이 소요될 수 있습니다. 사이트에 트래픽을 생성하고 다시 확인하기 전에 대기하세요.
+</Steps>
+
+## 빠른 참조
+
+### 시간 범위 사전 설정
+
+| 기간 | 에포크 오프셋 | ISO 8601(Linux) | ISO 8601(macOS) |
+| --- | --- | --- | --- |
+| 1시간 | `$(( $(date +%s) - 3600 ))` | `date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ` | `date -u -v-1H +%Y-%m-%dT%H:%M:%SZ` |
+| 24시간 | `$(( $(date +%s) - 86400 ))` | `date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ` | `date -u -v-24H +%Y-%m-%dT%H:%M:%SZ` |
+| 7일 | `$(( $(date +%s) - 604800 ))` | `date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ` | `date -u -v-7d +%Y-%m-%dT%H:%M:%SZ` |
+| 30일 | `$(( $(date +%s) - 2592000 ))` | `date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ` | `date -u -v-30d +%Y-%m-%dT%H:%M:%SZ` |
+
+### 검증 계층 요약
+
+| 계층 | 테스트 | 포함 내용 |
+| --- | --- | --- |
+| [1. DNS 해석](#layer-1-dns-resolution) | DNS-1부터 DNS-4까지 | A 레코드, ACME CNAME, 네임서버 권한, 관리 레코드 |
+| [2. TLS 인증서](#layer-2-tls-certificate) | TLS-1부터 TLS-4까지 | 인증서 상태, 인증서 세부 정보, 라이브 핸드셰이크, ACME 대상 |
+| [3. HTTP 로드 밸런서](#layer-3-http-load-balancer) | LB-1부터 LB-6까지 | 상태, 도메인, CSD 플래그, 경로 풀, 배포, 요약 |
+| [4. 원본 풀](#layer-4-origin-pool) | OP-1부터 OP-4까지 | 구성, TLS 모드, HC 연결, 원본 연결성 |
+| [5. 상태 검사](#layer-5-health-check) | HC-1부터 HC-2까지 | HC 구성, 모든 HC 목록 표시 |
+| [6. CSD 구성](#layer-6-csd-configuration) | CSD-1부터 CSD-5까지 | 테넌트 상태, JS 태그, 보호된 도메인, 라이브 삽입 |
+| [7. 트래픽 검증](#layer-7-traffic-verification) | TV-1부터 TV-5까지 | 요청 개수, 상태 코드, 샘플, 로그의 JS, E2E 테스트 |
+| [8. CSD 텔레메트리](#layer-8-csd-telemetry-amp-domain-policy) | TEL-1부터 TEL-8까지 | 스크립트, 도메인, 정책, 양식 필드, 심층 분석, 사용자, 위험도, 신선도 |
+
+### 엔드포인트 요약
+
+| 진단 | 엔드포인트 | 메서드 | 시간 형식 |
+| --- | --- | --- | --- |
+| 요청 개수 | `/api/data/namespaces/\{ns\}/access_logs/aggregation` | POST | ISO 8601 |
+| 상태 코드 | `/api/data/namespaces/\{ns\}/access_logs` | POST | ISO 8601 |
+| 최근 요청 | `/api/data/namespaces/\{ns\}/access_logs` | POST | ISO 8601 |
+| LB 상태 | `/api/config/namespaces/\{ns\}/http_loadbalancers/\{name\}` | GET | 없음 |
+| 원본 풀 | `/api/config/namespaces/\{ns\}/origin_pools/\{name\}` | GET | 없음 |
+| 상태 검사 | `/api/config/namespaces/\{ns\}/healthchecks/\{name\}` | GET | 없음 |
+| DNS 영역 | `/api/config/dns/namespaces/system/dns_zones/\{zone\}` | GET | 없음 |
+| CSD 상태 | `/api/shape/csd/namespaces/\{ns\}/status` | GET | 없음 |
+| JS 구성 | `/api/shape/csd/namespaces/\{ns\}/js_configuration` | GET | 없음 |
+| 보호된 도메인 | `/api/shape/csd/namespaces/\{ns\}/protected_domains` | GET | 없음 |
+| 스크립트 목록 | `/api/shape/csd/namespaces/\{ns\}/scripts` | POST | 에포크 초 |
+| 감지된 도메인 | `/api/shape/csd/namespaces/\{ns\}/detected_domains` | GET | 없음 |
+| 양식 필드 | `/api/shape/csd/namespaces/\{ns\}/formFields` | GET | 에포크 초(쿼리 파라미터) |
+| 스크립트 세부 정보 | `/api/shape/csd/namespaces/\{ns\}/scripts/\{id\}/dashboard` | GET | 없음 |
+| 스크립트 동작 | `/api/shape/csd/namespaces/\{ns\}/scripts/\{id\}/behaviors` | GET | 없음 |
+| 스크립트 네트워크 | `/api/shape/csd/namespaces/\{ns\}/scripts/\{id\}/networkInteractions` | GET | 없음 |
+| 영향을 받는 사용자 | `/api/shape/csd/namespaces/\{ns\}/scripts/\{id\}/affectedUsers` | POST | 에포크 초 |

@@ -1,0 +1,334 @@
+---
+title: Phase 3 — शमन करें
+description: CSD शमन नीति लागू करें और सत्यापित करें कि हमला ट्रैफिक अवरुद्ध है
+sidebar:
+  order: 4
+  label: Phase 3 — शमन करें
+i18n:
+  sourceHash: 5d336f6c3bde
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Phase 3 CSD शमन का **पहले/बाद का प्रमाण** बनाता है। आप शमन के बिना हमले को फिर से चलाते हैं एक आधार स्थापित करने के लिए, शमन लागू करते हैं, फिर वही हमला फिर से चलाते हैं यह साबित करने के लिए कि CSD नेटवर्क कॉल को अवरुद्ध करता है। Phase 2 पूर्ण होना चाहिए — सभी DET जांचें PASS होनी चाहिए — आगे बढ़ने से पहले।
+
+<Aside type="note">
+**CSD शमन शमित डोमेन से स्क्रिप्ट लोडिंग को अवरुद्ध करता है।** जब कोई डोमेन शमन सूची पर होता है, तो CSD JavaScript `&lt;script&gt;` टैग स्रोत URL को इंटरसेप्ट करता है और स्क्रिप्ट को लोड होने से रोकता है — आपूर्ति-श्रृंखला हमलों को स्रोत पर रोकता है। CSD `fetch()` या `XMLHttpRequest` कॉल को इंटरसेप्ट नहीं करता है। यह चरण शमन से पहले और बाद में वही हमला चलाकर स्क्रिप्ट ब्लॉकिंग का प्रमाण कैप्चर करता है।
+</Aside>
+
+<Aside type="caution">
+**लाइव परीक्षण नोट:** शमन POST/DELETE एंडपॉइंट्स को विकास पर्यावरणों में मान्य किया गया है लेकिन व्यवहार विवरण (प्रतिक्रिया समय, स्क्रिप्ट पहचान स्थिति पर प्रभाव) किरायेदार कॉन्फ़िगरेशन में भिन्न हो सकते हैं। यदि आप अप्रत्याशित प्रतिक्रियाएं देखते हैं, तो विहित एंडपॉइंट परिभाषाओं के लिए [API Reference](/csd/api-reference/#mitigated-domains) जांचें।
+</Aside>
+
+## Step 1: सक्रिय शमन की कमी की पुष्टि करें (आधार)
+
+"पहले" का स्नैपशॉट कैप्चर करने से पहले, सत्यापित करें कि पर्यावरण साफ है — कोई शमन सक्रिय नहीं होना चाहिए। यह सुनिश्चित करता है कि आधार हमला किसी भी CSD ब्लॉकिंग के बिना चलता है।
+
+### शमित डोमेन गणना जांचें
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '{count: (.items | length)}'
+```
+
+यदि गणना `0` **नहीं** है, तो पिछले रन से शमन बने रहते हैं। आगे बढ़ने से पहले प्रत्येक को हटाएं:
+
+```bash
+# एक शमित डोमेन हटाएं (प्रत्येक डोमेन नाम के लिए दोहराएं)
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/<domain-name>" \
+  | jq .
+```
+
+`<domain-name>` को `metadata.name` के साथ बदलें जो डोमेन को शमित करते समय उपयोग किया गया था (जैसे `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io`, `httpbin.org`, `jsonplaceholder.typicode.com`)। यदि `httpbin.org` की सफाई एक शेष आइटम छोड़ देती है, तो `www.httpbin.org` को हटाने का भी प्रयास करें — कुछ पिछले रन में metadata नाम के रूप में उपयोग किया गया हो सकता है।
+
+### Phase 2 पहचान की पुष्टि करें
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
+```
+
+### प्रमाण
+
+| जांच | अपेक्षित | स्थिति |
+| --- | --- | --- |
+| शमित डोमेन गणना | `0` (स्वच्छ आधार) | PASS यदि 0, सफाई की आवश्यकता यदि &gt; 0 |
+| पहचाने गए डोमेन गणना | &gt; 0 (Phase 2 पहचान मौजूद) | PASS यदि &gt; 0 |
+| निष्कासन डोमेन मौजूद | `www.httpbin.org`, `jsonplaceholder.typicode.com` | PASS यदि कम से कम एक दिखाई दे |
+
+## Step 2: हमला चलाएं — शमन से पहले
+
+सताव को साफ आधार कैप्चर करने के लिए **कोई शमन सक्रिय नहीं होने के साथ** संयुक्त सिमुलेशन को फिर से चलाएं। यह **"पहले" स्नैपशॉट** है — प्रमाण कि जब CSD शमन लागू नहीं होता है तो हमले सफल होते हैं।
+
+<Aside type="note">
+इस चरण को ब्राउज़र-पक्ष JavaScript निष्पादन की आवश्यकता है — `curl` CSD पहचान को ट्रिगर नहीं कर सकता। ब्राउज़र ऑटोमेशन टूल्स (MCP Chrome DevTools, Playwright, Puppeteer) वाले AI सहायक **AI-Automated Execution** अनुक्रम का उपयोग करके इन चरणों को सीधे निष्पादित करते हैं। ब्राउज़र ऑटोमेशन के बिना ऑपरेटर मैनुअल चरणों को पूरा करते हैं।
+</Aside>
+
+### AI-Automated निष्पादन
+
+ब्राउज़र ऑटोमेशन टूल्स वाले AI सहायक **Phase 2 initScript** का उपयोग करके प्रोग्रामेटिक रूप से हमला सिमुलेशन चलाते हैं (जो native `fetch` को सहेजता है):
+
+1. **initScript के साथ नेविगेट करें** — पहले `about:blank` पर नेविगेट करें एक स्वच्छ दस्तावेज संदर्भ सुनिश्चित करने के लिए (पिछली नेविगेशन से stale initScripts से बचता है), फिर `http://$F5XC_DOMAINNAME/#/login` पर `navigate_page` करें **Phase 2 initScript** के साथ (verbatim code in [Phase 2 — AI-Automated Execution](/csd/demo/phase-2-attack/#ai-automated-execution))। यह initScript native `setInterval`, `clearInterval`, `fetch`, और `console.log` को सहेजता है — native `fetch` संदर्भ यहाँ सही है क्योंकि कोई शमन सक्रिय नहीं है
+2. **स्वागत बैनर को खारिज करें** — स्वागत बैनर को बंद करने के लिए `Escape` के साथ `press_key` करें। बाद की यात्राओं पर बैनर नहीं दिखाई दे सकता (कुकीज़ बनी रहीं)। कुकी सहमति संवाद Escape कुंजी द्वारा स्वचालित रूप से खारिज किया जाता है
+3. **समाप्ति के लिए प्रतीक्षा करें** — सभी CDN स्क्रिप्ट लोड/त्रुटि कॉलबैक और fetch प्रतिशत समाधान के लिए 10 सेकंड प्रतीक्षा करें
+4. **प्रमाण कैप्चर करें** — `[CSD Demo] Simulation complete` के लिए `list_console_messages` की जांच करें और CDN लोड परिणाम; HTTP स्थिति कोड (`200`/`201` सफलता के लिए) को सत्यापित करने के लिए `script` और `fetch` प्रकारों के लिए फ़िल्ट किए गए `list_network_requests`
+
+<Aside type="caution">
+**zone.js असंगतता** — Juice Shop Angular के zone.js का उपयोग करता है, जो `setTimeout`, `setInterval`, `fetch`, `XMLHttpRequest`, और अन्य ब्राउज़र API को पैच करता है। यह `Cannot read properties of undefined (reading 'call')` के साथ MCP `evaluate_script`, `fill`, और `click` टूल को तोड़ देता है। इसके बजाय `initScript` के साथ `navigate_page` का उपयोग करें — `initScript` zone.js लोड होने से पहले चलता है, इसलिए आप native API संदर्भ सहेज सकते हैं और उन्हें polling कॉलबैक में उपयोग कर सकते हैं। initScript को native `HTMLInputElement.prototype.value` setter का उपयोग करके फॉर्म फ़ील्ड भरने चाहिए (`fill` नहीं) और पहचान स्क्रिप्ट को इनलाइन चलाना चाहिए (`setTimeout` के माध्यम से नहीं, जिसे zone.js पृष्ठ लोड के बाद इंटरसेप्ट कर सकता है)। [Trigger Detection — AI-Automated Execution](/csd/trigger-detection/#ai-automated-execution) विवरण के लिए देखें।
+</Aside>
+
+<Aside type="note">
+**initScript संचय** — प्रत्येक `initScript` पैरामीटर के साथ `navigate_page` कॉल स्क्रिप्ट को एक persistent सूची में जोड़ता है जो हर बाद के दस्तावेज़ लोड पर चलता है। stale स्क्रिप्ट हस्तक्षेप से बचने के लिए, या तो रन के बीच `about:blank` पर नेविगेट करें या `isolatedContext` के साथ `new_page` का उपयोग करें एक स्वच्छ ब्राउज़र संदर्भ के लिए।
+</Aside>
+
+### मैनुअल निष्पादन
+
+ब्राउज़र ऑटोमेशन टूल्स के बिना ऑपरेटर [Phase 2 — Step 8: Attack Simulation](/csd/demo/phase-2-attack/#step-8-attack-simulation) के समान प्रक्रिया का उपयोग करके सिमुलेशन को मैनुअल रूप से चलाते हैं:
+
+1. `http://xF5XC_DOMAINNAMEx/#/login` पर नेविगेट करें
+2. Email और Password फ़ील्ड में डमी क्रेडेंशियल दर्ज करें (जमा न करें)
+3. DevTools खोलें — **F12** दबाएं और **Console** टैब पर स्विच करें
+4. [Trigger Detection](/csd/trigger-detection/#run-the-combined-simulation-script) से संयुक्त पहचान स्क्रिप्ट को पेस्ट और चलाएं
+5. कंसोल आउटपुट देखें — सभी CDN स्क्रिप्ट लोड होनी चाहिए और निष्कासन कॉल `200`/`201` प्रतिक्रियाओं के साथ सफल होने चाहिए
+
+### प्रमाण — शमन से पहले
+
+| जांच | अपेक्षित (शमन से पहले) | स्थिति |
+| --- | --- | --- |
+| CDN स्क्रिप्ट इंजेक्ट | सभी 4 स्क्रिप्ट टैग लोड होते हैं — `[Supply Chain] Loaded from` संदेश दिखाई देते हैं, नेटवर्क टैब `200` दिखाता है | PASS |
+| `www.httpbin.org` को निष्कासन fetch | नेटवर्क टैब `200` दिखाता है — डेटा भेजा गया | PASS |
+| jsonplaceholder.typicode.com को निष्कासन fetch | नेटवर्क टैब `201` दिखाता है — डेटा भेजा गया | PASS |
+| कंसोल आउटपुट | `[CSD Demo] Simulation complete` | PASS |
+
+<Aside type="note">
+**नेटवर्क अनुरोधों के साथ सत्यापन:** सबसे विश्वसनीय प्रमाण **Network टैब** है (`list_network_requests` AI सहायकों के लिए), कंसोल कॉलबैक नहीं। Juice Shop में zone.js promise `.then()` कॉलबैक और स्क्रिप्ट `onload` हैंडलर को तोड़ सकता है, जिससे कंसोल संदेश अधूरे हो सकते हैं भले ही नेटवर्क अनुरोध सफल हों। हमेशा कंसोल आउटपुट को नेटवर्क अनुरोध स्थिति कोड के साथ क्रॉस-संदर्भ करें।
+</Aside>
+
+<Aside type="tip">
+यह आधार प्रमाण है: बिना शमन के सक्रिय, हमलावर की स्क्रिप्ट स्वतंत्र रूप से लोड होती हैं और डेटा निष्कासन सफल होता है। इस प्रमाण को सहेजें या स्क्रीनशॉट लें — आप इसे Step 5 में "बाद" के परिणामों के साथ सीधे तुलना करेंगे।
+</Aside>
+
+## Step 3: शमन लागू करें
+
+प्रत्येक पहचाने गए डोमेन के लिए, शमित डोमेन एंडपॉइंट को POST करें। Phase 2 सिमुलेशन से प्राथमिक लक्ष्य 4 CDN इंजेक्शन डोमेन और पहचाने गए किसी भी डेटा निष्कासन डोमेन हैं।
+
+**प्राथमिक शमन लक्ष्य** (संयुक्त सिमुलेशन स्क्रिप्ट से):
+
+| डोमेन | भूमिका |
+| --- | --- |
+| `cdn.jsdelivr.net` | CDN स्क्रिप्ट इंजेक्शन |
+| `esm.sh` | CDN स्क्रिप्ट इंजेक्शन |
+| `unpkg.com` | CDN स्क्रिप्ट इंजेक्शन |
+| `ga.jspm.io` | CDN स्क्रिप्ट इंजेक्शन |
+| `www.httpbin.org` | डेटा निष्कासन एंडपॉइंट |
+| `jsonplaceholder.typicode.com` | डेटा निष्कासन एंडपॉइंट |
+
+<Aside type="note">
+POST body को **दोनों** `metadata.name` (ऑब्जेक्ट के लिए पहचानकर्ता) और `spec.mitigated_domain` (डोमेन स्ट्रिंग CSD वर्गीकृत करेगा) की आवश्यकता होती है। दोनों को सेट किया जाना चाहिए — `spec: {}` एक `400` त्रुटि का कारण बनता है। अधिकांश डोमेन के लिए, दोनों फ़ील्ड एक ही मान का उपयोग करते हैं (जैसे `cdn.jsdelivr.net`)। नीचे `httpbin.org` अपवाद देखें।
+</Aside>
+
+**एक डोमेन को शमित करें** (प्रत्येक डोमेन के लिए एक बार चलाएं):
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "cdn.jsdelivr.net",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "mitigated_domain": "cdn.jsdelivr.net"
+    }
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+```
+
+प्रत्येक डोमेन के लिए दोहराएं:
+
+```bash
+# esm.sh
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"esm.sh","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"esm.sh"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# unpkg.com
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"unpkg.com","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"unpkg.com"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# ga.jspm.io
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"ga.jspm.io","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"ga.jspm.io"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# httpbin.org — शमित_domain के रूप में www.httpbin.org का उपयोग करें (नीचे नोट देखें)
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"httpbin.org","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"www.httpbin.org"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# jsonplaceholder.typicode.com
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"jsonplaceholder.typicode.com","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"jsonplaceholder.typicode.com"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+```
+
+<Aside type="note">
+**`httpbin.org` eTLD+1 बाधा:** API bare eTLD+1 डोमेन को `mitigated_domain` मान के रूप में `"Invalid root domain: cannot derive eTLD+1"` के साथ खारिज करता है। `metadata.name` को `httpbin.org` के रूप में रखते हुए `spec.mitigated_domain` मान के रूप में `www.httpbin.org` का उपयोग करें। शमन सही तरीके से लागू होता है — `name` पहचानकर्ता वह है जो शमित डोमेन सूची में दिखाई देता है। कोई भी bare domain (कोई subdomain नहीं) जो कस्टम सिमुलेशन स्क्रिप्ट में निष्कासन लक्ष्य के रूप में उपयोग किया जाता है, वही बाधा होगी।
+</Aside>
+
+एक `200` प्रतिक्रिया निर्मित शमित डोमेन ऑब्जेक्ट को रिटर्न करता है। एक `409` प्रतिक्रिया का मतलब है कि डोमेन पहले से ही शमित सूची में है — यह एक सफलता शर्त है।
+
+## Step 4: शमन लागू की गई पुष्टि करें
+
+सभी शमित डोमेन सूचीबद्ध करें और पुष्टि करें कि गणना अभी-अभी सबमिट किए गए डोमेन की संख्या से मेल खाती है:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '{count: (.items | length)}'
+```
+
+<Aside type="note">
+शमित डोमेन सूची एंडपॉइंट सभी आइटम के लिए null `metadata.name` के साथ आइटम को रिटर्न करता है — व्यक्तिगत डोमेन नाम सूची प्रतिक्रिया में दृश्यमान नहीं हैं। यह सत्यापित करें कि आइटम गणना बनाए गए POST अनुरोधों की संख्या के बराबर है (मानक सिमुलेशन के लिए 6)। प्रत्येक व्यक्तिगत POST की `200` प्रतिक्रिया Step 3 में प्रामाणिक प्रमाण है कि प्रत्येक शमन बनाया गया था। यदि गणना null-name आइटम के साथ 1 है और कोई शमन लागू नहीं किए गए थे, तो गणना को 0 के रूप में माना जाता है — यह एक backend artifact है ([Pre-flight Check](/csd/demo/#pre-flight-check) में निर्णय नियम देखें)।
+</Aside>
+
+### प्रमाण
+
+| जांच | अपेक्षित | स्थिति |
+| --- | --- | --- |
+| शमित डोमेन गणना | 6 (POST गणना से मेल खाता है) | PASS यदि गणना मेल खाती है |
+| सभी Step 3 POSTs `200` या `409` लौटाए | प्रत्येक डोमेन स्वीकृत | PASS |
+
+यदि गणना अपेक्षित से कम है, तो Step 3 से लापता डोमेन के लिए POST कमांड को फिर से चलाएं।
+
+## Step 5: हमला चलाएं — शमन के बाद
+
+**सटीक समान** संयुक्त सिमुलेशन को फिर से चलाएं **"बाद" स्नैपशॉट** कैप्चर करने के लिए। सिमुलेशन स्क्रिप्ट समान है — केवल CSD की शमन स्थिति बदल गई है। शमित डोमेन से स्क्रिप्ट लोड अब CSD JavaScript द्वारा अवरुद्ध हैं (`&lt;script&gt;` टैग `src` खाली स्ट्रिंग के लिए स्पष्ट किया जाता है)।
+
+<Aside type="note">
+यह चरण Step 2 के समान ब्राउज़र ऑटोमेशन अनुक्रम का उपयोग करता है। अंतर यह नहीं है कि आप क्या चलाते हैं — यह है कि आप क्या देखते हैं। शमन सक्रिय के साथ, CSD शमित डोमेन से `&lt;script&gt;` टैग लोड को अवरुद्ध करता है। Fetch API कॉल शमित निष्कासन डोमेन के लिए अभी भी पूर्ण होते हैं — CSD शमन स्क्रिप्ट लोडिंग को लक्षित करता है, fetch/XHR नहीं।
+</Aside>
+
+### AI-Automated निष्पादन
+
+ब्राउज़र ऑटोमेशन टूल्स वाले AI सहायक **समान Phase 2 initScript** का उपयोग करके प्रोग्रामेटिक रूप से हमला सिमुलेशन को फिर से चलाते हैं (verbatim code in [Phase 2 — AI-Automated Execution](/csd/demo/phase-2-attack/#ai-automated-execution))। initScript native `fetch` को zone.js त्रुटियों से बचने के लिए सहेजता है — यह CSD शमन को प्रभावित नहीं करता है क्योंकि CSD `fetch()` कॉल को इंटरसेप्ट नहीं करता है।
+
+1. **initScript के साथ नेविगेट करें** — एक स्वच्छ ब्राउज़र संदर्भ के लिए `isolatedContext` के साथ `new_page` का उपयोग करें (Step 2 से stale initScripts से बचता है), फिर `about:blank` पर नेविगेट करें, फिर login पृष्ठ पर **Phase 2 initScript** के साथ नेविगेट करें
+2. **स्वागत बैनर को खारिज करें** — `Escape` के साथ `press_key` करें
+3. **समाप्ति के लिए प्रतीक्षा करें** — सभी async कॉलबैक के लिए 10 सेकंड प्रतीक्षा करें
+4. **प्रमाण कैप्चर करें** — `[CSD Demo] Simulation complete` के लिए `list_console_messages` की जांच करें; `script` और `fetch` प्रकारों के लिए फ़िल्ट किए गए `list_network_requests` को देखें कि CDN स्क्रिप्ट लोड **अनुपस्थित** हैं (CSD स्क्रिप्ट src को स्पष्ट किया), जबकि निष्कासन डोमेन के लिए fetch कॉल अभी भी सामान्य रूप से पूर्ण होते हैं
+
+### मैनुअल निष्पादन
+
+ब्राउज़र ऑटोमेशन टूल्स के बिना ऑपरेटर [Phase 2 — Step 8: Attack Simulation](/csd/demo/phase-2-attack/#step-8-attack-simulation) के समान प्रक्रिया का उपयोग करके सिमुलेशन को मैनुअल रूप से फिर से चलाते हैं:
+
+1. `http://xF5XC_DOMAINNAMEx/#/login` पर नेविगेट करें
+2. Email और Password फ़ील्ड में डमी क्रेडेंशियल दर्ज करें (जमा न करें)
+3. DevTools खोलें — **F12** दबाएं और **Console** टैब पर स्विच करें
+4. [Trigger Detection](/csd/trigger-detection/#run-the-combined-simulation-script) से संयुक्त पहचान स्क्रिप्ट को पेस्ट और चलाएं
+5. कंसोल और नेटवर्क आउटपुट देखें — शमित डोमेन के लिए CDN स्क्रिप्ट `onload` और `onerror` कॉलबैक फायर नहीं होते (CSD स्क्रिप्ट `src` को खाली स्ट्रिंग के लिए स्पष्ट किया, पूरी तरह से नेटवर्क अनुरोध को रोकता है)। निष्कासन डोमेन के लिए Fetch कॉल (www.httpbin.org, jsonplaceholder.typicode.com) **अभी भी पूर्ण होते हैं** `200`/`201` के साथ — CSD शमन स्क्रिप्ट लोडिंग को अवरुद्ध करता है, fetch/XHR नहीं
+
+<Aside type="caution" title="शमन प्रसार समय">
+CSD JavaScript शमित डोमेन से स्क्रिप्ट लोडिंग को अवरुद्ध करने के लिए `&lt;script&gt;` टैग `src` setter को इंटरसेप्ट करके अपेक्षित है। हालांकि, HTTP (पोर्ट 80) पर परीक्षण में, शमन लागू करने के 5 मिनट के भीतर स्क्रिप्ट `src` clearing नहीं देखी गई — सभी CDN स्क्रिप्ट सामान्य रूप से लोड होती रहीं। यह संकेत दे सकता है कि शमन प्रसार को 5 मिनट से अधिक समय की आवश्यकता है, या कि तंत्र HTTP बनाम HTTPS में अलग तरीके से व्यवहार करता है। यदि शमन ब्लॉकिंग नहीं देखी जाती है, तो अतिरिक्त प्रसार समय की अनुमति दें और सत्यापित करें कि CSD telemetry स्क्रिप्ट ने अपना configuration रीफ्रेश किया है।
+
+**Fetch कॉल CSD शमन द्वारा इंटरसेप्ट नहीं किए जाते** (सत्यापित)। शमित डोमेन के लिए निष्कासन fetch कॉल (www.httpbin.org, jsonplaceholder.typicode.com) शमन के पहले और बाद दोनों में सामान्य रूप से पूर्ण होते हैं `200`/`201` प्रतिक्रिया के साथ। CSD शमन आपूर्ति-श्रृंखला vector (malicious script loading) को लक्षित करता है, डेटा निष्कासन via fetch/XHR को नहीं। Step 2 और Step 5 दोनों के लिए समान Phase 2 initScript (native `fetch` saved के साथ) का उपयोग करें।
+</Aside>
+
+### प्रमाण — शमन के बाद
+
+| जांच | अपेक्षित (शमन के बाद) | स्थिति |
+| --- | --- | --- |
+| CDN स्क्रिप्ट लोड | **अवरुद्ध** — स्क्रिप्ट नेटवर्क टैब में दिखाई नहीं देती (CSD `src` को खाली स्ट्रिंग के लिए स्पष्ट किया) | PASS |
+| CDN स्क्रिप्ट कॉलबैक | शमित डोमेन के लिए न तो `onload` और न ही `onerror` फायर होता है | PASS |
+| `www.httpbin.org` को निष्कासन fetch | `200` — fetch अभी भी पूर्ण होता है (CSD fetch को इंटरसेप्ट नहीं करता) | INFO |
+| jsonplaceholder.typicode.com को निष्कासन fetch | `201` — fetch अभी भी पूर्ण होता है (CSD fetch को इंटरसेप्ट नहीं करता) | INFO |
+| कंसोल आउटपुट | `[CSD Demo] Simulation complete` | PASS |
+
+<Aside type="tip">
+**Backend सत्यापन सबसे विश्वसनीय प्रमाण है।** यदि ब्राउज़र-दृश्यमान स्क्रिप्ट ब्लॉकिंग demo timeframe के भीतर नहीं देखी जाती है, तो प्राथमिक प्रमाण के रूप में `/detected_domains` API प्रतिक्रिया का उपयोग करें। domain summary में `mitigatedDomains` गणना और कम `actionNeededCount` पुष्टि करते हैं कि शमन backend में सक्रिय हैं — भले ही CSD JavaScript ब्राउज़र में अभी तक अपना configuration रीफ्रेश नहीं किया है ब्लॉकिंग लागू करने के लिए।
+</Aside>
+
+## Step 6: पहले बनाम बाद तुलना
+
+यह demo payoff है — साथ-साथ प्रमाण जो साबित करता है कि समान हमला, समान पृष्ठ पर, समान स्क्रिप्ट के साथ, अब पूरी तरह से अलग परिणाम देता है।
+
+### तुलना तालिका
+
+| संकेत | शमन से पहले (Step 2) | शमन के बाद (Step 5) |
+| --- | --- | --- |
+| CDN स्क्रिप्ट लोड | `200` — सभी 4 CDN स्क्रिप्ट सामान्य रूप से लोड होती हैं | **अवरुद्ध** — नेटवर्क टैब से स्क्रिप्ट अनुपस्थित (CSD `src` को खाली स्ट्रिंग के लिए स्पष्ट किया) |
+| CDN `onload` कॉलबैक | `[Supply Chain] Loaded from` संदेश दिखाई देते हैं | कोई कॉलबैक फायर नहीं होता (कोई नेटवर्क अनुरोध नहीं बनाया गया) |
+| `www.httpbin.org` को निष्कासन | `200` — डेटा निष्कासित | `200` — fetch अभी भी पूर्ण होता है (CSD fetch को इंटरसेप्ट नहीं करता) |
+| jsonplaceholder.typicode.com को निष्कासन | `201` — डेटा निष्कासित | `201` — fetch अभी भी पूर्ण होता है (CSD fetch को इंटरसेप्ट नहीं करता) |
+| CSD शमित डोमेन API | 0 शमित | 6 शमित |
+
+### Backend डेटा में शमन सत्यापित करें
+
+हर 60 सेकंड में 10 iterations के लिए (10 मिनट) `/detected_domains` को query करें। एक बार जब query return हो या 10-मिनट अधिकतम के बाद proceed करें — ये जांचें जानकारीपूर्ण हैं और Phase 4 को gate नहीं करती हैं।
+
+**शमन के बाद पहचाने गए डोमेन की जांच करें:**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
+```
+
+**शमित स्थिति के लिए स्क्रिप्ट की जांच करें:**
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 86400 ))
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq '{total: (.scripts | length), scripts: [.scripts[]? | {script_name: .script_name, risk_level: .risk_level}]}'
+```
+
+### Phase 3 प्रमाण सारांश
+
+| जांच | अपेक्षित | स्थिति |
+| --- | --- | --- |
+| आधार स्वच्छ (Step 1) | शुरुआत में 0 शमित डोमेन | PASS / FAIL |
+| पहले — हमला सफल (Step 2) | स्क्रिप्ट लोड, निष्कासन 200/201 लौटाता है | PASS / FAIL |
+| शमन लागू (Step 3) | सभी 6 डोमेन POST द्वारा स्वीकृत (200 या 409) | PASS / FAIL |
+| शमित गणना पुष्टि (Step 4) | सूची में 6 आइटम | PASS / FAIL |
+| बाद — स्क्रिप्ट लोड अवरुद्ध (Step 5) | CDN स्क्रिप्ट नेटवर्क टैब से अनुपस्थित, fetch कॉल अभी भी पूर्ण होते हैं | PASS / FAIL |
+| पहले बनाम बाद तुलना (Step 6) | Step 2 और Step 5 प्रमाण के बीच स्पष्ट अंतर | PASS / FAIL |
+
+<Aside type="note">
+शमन के बाद पहचान स्थिति अपडेट API प्रतिक्रिया में दिखाई देने में समय ले सकता है। यदि डोमेन शमन के तुरंत बाद भी "Action Needed" दिखा रहे हैं, तो 10 iterations के लिए (10 मिनट) हर 60 सेकंड में `/detected_domains` को query करें। 10 iterations के बाद भी अपडेट नहीं होने पर, current स्थिति को INFO के रूप में रिकॉर्ड करें — यह Phase 4 को gate नहीं करता है।
+</Aside>
+
+---
+
+**Phase 3 पूर्ण।** जब आप सभी deployment objects को हटाने के लिए तैयार हों तो [Phase 4 — Teardown](/csd/demo/phase-4-teardown/) पर जाएं।

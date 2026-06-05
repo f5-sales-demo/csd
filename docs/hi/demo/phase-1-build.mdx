@@ -1,0 +1,879 @@
+---
+title: Phase 1 — Build
+description: >-
+  F5 XC API के माध्यम से CSD इन्फ्रास्ट्रक्चर को तैनात करें — healthcheck,
+  origin pool, load balancer, protected domain
+sidebar:
+  order: 2
+  label: Phase 1 — Build
+i18n:
+  sourceHash: 6ecd8b98f257
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Phase 1 पूर्ण CSD इन्फ्रास्ट्रक्चर को तैनात और सत्यापित करता है। सभी चरणों को क्रम में पूरा करें — प्रत्येक चरण को आगे बढ़ने से पहले **पास** होना चाहिए। इन कमांडों को चलाने से पहले [index](/csd/demo/) पर Environment Setup और variable resolution को पूरा करने के लिए वापस जाएं।
+
+## Step 0: Namespace की जांच और निर्माण (सशर्त)
+
+जांचें कि लक्ष्य namespace पहले से tenant पर मौजूद है या नहीं। यदि यह मौजूद नहीं है, तो इसे बनाएं। `NAMESPACE_CREATED` shell variable में परिणाम को ट्रैक करें — Phase 4 teardown इसका उपयोग यह निर्धारित करने के लिए करता है कि namespace को हटाना है या नहीं।
+
+```bash
+NS_CHECK=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx")
+
+NAMESPACE_CREATED="false"
+if [ "$NS_CHECK" = "404" ]; then
+  curl -s -X POST \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d '{"metadata": {"name": "xF5XC_NAMESPACEx"}, "spec": {}}' \
+    "xF5XC_API_URLx/api/web/namespaces" | jq .
+  NAMESPACE_CREATED="true"
+fi
+```
+
+<Aside type="note">
+**`spec` फील्ड आवश्यक है।** F5 XC namespace API को request body में `spec` फील्ड की आवश्यकता होती है, भले ही कोई कॉन्फ़िगरेशन की आवश्यकता न हो — एक खाली object `{}` पास करें। `spec` को छोड़ने से error code `3` ("spec should not be empty in request") आता है।
+</Aside>
+
+### Evidence
+
+Confirm the namespace exists और record करें कि क्या यह बनाया गया था:
+
+```bash
+curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx"
+echo "NAMESPACE_CREATED=$NAMESPACE_CREATED"
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| HTTP Status | `200` | PASS यदि returned, FAIL यदि `404` या अन्य |
+| `NAMESPACE_CREATED` | `true` (created) या `false` (pre-existing) | जानकारीपूर्ण — Phase 4 teardown द्वारा उपयोग किया जाता है |
+
+## Step 1: Healthcheck बनाएं (वैकल्पिक)
+
+एक HTTP healthcheck बनाएं जो origin pool backend स्वास्थ्य की निगरानी के लिए उपयोग कर सकता है।
+
+<Aside type="note">
+**Healthchecks CSD के लिए वैकल्पिक हैं।** Client-Side Defense feature origin health monitoring पर निर्भर नहीं करता है। यदि आपका tenant healthcheck object limit को समाप्त कर दिया है (error code `8` — Error Handling देखें), इस चरण को छोड़ें और origin pool को healthcheck reference के बिना बनाएं। CSD सामान्य रूप से कार्य करेगा।
+
+यदि आप एक healthcheck बनाते हैं, तो इसे origin pool से **पहले** बनाएं। origin pool को एक मौजूदा healthcheck का संदर्भ देना चाहिए — यदि healthcheck origin pool बनाते समय मौजूद नहीं है, तो संदर्भ शांत रहेगा।
+</Aside>
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_HC_NAMEx",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "disable": false
+    },
+    "spec": {
+      "http_health_check": {
+        "use_origin_server_name": {},
+        "path": "/",
+        "use_http2": false,
+        "headers": {},
+        "request_headers_to_remove": [],
+        "expected_status_codes": ["200"]
+      },
+      "timeout": 3,
+      "interval": 15,
+      "jitter": 0,
+      "unhealthy_threshold": 1,
+      "healthy_threshold": 3,
+      "jitter_percent": 30
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks" \
+  | jq .
+```
+
+एक `200` response बनाए गए object के साथ potvrđuje कि healthcheck बनाया गया था। यदि response में `"code": 8` है जिसमें `"Object kind healthcheck has exhausted limits(150)"` जैसा message है, तो tenant ने अपनी healthcheck limit को मार दिया है — Step 2 पर जाएं और healthcheck reference को छोड़ें। CSD health monitoring पर निर्भर नहीं करता है।
+
+### Evidence
+
+Confirm करें कि healthcheck मौजूद है:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx" \
+  | jq '{name: .metadata.name, namespace: .metadata.namespace, path: .spec.http_health_check.path, interval: .spec.interval}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| HTTP Status | `200` with object | PASS यदि returned, FAIL यदि `404` |
+| `name` | Matches `F5XC_HC_NAME` | PASS |
+| `path` | `/` | PASS |
+| Step 1 skipped (error code `8`, limit exhausted) | — | PASS (healthcheck CSD के लिए वैकल्पिक है) |
+
+## Step 2: Origin Pool बनाएं
+
+अपने backend server की ओर इशारा करते हुए एक origin pool बनाएं। यदि आपने Step 1 में एक healthcheck बनाया है, तो `healthcheck` reference शामिल करें। यदि Step 1 को छोड़ दिया गया था, तो एक empty array का उपयोग करें।
+
+**Healthcheck के साथ** (Step 1 सफल):
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_ORIGIN_POOLx",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "Origin pool for CSD demo",
+      "disable": false
+    },
+    "spec": {
+      "origin_servers": [{
+        "public_ip": { "ip": "xF5XC_ORIGIN_IPx" },
+        "labels": {}
+      }],
+      "no_tls": {},
+      "port": xF5XC_ORIGIN_PORTx,
+      "same_as_endpoint_port": {},
+      "healthcheck": [{
+        "namespace": "xF5XC_NAMESPACEx",
+        "name": "xF5XC_HC_NAMEx",
+        "kind": "healthcheck"
+      }],
+      "loadbalancer_algorithm": "LB_OVERRIDE",
+      "endpoint_selection": "LOCAL_PREFERRED"
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools" \
+  | jq .
+```
+
+**Healthcheck के बिना** (Step 1 को छोड़ दिया गया):
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_ORIGIN_POOLx",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "Origin pool for CSD demo",
+      "disable": false
+    },
+    "spec": {
+      "origin_servers": [{
+        "public_ip": { "ip": "xF5XC_ORIGIN_IPx" },
+        "labels": {}
+      }],
+      "no_tls": {},
+      "port": xF5XC_ORIGIN_PORTx,
+      "same_as_endpoint_port": {},
+      "healthcheck": [],
+      "loadbalancer_algorithm": "LB_OVERRIDE",
+      "endpoint_selection": "LOCAL_PREFERRED"
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools" \
+  | jq .
+```
+
+एक `200` response confirm करता है कि origin pool बनाया गया था।
+
+<Aside type="caution">
+यदि response में `"code": 8` है जिसमें `"Object kind endpoint has exhausted limits(500)"` या `"Object kind origin_pool has exhausted limits"` जैसा message है, तो tenant ने अपने quota को मार दिया है। Healthchecks के विपरीत, origin pools demo के लिए **आवश्यक** हैं — demo बिना उनके आगे नहीं बढ़ सकता है। अन्य namespaces से अप्रयुक्त origin pools को हटाएं क्षमता को मुक्त करने के लिए (एक origin pool को हटाना भी इसके endpoint sub-objects को मुक्त करता है), फिर पुनः प्रयास करें। यदि limit को हल नहीं किया जा सकता है, तो tenant quota को बढ़ाने के लिए अपने F5 Distributed Cloud (F5 XC) administrator से संपर्क करें।
+</Aside>
+
+### Verify करें कि Healthcheck लिंक किया गया है
+
+यदि आपने एक healthcheck reference शामिल किया है, तो confirm करें कि यह सही तरीके से लिंक किया गया है:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '.spec.healthcheck'
+```
+
+एक populated array link को confirm करता है। एक empty array `[]` expected है यदि Step 1 को छोड़ दिया गया था, या यदि आप एक link करना चाहते थे तो यह healthcheck नहीं मिला।
+
+### Evidence
+
+Confirm करें कि origin pool मौजूद है और सही configuration में है:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '{name: .metadata.name, origin_ip: .spec.origin_servers[0].public_ip.ip, port: .spec.port, healthcheck_count: (.spec.healthcheck | length)}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| HTTP Status | `200` | PASS यदि returned, FAIL यदि `404` |
+| `name` | Matches `F5XC_ORIGIN_POOL` | PASS |
+| `origin_ip` | Matches `F5XC_ORIGIN_IP` | PASS |
+| `port` | Matches `F5XC_ORIGIN_PORT` | PASS |
+| `healthcheck_count` | `1` (with HC) या `0` (without) | दोनों तरीकों से PASS |
+
+## Step 3: Client-Side Defense के साथ HTTP Load Balancers बनाएं
+
+Client-Side Defense enabled के साथ **दो** load balancers बनाएं — एक HTTP LB (primary, port 80) और एक HTTPS LB (secondary, port 443 with automatic certificate management)। HTTP LB सभी demo traffic के लिए default है। HTTPS LB एक nice to have है जो Let's Encrypt certificate provisioning पर निर्भर करता है, जो demo environments में rate limits को मार सकता है।
+
+<Aside type="note">
+HTTP Load Balancer spec में 22+ `oneOf` choice groups हैं। प्रत्येक group के पास exactly one choice set होना चाहिए या API एक `422` error return करता है। नीचे दिए गए configurations CSD को छोड़कर सभी optional security features को disable करते हैं — अपने environment के लिए आवश्यकतानुसार modify करें। दोनों LBs same origin pool, CSD settings, और domain साझा करते हैं — केवल listener type अलग होता है।
+</Aside>
+
+<Aside type="tip">
+दोनों LB names `F5XC_LB_NAME` से derive होते हैं: HTTP LB `${F5XC_LB_NAME}-http` है और HTTPS LB `${F5XC_LB_NAME}-https` है। कोई अतिरिक्त environment variables की आवश्यकता नहीं है।
+</Aside>
+
+### HTTP Load Balancer (Primary)
+
+यह demos के लिए **primary** load balancer है। यह F5 XC managed DNS के साथ port 80 पर एक `http` listener का उपयोग करता है। यह TLS certificate provisioning पर निर्भर नहीं करता है, इसलिए DNS resolve होने के बाद यह तुरंत ready हो जाता है।
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_LB_NAMEx-http",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "HTTP LB with Client-Side Defense enabled (primary demo LB)",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["xF5XC_DOMAINNAMEx"],
+      "http": {
+        "dns_volterra_managed": true,
+        "port": 80
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [{
+        "pool": {
+          "namespace": "xF5XC_NAMESPACEx",
+          "name": "xF5XC_ORIGIN_POOLx",
+          "kind": "origin_pool"
+        },
+        "weight": 1,
+        "priority": 1
+      }],
+      "client_side_defense": {
+        "policy": {
+          "js_insert_all_pages": {}
+        }
+      },
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers" \
+  | jq .
+```
+
+एक `200` response confirm करता है कि HTTP load balancer CSD enabled के साथ बनाया गया था।
+
+<Aside type="caution">
+यदि response में `"code": 8` है जिसमें `"Object kind http_loadbalancer has exhausted limits"` जैसा message है, तो tenant ने अपने load balancer quota को मार दिया है। Load balancers demo के लिए **आवश्यक** हैं। क्षमता को मुक्त करने के लिए अप्रयुक्त load balancers को हटाएं, फिर पुनः प्रयास करें।
+</Aside>
+
+### HTTPS Load Balancer (Secondary)
+
+यह **secondary** load balancer है। यह port 443 पर `https_auto_cert` का उपयोग करता है with automatic Let's Encrypt certificate provisioning। इसे बनाने से पहले, एक **skeleton HTTPS LB** की जांच करें जो एक previous teardown से exist कर सकता है — यदि ऐसा है, तो इसे PUT के माध्यम से restore करें instead of POST ताकि existing Let's Encrypt certificate को preserve किया जा सके और rate limits को avoid किया जा सके (5 duplicate certificates per exact identifier set per 7 days)।
+
+**Check करें कि क्या HTTPS LB पहले से मौजूद है:**
+
+```bash
+HTTPS_CHECK=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+```
+
+यदि `HTTPS_CHECK` `200` है, एक skeleton HTTPS LB exist करता है — **Path A (PUT)** का उपयोग करें। यदि `404`, **Path B (POST)** का उपयोग करें।
+
+#### Path A: Skeleton को PUT के माध्यम से Restore करें (HTTPS LB exist करता है)
+
+जब एक skeleton HTTPS LB एक prior teardown से exist करता है, तो पूर्ण configuration को PUT के माध्यम से restore करें। यह origin pool को re-attach करता है और CSD को re-enable करता है **बिना एक नए Let's Encrypt certificate request को trigger किए** — existing certificate valid रहता है।
+
+```bash
+curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_LB_NAMEx-https",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "HTTPS LB with Client-Side Defense enabled (secondary, cert-dependent)",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["xF5XC_DOMAINNAMEx"],
+      "https_auto_cert": {
+        "http_redirect": false,
+        "add_hsts": false,
+        "port": 443,
+        "default_header": {},
+        "enable_path_normalize": {},
+        "no_mtls": {},
+        "default_loadbalancer": {}
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [{
+        "pool": {
+          "namespace": "xF5XC_NAMESPACEx",
+          "name": "xF5XC_ORIGIN_POOLx",
+          "kind": "origin_pool"
+        },
+        "weight": 1,
+        "priority": 1
+      }],
+      "client_side_defense": {
+        "policy": {
+          "js_insert_all_pages": {}
+        }
+      },
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq .
+```
+
+एक `200` response confirm करता है कि skeleton को पूर्ण configuration के साथ restore किया गया। Certificate state `CertificateValid` रहना चाहिए — कोई नया Let's Encrypt provisioning trigger नहीं होता है।
+
+<Aside type="note">
+**Skeleton restoration।** PUT संपूर्ण object spec को replace करता है। Skeleton HTTPS LB ने teardown के दौरान अपनी domain binding और certificate को retain किया। यह PUT origin pool reference को restore करता है और Client-Side Defense को re-enable करता है बिना एक नए Let's Encrypt certificate request को trigger किए। HTTPS तुरंत available है।
+</Aside>
+
+#### Path B: नया POST के माध्यम से Create करें (HTTPS LB exist नहीं करता है)
+
+जब कोई HTTPS LB exist नहीं करता है (first run या एक पूर्ण teardown के बाद), इसे POST के माध्यम से create करें। यह Let's Encrypt certificate provisioning को trigger करता है, जो 5–10 मिनट ले सकता है।
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_LB_NAMEx-https",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "HTTPS LB with Client-Side Defense enabled (secondary, cert-dependent)",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["xF5XC_DOMAINNAMEx"],
+      "https_auto_cert": {
+        "http_redirect": false,
+        "add_hsts": false,
+        "port": 443,
+        "default_header": {},
+        "enable_path_normalize": {},
+        "no_mtls": {},
+        "default_loadbalancer": {}
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [{
+        "pool": {
+          "namespace": "xF5XC_NAMESPACEx",
+          "name": "xF5XC_ORIGIN_POOLx",
+          "kind": "origin_pool"
+        },
+        "weight": 1,
+        "priority": 1
+      }],
+      "client_side_defense": {
+        "policy": {
+          "js_insert_all_pages": {}
+        }
+      },
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers" \
+  | jq .
+```
+
+एक `200` response confirm करता है कि HTTPS load balancer बनाया गया। Certificate provisioning automatically शुरू होता है।
+
+<Aside type="caution">
+यदि response में `"code": 8` है "exhausted limits" के साथ, HTTPS LB को create नहीं किया जा सकता है। HTTPS LB optional है — demo HTTP LB का उपयोग करके proceed करता है। Phase 1 Evidence Summary में quota limitation को INFO के रूप में note करें।
+</Aside>
+
+<Aside type="note">
+**Let's Encrypt rate limits।** एक नया HTTPS LB create करना एक Let's Encrypt certificate request को trigger करता है। Let's Encrypt केवल 5 duplicate certificates per exact identifier set per 7 days allow करता है। यदि `cert_state` `AutoCertDomainRateLimited` दिखाता है, तो demo HTTP LB का उपयोग करके continue करता है। इस limit को avoid करने के लिए, default teardown HTTPS LB को एक skeleton के रूप में preserve करता है — [Phase 4 — Teardown](/csd/demo/phase-4-teardown/) देखें।
+</Aside>
+
+### Evidence
+
+Confirm करें कि दोनों load balancers exist करते हैं with CSD enabled। हमेशा evidence के लिए एक **GET** का उपयोग करें — POST response transient state values return करता है जो settled configuration को reflect नहीं कर सकते हैं।
+
+**HTTP LB (primary):**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{name: .metadata.name, domains: .spec.domains, csd_enabled: (.spec.client_side_defense != null), state: .spec.state}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| HTTP Status | `200` | PASS यदि returned, FAIL यदि `404` |
+| `name` | `${F5XC_LB_NAME}-http` | PASS |
+| `domains` | Contains `F5XC_DOMAINNAME` | PASS |
+| `csd_enabled` | `true` | PASS — CSD इस LB पर configured है |
+| `state` | `VIRTUAL_HOST_READY` या `VIRTUAL_HOST_PENDING_A_RECORD` | Expected — HTTP LB DNS resolve होने के बाद READY में transition करता है। कोई अन्य state (e.g. `VIRTUAL_HOST_FAILED`) एक FAIL है — operator को report करें और proceed न करें |
+
+**HTTPS LB (secondary):**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{name: .metadata.name, domains: .spec.domains, csd_enabled: (.spec.client_side_defense != null), state: .spec.state, cert_state: .spec.cert_state}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| HTTP Status | `200` | PASS यदि returned, FAIL यदि `404` |
+| `name` | `${F5XC_LB_NAME}-https` | PASS |
+| `domains` | Contains `F5XC_DOMAINNAME` | PASS |
+| `csd_enabled` | `true` | PASS — CSD इस LB पर configured है |
+| `creation_method` | PUT (restored skeleton) या POST (new) | INFO — PUT existing certificate को preserve करता है |
+| `state` | `VIRTUAL_HOST_READY` (PUT) या `VIRTUAL_HOST_PENDING_A_RECORD` (POST) | Expected — PUT path पहले से ही READY में हो सकता है क्योंकि DNS skeleton से persist हुआ |
+| `cert_state` | `CertificateValid` (PUT) या `PreDomainChallengePending` (POST) | PUT existing cert को preserve करता है; POST नया provisioning trigger करता है |
+
+## Step 4: DNS कॉन्फ़िगर करें
+
+Load balancer बनाने के बाद, यह `VIRTUAL_HOST_PENDING_A_RECORD` status में enter करता है और automatic certificate `PreDomainChallengePending` में रहता है। LB fully operational होने से पहले दो DNS records मौजूद होने चाहिए:
+
+1. **A record** — `xF5XC_DOMAINNAMEx` को VIP IP address की ओर इशारा करते हुए (LB response में `dns_info` से)
+2. **ACME challenge record** — `_acme-challenge.xF5XC_DOMAINNAMEx` TLS certificate validation के लिए (automatically managed जब F5 XC DNS को managed records के साथ उपयोग किया जाता है; external DNS के लिए manual CNAME required)
+
+Approach इस बात पर निर्भर करता है कि क्या F5 XC आपके domain के लिए authoritative DNS provider है।
+
+### DNS Authority को Detect करें
+
+अपने root domain के लिए nameservers को check करें:
+
+```bash
+dig +short NS xF5XC_ROOT_DOMAINx
+```
+
+यदि response में `ns1.f5clouddns.com` और `ns2.f5clouddns.com` शामिल हैं, F5 XC authoritative DNS provider है — **Option A** को follow करें। अन्यथा, external DNS के लिए **Option B** को follow करें।
+
+### Option A: F5 XC Managed DNS
+
+जब F5 XC authoritative DNS provider है, तो platform automatically दोनों A record और ACME challenge CNAME को create कर सकता है — लेकिन केवल जब DNS zone में `allow_http_lb_managed_records` enabled हो।
+
+<Aside type="note">
+DNS zones **system** namespace में live करते हैं, user namespaces में नहीं। Zone name root domain से match करता है (e.g., `bankexample.com`)।
+</Aside>
+
+**1. Check करें कि क्या managed records enabled हैं:**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq '.spec.primary.allow_http_lb_managed_records'
+```
+
+यदि response `true` है, तो platform load balancers के लिए auto-create DNS records करेगा — **3. Verify DNS resolution** को skip करें। यदि `false` या `null`, अगले step को continue करें।
+
+**2. Managed records को enable करें:**
+
+<Aside type="caution">
+`PUT` payload को **पूर्ण zone spec** शामिल करना चाहिए — metadata और सभी existing configuration fields। Fields को omit करना उन्हें defaults में reset कर देगा। पहले current zone configuration को retrieve करें, फिर केवल `allow_http_lb_managed_records` field को modify करें।
+</Aside>
+
+Current zone configuration को retrieve करें, managed records को enable करें, और update करें:
+
+```bash
+# Get current zone config
+ZONE_CONFIG=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx")
+
+# Update with managed records enabled
+echo "$ZONE_CONFIG" \
+  | jq '.spec.primary.allow_http_lb_managed_records = true' \
+  | curl -s -X PUT \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d @- \
+    "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq .
+```
+
+<Aside type="caution">
+Zone spec में एक `x-ves-io-managed` rr_set_group है platform-managed records के साथ। आपके `PUT` payload को यह group को **preserve** करना चाहिए — इसे omit करना HTTP 403 "reserved for internal purposes" का कारण बनता है। हमेशा पहले `GET` के साथ current zone configuration को retrieve करें, केवल उन fields को modify करें जिनकी आवश्यकता है, और पूर्ण spec को वापस भेजें।
+</Aside>
+
+एक `200` response (empty `\{\}`) confirm करता है कि zone को update किया गया। F5 XC zone के auto-managed record group में A record और ACME challenge record को create करेगा। यदि managed records 60 seconds के भीतर appear नहीं होते, तो load balancer को re-apply करें record creation को trigger करने के लिए:
+
+```bash
+LB_CONFIG=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http")
+echo "$LB_CONFIG" | curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d @- \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq .
+```
+
+यह GET+PUT re-apply LB configuration को change नहीं करता है — यह बस platform को DNS zone को re-evaluate करने और managed records को create करने के लिए trigger करता है। यदि A record 60 seconds बाद भी resolve नहीं होता है re-apply के बाद, stop करें और operator को report करें — re-apply को एक बार से अधिक retry न करें।
+
+**3. DNS resolution को verify करें:**
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A
+```
+
+Response को VIP IP address return करना चाहिए। DNS propagation typically F5 XC managed zones के लिए immediate है, लेकिन 60 seconds तक allow करें।
+
+<Aside type="tip">
+**Negative DNS cache:** यदि आपने domain को query किया है record exist करने से पहले, आपके recursive resolver ने `NXDOMAIN` response को cache किया हो सकता है। Stale cache को rule out करने के लिए authoritative nameserver या एक public resolver के विरुद्ध verify करें:
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A @ns1.f5clouddns.com
+dig +short xF5XC_DOMAINNAMEx A @8.8.8.8
+```
+</Aside>
+
+### Option B: External DNS Provider
+
+जब आपका domain एक external DNS provider का उपयोग करता है, तो आपको records को manually create करना चाहिए। Load balancer से required values को extract करें:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{
+    vip_ip: .spec.dns_info[0].ip_address,
+    acme_target: .spec.auto_cert_info.dns_records
+  }'
+```
+
+अपने DNS provider पर ये records create करें:
+
+| Type | Name | Value |
+| --- | --- | --- |
+| A | `xF5XC_DOMAINNAMEx` | `dns_info[0].ip_address` से VIP IP |
+| CNAME | `_acme-challenge.xF5XC_DOMAINNAMEx` | `*.autocerts.ves.volterra.io` |
+
+Records को create करने के बाद, resolution को verify करें:
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+```
+
+<Aside type="tip">
+A record LB को `VIRTUAL_HOST_PENDING_A_RECORD` से `VIRTUAL_HOST_READY` में transition के लिए required है। ACME CNAME automatic TLS certificate provisioning के लिए required है। दोनों records के बिना, LB एक pending state में remain करेगा।
+</Aside>
+
+### Evidence
+
+| Test | Command | Expected | Status |
+| --- | --- | --- | --- |
+| DNS-1: A Record | `dig +short $F5XC_DOMAINNAME A` | VIP IP address returned | PASS यदि IP returned, FAIL यदि empty |
+| DNS-2: ACME CNAME | `dig +short _acme-challenge.$F5XC_DOMAINNAME CNAME` | `*.autocerts.ves.volterra.io` | PASS यदि CNAME returned |
+| DNS authority | `dig +short NS $F5XC_ROOT_DOMAIN` | F5 XC या external nameservers | जानकारीपूर्ण — Option A vs B को determine करता है |
+
+यदि DNS-1 60 seconds के बाद empty return करता है, [Troubleshooting — LB Stuck in VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record) देखें।
+
+## Step 5: Verify करें कि CSD Enabled है
+
+Check करें कि Client-Side Defense tenant के लिए enabled है। CSD tenant level पर configured है — यदि यह पहले से enable नहीं किया गया है, तो अपने F5 XC administrator से contact करें।
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq .
+```
+
+एक response जिसमें `"isConfigured": true` और `"isEnabled": true` शामिल है, confirm करता है कि CSD active है।
+
+### Evidence
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq '{configured: .isConfigured, enabled: .isEnabled}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| `configured` | `true` | PASS |
+| `enabled` | `true` | PASS |
+| कोई भी `false` | — | FAIL — CSD को tenant level पर enable करने के लिए F5 XC administrator से contact करें |
+
+## Step 6: Protected Domain को Register करें
+
+Root domain को register करें जिसे CSD monitor करेगा। `protected_domain` field **eTLD+1** root domain होना चाहिए (e.g., `f5demos.com`), full FQDN नहीं।
+
+<Aside type="caution">
+**Protected domains tenant-scoped हैं, namespace-scoped नहीं।** Healthchecks, origin pools, और load balancers के विपरीत, protected domains globally tenant पर registered हैं — API URL में namespace एक routing parameter है, ownership boundary नहीं। हालांकि, protected domain एक CSD configuration object है जो इस deployment से जुड़ा है और **teardown के दौरान हटाया जाना चाहिए** जब deployment को fully remove किया जा रहा हो। इसे DNS zone से confuse न करें, जो shared infrastructure है और कभी भी deleted नहीं होना चाहिए।
+</Aside>
+
+### Check करें कि क्या पहले से Registered है
+
+Create करने से पहले, check करें कि domain पहले से tenant पर registered है या नहीं। POST के लिए एक `409` response का मतलब domain पहले से exist करता है — यह एक error नहीं, success condition है।
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_DOMAINNAMEx",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "protected_domain": "xF5XC_ROOT_DOMAINx"
+    }
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq .
+```
+
+| Response | Meaning | Action |
+| --- | --- | --- |
+| `200` | Domain successfully registered | Step 7 को continue करें |
+| `409` (domain already exists) | Domain को पहले इस tenant पर register किया गया था | पहले से done है — Step 7 को continue करें |
+| `"code": 8` (exhausted limits) | Protected domain quota full | **Blocking** — protected domains CSD के लिए required हैं। अप्रयुक्त protected domains को delete करें या अपने administrator से contact करें। |
+
+### Evidence
+
+POST response ही primary evidence है — यह registered domain object को return करता है with `spec.protected_domain` matching आपके root domain। Alternatively, सभी protected domains को list करें confirm करने के लिए:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '.items | length'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| POST returned `protected_domain` | Matches `F5XC_ROOT_DOMAIN` | PASS |
+| POST returned `200` या `409` | Domain registered या पहले से exist करता है | PASS |
+| List items count | &gt; 0 | PASS |
+
+<Aside type="note">
+Individual GET endpoint (`/protected_domains/\{name\}`) protected domains के लिए available नहीं है। Verification के लिए POST response या list endpoint का उपयोग करें।
+</Aside>
+
+## Step 7: Verify करें
+
+### DNS Resolution
+
+Confirm करें कि A record resolve हो रहा है और ACME challenge CNAME in place है:
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+```
+
+A record को VIP IP address return करना चाहिए। CNAME को `*.autocerts.ves.volterra.io` की ओर point करना चाहिए (या एक related autocerts target)।
+
+### Load Balancer State
+
+Check करें कि दोनों load balancers अपनी pending states से बाहर आ गए हैं। HTTP LB primary check है — इसे `VIRTUAL_HOST_READY` तक पहुंचना चाहिए एक बार DNS resolve हो जाने पर, बिना certificate dependency के। HTTPS LB certificate state informational only है।
+
+**HTTP LB (primary — proceed से पहले READY होना चाहिए):**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{state: .spec.state}'
+```
+
+| Field | Expected | Intermediate States |
+| --- | --- | --- |
+| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS configured नहीं (Step 4 देखें) |
+
+**HTTPS LB (secondary — informational, progression को block नहीं करता):**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{state: .spec.state, cert_state: .spec.cert_state}'
+```
+
+| Field | Expected | Intermediate States |
+| --- | --- | --- |
+| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS configured नहीं; `VIRTUAL_HOST_DNS_A_RECORD_ADDED` — A record found, cert के लिए wait करना |
+| `cert_state` | `CertificateValid` | `PreDomainChallengePending` — ACME CNAME के लिए wait करना; `DomainChallengeStarted` — ACME challenge in progress; `AutoCertDomainRateLimited` — Let's Encrypt rate limit hit (demo environments में expected, HTTP LB को affect नहीं करता) |
+
+<Aside type="note">
+Certificate provisioning **5–10 मिनट** ले सकता है DNS records बनाने के बाद। यदि `cert_state` `AutoCertDomainRateLimited` दिखाता है, यह demo environments में expected है जहां infrastructure frequently created और destroyed होता है। HTTP LB unaffected है — demo को `http://` URLs का उपयोग करके continue करें।
+</Aside>
+
+### JS Configuration
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq .
+```
+
+Response में एक `scriptTag` field है जिसमें full HTML `<script>` tag है जो load balancer page responses में inject करता है।
+
+### Detected Domains
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{summary: .domain_summary, domains: .domains_list}'
+```
+
+### Detected Scripts
+
+Scripts endpoint को epoch timestamps (Unix epoch से seconds) का उपयोग करके एक time range की आवश्यकता होती है। नीचे का example पिछले 7 दिन को query करता है।
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq '[.scripts[]? | {script_name: .script_name, risk_level: .risk_level}]'
+```
+
+### Form Fields
+
+Form fields endpoint को epoch timestamps की आवश्यकता होती है, query parameters के रूप में passed।
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields?startTime=$START&endTime=$NOW" \
+  | jq '.form_fields'
+```
+
+### Phase 1 Evidence Summary
+
+सभी verification checks को complete करने के बाद, AI assistant को एक consolidated status table present करना चाहिए:
+
+| Test ID | Check | Expected | Required | Status |
+| --- | --- | --- | --- | --- |
+| DNS-1 | A Record resolves | VIP IP returned | **Yes** | PASS / FAIL |
+| DNS-2 | ACME CNAME exists | `*.autocerts.ves.volterra.io` | No | PASS / PENDING |
+| LB-1 | HTTP LB state | `VIRTUAL_HOST_READY` | **Yes** | PASS / PENDING |
+| LB-2 | HTTPS LB state | `VIRTUAL_HOST_READY` | No | PASS / PENDING / INFO |
+| TLS-1 | Certificate state | `CertificateValid` | No | PASS / PENDING / INFO |
+| CSD-1 | JS configuration | `scriptTag` present | **Yes** | PASS / FAIL |
+| CSD-2 | CSD status | `isEnabled: true` | **Yes** | PASS / FAIL |
+| CSD-3 | Protected domain | Domain registered | **Yes** | PASS / FAIL |
+
+<Aside type="note">
+**Phase 2 HTTP LB का उपयोग करता है।** HTTPS optional है — यदि TLS-1 `AutoCertDomainRateLimited` दिखाता है या LB-2 PENDING में remain करता है, demo normally `http://` URLs का उपयोग करके proceed करता है। केवल DNS-1, LB-1, CSD-1, CSD-2, और CSD-3 को Phase 2 में proceed करने से पहले PASS करना required है।
+</Aside>
+
+यदि LB-1 PENDING दिखाता है, तो हर 30 seconds को 4 iterations के लिए poll करें (total 2 मिनट)। यदि LB-1 4 iterations के बाद `VIRTUAL_HOST_READY` में नहीं पहुंचा है, तो `dig` के साथ DNS resolution को check करें और operator को report करें — जब तक LB-1 READY तक नहीं पहुंचता तब तक proceed न करें। LB-2 और TLS-1 के लिए, हर 60 seconds को 10 iterations के लिए poll करें (10 मिनट total)। यदि 10 iterations के बाद भी एक intermediate state में है, तो current state को INFO के रूप में record करें और proceed करें — ये informational हैं और demo progression को block नहीं करते हैं।
+
+<Aside type="note">
+LB response में `dns_info` field empty (`[]`) हो सकता है भले ही DNS सही तरीके से resolve हो — यह एक clean recreation के बाद होता है। VIP address के लिए `dns_info` पर rely करने के बजाय हमेशा `dig` के साथ DNS resolution को verify करें।
+</Aside>
+
+---
+
+**Phase 1 complete।** [Phase 2 — Attack](/csd/demo/phase-2-attack/) को proceed करने के लिए attack simulation को run करें।

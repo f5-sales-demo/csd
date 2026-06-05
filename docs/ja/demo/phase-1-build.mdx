@@ -1,0 +1,877 @@
+---
+title: Phase 1 — Build
+description: F5 XC APIを使用してCSDインフラをデプロイ — ヘルスチェック、オリジンプール、ロードバランサー、保護されたドメイン
+sidebar:
+  order: 2
+  label: Phase 1 — Build
+i18n:
+  sourceHash: 6ecd8b98f257
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Phase 1は、完全なCSDインフラストラクチャをデプロイして検証します。すべてのステップを順序通りに完了してください—各ステップが成功してから次に進む必要があります。これらのコマンドを実行する前に、[インデックス](/csd/demo/)に戻り、環境設定と変数の解決を完了してください。
+
+## Step 0: 名前空間のチェックと作成（条件付き）
+
+対象の名前空間がテナント上に既に存在するかどうかを確認します。存在しない場合は、作成します。`NAMESPACE_CREATED`シェル変数に結果を記録します—Phase 4のティアダウンはこれを使用して名前空間を削除するかどうかを判断します。
+
+```bash
+NS_CHECK=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx")
+
+NAMESPACE_CREATED="false"
+if [ "$NS_CHECK" = "404" ]; then
+  curl -s -X POST \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d '{"metadata": {"name": "xF5XC_NAMESPACEx"}, "spec": {}}' \
+    "xF5XC_API_URLx/api/web/namespaces" | jq .
+  NAMESPACE_CREATED="true"
+fi
+```
+
+<Aside type="note">
+**`spec`フィールドは必須です。** F5 XC名前空間APIは、設定が不要な場合でも、リクエストボディに`spec`フィールドが必要です—空のオブジェクト`{}`を渡してください。`spec`を省略するとエラーコード`3`（「spec should not be empty in request」）が返されます。
+</Aside>
+
+### 証拠
+
+名前空間が存在することを確認し、それが作成されたかどうかを記録します：
+
+```bash
+curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx"
+echo "NAMESPACE_CREATED=$NAMESPACE_CREATED"
+```
+
+| フィールド | 期待値 | ステータス |
+| --- | --- | --- |
+| HTTPステータス | `200` | 返された場合はPASS、`404`その他の場合はFAIL |
+| `NAMESPACE_CREATED` | `true`（作成）または`false`（既存） | 情報提供—Phase 4ティアダウンで使用 |
+
+## Step 1: ヘルスチェックの作成（オプション）
+
+オリジンプールがバックエンドのヘルスをモニタリングするために使用できるHTTPヘルスチェックを作成します。
+
+<Aside type="note">
+**ヘルスチェックはCSDではオプションです。** Client-Side Defenseフィーチャーはオリジンヘルスモニタリングに依存しません。テナントがヘルスチェックオブジェクトの制限に達した場合（エラーコード`8`—エラーハンドリングを参照）、このステップをスキップして、ヘルスチェック参照なしでオリジンプールを作成してください。CSDは正常に機能します。
+
+ヘルスチェックを作成する場合は、オリジンプールの前に作成してください。オリジンプールは既存のヘルスチェックを参照する必要があります—オリジンプールを作成するときにヘルスチェックが存在しない場合、参照は無視されます。
+</Aside>
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_HC_NAMEx",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "disable": false
+    },
+    "spec": {
+      "http_health_check": {
+        "use_origin_server_name": {},
+        "path": "/",
+        "use_http2": false,
+        "headers": {},
+        "request_headers_to_remove": [],
+        "expected_status_codes": ["200"]
+      },
+      "timeout": 3,
+      "interval": 15,
+      "jitter": 0,
+      "unhealthy_threshold": 1,
+      "healthy_threshold": 3,
+      "jitter_percent": 30
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks" \
+  | jq .
+```
+
+`200`レスポンスと作成されたオブジェクトはヘルスチェックが作成されたことを確認します。レスポンスが`"code": 8`と「Object kind healthcheck has exhausted limits(150)」のようなメッセージを含む場合、テナントがヘルスチェック制限に達しています—Step 2にスキップしてヘルスチェック参照を省略してください。CSDはヘルスモニタリングに依存しません。
+
+### 証拠
+
+ヘルスチェックが存在することを確認します：
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx" \
+  | jq '{name: .metadata.name, namespace: .metadata.namespace, path: .spec.http_health_check.path, interval: .spec.interval}'
+```
+
+| フィールド | 期待値 | ステータス |
+| --- | --- | --- |
+| HTTPステータス | `200`とオブジェクト | 返された場合はPASS、`404`の場合はFAIL |
+| `name` | `F5XC_HC_NAME`と一致 | PASS |
+| `path` | `/` | PASS |
+| Step 1スキップ（エラーコード`8`、制限に達した） | — | PASS（ヘルスチェックはCSDではオプション） |
+
+## Step 2: オリジンプールの作成
+
+バックエンドサーバーを指すオリジンプールを作成します。Step 1でヘルスチェックを作成した場合は、`healthcheck`参照を含めます。Step 1がスキップされた場合は、空配列を使用します。
+
+**ヘルスチェック付き**（Step 1成功）：
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_ORIGIN_POOLx",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "Origin pool for CSD demo",
+      "disable": false
+    },
+    "spec": {
+      "origin_servers": [{
+        "public_ip": { "ip": "xF5XC_ORIGIN_IPx" },
+        "labels": {}
+      }],
+      "no_tls": {},
+      "port": xF5XC_ORIGIN_PORTx,
+      "same_as_endpoint_port": {},
+      "healthcheck": [{
+        "namespace": "xF5XC_NAMESPACEx",
+        "name": "xF5XC_HC_NAMEx",
+        "kind": "healthcheck"
+      }],
+      "loadbalancer_algorithm": "LB_OVERRIDE",
+      "endpoint_selection": "LOCAL_PREFERRED"
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools" \
+  | jq .
+```
+
+**ヘルスチェックなし**（Step 1スキップ）：
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_ORIGIN_POOLx",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "Origin pool for CSD demo",
+      "disable": false
+    },
+    "spec": {
+      "origin_servers": [{
+        "public_ip": { "ip": "xF5XC_ORIGIN_IPx" },
+        "labels": {}
+      }],
+      "no_tls": {},
+      "port": xF5XC_ORIGIN_PORTx,
+      "same_as_endpoint_port": {},
+      "healthcheck": [],
+      "loadbalancer_algorithm": "LB_OVERRIDE",
+      "endpoint_selection": "LOCAL_PREFERRED"
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools" \
+  | jq .
+```
+
+`200`レスポンスはオリジンプールが作成されたことを確認します。
+
+<Aside type="caution">
+レスポンスが`"code": 8`と「Object kind endpoint has exhausted limits(500)」または「Object kind origin_pool has exhausted limits」のようなメッセージを含む場合、テナントがクォータに達しています。ヘルスチェックと異なり、オリジンプールはデモに**必須**です—デモはオリジンプールなしで進行できません。他の名前空間から未使用のオリジンプールを削除して容量を解放してから、もう一度試してください（オリジンプールの削除はそのエンドポイントサブオブジェクトも解放します）。制限を解決できない場合は、F5 Distributed Cloud（F5 XC）管理者に連絡してテナントクォータを増やしてください。
+</Aside>
+
+### ヘルスチェックがリンクされていることを確認
+
+ヘルスチェック参照を含めた場合、それが適切にリンクされていることを確認します：
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '.spec.healthcheck'
+```
+
+入力された配列はリンクを確認します。空配列`[]`はStep 1がスキップされた場合に予期される、またはリンクしようとしたが見つからなかったことを意味します。
+
+### 証拠
+
+オリジンプールが存在し、正しい設定を持っていることを確認します：
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '{name: .metadata.name, origin_ip: .spec.origin_servers[0].public_ip.ip, port: .spec.port, healthcheck_count: (.spec.healthcheck | length)}'
+```
+
+| フィールド | 期待値 | ステータス |
+| --- | --- | --- |
+| HTTPステータス | `200` | 返された場合はPASS、`404`の場合はFAIL |
+| `name` | `F5XC_ORIGIN_POOL`と一致 | PASS |
+| `origin_ip` | `F5XC_ORIGIN_IP`と一致 | PASS |
+| `port` | `F5XC_ORIGIN_PORT`と一致 | PASS |
+| `healthcheck_count` | `1`（HC付き）または`0`（なし） | どちらでもPASS |
+
+## Step 3: Client-Side Defenseが有効なHTTPロードバランサーの作成
+
+Client-Side Defenseが有効な**2つの**ロードバランサーを作成します—HTTPロードバランサー（プライマリ、ポート80）とHTTPSロードバランサー（セカンダリ、ポート443、自動証明書管理付き）。HTTPロードバランサーはすべてのデモトラフィックのデフォルトです。HTTPSロードバランサーはLet's Encrypt証明書プロビジョニングに依存する素晴らしい追加機能で、デモ環境でレート制限に達する可能性があります。
+
+<Aside type="note">
+HTTPロードバランサースペックには22以上の`oneOf`選択グループがあります。すべてのグループに1つの選択肢が設定されているか、APIが`422`エラーを返します。以下の設定はCSD以外のすべてのオプションセキュリティ機能を無効にしています—環境に合わせて必要に応じて変更してください。両方のロードバランサーは同じオリジンプール、CSD設定、ドメインを共有します—リスナータイプのみが異なります。
+</Aside>
+
+<Aside type="tip">
+両方のロードバランサー名は`F5XC_LB_NAME`から派生しています：HTTPロードバランサーは`${F5XC_LB_NAME}-http`で、HTTPSロードバランサーは`${F5XC_LB_NAME}-https`です。追加の環境変数は必要ありません。
+</Aside>
+
+### HTTPロードバランサー（プライマリ）
+
+これはデモの**プライマリ**ロードバランサーです。F5 XC管理DNSでポート80のHTTPリスナーを使用します。TLS証明書プロビジョニングに依存しないため、DNSが解決されたら直ちに使用可能になります。
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_LB_NAMEx-http",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "HTTP LB with Client-Side Defense enabled (primary demo LB)",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["xF5XC_DOMAINNAMEx"],
+      "http": {
+        "dns_volterra_managed": true,
+        "port": 80
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [{
+        "pool": {
+          "namespace": "xF5XC_NAMESPACEx",
+          "name": "xF5XC_ORIGIN_POOLx",
+          "kind": "origin_pool"
+        },
+        "weight": 1,
+        "priority": 1
+      }],
+      "client_side_defense": {
+        "policy": {
+          "js_insert_all_pages": {}
+        }
+      },
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers" \
+  | jq .
+```
+
+`200`レスポンスはHTTPロードバランサーがCSD有効で作成されたことを確認します。
+
+<Aside type="caution">
+レスポンスが`"code": 8`と「Object kind http_loadbalancer has exhausted limits」のようなメッセージを含む場合、テナントがロードバランサークォータに達しています。ロードバランサーはデモに**必須**です。未使用のロードバランサーを削除して容量を解放してから、もう一度試してください。
+</Aside>
+
+### HTTPSロードバランサー（セカンダリ）
+
+これはセカンダリロードバランサーです。ポート443で`https_auto_cert`を使用し、Let's Encrypt証明書を自動的にプロビジョニングします。作成する前に、前回のティアダウンから**スケルトンHTTPSロードバランサー**が存在するかどうかを確認してください—存在する場合は、PUTで復元して、既存のLet's Encrypt証明書を保持し、レート制限を回避してください（7日間に同じ識別子セットに対して重複する証明書は5つまで）。
+
+**HTTPSロードバランサーが既に存在するかどうかを確認：**
+
+```bash
+HTTPS_CHECK=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+```
+
+`HTTPS_CHECK`が`200`の場合、スケルトンHTTPSロードバランサーが存在します—**Path A（PUT）**を使用します。`404`の場合は、**Path B（POST）**を使用します。
+
+#### Path A: PUTでスケルトンを復元（HTTPSロードバランサーが存在）
+
+前回のティアダウンからスケルトンHTTPSロードバランサーが存在する場合、PUTで完全な設定を復元します。これはオリジンプール参照を再度アタッチしてCSDを再度有効にする**一方で、新しいLet's Encrypt証明書リクエストはトリガーしません**—既存の証明書は有効なままです。
+
+```bash
+curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_LB_NAMEx-https",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "HTTPS LB with Client-Side Defense enabled (secondary, cert-dependent)",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["xF5XC_DOMAINNAMEx"],
+      "https_auto_cert": {
+        "http_redirect": false,
+        "add_hsts": false,
+        "port": 443,
+        "default_header": {},
+        "enable_path_normalize": {},
+        "no_mtls": {},
+        "default_loadbalancer": {}
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [{
+        "pool": {
+          "namespace": "xF5XC_NAMESPACEx",
+          "name": "xF5XC_ORIGIN_POOLx",
+          "kind": "origin_pool"
+        },
+        "weight": 1,
+        "priority": 1
+      }],
+      "client_side_defense": {
+        "policy": {
+          "js_insert_all_pages": {}
+        }
+      },
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq .
+```
+
+`200`レスポンスはスケルトンが完全な設定で復元されたことを確認します。証明書状態は`CertificateValid`のままです—新しいLet's Encrypt証明書プロビジョニングはトリガーされません。
+
+<Aside type="note">
+**スケルトン復元。** PUTはオブジェクト仕様全体を置き換えます。スケルトンHTTPSロードバランサーはティアダウン中にドメインバインディングと証明書を保持しました。このPUTはオリジンプール参照を復元し、新しいLet's Encrypt証明書リクエストをトリガーせずにClient-Side Defenseを再度有効にします。HTTPSはすぐに利用可能です。
+</Aside>
+
+#### Path B: POSTで新規作成（HTTPSロードバランサーが存在しない）
+
+HTTPSロードバランサーが存在しない場合（初回実行または完全なティアダウン後）、POSTで作成します。これはLet's Encrypt証明書プロビジョニングをトリガーするため、5～10分かかる可能性があります。
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_LB_NAMEx-https",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "HTTPS LB with Client-Side Defense enabled (secondary, cert-dependent)",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["xF5XC_DOMAINNAMEx"],
+      "https_auto_cert": {
+        "http_redirect": false,
+        "add_hsts": false,
+        "port": 443,
+        "default_header": {},
+        "enable_path_normalize": {},
+        "no_mtls": {},
+        "default_loadbalancer": {}
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [{
+        "pool": {
+          "namespace": "xF5XC_NAMESPACEx",
+          "name": "xF5XC_ORIGIN_POOLx",
+          "kind": "origin_pool"
+        },
+        "weight": 1,
+        "priority": 1
+      }],
+      "client_side_defense": {
+        "policy": {
+          "js_insert_all_pages": {}
+        }
+      },
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers" \
+  | jq .
+```
+
+`200`レスポンスはHTTPSロードバランサーが作成されたことを確認します。証明書プロビジョニングが自動的に開始されます。
+
+<Aside type="caution">
+レスポンスが`"code": 8`と「exhausted limits」を含む場合、HTTPSロードバランサーを作成できません。HTTPSロードバランサーはオプションです—デモはHTTPロードバランサーを使用して進行します。Phase 1エビデンスサマリーでクォータ制限を情報として記録してください。
+</Aside>
+
+<Aside type="note">
+**Let's Encryptレート制限。** 新しいHTTPSロードバランサーを作成するとLet's Encrypt証明書リクエストがトリガーされます。Let's Encryptは7日間に同じ識別子セットに対して5つの重複する証明書のみを許可します。`cert_state`が`AutoCertDomainRateLimited`を表示する場合、デモはHTTPロードバランサーを使用して続行されます。この制限に達することを避けるために、デフォルトティアダウンはHTTPSロードバランサーをスケルトンとして保持します—[Phase 4—Teardown](/csd/demo/phase-4-teardown/)を参照してください。
+</Aside>
+
+### 証拠
+
+両方のロードバランサーが存在してCSD有効であることを確認します。証拠には必ず**GET**を使用してください—POSTレスポンスは解決された設定を反映していない可能性がある一時的な状態値を返します。
+
+**HTTPロードバランサー（プライマリ）：**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{name: .metadata.name, domains: .spec.domains, csd_enabled: (.spec.client_side_defense != null), state: .spec.state}'
+```
+
+| フィールド | 期待値 | ステータス |
+| --- | --- | --- |
+| HTTPステータス | `200` | 返された場合はPASS、`404`の場合はFAIL |
+| `name` | `${F5XC_LB_NAME}-http` | PASS |
+| `domains` | `F5XC_DOMAINNAME`を含む | PASS |
+| `csd_enabled` | `true` | PASS—このロードバランサーではCSDが設定されています |
+| `state` | `VIRTUAL_HOST_READY`または`VIRTUAL_HOST_PENDING_A_RECORD` | 期待される—HTTPロードバランサーはDNSが解決されたらREADYに遷移します。他の状態（例：`VIRTUAL_HOST_FAILED`）はFAIL—オペレーターに報告して進行しないでください |
+
+**HTTPSロードバランサー（セカンダリ）：**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{name: .metadata.name, domains: .spec.domains, csd_enabled: (.spec.client_side_defense != null), state: .spec.state, cert_state: .spec.cert_state}'
+```
+
+| フィールド | 期待値 | ステータス |
+| --- | --- | --- |
+| HTTPステータス | `200` | 返された場合はPASS、`404`の場合はFAIL |
+| `name` | `${F5XC_LB_NAME}-https` | PASS |
+| `domains` | `F5XC_DOMAINNAME`を含む | PASS |
+| `csd_enabled` | `true` | PASS—このロードバランサーではCSDが設定されています |
+| `creation_method` | PUT（復元されたスケルトン）またはPOST（新規） | 情報提供—PUTは既存の証明書を保持します |
+| `state` | `VIRTUAL_HOST_READY`（PUT）または`VIRTUAL_HOST_PENDING_A_RECORD`（POST） | 期待される—PUTパスはスケルトンからDNSが保持されているため既にREADYである可能性があります |
+| `cert_state` | `CertificateValid`（PUT）または`PreDomainChallengePending`（POST） | PUTは既存の証明書を保持します、POSTは新しいプロビジョニングをトリガーします |
+
+## Step 4: DNSの設定
+
+ロードバランサーを作成した後、`VIRTUAL_HOST_PENDING_A_RECORD`ステータスに入り、自動証明書は`PreDomainChallengePending`のままです。ロードバランサーが完全に操作可能になる前に、2つのDNSレコードが存在する必要があります：
+
+1. **Aレコード**—`xF5XC_DOMAINNAMEx`がVIP IPアドレスを指す（ロードバランサーレスポンスの`dns_info`から）
+2. **ACMEチャレンジレコード**—TLS証明書検証用の`_acme-challenge.xF5XC_DOMAINNAMEx`（F5 XC DNSで管理されたレコードを使用する場合は自動で管理；外部DNSの場合は手動CNAMEが必要）
+
+アプローチはF5 XCがドメインの権限あるDNSプロバイダーであるかどうかに依存します。
+
+### DNS権限を検出
+
+ルートドメインのネームサーバーを確認：
+
+```bash
+dig +short NS xF5XC_ROOT_DOMAINx
+```
+
+レスポンスが`ns1.f5clouddns.com`と`ns2.f5clouddns.com`を含む場合、F5 XCは権限あるDNSプロバイダーです—**オプションA**に従ってください。それ以外の場合は外部DNSの場合は**オプションB**に従ってください。
+
+### Option A: F5 XC管理DNS
+
+F5 XCが権限あるDNSプロバイダーの場合、プラットフォームはAレコードとACMEチャレンジCNAMEを自動的に作成できます—ただし、DNSゾーンに`allow_http_lb_managed_records`が有効になっている場合のみです。
+
+<Aside type="note">
+DNSゾーンはユーザー名前空間ではなく**システム**名前空間にあります。ゾーン名はルートドメインと一致します（例：`bankexample.com`）。
+</Aside>
+
+**1. 管理レコードが有効であるかどうかを確認：**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq '.spec.primary.allow_http_lb_managed_records'
+```
+
+レスポンスが`true`の場合、プラットフォームはロードバランサーのDNSレコードを自動作成します—**3. DNS解決の確認**にスキップしてください。`false`または`null`の場合、次のステップに続きます。
+
+**2. 管理レコードを有効にする：**
+
+<Aside type="caution">
+`PUT`ペイロードは**完全なゾーン仕様**を含める必要があります—メタデータとすべての既存の設定フィールド。フィールドを省略するとデフォルトにリセットされます。まず現在のゾーン構成を取得してから、`allow_http_lb_managed_records`フィールドのみを変更してください。
+</Aside>
+
+現在のゾーン構成を取得し、管理レコードを有効にして、更新します：
+
+```bash
+# Get current zone config
+ZONE_CONFIG=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx")
+
+# Update with managed records enabled
+echo "$ZONE_CONFIG" \
+  | jq '.spec.primary.allow_http_lb_managed_records = true' \
+  | curl -s -X PUT \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d @- \
+    "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq .
+```
+
+<Aside type="caution">
+ゾーン仕様には、プラットフォーム管理レコードの`x-ves-io-managed`rr_set_groupが含まれています。PUTペイロードは**このグループを保持する必要があります**—省略するとHTTP 403「reserved for internal purposes」になります。必ず`GET`で現在のゾーン構成を取得してから、必要なフィールドのみを変更して、完全な仕様を返してください。
+</Aside>
+
+`200`レスポンス（空の`\{\}`）はゾーンが更新されたことを確認します。F5 XCはゾーンの自動管理レコードグループにAレコードとACMEチャレンジレコードを作成します。管理レコードが60秒以内に表示されない場合は、ロードバランサーに再度適用してレコード作成をトリガーしてください：
+
+```bash
+LB_CONFIG=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http")
+echo "$LB_CONFIG" | curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d @- \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq .
+```
+
+このGET+PUT再適用はロードバランサー設定を変更しません—プラットフォームがDNSゾーンを再評価して管理レコードを作成するようにトリガーするだけです。Aレコードが再適用後60秒以内に解決されない場合は、停止してオペレーターに報告してください—再適用を複数回試行しないでください。
+
+**3. DNS解決の確認：**
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A
+```
+
+レスポンスはVIP IPアドレスを返す必要があります。F5 XC管理ゾーンではDNS伝播は通常すぐですが、最大60秒待ってください。
+
+<Aside type="tip">
+**負のDNSキャッシュ：** レコードが存在する前にドメインをクエリした場合、再帰的リゾルバーが`NXDOMAIN`レスポンスをキャッシュしている可能性があります。権限あるネームサーバーまたはパブリックリゾルバーに対して検証して、古いキャッシュを除外してください：
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A @ns1.f5clouddns.com
+dig +short xF5XC_DOMAINNAMEx A @8.8.8.8
+```
+</Aside>
+
+### Option B: 外部DNSプロバイダー
+
+ドメインが外部DNSプロバイダーを使用する場合、手動でレコードを作成する必要があります。ロードバランサーから必要な値を抽出します：
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{
+    vip_ip: .spec.dns_info[0].ip_address,
+    acme_target: .spec.auto_cert_info.dns_records
+  }'
+```
+
+DNSプロバイダーでこれらのレコードを作成します：
+
+| タイプ | 名前 | 値 |
+| --- | --- | --- |
+| A | `xF5XC_DOMAINNAMEx` | `dns_info[0].ip_address`からのVIP IP |
+| CNAME | `_acme-challenge.xF5XC_DOMAINNAMEx` | `*.autocerts.ves.volterra.io` |
+
+レコードを作成した後、解決を確認します：
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+```
+
+<Aside type="tip">
+Aレコードはロードバランサーが`VIRTUAL_HOST_PENDING_A_RECORD`から`VIRTUAL_HOST_READY`に遷移するために必須です。ACME CNAMEは自動TLS証明書プロビジョニングに必須です。両方のレコードがないと、ロードバランサーは待機状態のままになります。
+</Aside>
+
+### 証拠
+
+| テスト | コマンド | 期待値 | ステータス |
+| --- | --- | --- | --- |
+| DNS-1: Aレコード | `dig +short $F5XC_DOMAINNAME A` | VIP IPアドレスが返される | IP返却時はPASS、空の場合はFAIL |
+| DNS-2: ACME CNAME | `dig +short _acme-challenge.$F5XC_DOMAINNAME CNAME` | `*.autocerts.ves.volterra.io` | CNAMEが返される場合はPASS |
+| DNS権限 | `dig +short NS $F5XC_ROOT_DOMAIN` | F5 XCまたは外部ネームサーバー | 情報提供—オプションAとBを決定 |
+
+60秒後にDNS-1が空を返す場合は、[トラブルシューティング&mdash;LB VIRTUAL_HOST_PENDING_A_RECORDでスタック](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record)を参照してください。
+
+## Step 5: CSDが有効であることを確認
+
+Client-Side Defenseがテナントに対して有効であることを確認します。CSDはテナントレベルで設定されます—まだ有効化されていない場合は、F5 XC管理者に連絡してください。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq .
+```
+
+`"isConfigured": true`と`"isEnabled": true`を含むレスポンスはCSDがアクティブであることを確認します。
+
+### 証拠
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq '{configured: .isConfigured, enabled: .isEnabled}'
+```
+
+| フィールド | 期待値 | ステータス |
+| --- | --- | --- |
+| `configured` | `true` | PASS |
+| `enabled` | `true` | PASS |
+| どちらかが`false` | — | FAIL—F5 XC管理者に連絡してテナントレベルでCSDを有効にしてください |
+
+## Step 6: 保護されたドメインの登録
+
+CSDがモニタリングするルートドメインを登録します。`protected_domain`フィールドは、完全なFQDNではなく、**eTLD+1**ルートドメイン（例：`f5demos.com`）である必要があります。
+
+<Aside type="caution">
+**保護されたドメインはテナントスコープで、名前空間スコープではありません。** ヘルスチェック、オリジンプール、ロードバランサーと異なり、保護されたドメインはテナント全体に登録されます—API URLの名前空間はルーティングパラメータで、所有権の境界ではありません。ただし、保護されたドメインはこのデプロイメントに結び付けられたCSD設定オブジェクト**で、デプロイメント全体が削除される場合はティアダウン中に削除する必要があります**。これを共有インフラストラクチャである必要があり削除されるべきではないDNSゾーンと混同しないでください。
+</Aside>
+
+### 既に登録されているかどうかを確認
+
+作成する前に、ドメインがテナント上に既に登録されているかどうかを確認します。POSTへの`409`レスポンスはドメインが既に存在することを意味します—これはエラーではなく成功条件です。
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_DOMAINNAMEx",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "protected_domain": "xF5XC_ROOT_DOMAINx"
+    }
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq .
+```
+
+| レスポンス | 意味 | アクション |
+| --- | --- | --- |
+| `200` | ドメインが正常に登録されました | Step 7に続行 |
+| `409`（ドメインが既に存在） | ドメインが以前このテナントに登録されました | 既に実行済み—Step 7に続行 |
+| `"code": 8`（制限に達した） | 保護されたドメインクォータが満杯 | **ブロック**—保護されたドメインはCSDに必須です。未使用の保護されたドメインを削除するか、管理者に連絡してください。 |
+
+### 証拠
+
+POSTレスポンス自体が主要な証拠です—`spec.protected_domain`がルートドメインと一致する登録ドメインオブジェクトを返します。または、すべての保護されたドメインをリストして確認します：
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '.items | length'
+```
+
+| フィールド | 期待値 | ステータス |
+| --- | --- | --- |
+| POSTが返した`protected_domain` | `F5XC_ROOT_DOMAIN`と一致 | PASS |
+| POSTが返した`200`または`409` | ドメインが登録されているか、既に存在 | PASS |
+| リストアイテム数 | &gt; 0 | PASS |
+
+<Aside type="note">
+個別のGETエンドポイント（`/protected_domains/\{name\}`）は保護されたドメインには利用できません。検証のためにPOSTレスポンスまたはリストエンドポイントを使用してください。
+</Aside>
+
+## Step 7: 確認
+
+### DNS解決
+
+Aレコードが解決していてACMEチャレンジCNAMEが存在していることを確認します：
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+```
+
+Aレコードはその他IPアドレスを返す必要があります。CNAMEは`*.autocerts.ves.volterra.io`（または関連する自動証明書ターゲット）を指す必要があります。
+
+### ロードバランサー状態
+
+両方のロードバランサーが待機状態から遷移したことを確認します。HTTPロードバランサーはプライマリチェックです—DNSが解決されたら`VIRTUAL_HOST_READY`に到達する必要があります。証明書の依存がありません。HTTPSロードバランサーの証明書状態は情報提供のみです。
+
+**HTTPロードバランサー（プライマリ—進行するために必ずREADYである必要があります）：**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{state: .spec.state}'
+```
+
+| フィールド | 期待値 | 中間状態 |
+| --- | --- | --- |
+| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD`—DNS未構成（Step 4を参照） |
+
+**HTTPSロードバランサー（セカンダリ—情報提供のみ、進行をブロックしません）：**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{state: .spec.state, cert_state: .spec.cert_state}'
+```
+
+| フィールド | 期待値 | 中間状態 |
+| --- | --- | --- |
+| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD`—DNS未構成、`VIRTUAL_HOST_DNS_A_RECORD_ADDED`—Aレコード見つかり、証明書待機中 |
+| `cert_state` | `CertificateValid` | `PreDomainChallengePending`—ACME CNAME待機中、`DomainChallengeStarted`—ACMEチャレンジ進行中、`AutoCertDomainRateLimited`—Let's Encryptレート制限に達した（デモ環境では予期される、HTTPロードバランサーに影響なし） |
+
+<Aside type="note">
+証明書プロビジョニングはDNSレコード作成後**5～10分**かかる可能性があります。`cert_state`が`AutoCertDomainRateLimited`を表示する場合、デモ環境では予期されています。HTTPロードバランサーは影響を受けません—`http://` URLでデモを進めてください。
+</Aside>
+
+### JS設定
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq .
+```
+
+レスポンスには、ロードバランサーがページレスポンスに挿入する完全なHTML`<script>`タグを含む`scriptTag`フィールドが含まれています。
+
+### 検出されたドメイン
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{summary: .domain_summary, domains: .domains_list}'
+```
+
+### 検出されたスクリプト
+
+スクリプトエンドポイントはエポックタイムスタンプを使用した時間範囲が必要です（UNIXエポック以来の秒）。以下の例は過去7日間をクエリします。
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq '[.scripts[]? | {script_name: .script_name, risk_level: .risk_level}]'
+```
+
+### フォームフィールド
+
+フォームフィールドエンドポイントはエポックタイムスタンプを使用した時間範囲が必要で、クエリパラメータとして渡されます。
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields?startTime=$START&endTime=$NOW" \
+  | jq '.form_fields'
+```
+
+### Phase 1エビデンスサマリー
+
+すべての検証チェックを完了した後、AIアシスタントは統合ステータステーブルを提示する必要があります：
+
+| テストID | チェック | 期待値 | 必須 | ステータス |
+| --- | --- | --- | --- | --- |
+| DNS-1 | Aレコードが解決 | VIP IPが返される | **はい** | PASS / FAIL |
+| DNS-2 | ACME CNAMEが存在 | `*.autocerts.ves.volterra.io` | いいえ | PASS / PENDING |
+| LB-1 | HTTPロードバランサー状態 | `VIRTUAL_HOST_READY` | **はい** | PASS / PENDING |
+| LB-2 | HTTPSロードバランサー状態 | `VIRTUAL_HOST_READY` | いいえ | PASS / PENDING / INFO |
+| TLS-1 | 証明書状態 | `CertificateValid` | いいえ | PASS / PENDING / INFO |
+| CSD-1 | JS設定 | `scriptTag`が存在 | **はい** | PASS / FAIL |
+| CSD-2 | CSDステータス | `isEnabled: true` | **はい** | PASS / FAIL |
+| CSD-3 | 保護されたドメイン | ドメイン登録済み | **はい** | PASS / FAIL |
+
+<Aside type="note">
+**Phase 2ではHTTPロードバランサーを使用します。** HTTPSはオプションです—TLS-1が`AutoCertDomainRateLimited`を表示するか、LB-2がPENDINGのままの場合、デモは`http://` URLを使用して正常に進行します。Phase 2に進む前にDNS-1、LB-1、CSD-1、CSD-2、CSD-3のみが成功する必要があります。
+</Aside>
+
+LB-1がPENDINGを表示する場合、30秒ごとに最大4回（合計2分）ポーリングしてください。4回のイテレーション後、LB-1がまだ`VIRTUAL_HOST_READY`に到達していない場合、`dig`でDNS解決をチェックしてオペレーターに報告してください—LB-1がREADYに到達するまで進行しないでください。LB-2とTLS-1の場合、60秒ごとに最大10回（10分）ポーリングしてください。10回のイテレーション後も中間状態にある場合、現在の状態をINFOとして記録して進行してください—これらは情報提供であり、デモの進行をブロックしません。
+
+<Aside type="note">
+LBレスポンスの`dns_info`フィールドはDNSが正しく解決される場合でも空になる可能性があります（`[]`）—これはクリーンな再作成後に発生します。`dns_info`ではなく、VIPアドレスに対して常に`dig`でDNS解決を確認してください。
+</Aside>
+
+---
+
+**Phase 1完了。** [Phase 2—Attack](/csd/demo/phase-2-attack/)に進んで攻撃シミュレーションを実行してください。

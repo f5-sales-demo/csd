@@ -1,0 +1,82 @@
+---
+title: Configuración de XC
+description: >-
+  Configuración de la plataforma F5 XC requerida para habilitar y operar
+  Client-Side Defense
+sidebar:
+  order: 2
+  label: Configuración de XC
+i18n:
+  sourceHash: 1ca5f1c4ac1c
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+import Screenshot from "@f5xc-salesdemos/docs-theme/components/Screenshot.astro";
+
+CSD ya está habilitado en la aplicación de demostración. Esta sección muestra las pantallas de configuración.
+
+## Navegar a Client-Side Defense
+
+<Steps>
+1. Inicie sesión en la **Consola de F5 Distributed Cloud**
+2. Seleccione el espacio de trabajo **Client-Side Defense**
+3. Establezca el espacio de nombres en **bot-defense**
+4. Navegue a **Manage** &rarr; **Configuration**
+</Steps>
+
+<Screenshot light="/images/csd-config.png" alt="Página de configuración de CSD mostrando lista de dominios" />
+
+## Configuración de Dominio
+
+Añadir un dominio en la página de Configuración de CSD lo registra con el motor de informes de CSD. Esto define el ámbito del espacio de nombres para el cual CSD recopila e informa telemetría — detecciones de scripts, notificaciones de alerta y acciones de mitigación se consolidan bajo el dominio registrado.
+
+El dominio de demostración (`botdemo.sales-demo.f5demos.com`) está registrado aquí.
+
+<Aside type="note">
+La página de Configuración de CSD **no** controla la inyección de JavaScript. El ámbito de inyección se configura en el Equilibrador de Carga HTTP (véase a continuación). No modifique la configuración del dominio de demostración — revise la configuración en modo de solo lectura.
+</Aside>
+
+## Método del Equilibrador de Carga HTTP
+
+El Equilibrador de Carga HTTP es donde se configura la inyección de JavaScript. Esto controla si y dónde se insertan los scripts de CSD en las páginas de la aplicación servidas a través del equilibrador de carga.
+
+<Steps>
+1. Navegue a **Multi-Cloud App Connect** &rarr; **HTTP Load Balancers**
+2. Haga clic en el menú **&hellip;** (acciones) en el equilibrador de carga que sirve la aplicación y seleccione **Manage Configuration**
+
+   <Screenshot light="/images/csd-lb-config.png" alt="Lista de Equilibradores de Carga HTTP mostrando el equilibrador de carga de demostración" />
+3. Desplácese hasta la sección **Client-Side Defense** en la barra lateral izquierda
+
+   El campo **Client-Side Defense** está configurado en **Enable** y **Client-Side Defense Policy** muestra **Configured**.
+
+   <Screenshot light="/images/csd-lb-csd-settings.png" alt="Alternancia de CSD y configuración dentro de la configuración del Equilibrador de Carga HTTP" />
+4. Haga clic en **View Configuration** para abrir los detalles de la política de CSD
+
+   El campo **JavaScript Insertion Settings** muestra el ámbito de inyección. El equilibrador de carga de demostración está configurado para **Insert JavaScript in All Pages**.
+
+   <Screenshot light="/images/csd-lb-injection-scope.png" alt="Ámbito de inyección de JavaScript en la sub-configuración de CSD" />
+</Steps>
+
+<Aside type="tip">
+La página de Configuración de CSD (arriba) registra un dominio con el motor de informes. El Equilibrador de Carga HTTP controla la inyección de scripts. Ambos deben estar configurados para que CSD funcione de extremo a extremo.
+</Aside>
+
+## Verificar la Inyección de Script
+
+<Steps>
+1. Abra la [aplicación de demostración](https://botdemo.sales-demo.f5demos.com) en Chrome
+2. Presione **F12** para abrir DevTools
+3. Vaya a la pestaña **Elements**
+4. Busque `__imp_apg__` o `zeronaught` en el HTML para localizar scripts de instrumentación de CSD
+5. Confirme que una o más etiquetas `<script>` de CSD estén presentes en `<head>` — las rutas exactas de script varían según la implementación
+6. Confirme que los scripts fueron inyectados por el equilibrador de carga (no son parte del código fuente de la aplicación)
+</Steps>
+
+<Screenshot light="/images/csd-injected-scripts-light.png" dark="/images/csd-injected-scripts-dark.png" alt="Scripts inyectados en la pestaña Elements de DevTools" />
+
+Los scripts de instrumentación de CSD son inyectados por el equilibrador de carga F5 XC — no forman parte del código fuente de la aplicación.
+
+<Aside type="caution">
+Si los scripts no están presentes, verifique que el dominio esté configurado y que esté accediendo a la aplicación a través del equilibrador de carga F5 XC (no directamente al origen).
+</Aside>

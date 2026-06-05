@@ -1,0 +1,80 @@
+---
+title: XC 配置
+description: 启用和运行客户端防御所需的 F5 XC 平台配置
+sidebar:
+  order: 2
+  label: XC 配置
+i18n:
+  sourceHash: 1ca5f1c4ac1c
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+import Screenshot from "@f5xc-salesdemos/docs-theme/components/Screenshot.astro";
+
+CSD 已在演示应用程序上启用。本节显示配置屏幕。
+
+## 导航到客户端防御
+
+<Steps>
+1. 登录 **F5 分布式云控制台**
+2. 选择 **客户端防御** 工作区
+3. 将命名空间设置为 **bot-defense**
+4. 导航到 **管理** &rarr; **配置**
+</Steps>
+
+<Screenshot light="/images/csd-config.png" alt="显示域列表的 CSD 配置页面" />
+
+## 域配置
+
+在 CSD 配置页面上添加域会将其注册到 CSD 报告引擎。这定义了 CSD 收集和报告遥测数据的命名空间范围 — 脚本检测、警报通知和缓解操作都汇总到已注册的域下。
+
+演示域 (`botdemo.sales-demo.f5demos.com`) 在此处注册。
+
+<Aside type="note">
+CSD 配置页面**不**控制 JavaScript 注入。注入范围在 HTTP 负载均衡器上配置（见下文）。请勿修改演示域配置 — 以只读模式查看设置。
+</Aside>
+
+## HTTP 负载均衡器方法
+
+HTTP 负载均衡器是配置 JavaScript 注入的位置。这控制 CSD 脚本是否以及在何处插入到通过负载均衡器提供的应用程序页面中。
+
+<Steps>
+1. 导航到 **多云应用连接** &rarr; **HTTP 负载均衡器**
+2. 在为应用程序提供服务的负载均衡器上点击 **&hellip;**（操作）菜单，并选择**管理配置**
+
+   <Screenshot light="/images/csd-lb-config.png" alt="显示演示负载均衡器的 HTTP 负载均衡器列表" />
+3. 滚动到左侧边栏中的 **客户端防御** 部分
+
+   **客户端防御** 字段设置为**启用**，**客户端防御策略** 显示**已配置**。
+
+   <Screenshot light="/images/csd-lb-csd-settings.png" alt="HTTP 负载均衡器配置中的 CSD 切换和设置" />
+4. 点击**查看配置**打开 CSD 策略详情
+
+   **JavaScript 注入设置** 字段显示注入范围。演示负载均衡器设置为**在所有页面中插入 JavaScript**。
+
+   <Screenshot light="/images/csd-lb-injection-scope.png" alt="CSD 子配置中的 JavaScript 注入范围" />
+</Steps>
+
+<Aside type="tip">
+CSD 配置页面（上文）向报告引擎注册域。HTTP 负载均衡器控制脚本注入。两者都必须配置才能使 CSD 端到端正常工作。
+</Aside>
+
+## 验证脚本注入
+
+<Steps>
+1. 在 Chrome 中打开[演示应用程序](https://botdemo.sales-demo.f5demos.com)
+2. 按 **F12** 打开开发者工具
+3. 转到 **Elements** 标签
+4. 在 HTML 中搜索 `__imp_apg__` 或 `zeronaught` 以定位 CSD 工具脚本
+5. 确认一个或多个 CSD `<script>` 标签存在于 `<head>` 中 — 确切的脚本路径因部署而异
+6. 确认脚本由负载均衡器注入（它们不是应用程序源的一部分）
+</Steps>
+
+<Screenshot light="/images/csd-injected-scripts-light.png" dark="/images/csd-injected-scripts-dark.png" alt="开发者工具 Elements 标签中的注入脚本" />
+
+CSD 工具脚本由 F5 XC 负载均衡器注入 — 它们不是应用程序源的一部分。
+
+<Aside type="caution">
+如果脚本不存在，请验证域已配置且您正在通过 F5 XC 负载均衡器访问应用程序（不是直接访问源）。
+</Aside>

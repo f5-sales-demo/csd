@@ -1,0 +1,336 @@
+---
+title: Phase 3 — Mitigate
+description: >-
+  Wenden Sie die CSD-Mitigationsrichtlinie an und überprüfen Sie, ob
+  Angriffverkehr blockiert wird
+sidebar:
+  order: 4
+  label: Phase 3 — Mitigate
+i18n:
+  sourceHash: 5d336f6c3bde
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Phase 3 erstellt einen **Vorher-Nachher-Nachweis** der CSD-Mitigation. Sie führen den Angriff ohne Mitigationen erneut aus, um eine Baseline zu etablieren, wenden Mitigationen an und führen dann denselben Angriff erneut aus, um zu beweisen, dass CSD die Netzwerkaufrufe blockiert. Phase 2 muss abgeschlossen sein — alle DET-Prüfungen BESTANDEN — bevor Sie fortfahren.
+
+<Aside type="note">
+**CSD-Mitigation blockiert das Laden von Skripten von geminderten Domänen.** Wenn sich eine Domäne auf der Mitigationsliste befindet, fängt das CSD-JavaScript `&lt;script&gt;`-Tag-Quell-URLs ab und verhindert das Laden von Skripten — wodurch Supply-Chain-Angriffe an der Quelle gestoppt werden. CSD fängt keine `fetch()`- oder `XMLHttpRequest`-Aufrufe ab. Diese Phase erfasst einen Nachweis der Skriptblockierung, indem derselbe Angriff vor und nach der Mitigation ausgeführt wird.
+</Aside>
+
+<Aside type="caution">
+**Live-Test-Hinweis:** Die Mitigation POST/DELETE-Endpunkte wurden in Entwicklungsumgebungen validiert, aber Verhaltensdetails (Response-Timing, Auswirkung auf den Skripterkennungsstatus) können über Mandantenkonfigurationen variieren. Wenn Sie unerwartete Responses beobachten, konsultieren Sie die [API-Referenz](/csd/api-reference/#mitigated-domains) für die kanonischen Endpoint-Definitionen.
+</Aside>
+
+## Schritt 1: Bestätigen Sie, dass keine aktiven Mitigationen vorhanden sind (Baseline)
+
+Überprüfen Sie vor der Erfassung des „Vorher"-Snapshots, dass die Umgebung sauber ist — es sollten keine Mitigationen aktiv sein. Dies gewährleistet, dass der Baseline-Angriff ohne CSD-Blockierung ausgeführt wird.
+
+### Anzahl der geminderten Domänen überprüfen
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '{count: (.items | length)}'
+```
+
+Wenn die Anzahl **nicht** `0` ist, bleiben Mitigationen aus einem vorherigen Durchlauf bestehen. Löschen Sie jede, bevor Sie fortfahren:
+
+```bash
+# Löschen Sie eine geminerte Domäne (wiederholen Sie für jede Domäne)
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/<domain-name>" \
+  | jq .
+```
+
+Ersetzen Sie `<domain-name>` durch den `metadata.name`, der beim Mindern der Domäne verwendet wurde (z. B. `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io`, `httpbin.org`, `jsonplaceholder.typicode.com`). Wenn das Löschen von `httpbin.org` ein verbleibendes Element hinterlässt, versuchen Sie auch, `www.httpbin.org` zu löschen — einige vorherige Durchläufe haben möglicherweise diesen Namen als Metadatennamen verwendet.
+
+### Bestätigen Sie, dass Phase-2-Erkennungen vorhanden sind
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
+```
+
+### Nachweis
+
+| Überprüfung | Erwartet | Status |
+| --- | --- | --- |
+| Anzahl geminderter Domänen | `0` (saubere Baseline) | BESTANDEN, wenn 0, erfordert Cleanup, wenn > 0 |
+| Anzahl erkannter Domänen | > 0 (Phase-2-Erkennungen vorhanden) | BESTANDEN, wenn > 0 |
+| Exfiltrationdomänen vorhanden | `www.httpbin.org`, `jsonplaceholder.typicode.com` | BESTANDEN, wenn mindestens eine angezeigt wird |
+
+## Schritt 2: Angriff ausführen — vor der Mitigation
+
+Führen Sie die kombinierte Simulation **ohne aktive Mitigationen** erneut aus, um einen frischen Baseline zu erfassen. Dies ist der **„Vorher"-Snapshot** — Beweis, dass Angriffe erfolgreich sind, wenn CSD-Mitigation nicht angewendet wird.
+
+<Aside type="note">
+Dieser Schritt erfordert Browser-seitige JavaScript-Ausführung — `curl` kann CSD-Erkennung nicht auslösen. AI-Assistenten mit Browser-Automatisierungstools (MCP Chrome DevTools, Playwright, Puppeteer) führen diese Schritte direkt mit der unten aufgeführten **AI-automatisierten Ausführungssequenz** aus. Operatoren ohne Browser-Automatisierung führen die manuellen Schritte aus.
+</Aside>
+
+### AI-automatisierte Ausführung
+
+AI-Assistenten mit Browser-Automatisierungstools führen die Angriffssimulation programmgesteuert mit dem gleichen Phase-2-initScript aus (welches natives `fetch` speichert):
+
+1. **Mit initScript navigieren** — navigieren Sie zuerst zu `about:blank`, um einen sauberen Dokumentkontext sicherzustellen (vermeiden Sie veraltete initScripts aus vorherigen Navigationen), dann `navigate_page` zu `http://$F5XC_DOMAINNAME/#/login` mit dem **Phase-2-initScript** (wörtlicher Code in [Phase 2 — AI-automatisierte Ausführung](/csd/demo/phase-2-attack/#ai-automated-execution)). Dieses initScript speichert natives `setInterval`, `clearInterval`, `fetch` und `console.log` — die native `fetch`-Referenz ist hier korrekt, da keine Mitigationen aktiv sind
+2. **Willkommensbanner schließen** — `press_key` mit `Escape`, um das Willkommensbanner zu schließen. Bei nachfolgenden Besuchen wird das Banner möglicherweise nicht angezeigt (Cookies gespeichert). Das Cookie-Zustimmungsdialogfeld wird automatisch durch die Escape-Taste geschlossen
+3. **Auf Fertigstellung warten** — warten Sie 10 Sekunden, bis alle CDN-Skriptlade-/Fehler-Callbacks und fetch-Promise-Lösungen abgeschlossen sind
+4. **Nachweis erfassen** — `list_console_messages`, um auf `[CSD Demo] Simulation complete` und CDN-Ladevorgangsergebnisse zu überprüfen; `list_network_requests` gefiltert nach `script`- und `fetch`-Typen, um HTTP-Statuscodes zu überprüfen (`200`/`201` für Erfolg)
+
+<Aside type="caution">
+**zone.js-Inkompatibilität** — Juice Shop verwendet Angular's zone.js, das `setTimeout`, `setInterval`, `fetch`, `XMLHttpRequest` und andere Browser-APIs patcht. Dies bricht die MCP-Tools `evaluate_script`, `fill` und `click` mit `Cannot read properties of undefined (reading 'call')`. Verwenden Sie stattdessen `navigate_page` mit `initScript` — `initScript` wird ausgeführt, bevor zone.js geladen wird, sodass Sie native API-Referenzen speichern und sie in Polling-Callbacks verwenden können. Das initScript muss Formularfelder mit dem nativen `HTMLInputElement.prototype.value`-Setter (nicht `fill`) ausfüllen und das Erkennungsskript inline ausführen (nicht über `setTimeout`, das zone.js nach dem Seitenladen abfangen kann). Weitere Details finden Sie unter [Trigger Detection — AI-automatisierte Ausführung](/csd/trigger-detection/#ai-automated-execution).
+</Aside>
+
+<Aside type="note">
+**initScript-Ansammlung** — jeder `navigate_page`-Aufruf mit einem `initScript`-Parameter fügt das Skript zu einer persistenten Liste hinzu, die bei jedem nachfolgenden Dokumentladevorgang ausgeführt wird. Um zu vermeiden, dass veraltete Skripte eingreifen, navigieren Sie entweder zwischen Durchläufen zu `about:blank`, oder verwenden Sie `new_page` mit `isolatedContext` für einen sauberen Browser-Kontext.
+</Aside>
+
+### Manuelle Ausführung
+
+Operatoren ohne Browser-Automatisierungstools führen die Simulation manuell mit dem gleichen Verfahren wie [Phase 2 — Schritt 8: Angriffssimulation](/csd/demo/phase-2-attack/#step-8-attack-simulation) aus:
+
+1. Navigieren Sie zu `http://xF5XC_DOMAINNAMEx/#/login`
+2. Geben Sie Dummy-Anmeldeinformationen in den Feldern E-Mail und Passwort ein (nicht absenden)
+3. Öffnen Sie DevTools — drücken Sie **F12** und wechseln Sie zur Registerkarte **Konsole**
+4. Fügen Sie das Combined Detection Script aus [Trigger Detection](/csd/trigger-detection/#run-the-combined-simulation-script) ein und führen Sie es aus
+5. Beobachten Sie die Konsolenausgabe — alle CDN-Skripte sollten geladen werden und Exfiltrationaufrufe sollten mit `200`/`201`-Responses erfolgreich sein
+
+### Nachweis — vor der Mitigation
+
+| Überprüfung | Erwartet (vor Mitigation) | Status |
+| --- | --- | --- |
+| CDN-Skripte injiziert | Alle 4 Script-Tags laden — `[Supply Chain] Loaded from`-Meldungen erscheinen, Netzwerk-Tab zeigt `200` | BESTANDEN |
+| Exfiltrations-Fetch zu `www.httpbin.org` | Netzwerk-Tab zeigt `200` — Daten gesendet | BESTANDEN |
+| Exfiltrations-Fetch zu jsonplaceholder.typicode.com | Netzwerk-Tab zeigt `201` — Daten gesendet | BESTANDEN |
+| Konsolenausgabe | `[CSD Demo] Simulation complete` | BESTANDEN |
+
+<Aside type="note">
+**Überprüfung mit Netzwerkanfragen:** Der zuverlässigste Nachweis ist die **Netzwerk-Registerkarte** (oder `list_network_requests` für AI-Assistenten), nicht Konsolen-Callbacks. Zone.js in Juice Shop kann Promise `.then()`-Callbacks und Skript-`onload`-Handler unterbrechen, was dazu führen kann, dass Konsolenmeldungen unvollständig sind, selbst wenn Netzwerkanfragen erfolgreich sind. Vergleichen Sie immer die Konsolenausgabe mit Netzwerkanfrage-Statuscodes.
+</Aside>
+
+<Aside type="tip">
+Dies ist der Baseline-Nachweis: Ohne aktive Mitigationen laden die Angreiffer-Skripte frei und die Datenexfiltration ist erfolgreich. Speichern oder erstellen Sie einen Screenshot dieses Nachweises — Sie werden ihn in Schritt 5 direkt mit den „Nachher"-Ergebnissen vergleichen.
+</Aside>
+
+## Schritt 3: Mitigationen anwenden
+
+Senden Sie für jede erkannte Domäne einen POST an den Endpunkt der geminderten Domänen. Die primären Ziele aus der Phase-2-Simulation sind die 4 CDN-Injektionsdomänen und alle erkannten Datenexfiltrationdomänen.
+
+**Primäre Mitigationsziele** (aus dem Combined Simulation Script):
+
+| Domäne | Rolle |
+| --- | --- |
+| `cdn.jsdelivr.net` | CDN-Skript-Injektion |
+| `esm.sh` | CDN-Skript-Injektion |
+| `unpkg.com` | CDN-Skript-Injektion |
+| `ga.jspm.io` | CDN-Skript-Injektion |
+| `www.httpbin.org` | Datenexfiltrations-Endpunkt |
+| `jsonplaceholder.typicode.com` | Datenexfiltrations-Endpunkt |
+
+<Aside type="note">
+Der POST-Body erfordert **sowohl** `metadata.name` (der Bezeichner für das Objekt) als auch `spec.mitigated_domain` (die Domänen-Zeichenfolge, die CSD klassifiziert). Beide müssen gesetzt sein — `spec: {}` verursacht einen `400`-Fehler. Bei den meisten Domänen verwenden beide Felder denselben Wert (z. B. `cdn.jsdelivr.net`). Siehe die Ausnahme `httpbin.org` unten.
+</Aside>
+
+**Mindert eine Domäne** (einmal pro Domäne ausführen):
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "cdn.jsdelivr.net",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "mitigated_domain": "cdn.jsdelivr.net"
+    }
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+```
+
+Wiederholen Sie für jede Domäne:
+
+```bash
+# esm.sh
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"esm.sh","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"esm.sh"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# unpkg.com
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"unpkg.com","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"unpkg.com"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# ga.jspm.io
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"ga.jspm.io","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"ga.jspm.io"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# httpbin.org — www.httpbin.org als mitigated_domain verwenden (siehe Hinweis unten)
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"httpbin.org","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"www.httpbin.org"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# jsonplaceholder.typicode.com
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"jsonplaceholder.typicode.com","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"jsonplaceholder.typicode.com"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+```
+
+<Aside type="note">
+**`httpbin.org` eTLD+1-Einschränkung:** Die API lehnt nackte eTLD+1-Domänen als `mitigated_domain`-Werte mit `"Invalid root domain: cannot derive eTLD+1"` ab. Verwenden Sie `www.httpbin.org` als den `spec.mitigated_domain`-Wert, während Sie `httpbin.org` als `metadata.name` beibehalten. Die Mitigation wird korrekt angewendet — der `name`-Bezeichner ist das, was in der geminderten Domänenliste angezeigt wird. Jede nackte Domäne (keine Subdomain), die in einem benutzerdefinierten Simulationsskript als Exfiltrationsziel verwendet wird, weist die gleiche Einschränkung auf.
+</Aside>
+
+Eine `200`-Response gibt das erstellte geminerte Domänenobjekt zurück. Eine `409`-Response bedeutet, dass die Domäne bereits auf der Mitigationsliste vorhanden ist — dies ist eine Erfolgsbedingung.
+
+## Schritt 4: Überprüfen Sie, dass Mitigationen angewendet wurden
+
+Listen Sie alle geminderten Domänen auf und bestätigen Sie, dass die Anzahl mit der Anzahl der gerade eingereichten Domänen übereinstimmt:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '{count: (.items | length)}'
+```
+
+<Aside type="note">
+Der Listenendpunkt für geminerte Domänen gibt Elemente mit null `metadata.name` für ALLE Elemente zurück — einzelne Domänennamen sind in der Listenresponse nicht sichtbar. Überprüfen Sie, indem Sie überprüfen, dass die Elementanzahl mit der Anzahl der eingereichten POST-Anfragen übereinstimmt (6 für die Standard-Simulation). Die `200`-Response aus jedem einzelnen POST in Schritt 3 ist der autoritative Nachweis, dass jede Mitigation erstellt wurde. Wenn die Anzahl 1 ist, mit einem Element ohne Namen und keine Mitigationen wurden angewendet, behandeln Sie die Anzahl als 0 — dies ist ein Backend-Artefakt (siehe [Pre-flight Check](/csd/demo/#pre-flight-check) für die Entscheidungsregel).
+</Aside>
+
+### Nachweis
+
+| Überprüfung | Erwartet | Status |
+| --- | --- | --- |
+| Anzahl geminderter Domänen | 6 (entspricht POST-Anzahl) | BESTANDEN, wenn die Anzahl übereinstimmt |
+| Alle Schritt-3-POSTs gaben `200` oder `409` zurück | Jede Domäne akzeptiert | BESTANDEN |
+
+Wenn die Anzahl niedriger als erwartet ist, führen Sie den POST-Befehl für die fehlende Domäne aus Schritt 3 erneut aus.
+
+## Schritt 5: Angriff ausführen — nach der Mitigation
+
+Führen Sie **genau die gleiche** kombinierte Simulation aus, um den **„Nachher"-Snapshot** zu erfassen. Das Simulationsskript ist identisch — nur der Mitigationszustand von CSD hat sich geändert. Skriptladevorgänge von geminderten Domänen werden jetzt durch das CSD-JavaScript blockiert (die `&lt;script&gt;`-Tag `src` wird zu einer leeren Zeichenfolge geleert).
+
+<Aside type="note">
+Dieser Schritt verwendet die gleiche Browser-Automatisierungssequenz wie Schritt 2. Der Unterschied liegt nicht darin, was Sie ausführen — es liegt in dem, was Sie beobachten. Mit aktiven Mitigationen blockiert CSD `&lt;script&gt;`-Tag-Ladevorgänge von geminderten Domänen. Fetch-API-Aufrufe zu geminderten Exfiltrationdomänen werden weiterhin abgeschlossen — CSD-Mitigation zielt auf das Laden von Skripten ab, nicht auf fetch/XHR.
+</Aside>
+
+### AI-automatisierte Ausführung
+
+AI-Assistenten mit Browser-Automatisierungstools führen die Angriffssimulation programmgesteuert mit dem **gleichen Phase-2-initScript** (wörtlicher Code in [Phase 2 — AI-automatisierte Ausführung](/csd/demo/phase-2-attack/#ai-automated-execution)) erneut aus. Das initScript speichert natives `fetch`, um zone.js-Fehler zu vermeiden — dies beeinträchtigt die CSD-Mitigation nicht, da CSD `fetch()`-Aufrufe nicht abfängt.
+
+1. **Mit initScript navigieren** — verwenden Sie `new_page` mit `isolatedContext` für einen sauberen Browser-Kontext (vermeiden Sie veraltete initScripts aus Schritt 2), navigieren Sie dann zu `about:blank`, dann zur Login-Seite mit dem **Phase-2-initScript**
+2. **Willkommensbanner schließen** — `press_key` mit `Escape`
+3. **Auf Fertigstellung warten** — warten Sie 10 Sekunden auf alle asynchronen Callbacks
+4. **Nachweis erfassen** — `list_console_messages`, um auf `[CSD Demo] Simulation complete` zu überprüfen; `list_network_requests` gefiltert nach `script`- und `fetch`-Typen, um zu beobachten, dass CDN-Skriptladevorgänge **nicht vorhanden sind** (CSD hat die Skript-src gelöscht), während Fetch-Aufrufe zu Exfiltrationdomänen weiterhin normal ablaufen
+
+### Manuelle Ausführung
+
+Operatoren ohne Browser-Automatisierungstools führen die Simulation manuell mit dem gleichen Verfahren wie [Phase 2 — Schritt 8: Angriffssimulation](/csd/demo/phase-2-attack/#step-8-attack-simulation) erneut aus:
+
+1. Navigieren Sie zu `http://xF5XC_DOMAINNAMEx/#/login`
+2. Geben Sie Dummy-Anmeldeinformationen in den Feldern E-Mail und Passwort ein (nicht absenden)
+3. Öffnen Sie DevTools — drücken Sie **F12** und wechseln Sie zur Registerkarte **Konsole**
+4. Fügen Sie das Combined Detection Script aus [Trigger Detection](/csd/trigger-detection/#run-the-combined-simulation-script) ein und führen Sie es aus
+5. Beobachten Sie die Konsole und Netzwerkausgabe — CDN-Skript-`onload`- und `onerror`-Callbacks werden nicht für geminerte Domänen ausgelöst (CSD hat die Skript-`src` zu einer leeren Zeichenfolge geleert, was die Netzwerkanfrage vollständig verhindert). Fetch-Aufrufe zu Exfiltrationdomänen (www.httpbin.org, jsonplaceholder.typicode.com) **werden immer noch abgeschlossen** mit `200`/`201` — CSD-Mitigation blockiert das Laden von Skripten, nicht fetch/XHR-Aufrufe
+
+<Aside type="caution" title="Mitigations-Propagierungstiming">
+Das CSD-JavaScript soll das Laden von Skripten aus geminderten Domänen blockieren, indem es den `&lt;script&gt;`-Tag-`src`-Setter abfängt. Bei Tests über HTTP (Port 80) wurde das Leeren von Skript-`src` jedoch nicht innerhalb von 5 Minuten nach der Anwendung von Mitigationen beobachtet — alle CDN-Skripte wurden weiterhin normal geladen. Dies kann darauf hinweisen, dass die Mitigationspropagierung mehr als 5 Minuten dauert, oder dass der Mechanismus über HTTP im Vergleich zu HTTPS unterschiedlich verhält. Wenn die Mitigationsblockierung nicht beobachtet wird, lassen Sie zusätzliche Propagierungszeit zu und überprüfen Sie, dass das CSD-Telemetrieskript seine Konfiguration aktualisiert hat.
+
+**Fetch-Aufrufe werden von CSD-Mitigation nicht abgefangen** (verifiziert). Exfiltrations-Fetch-Aufrufe zu geminderten Domänen (www.httpbin.org, jsonplaceholder.typicode.com) werden vor und nach der Mitigation weiterhin normal mit `200`/`201`-Responses abgeschlossen. CSD-Mitigation zielt auf den Supply-Chain-Vektor (bösartiges Skriptladen) ab, nicht auf Datenexfiltration über fetch/XHR. Verwenden Sie das gleiche Phase-2-initScript (mit gespeichertem natives `fetch`) für Schritt 2 und Schritt 5.
+</Aside>
+
+### Nachweis — nach der Mitigation
+
+| Überprüfung | Erwartet (nach Mitigation) | Status |
+| --- | --- | --- |
+| CDN-Skript-Ladevorgänge | **Blockiert** — Skripte werden nicht in der Netzwerk-Registerkarte angezeigt (CSD hat `src` zu einer leeren Zeichenfolge geleert) | BESTANDEN |
+| CDN-Skript-Callbacks | Weder `onload` noch `onerror` wird für geminerte Domänen ausgelöst | BESTANDEN |
+| Exfiltrations-Fetch zu `www.httpbin.org` | `200` — Fetch wird weiterhin abgeschlossen (CSD fängt fetch nicht ab) | INFO |
+| Exfiltrations-Fetch zu jsonplaceholder.typicode.com | `201` — Fetch wird weiterhin abgeschlossen (CSD fängt fetch nicht ab) | INFO |
+| Konsolenausgabe | `[CSD Demo] Simulation complete` | BESTANDEN |
+
+<Aside type="tip">
+**Backend-Überprüfung ist der zuverlässigste Nachweis.** Wenn die browserbare Skriptblockierung nicht innerhalb des Demo-Zeitrahmens beobachtet wird, verwenden Sie die `geheime Detected_domains`-API-Response als primären Nachweis. Die `mitigatedDomains`-Anzahl und die reduzierte `actionNeededCount` in der Domänenzusammenfassung bestätigen, dass Mitigationen im Backend aktiv sind — selbst wenn das CSD-JavaScript im Browser seine Konfiguration zur Durchsetzung der Blockierung noch nicht aktualisiert hat.
+</Aside>
+
+## Schritt 6: Vorher- vs. Nachher-Vergleich
+
+Dies ist die Demo-Auszahlung — Nebeneinanderstellung von Beweisen, die zeigen, dass derselbe Angriff auf der gleichen Seite mit dem gleichen Skript jetzt ein völlig anderes Ergebnis erzeugt.
+
+### Vergleichstabelle
+
+| Signal | Vor Mitigation (Schritt 2) | Nach Mitigation (Schritt 5) |
+| --- | --- | --- |
+| CDN-Skript-Ladevorgänge | `200` — alle 4 CDN-Skripte werden normal geladen | **Blockiert** — Skripte fehlen in der Netzwerk-Registerkarte (CSD hat `src` zu einer leeren Zeichenfolge geleert) |
+| CDN-`onload`-Callbacks | `[Supply Chain] Loaded from`-Meldungen erscheinen | Es werden keine Callbacks ausgelöst (keine Netzwerkanfrage wurde gestellt) |
+| Exfiltration zu `www.httpbin.org` | `200` — Daten exfiltriert | `200` — Fetch wird weiterhin abgeschlossen (CSD fängt fetch nicht ab) |
+| Exfiltration zu jsonplaceholder.typicode.com | `201` — Daten exfiltriert | `201` — Fetch wird weiterhin abgeschlossen (CSD fängt fetch nicht ab) |
+| CSD-geminerte-Domänen-API | 0 geminiert | 6 geminiert |
+
+### Mitigationen in Backend-Daten überprüfen
+
+Fragen Sie `/detected_domains` alle 60 Sekunden bis zu 10 Iterationen (10 Minuten) lang ab. Fahren Sie mit der Vergleichstabelle fort, sobald die Abfrage eine Response zurückgibt, oder nach dem 10-Minuten-Maximum — diese Prüfungen sind informativ und blockieren nicht Phase 4.
+
+**Erkannte Domänen nach Mitigation überprüfen:**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
+```
+
+**Skripte auf Mitigationsstatus überprüfen:**
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 86400 ))
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq '{total: (.scripts | length), scripts: [.scripts[]? | {script_name: .script_name, risk_level: .risk_level}]}'
+```
+
+### Zusammenfassung des Phase-3-Nachweises
+
+| Überprüfung | Erwartet | Status |
+| --- | --- | --- |
+| Baseline sauber (Schritt 1) | 0 geminerte Domänen am Anfang | BESTANDEN / NICHT BESTANDEN |
+| Vorher — Angriff erfolgreich (Schritt 2) | Skripte geladen, Exfiltration gibt 200/201 zurück | BESTANDEN / NICHT BESTANDEN |
+| Mitigationen angewendet (Schritt 3) | Alle 6 Domänen akzeptiert via POST (200 oder 409) | BESTANDEN / NICHT BESTANDEN |
+| Geminerte Anzahl bestätigt (Schritt 4) | 6 Elemente in Liste | BESTANDEN / NICHT BESTANDEN |
+| Nachher — Skriptladevorgänge blockiert (Schritt 5) | CDN-Skripte fehlen in Netzwerk-Registerkarte, Fetch-Aufrufe werden weiterhin abgeschlossen | BESTANDEN / NICHT BESTANDEN |
+| Vorher- vs. Nachher-Vergleich (Schritt 6) | Klarer Unterschied zwischen Schritt-2- und Schritt-5-Beweisen | BESTANDEN / NICHT BESTANDEN |
+
+<Aside type="note">
+Erkennungsstatusaktualisierungen nach der Mitigation können in der API-Response Zeit zum Erscheinen brauchen. Wenn die Domänen unmittelbar nach der Mitigation immer noch „Maßnahme erforderlich" anzeigen, fragen Sie `/detected_domains` alle 60 Sekunden bis zu 10 Iterationen (10 Minuten) lang ab. Wenn immer noch nicht aktualisiert nach 10 Iterationen, notieren Sie den aktuellen Zustand als INFO — dies blockiert Phase 4 nicht.
+</Aside>
+
+---
+
+**Phase 3 abgeschlossen.** Fahren Sie mit [Phase 4 — Teardown](/csd/demo/phase-4-teardown/) fort, wenn Sie bereit sind, alle Bereitstellungsobjekte zu entfernen.

@@ -1,0 +1,1241 @@
+---
+title: 诊断和验证
+description: CSD 部署的健康检查、连接测试和验证程序
+sidebar:
+  order: 8
+  label: 诊断和验证
+i18n:
+  sourceHash: 754ac3ee6525
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+本页提供了一个**分层 UAT 验证矩阵**，用于端到端验证您的客户端防护 (Client-Side Defense, CSD) 部署。每个测试用例都遵循基础设施依赖链 — 从 DNS 解析到 CSD 遥测 — 因此您可以系统地证明每个组件都正常工作。
+
+这些命令是[CSD 控制台演练](/csd/csd-console/)的**API 等价物** — 当您需要从终端进行验证、自动化监控或在不使用 UI 的情况下演示 CSD 功能时使用这些命令。
+
+## 先决条件
+
+如 [API 自动化 — 环境设置](/csd/demo/#environment-setup)中所述设置您的环境变量：
+
+```bash
+set -a && source .env && set +a
+```
+
+以下所有命令都使用 `xTOKENx` 占位符格式。使用您的环境变量（`$F5XC_API_TOKEN`、`$F5XC_NAMESPACE` 等）替换或使用页面顶部的交互式表单。
+
+## API 行为说明
+
+<Aside type="note">
+**PUT 和 DELETE 在 HTTP 200 时返回空的 `\{\}`** — 这是预期的成功响应，不是错误。只有 **POST** 返回创建的对象。**列表端点**（例如 `/healthchecks`）和**单个 GET 端点**（例如 `/healthchecks/\{name\}`）返回不同的响应结构 — 请参阅 [API 参考 — API 约定](/csd/api-reference/#api-conventions)了解每个的正确 `jq` 路径。
+</Aside>
+
+## 时间范围助手
+
+许多 CSD 端点需要 epoch 时间戳（自 Unix 纪元以来的秒数）。这些单行命令为常见范围计算开始/结束时间。
+
+**跨平台**（macOS + Linux）：
+
+```bash
+# 当前时间作为 epoch 秒数
+NOW=$(date +%s)
+
+# 1 小时前
+START_1H=$(( NOW - 3600 ))
+
+# 24 小时前
+START_24H=$(( NOW - 86400 ))
+
+# 7 天前
+START_7D=$(( NOW - 604800 ))
+
+# 30 天前
+START_30D=$(( NOW - 2592000 ))
+```
+
+| 预设 | 秒数 | Shell 表达式 |
+| --- | --- | --- |
+| 1 小时 | 3,600 | `$(( $(date +%s) - 3600 ))` |
+| 24 小时 | 86,400 | `$(( $(date +%s) - 86400 ))` |
+| 7 天 | 604,800 | `$(( $(date +%s) - 604800 ))` |
+| 30 天 | 2,592,000 | `$(( $(date +%s) - 2592000 ))` |
+
+<Aside type="note">
+CSD 端点（`/api/shape/csd/`）使用 **epoch 秒数**（例如 `1710000000`）。访问日志端点（`/api/data/`）使用 **ISO 8601** 时间戳（例如 `2024-03-10T00:00:00Z`）。每个部分中的命令为该端点使用正确的格式。
+</Aside>
+
+## 测试用例格式
+
+以下每个测试都遵循此结构：
+
+| 字段 | 说明 |
+| --- | --- |
+| **测试 ID** | 层数 + 顺序 ID（例如 DNS-1, TLS-2） |
+| **它证明了什么** | 正在验证的特定基础设施事实 |
+| **命令** | 准备好运行的 `curl` 或 `dig` 命令 |
+| **通过 / 失败** | 健康状态 vs 不健康状态的预期输出 |
+| **修复** | 相关设置或故障排除部分的链接 |
+
+---
+
+## 第 1 层：DNS 解析
+
+DNS 是基础 — 如果域不解析到负载均衡器 VIP，其他一切都无法工作。
+
+### DNS-1：A 记录解析
+
+**它证明了什么：** 域解析到负载均衡器 VIP IP 地址。
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — 返回 VIP IP（例如 `72.19.3.185`） | 域解析到 LB 虚拟 IP |
+| **失败** — 空响应 | DNS A 记录未配置 |
+
+**修复：** [API 自动化 — 步骤 4：配置 DNS](/csd/demo/phase-1-build/#step-4-configure-dns)
+
+<Aside type="tip">
+**负面 DNS 缓存：** 如果域之前返回 `NXDOMAIN`，递归解析器可能会缓存该结果。针对权威命名服务器验证以排除过时缓存：`dig +short xF5XC_DOMAINNAMEx A @ns1.f5clouddns.com` 或使用公共解析器如 `@8.8.8.8`。
+</Aside>
+
+### DNS-2：ACME 质询记录
+
+**它证明了什么：** ACME 质询记录存在用于自动 TLS 证书配置。
+
+```bash
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx TXT
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — CNAME 指向 `*.autocerts.ves.volterra.io.`（外部 DNS） | ACME 质询 CNAME 已就位 |
+| **通过** — TXT 记录带域值（F5 分布式云 (F5 XC) 托管 DNS） | 通过 TXT 记录进行平台托管的 ACME 质询 |
+| **失败** — 两者都为空 | 未配置 ACME 记录；证书将保持在 `PreDomainChallengePending` |
+
+<Aside type="note">
+使用启用了 `allow_http_lb_managed_records` 的 F5 XC 托管 DNS 时，平台会自动创建一条**TXT** 记录（不是 CNAME）在 `x-ves-io-managed` RR 集组中。这种基于 TXT 的 ACME 验证在内部处理。使用外部 DNS 时，您必须手动创建指向 `*.autocerts.ves.volterra.io` 的 CNAME。
+</Aside>
+
+**修复：** 对于外部 DNS，创建 CNAME：`_acme-challenge.xF5XC_DOMAINNAMEx` → `*.autocerts.ves.volterra.io`。对于 F5 XC 托管 DNS，在 DNS 区域上启用 `allow_http_lb_managed_records` — 请参阅 [DNS-4](#dns-4-f5-xc-managed-records-enabled)。请参阅 [API 自动化 — 步骤 4](/csd/demo/phase-1-build/#step-4-configure-dns)。
+
+### DNS-3：命名服务器权限
+
+**它证明了什么：** F5 XC 是否为根域的权威 DNS 提供商。
+
+```bash
+dig +short NS xF5XC_ROOT_DOMAINx
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| 包括 `ns1.f5clouddns.com` 和 `ns2.f5clouddns.com` | F5 XC 托管 DNS — 记录可以自动创建 |
+| 其他命名服务器 | 外部 DNS — 记录必须手动创建 |
+
+**修复：** [API 自动化 — 检测 DNS 权限](/csd/demo/phase-1-build/#detect-dns-authority)
+
+### DNS-4：F5 XC 托管记录已启用
+
+**它证明了什么：** F5 XC DNS 区域允许负载均衡器自动创建记录（仅限 F5 XC 托管 DNS）。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq '.spec.primary.allow_http_lb_managed_records'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — `true` | 平台将自动为 LB 创建 A 和 ACME 记录 |
+| **失败** — `false` 或 `null` | 托管记录已禁用；通过区域更新启用 |
+
+<Aside type="caution">
+当使用 F5 XC 托管 DNS 时，`false` 结果是一个常见的错误配置。如果未启用托管记录，平台无法自动创建 A 记录（指向 VIP）或 ACME 质询 CNAME（TLS 证书配置所需）。这会导致负载均衡器卡在 `VIRTUAL_HOST_PENDING_A_RECORD`，证书卡在 `PreDomainChallengePending`。在 DNS 区域上启用托管记录或手动创建记录。
+</Aside>
+
+**修复：** [API 自动化 — 选项 A：F5 XC 托管 DNS](/csd/demo/phase-1-build/#option-a-f5-xc-managed-dns)
+
+---
+
+## 第 2 层：TLS 证书
+
+DNS 解析后，负载均衡器必须具有有效的 TLS 证书。
+
+### TLS-1：证书状态
+
+<Aside type="note">
+**此测试仅适用于 HTTPS LB (`${F5XC_LB_NAME}-https`)。** HTTP LB 没有证书。在演示环境中，TLS-1 是信息性的 — 如果显示 `AutoCertDomainRateLimited`，演示将使用 HTTP LB 的 `http://` URL 正常进行。
+</Aside>
+
+**它证明了什么：** 自动 TLS 证书已在 HTTPS LB 上颁发。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '.spec.cert_state'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — `"CertificateValid"` 或 `"AutoCertRenewing"` | 证书有效且活跃 |
+| **警告** — `"DomainChallengePending"` 或 `"DomainChallengeStarted"` | ACME 质询进行中 — 等待 5–10 分钟 |
+| **信息** — `"AutoCertDomainRateLimited"` | Let's Encrypt 速率限制命中 — 演示环境预期，不影响 HTTP LB |
+| **失败** — `"PreDomainChallengePending"` | ACME 质询记录缺失 — 请参阅 [DNS-2](#dns-2-acme-challenge-record) |
+
+**修复：** 确保 ACME 质询记录已就位（外部 DNS 的 CNAME，或为 F5 XC DNS 启用托管记录）。证书配置后需要 **5–10 分钟**。如果超过 15 分钟仍未解决，请参阅[证书卡住 — 清理重建](/csd/demo/#certificate-stuck--clean-recreation-optional)。如果速率受限，HTTP LB 不受影响。
+
+### TLS-2：证书详情
+
+**它证明了什么：** 证书涵盖预期的域并显示过期信息。仅适用于 HTTPS LB。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{
+    cert_state: .spec.cert_state,
+    auto_cert_info: .spec.auto_cert_info
+  }'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — `auto_cert_info` 包含 `dns_records` 和证书元数据 | 证书配置详情可用 |
+| **失败** — `auto_cert_info` 为 `null` 或为空 | 证书尚未配置 |
+
+### TLS-3：实时 TLS 握手
+
+**它证明了什么：** TLS 证书有效且握手从客户端完成。仅适用于 HTTPS LB 具有有效证书时。
+
+<Aside type="note">
+在演示环境中，使用 `curl http://xF5XC_DOMAINNAMEx/`（HTTP，而非 HTTPS）作为主要验证路径。TLS 握手测试是可选的 — 仅当 HTTPS LB 证书为 `CertificateValid` 时才有效。
+</Aside>
+
+```bash
+curl -sv "https://xF5XC_DOMAINNAMEx/" 2>&1 \
+  | grep -E 'SSL connection|subject:|expire date:|issuer:'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — 显示 `SSL connection using TLSv1.3`、有效的主体和过期日期 | 端到端 TLS 正常工作 |
+| **失败** — 连接被拒绝或证书错误 | 检查 DNS 解析和证书状态；如果速率受限，改用 HTTP |
+
+### TLS-4：来自 LB 的 ACME 记录目标
+
+**它证明了什么：** HTTPS 负载均衡器报告用于证书验证的正确 ACME 目标。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{
+    vip_ip: .spec.dns_info[0].ip_address,
+    acme_target: .spec.auto_cert_info.dns_records
+  }'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — `vip_ip` 和 `acme_target` 已填充 | DNS 记录可以针对这些值进行验证 |
+| **失败** — `null` 值 | LB 可能未配置 `https_auto_cert` |
+
+---
+
+## 第 3 层：HTTP 负载均衡器
+
+负载均衡器必须处于就绪状态并正确配置。
+
+### LB-1：运行状态
+
+**它证明了什么：** HTTP 负载均衡器（主要）完全运行且接受流量。
+
+<Aside type="note">
+**HTTP LB 是主要验证目标。** 在演示环境中，首先检查 HTTP LB（`${F5XC_LB_NAME}-http`）— 一旦 DNS 解析，它就会达到 `VIRTUAL_HOST_READY`，无证书依赖。使用 `curl http://xF5XC_DOMAINNAMEx/` 进行主要的基于 HTTP 的验证。
+</Aside>
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '.spec.state'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — `"VIRTUAL_HOST_READY"` | LB 正常运行 |
+| **失败** — `"VIRTUAL_HOST_PENDING_A_RECORD"` | DNS A 记录未配置 — 请参阅 [DNS-1](#dns-1-a-record-resolution) |
+
+**修复：** [LB 卡在 VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record)
+
+### LB-2：域配置
+
+**它证明了什么：** HTTP 负载均衡器为正确的域配置。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '.spec.domains'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — 数组包含您的 FQDN（例如 `["app.example.com"]`） | LB 为预期域配置 |
+| **失败** — 缺失或错误的域 | 使用正确的域更新 LB 规范 |
+
+### LB-3：在 LB 上启用 CSD
+
+**它证明了什么：** 客户端防护在负载均衡器上启用，使用正确的 JS 注入策略。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{
+    csd_enabled: (if .spec.client_side_defense then true else false end),
+    js_policy: .spec.client_side_defense.policy
+  }'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — `csd_enabled: true`，策略中有 `js_insert_all_pages` | CSD 活跃，在所有页面上进行 JS 注入 |
+| **失败** — `csd_enabled: false` | LB 未配置 CSD |
+
+**修复：** [API 参考 — 在负载均衡器上启用 CSD](/csd/api-reference/#enable-csd-on-a-load-balancer)
+
+### LB-4：默认路由池
+
+**它证明了什么：** 负载均衡器引用正确的源池，具有预期的权重和优先级。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '.spec.default_route_pools[] | {
+    pool: .pool.name,
+    namespace: .pool.namespace,
+    weight: .weight,
+    priority: .priority
+  }'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — 显示您的源池名称，包括权重/优先级 | LB 正在路由到正确的后端 |
+| **失败** — 为空或错误池 | 更新 LB `default_route_pools` 配置 |
+
+### LB-5：部署状态（按站点条件）
+
+**它证明了什么：** 负载均衡器已部署并跨所有站点报告健康条件。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{
+    state: .spec.state,
+    dns_info: .spec.dns_info,
+    host_name: .spec.host_name
+  }'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — `state` 为 `VIRTUAL_HOST_READY`，`dns_info` 已填充 | LB 完全部署，分配了 VIP |
+| **失败** — 待决状态或空的 `dns_info` | DNS 或证书问题阻止部署 |
+
+<Aside type="tip">
+当 LB 不处于 `VIRTUAL_HOST_READY` 状态时，检查 `.status[].virtual_host_status.error_description` 了解 F5 XC 控制台 UI 中显示的相同错误详情：
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '[.status[]? | select(.virtual_host_status != null) | .virtual_host_status | {state, error_description, suggested_action}]'
+```
+</Aside>
+
+### LB-6：完整 LB 摘要
+
+**它证明了什么：** 两个 LB 配置的综合快照以用于调试。
+
+**HTTP LB（主要）：**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{
+    name: .metadata.name,
+    state: .spec.state,
+    domains: .spec.domains,
+    csd_enabled: (if .spec.client_side_defense then true else false end),
+    route_pools: [.spec.default_route_pools[] | .pool.name],
+    advertise: (if .spec.advertise_on_public_default_vip then "public_default_vip" else "custom" end)
+  }'
+```
+
+**HTTPS LB（辅助 — 包括证书状态）：**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{
+    name: .metadata.name,
+    state: .spec.state,
+    cert_state: .spec.cert_state,
+    domains: .spec.domains,
+    csd_enabled: (if .spec.client_side_defense then true else false end),
+    route_pools: [.spec.default_route_pools[] | .pool.name]
+  }'
+```
+
+---
+
+## 第 4 层：源池
+
+源池定义负载均衡器路由流量的后端服务器。
+
+### OP-1：源池配置
+
+**它证明了什么：** 源池存在，具有正确的后端服务器、端口和负载均衡算法。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '{
+    name: .metadata.name,
+    origin_servers: [.spec.origin_servers[] | {
+      ip: .public_ip.ip,
+      labels: .labels
+    }],
+    port: .spec.port,
+    lb_algorithm: .spec.loadbalancer_algorithm,
+    endpoint_selection: .spec.endpoint_selection
+  }'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — 显示正确的 IP、端口和算法 | 源池配置正确 |
+| **失败** — `404` 或错误的值 | 源池缺失或配置错误 |
+
+**修复：** [API 自动化 — 步骤 2：创建源池](/csd/demo/phase-1-build/#step-2-create-origin-pool)
+
+### OP-2：到源的 TLS
+
+**它证明了什么：** 是否为 LB 与源服务器之间的连接配置了 TLS。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '{
+    tls_config: (if .spec.no_tls then "no_tls (plaintext)" elif .spec.use_tls then "use_tls (encrypted)" else "unknown" end)
+  }'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| `no_tls (plaintext)` | LB 通过 HTTP 连接到源（Juice Shop 演示预期） |
+| `use_tls (encrypted)` | LB 通过 HTTPS 连接到源 |
+
+### OP-3：健康检查关联
+
+**它证明了什么：** 源池已链接正确的健康检查（如适用）。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '.spec.healthcheck'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — 健康检查引用数组（名称、命名空间、类型） | 健康检查已链接 |
+| **正常** — 空数组 `[]` | 无健康检查（可接受 — CSD 不需要） |
+| **失败** — 预期健康检查但数组为空 | 创建时未找到健康检查 — 请参阅[健康检查未链接到源池](/csd/demo/#healthcheck-not-linked-to-origin-pool) |
+
+### OP-4：源连接性
+
+**它证明了什么：** 源服务器从客户端可到达（不测试 LB 到源路径）。
+
+```bash
+curl -s -o /dev/null -w '%{http_code}' \
+  "http://xF5XC_ORIGIN_IPx:xF5XC_ORIGIN_PORTx/"
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — `200`（或其他有效的 HTTP 代码） | 源服务器响应 |
+| **失败** — `000` 或连接被拒绝 | 此网络中源服务器不可到达 |
+
+<Aside type="note">
+这测试直接的客户端到源连接性。LB 到源路径可能使用不同的网络路径。这里的失败不一定意味着 LB 无法到达源。
+</Aside>
+
+---
+
+## 第 5 层：健康检查
+
+健康检查监控后端可用性。对 CSD 是可选的，但对生产部署有用。
+
+### HC-1：健康检查配置
+
+**它证明了什么：** 健康检查存在，具有正确的类型、路径、时序和阈值。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx" \
+  | jq '{
+    name: .metadata.name,
+    type: (if .spec.http_health_check then "HTTP" elif .spec.tcp_health_check then "TCP" else "unknown" end),
+    path: .spec.http_health_check.path,
+    expected_status: .spec.http_health_check.expected_status_codes,
+    timeout: .spec.timeout,
+    interval: .spec.interval,
+    unhealthy_threshold: .spec.unhealthy_threshold,
+    healthy_threshold: .spec.healthy_threshold
+  }'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — 显示 HTTP 类型，路径 `/` 和预期 `200` | 健康检查配置正确 |
+| **失败** — `404` 响应 | 健康检查不存在（可能已被跳过 — 请参阅[第 1 阶段步骤 1](/csd/demo/phase-1-build/#step-1-create-healthcheck-optional)） |
+
+### HC-2：列出所有健康检查
+
+**它证明了什么：** 列举命名空间中的所有健康检查，验证命名和计数。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks" \
+  | jq -r '
+    ["NAME", "NAMESPACE", "DESCRIPTION"],
+    (.items[] | [
+      .name,
+      .namespace,
+      (.description | if length == 0 then "—" else . end)
+    ])
+    | @tsv' | column -t
+```
+
+<Aside type="note">
+列表端点仅返回摘要数据（名称、命名空间、描述）。要查看完整的配置详情（类型、路径、间隔、超时），使用 [HC-1](#hc-1-healthcheck-configuration) 查询单个健康检查。
+</Aside>
+
+---
+
+## 第 6 层：CSD 配置
+
+CSD 必须在租户级别启用，并配置 JavaScript 注入标记。
+
+### CSD-1：租户 CSD 状态
+
+**它证明了什么：** CSD 为租户配置和启用。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq '{isConfigured, isEnabled}'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — 两者都为 `true` | CSD 对此租户活跃 |
+| **失败** — `isConfigured: false` | CSD 未在租户级别启用 — 联系 F5 XC 管理员 |
+| **失败** — `isEnabled: false` | CSD 配置但未活跃 |
+
+### CSD-2：JS 注入标记
+
+**它证明了什么：** CSD JavaScript 注入标记已生成且准备注入。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq '{has_script_tag: (.scriptTag | length > 0)}'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — `has_script_tag: true` | JS 注入标记已配置 |
+| **失败** — `has_script_tag: false` | 无脚本标记 — 验证 CSD 已启用且受保护域已注册 |
+
+### CSD-3：JS 标记内容
+
+**它证明了什么：** 显示完整的脚本标记以进行验证或手动注入。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq '.scriptTag'
+```
+
+### CSD-4：受保护域注册
+
+**它证明了什么：** 根域在租户上注册为 CSD 受保护域。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '.items[] | {name, namespace, description}'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — 显示具有非空 `name` 的项 | 域受保护 |
+| **失败** — 项具有空的 `name` 和 `namespace` 字段 | 未注册受保护的域 — 请参阅[第 1 阶段步骤 6](/csd/demo/phase-1-build/#step-6-register-protected-domain) |
+
+<Aside type="note">
+受保护域列表端点返回摘要数据。所有字段均为空的项表示未配置受保护的域。CSD JavaScript 标记（[CSD-2](#csd-2-js-injection-tag)）是更可靠的指示器，表明域保护活跃。
+</Aside>
+
+### CSD-5：实时 JS 注入验证
+
+**它证明了什么：** CSD JavaScript 实际上被注入到负载均衡器提供的页面响应中。
+
+```bash
+curl -s "http://xF5XC_DOMAINNAMEx/" \
+  | grep -oE '(zeronaught|shape)\.com[^"]*' | head -1
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — 返回 `zeronaught.com` 或 `shape.com` URL 片段（例如 `zeronaught.com/__imp_apg__/js/...`） | CSD JavaScript 被注入到页面中 |
+| **失败** — 空输出 | JS 未注入 — 检查 [LB-3](#lb-3-csd-enabled-on-lb) 和 [CSD-1](#csd-1-tenant-csd-status) |
+
+---
+
+## 第 7 层：流量验证
+
+验证实时流量到达负载均衡器并被正确处理。
+
+### TV-1：请求计数（过去 24 小时）
+
+**它证明了什么：** 流量到达负载均衡器。零结果意味着没有流量到达。
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start_time": "'"$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)"'",
+    "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"
+  }' \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs/aggregation" \
+  | jq '{total_requests: .total_hits}'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — `total_requests` 是非零字符串（例如 `"380"`） | 流量通过 LB 流动 |
+| **失败** — `"0"` 或无数据 | 没有流量到达 LB — 检查 [DNS-1](#dns-1-a-record-resolution) 和 [LB-1](#lb-1-operational-state) |
+
+<Aside type="note">
+`total_hits` 值作为**字符串**返回（例如 `"380"`），而不是整数。命名空间从 URL 路径推断 — 不要将其包含在请求正文中。
+</Aside>
+
+### TV-2：状态码分布
+
+**它证明了什么：** 响应状态码的分解显示错误模式。
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start_time": "'"$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)"'",
+    "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",
+    "sort": "DESCENDING",
+    "limit": 100
+  }' \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs" \
+  | jq -r '
+    [.logs[] | fromjson | .rsp_code_class]
+    | group_by(.) | map({class: .[0], count: length})
+    | sort_by(-.count)
+    | ["STATUS_CLASS", "COUNT"], (.[] | [.class, .count])
+    | @tsv' | column -t
+```
+
+<Aside type="note">
+聚合端点不支持 `terms` 分组 — `aggs` 总是返回空。此命令获取最近 100 个日志条目并在客户端计算分布。每个日志条目是一个**JSON 字符串**，必须用 `fromjson` 解析。
+</Aside>
+
+健康网站的预期输出：
+
+```
+STATUS_CLASS                  COUNT
+2xx                           82
+downstream_remote_disconnect  18
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — 大多数 `2xx` | 网站提供成功响应 |
+| **警告** — 高 `4xx` 计数 | 客户端错误（错误 URL、缺失资源） |
+| **失败** — 高 `5xx` 计数 | 服务器错误 — 检查源服务器健康 |
+
+`downstream_remote_disconnect` 类指示客户端在响应完成前关闭连接（长轮询或 WebSocket 升级请求常见）。
+
+### TV-3：最近请求样本
+
+**它证明了什么：** 单个请求被记录到包含正确字段的日志。
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start_time": "'"$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-1H +%Y-%m-%dT%H:%M:%SZ)"'",
+    "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",
+    "sort": "DESCENDING",
+    "limit": 10
+  }' \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs" \
+  | jq -r '
+    ["TIMESTAMP", "METHOD", "PATH", "STATUS", "SRC_IP"],
+    (.logs[] | fromjson | [.["@timestamp"], .method, .req_path, .rsp_code, .src_ip])
+    | @tsv' | column -t
+```
+
+<Aside type="caution">
+`.logs[]` 数组中的每个条目是一个**JSON 字符串**，而不是解析的对象。在访问字段前必须通过 jq 中的 `fromjson` 管道（例如 `.logs[] | fromjson | .method`）。
+</Aside>
+
+### TV-4：访问日志中的 CSD JS 注入
+
+**它证明了什么：** 访问日志确认 CSD JavaScript 被注入到负载均衡器提供的响应中。
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start_time": "'"$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-1H +%Y-%m-%dT%H:%M:%SZ)"'",
+    "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",
+    "sort": "DESCENDING",
+    "limit": 20
+  }' \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs" \
+  | jq '[.logs[] | fromjson | select(.csd_js_injection == "true")] | length as $injected |
+    {injected_count: $injected, total_sampled: 20}'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — `injected_count` > 0 | CSD JS 被注入到页面响应中 |
+| **失败** — `injected_count: 0` | JS 未注入 — 检查 [CSD-1](#csd-1-tenant-csd-status) 和 [LB-3](#lb-3-csd-enabled-on-lb) |
+
+<Aside type="note">
+`csd_js_injection` 字段仅在发生注入的日志条目上存在。在测试中，抽样日志条目的 40% 具有 `csd_js_injection: "true"`（HTML 页面请求），而 60% 缺少该字段（静态资产如 `.ico`、`.js`、`.css` 文件和 WebSocket 连接）。HTML 页面请求应显示注入；API 调用和静态资产请求通常不会。
+</Aside>
+
+### TV-5：端到端连接性测试
+
+**它证明了什么：** 完整请求通过 DNS、LB 和源流向，返回有效响应。
+
+```bash
+curl -sv "http://xF5XC_DOMAINNAMEx/" 2>&1 \
+  | grep -E 'Connected to|< HTTP|< content-type'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — 显示连接、HTTP 200 和 content-type | 完整堆栈正常运行 |
+| **失败** — 连接被拒绝或 DNS 错误 | 从[第 1 层：DNS](#layer-1-dns-resolution) 开始调试 |
+
+<Aside type="tip">
+对于 HTTPS 端到端测试（仅当 HTTPS LB 证书有效时），使用 `curl -sv "https://xF5XC_DOMAINNAMEx/"` 并检查输出中的 `SSL connection`。
+</Aside>
+
+---
+
+## 第 8 层：CSD 遥测与域策略
+
+这些命令查询在[CSD 控制台](/csd/csd-console/)仪表板、脚本列表、表单字段和网络视图中显示的相同数据。
+
+### TEL-1：脚本清单
+
+**它证明了什么：** CSD 正在检测和编录在受保护域上运行的脚本。
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"startTime\": \"${START}\",
+    \"endTime\": \"${NOW}\"
+  }" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq -r '
+    ["SCRIPT", "RISK", "STATUS", "FIELDS", "USERS"],
+    (.scripts[] | [
+      (.script_name | if length > 50 then .[:47] + "..." else . end),
+      .risk_level,
+      .status,
+      (.form_fields_read // 0),
+      (.affected_users_count // 0)
+    ])
+    | @tsv' | column -t
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — 脚本与风险级别列出 | CSD 正在主动监控脚本 |
+| **失败** — 空数组 | 请参阅[故障排除：空脚本数组](#empty-scripts-array) |
+
+<Aside type="tip">
+脚本名称是完整 URL，可能非常长。上面的命令将名称截断为 50 个字符以便终端可读性。删除截断过滤器以查看完整 URL。
+</Aside>
+
+### TEL-2：检测到的域
+
+**它证明了什么：** CSD 已检测脚本源域并按状态分类。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{
+    summary: {
+      action_needed: .domain_summary.actionNeededCount.count,
+      mitigated: .domain_summary.mitigatedDomains.count,
+      allowed: .domain_summary.allowedDomains.count,
+      total: .domain_summary.totalDomains.count
+    },
+    domains: [.domains_list[] | {
+      domain: .domain,
+      category: .category,
+      status: .status,
+      first_seen: (.firstSeenDate | tonumber | todate),
+      latest_seen: (.latestSeenDate | tonumber | todate)
+    }]
+  }'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — `total` > 0，列出域 | CSD 正在跟踪脚本域 |
+| **警告** — `action_needed` > 0 | 某些域需要审查 |
+| **失败** — 空响应 | 无遥测数据 — 检查 [CSD-5](#csd-5-live-js-injection-verification) |
+
+### TEL-3：域策略状态
+
+**它证明了什么：** 显示允许 vs 缓解域的分布，以及策略是否一致。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{
+    action_needed: .domain_summary.actionNeededCount.count,
+    mitigated: .domain_summary.mitigatedDomains.count,
+    allowed: .domain_summary.allowedDomains.count,
+    total: .domain_summary.totalDomains.count,
+    domains_needing_action: [.domains_list[] | select(.status == "AN") | .domain]
+  }'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — `action_needed: 0` | 所有域已审查并分类 |
+| **警告** — `action_needed` > 0 | `domains_needing_action` 中列出的域需要审查 |
+
+### TEL-4：表单字段清单
+
+**它证明了什么：** CSD 已检测脚本正在读取的表单字段，带有敏感性分类。
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields?startTime=${START}&endTime=${NOW}" \
+  | jq -r '
+    ["FIELD", "SENSITIVITY", "SCRIPTS"],
+    (.form_fields[] | [
+      .name,
+      .analysis,
+      (.scripts_count // 0)
+    ])
+    | @tsv' | column -t
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — 列出带敏感性的表单字段 | CSD 正在跟踪表单字段访问 |
+| **信息** — 空数组 | 未检测到表单字段（如果网站上没有表单，预期） |
+
+### TEL-5：脚本深入分析
+
+**它证明了什么：** 特定脚本的详细信息，包括风险、行为和网络交互。
+
+首先，从 [TEL-1](#tel-1-script-inventory) 获取脚本 ID，然后查询其详情：
+
+```bash
+SCRIPT_ID="your-script-id"
+
+# 概述（风险级别、类型、源域）
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/dashboard" \
+  | jq '{script_name, risk_level, type, source_domain, status}'
+
+# 行为随时间变化
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/behaviors" \
+  | jq '.behaviors'
+
+# 网络交互（脚本通信的域）
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/networkInteractions" \
+  | jq '.network_interactions'
+```
+
+### TEL-6：受影响的用户
+
+**它证明了什么：** 列出受特定脚本影响的用户，显示曝露范围。
+
+```bash
+SCRIPT_ID="your-script-id"
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"startTime\": \"${START}\",
+    \"endTime\": \"${NOW}\"
+  }" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/affectedUsers" \
+  | jq -r '
+    ["IP_ADDRESS", "DEVICE_ID", "GEO", "CHANNEL", "USER_AGENT"],
+    (.affected_users[] | [
+      .ip_address,
+      (.device_id | if length > 12 then .[:12] + "..." else . end),
+      .geolocation,
+      .channel,
+      (.user_agent | if length > 30 then .[:27] + "..." else . end)
+    ])
+    | @tsv' | column -t
+```
+
+### TEL-7：按风险级别的脚本计数
+
+**它证明了什么：** 所有检测脚本中的汇总风险分布。
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"startTime\": \"${START}\",
+    \"endTime\": \"${NOW}\"
+  }" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq '[.scripts[] | .risk_level] | group_by(.) | map({risk_level: .[0], count: length}) | sort_by(-.count)'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — 所有 `No Risk` | 无风险脚本检测 |
+| **警告** — `Low Risk` 或 `High Risk` 存在 | 在 [TEL-5](#tel-5-script-deep-dive) 中审查标记的脚本 |
+
+### TEL-8：遥测新鲜度
+
+**它证明了什么：** CSD 遥测数据最近，确认活跃监控。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{
+    total_domains: .domain_summary.totalDomains.count,
+    latest_update: (.domain_summary.totalDomains.lastUpdated // "unknown"),
+    most_recent_domain: (.domains_list | sort_by(.latestSeenDate) | last | {
+      domain: .domain,
+      latest_seen: (.latestSeenDate | tonumber | todate)
+    })
+  }'
+```
+
+| 结果 | 含义 |
+| --- | --- |
+| **通过** — `latest_seen` 在过去 24 小时内 | 遥测正在主动收集数据 |
+| **警告** — `latest_seen` 早于 24 小时 | 流量可能已停止或 CSD 处理延迟 |
+
+---
+
+## 完整堆栈仪表板
+
+运行单个命令，检查所有层的所有关键健康指标并生成摘要表：
+
+```bash
+echo "=== CSD 验证仪表板 ==="
+echo ""
+
+# 第 1 层：DNS
+DNS_A=$(dig +short xF5XC_DOMAINNAMEx A | head -1)
+DNS_ACME=$(dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME | head -1)
+
+# 第 2-3 层：LB + TLS
+LB=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http")
+LB_HTTPS=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+
+LB_STATE=$(echo "$LB" | jq -r '.spec.state // "UNKNOWN"')
+CERT_STATE=$(echo "$LB_HTTPS" | jq -r '.spec.cert_state // "UNKNOWN"')
+CSD_ON_LB=$(echo "$LB" | jq -r 'if .spec.client_side_defense then "ENABLED" else "DISABLED" end')
+DOMAINS=$(echo "$LB" | jq -r '.spec.domains | join(", ")')
+ROUTE_POOL=$(echo "$LB" | jq -r '[.spec.default_route_pools[] | .pool.name] | join(", ")')
+
+# 第 6 层：CSD 状态
+CSD=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status")
+
+CSD_CONFIGURED=$(echo "$CSD" | jq -r '.isConfigured // false')
+CSD_ENABLED=$(echo "$CSD" | jq -r '.isEnabled // false')
+
+# 第 6 层：JS 配置
+JS_TAG=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq -r 'if (.scriptTag | length) > 0 then "PRESENT" else "MISSING" end')
+
+# 第 7 层：流量（过去 24 小时）
+TRAFFIC=$(curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"start_time\": \"$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)\",
+    \"end_time\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+  }" \
+  "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs/aggregation" \
+  | jq -r '.total_hits // "0"')
+
+printf "%-28s %s\n" "检查" "状态"
+printf "%-28s %s\n" "----------------------------" "----------------------------"
+printf "%-28s %s\n" "[DNS] A 记录" "${DNS_A:-NOT_FOUND}"
+printf "%-28s %s\n" "[DNS] ACME CNAME" "${DNS_ACME:-NOT_FOUND}"
+printf "%-28s %s\n" "[TLS] 证书" "$CERT_STATE"
+printf "%-28s %s\n" "[LB] 状态" "$LB_STATE"
+printf "%-28s %s\n" "[LB] 域" "$DOMAINS"
+printf "%-28s %s\n" "[LB] 路由池" "$ROUTE_POOL"
+printf "%-28s %s\n" "[LB] LB 上的 CSD" "$CSD_ON_LB"
+printf "%-28s %s\n" "[CSD] 已配置（租户）" "$CSD_CONFIGURED"
+printf "%-28s %s\n" "[CSD] 已启用" "$CSD_ENABLED"
+printf "%-28s %s\n" "[CSD] JS 脚本标记" "$JS_TAG"
+printf "%-28s %s\n" "[流量] 请求（24 小时）" "$TRAFFIC"
+```
+
+---
+
+## 访问日志字段参考
+
+<Aside type="caution">
+`.logs[]` 数组中的每个条目是一个**JSON 字符串**，而不是解析的对象。在访问字段前必须通过 jq 中的 `fromjson` 管道（例如 `.logs[] | fromjson | .method`）。
+</Aside>
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `@timestamp` | string | 请求时间戳 (ISO 8601)。注意 `@` 前缀 — 在 jq 中用 `.["@timestamp"]` 访问 |
+| `method` | string | HTTP 方法 (GET, POST, 等) |
+| `req_path` | string | 请求 URI 路径 |
+| `rsp_code` | string | HTTP 响应状态代码作为字符串（例如 `"200"`, `"404"`） |
+| `rsp_code_class` | string | 状态码类 (`2xx`, `3xx`, `4xx`, `5xx`, 或 `downstream_remote_disconnect`) |
+| `src_ip` | string | 客户端源 IP 地址 |
+| `dst_ip` | string | 目标（VIP）IP 地址 |
+| `domain` | string | 请求 Host 头值 |
+| `user_agent` | string | 客户端 User-Agent 字符串 |
+| `rsp_size` | string | 响应正文大小（字节）（作为字符串返回） |
+| `req_size` | string | 请求正文大小（字节）（作为字符串返回） |
+| `duration_with_data_tx_delay` | string | 总请求持续时间（秒）（作为字符串返回，例如 `"0.024219"`） |
+| `csd_js_injection` | string | 当 CSD JavaScript 被注入时为 `"true"`（仅在活跃时出现） |
+
+## CSD 遥测字段参考
+
+| 字段 | 端点 | 说明 |
+| --- | --- | --- |
+| `isConfigured` | status | CSD 在租户级别启用 |
+| `isEnabled` | status | CSD 对此命名空间活跃 |
+| `scripts[]` | scripts | 检测到的脚本对象数组 |
+| `.script_name` | scripts | JavaScript 文件的完整 URL |
+| `.risk_level` | scripts | 风险级别（无风险、低风险、高风险） |
+| `.status` | scripts | AN（需要采取行动）或 NA（不需要采取行动） |
+| `.form_fields_read` | scripts | 脚本读取的表单字段数量 |
+| `.affected_users_count` | scripts | 受影响的唯一用户/会话数量 |
+| `domain_summary` | detected_domains | 按状态的计数：`.actionNeededCount.count`, `.mitigatedDomains.count`, `.allowedDomains.count`, `.totalDomains.count`（每个都有 `.count` 和 `.lastUpdated`） |
+| `domains_list[]` | detected_domains | 检测到的域对象数组，包含 `.domain`, `.status`, `.category`, `.firstSeenDate`, `.latestSeenDate`（作为字符串的 epoch 秒数） |
+| `form_fields[]` | formFields | 检测到的表单字段对象数组 |
+| `.analysis` | formFields | 敏感性分类（敏感、不敏感） |
+
+## 故障排除
+
+### 零访问日志
+
+如果 [TV-1](#tv-1-request-count-last-24-hours) 返回 `0`：
+
+<Steps>
+1. **检查 DNS 解析** — 验证域解析到 LB VIP：
+   ```bash
+   dig +short xF5XC_DOMAINNAMEx A
+   ```
+   如果为空，DNS 未配置。请参阅 [API 自动化 — 步骤 4](/csd/demo/phase-1-build/#step-4-configure-dns)。
+
+2. **检查 LB 状态** — 负载均衡器必须为 `VIRTUAL_HOST_READY`：
+   ```bash
+   curl -s \
+     -H "Authorization: APIToken xF5XC_API_TOKENx" \
+     "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+     | jq '.spec.state'
+   ```
+
+3. **发送测试请求** — 生成流量以确认端到端连接性：
+   ```bash
+   curl -sv "http://xF5XC_DOMAINNAMEx/" 2>&1 | head -20
+   ```
+   查找成功的 HTTP 响应。仅当 HTTPS LB 证书有效时使用 `https://`。
+</Steps>
+
+### DNS 区域上禁用托管记录
+
+如果 [DNS-4](#dns-4-f5-xc-managed-records-enabled) 返回 `false`，即使 F5 XC 是权威 DNS 提供商，自动记录创建也被禁用。这是一个常见错误配置，导致 A 记录和 ACME CNAME 都缺失，这会阻止负载均衡器达到 `VIRTUAL_HOST_READY` 并阻止证书被颁发。
+
+要启用托管记录，更新 DNS 区域配置设置 `allow_http_lb_managed_records: true`。请参阅 [API 自动化 — 选项 A：F5 XC 托管 DNS](/csd/demo/phase-1-build/#option-a-f5-xc-managed-dns) 查看 API 调用。
+
+### LB 卡在 VIRTUAL_HOST_PENDING_A_RECORD
+
+负载均衡器正在等待指向其 VIP 的 DNS A 记录。请参阅[LB 卡在 VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record) 了解详细的解决步骤。
+
+### 证书卡在 PreDomainChallengePending
+
+自动 TLS 证书需要 ACME 质询记录。方法取决于您的 DNS 提供商：
+
+**F5 XC 托管 DNS：** 在 DNS 区域上启用 `allow_http_lb_managed_records`（[DNS-4](#dns-4-f5-xc-managed-records-enabled)）。平台自动在 `x-ves-io-managed` RR 集组中创建基于 TXT 的 ACME 质询记录。如果启用托管记录后证书仍然卡住，删除并重建负载均衡器以触发新鲜证书请求。
+
+**外部 DNS：** 在您的 DNS 提供商处创建 CNAME 记录：
+
+```
+_acme-challenge.xF5XC_DOMAINNAMEx  CNAME  *.autocerts.ves.volterra.io
+```
+
+验证记录存在：
+
+```bash
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx TXT
+```
+
+如果两者都为空，ACME 记录未配置。记录就位后证书配置需要 5–10 分钟。检查 LB 错误状态了解特定的 ACME 验证错误：
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '[.status[]? | select(.virtual_host_status != null) | .virtual_host_status.error_description]'
+```
+
+### CSD isConfigured 为 false
+
+CSD 必须由 F5 XC 管理员在租户级别启用。这是一个租户范围的设置，无法通过命名空间 API 配置。联系您的管理员启用客户端防护。
+
+### 空脚本数组
+
+如果 [TEL-1](#tel-1-script-inventory) 返回空数组：
+
+<Steps>
+1. **检查受保护域** — CSD 仅在注册域上监控脚本：
+   ```bash
+   curl -s \
+     -H "Authorization: APIToken xF5XC_API_TOKENx" \
+     "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+     | jq '.items[] | {name, namespace}'
+   ```
+
+2. **验证 JS 注入** — 确认 CSD 脚本标记被注入到页面中：
+   ```bash
+   curl -s "http://xF5XC_DOMAINNAMEx/" | grep -oE '(zeronaught|shape)\.com[^"]*' | head -1
+   ```
+   如果没有匹配，CSD JavaScript 未被注入到页面中。检查 LB 是否启用了 `client_side_defense`。
+
+3. **允许处理时间** — 首次启用 CSD 或注册新受保护域后，脚本检测可能需要 5–15 分钟。向网站生成流量并在重新检查前等待。
+</Steps>
+
+## 快速参考
+
+### 时间范围预设
+
+| 时期 | Epoch 偏移 | ISO 8601 (Linux) | ISO 8601 (macOS) |
+| --- | --- | --- | --- |
+| 1 小时 | `$(( $(date +%s) - 3600 ))` | `date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ` | `date -u -v-1H +%Y-%m-%dT%H:%M:%SZ` |
+| 24 小时 | `$(( $(date +%s) - 86400 ))` | `date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ` | `date -u -v-24H +%Y-%m-%dT%H:%M:%SZ` |
+| 7 天 | `$(( $(date +%s) - 604800 ))` | `date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ` | `date -u -v-7d +%Y-%m-%dT%H:%M:%SZ` |
+| 30 天 | `$(( $(date +%s) - 2592000 ))` | `date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ` | `date -u -v-30d +%Y-%m-%dT%H:%M:%SZ` |
+
+### 验证层摘要
+
+| 层 | 测试 | 它涵盖什么 |
+| --- | --- | --- |
+| [1. DNS 解析](#layer-1-dns-resolution) | DNS-1 至 DNS-4 | A 记录、ACME CNAME、命名服务器权限、托管记录 |
+| [2. TLS 证书](#layer-2-tls-certificate) | TLS-1 至 TLS-4 | 证书状态、证书详情、实时握手、ACME 目标 |
+| [3. HTTP 负载均衡器](#layer-3-http-load-balancer) | LB-1 至 LB-6 | 状态、域、CSD 标志、路由池、部署、摘要 |
+| [4. 源池](#layer-4-origin-pool) | OP-1 至 OP-4 | 配置、TLS 模式、HC 关联、源连接性 |
+| [5. 健康检查](#layer-5-health-check) | HC-1 至 HC-2 | HC 配置、列出所有 HC |
+| [6. CSD 配置](#layer-6-csd-configuration) | CSD-1 至 CSD-5 | 租户状态、JS 标记、受保护域、实时注入 |
+| [7. 流量验证](#layer-7-traffic-verification) | TV-1 至 TV-5 | 请求计数、状态码、样本、日志中的 JS、E2E 测试 |
+| [8. CSD 遥测](#layer-8-csd-telemetry-amp-domain-policy) | TEL-1 至 TEL-8 | 脚本、域、策略、表单字段、深入分析、用户、风险、新鲜度 |
+
+### 端点摘要
+
+| 诊断 | 端点 | 方法 | 时间格式 |
+| --- | --- | --- | --- |
+| 请求计数 | `/api/data/namespaces/\{ns\}/access_logs/aggregation` | POST | ISO 8601 |
+| 状态码 | `/api/data/namespaces/\{ns\}/access_logs` | POST | ISO 8601 |
+| 最近请求 | `/api/data/namespaces/\{ns\}/access_logs` | POST | ISO 8601 |
+| LB 状态 | `/api/config/namespaces/\{ns\}/http_loadbalancers/\{name\}` | GET | 无 |
+| 源池 | `/api/config/namespaces/\{ns\}/origin_pools/\{name\}` | GET | 无 |
+| 健康检查 | `/api/config/namespaces/\{ns\}/healthchecks/\{name\}` | GET | 无 |
+| DNS 区域 | `/api/config/dns/namespaces/system/dns_zones/\{zone\}` | GET | 无 |
+| CSD 状态 | `/api/shape/csd/namespaces/\{ns\}/status` | GET | 无 |
+| JS 配置 | `/api/shape/csd/namespaces/\{ns\}/js_configuration` | GET | 无 |
+| 受保护域 | `/api/shape/csd/namespaces/\{ns\}/protected_domains` | GET | 无 |
+| 脚本列表 | `/api/shape/csd/namespaces/\{ns\}/scripts` | POST | Epoch 秒数 |
+| 检测到的域 | `/api/shape/csd/namespaces/\{ns\}/detected_domains` | GET | 无 |
+| 表单字段 | `/api/shape/csd/namespaces/\{ns\}/formFields` | GET | Epoch 秒数（查询参数） |
+| 脚本详情 | `/api/shape/csd/namespaces/\{ns\}/scripts/\{id\}/dashboard` | GET | 无 |
+| 脚本行为 | `/api/shape/csd/namespaces/\{ns\}/scripts/\{id\}/behaviors` | GET | 无 |
+| 脚本网络 | `/api/shape/csd/namespaces/\{ns\}/scripts/\{id\}/networkInteractions` | GET | 无 |
+| 受影响用户 | `/api/shape/csd/namespaces/\{ns\}/scripts/\{id\}/affectedUsers` | POST | Epoch 秒数 |

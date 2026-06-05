@@ -1,0 +1,174 @@
+---
+title: CSD コンソール ウォークスルー
+description: コンソール UI ウォークスルー — CSD の有効化、テレメトリの表示、ポリシーの管理
+sidebar:
+  order: 7
+  label: CSD コンソール
+i18n:
+  sourceHash: c0bcdde5efcc
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+import Screenshot from "@f5xc-salesdemos/docs-theme/components/Screenshot.astro";
+
+## ダッシュボード
+
+XC コンソールで **Client-Side Defense** ダッシュボードに移動します。
+
+<Screenshot light="/images/csd-dashboard.png" alt="CSD Dashboard showing summary cards and domain table" />
+
+サマリー カードには **処理済み** スクリプト ドメインが表示されます。
+
+- **Action Needed** — レビュー用にフラグが付いているが、まだ処理されていないスクリプト ドメイン（ファーストパーティとサードパーティの両方）
+- **Found &amp; Mitigated** — スクリプトが軽減リストに追加されたドメイン（管理アクションの後の変更のみ）
+- **Found &amp; Allowed** — 明示的に許可リストに追加されたドメイン（管理アクションの後の変更のみ）
+- **Total Found** — 現在の期間に CSD が検出したすべてのスクリプト ドメイン（新しい検出で自動更新）
+- **Transactions Consumed** — 今月処理された CSD テレメトリ イベント（CSD がアクティブであることを確認）
+
+ドメイン テーブルには CSD が検出した **すべてのドメイン** が一覧表示されます。これには、ファーストパーティとサードパーティの両方のスクリプト ソース ドメイン、および fetch/XHR の宛先ドメインが含まれます。各行はドメイン ステータス、最後に表示されたタイムスタンプ、ドメイン カテゴリ、およびそのドメインからのアクティビティが観察された場所（URL）を示します。
+
+上のスクリーンショットはデモテナントで検出されたドメインを示していますが、すべて **Action Needed** ステータスです。表示される特定のドメインは、実行されたシミュレーションによって異なります。
+
+| ドメイン | カテゴリ | オリジン |
+| --- | --- | --- |
+| `botdemo.sales-demo.f5demos.com` | Computer and Internet Info | 保護されたアプリケーション ドメイン |
+| `dnslog.cn` | Malware Sites | データ流出シミュレーション スクリプト |
+| `canarytokens.com` | Computer and Internet Security | データ流出シミュレーション スクリプト |
+
+[統合シミュレーション](/csd/trigger-detection/) を実行し、注入された CDN ドメイン（`cdn.jsdelivr.net`、`esm.sh`、`unpkg.com`、`ga.jspm.io`）をアクション メニューを介して処理した後、これらのドメインはテーブルに **Found &amp; Allowed** または **Found &amp; Mitigated** ステータスで表示されます。
+
+<Aside type="note">
+CSD がドメインからスクリプトをロードしていることを検出した後にのみ、ドメインはダッシュボードに表示されます。**Action Needed** 数は、管理者がレビュー用にフラグを付けたドメインを反映しています。統合シミュレーションからの新しい検出は、ここに表示される前に **Script List** に表示されるまで 5～10 分かかる場合があります。
+</Aside>
+
+ドメイン行の **...** アクション メニューをクリックして、利用可能なアクションを表示します。**Add To Allow List** と **Add To Mitigate List** があります。
+
+<Screenshot light="/images/csd-dashboard-actions.png" alt="Dashboard actions menu showing Allow and Mitigate options" />
+
+## スクリプト インベントリ
+
+左側のナビゲーションから **Script List** を開いて、検出されたすべてのスクリプトを表示します。
+
+<Screenshot light="/images/csd-script-list.png" alt="Script List showing detected scripts" />
+
+| フィールド | 説明 |
+| --- | --- |
+| **Script Name** | JavaScript ファイルの完全な URL |
+| **Status** | AN（Action Needed）または NA（No Action Needed） |
+| **Risk Level** | No Risk、Low Risk、または High Risk |
+| **Justification** | CSD がスクリプトをフラグした理由 |
+| **Last Seen** | 最新の検出タイムスタンプ |
+| **Locations Found** | スクリプトが観察されたページ数 |
+| **Network Interactions** | スクリプトが行ったネットワーク呼び出しの数 |
+| **Form Fields** | スクリプトが読むフォーム フィールドの数 |
+| **Affected Clients** | 影響を受けたユーザー/セッションの数 |
+
+統合シミュレーションを実行した後、以下が表示されます。
+
+- **アプリケーション スクリプト**（例：`main.js`、`vendor.js`）は、機密フォーム フィールド（メール、パスワード）を読むため、**High Risk / Action Needed** としてフラグが付けられます
+- `cdn.jsdelivr.net`、`esm.sh`、`unpkg.com`、`ga.jspm.io` からの **4 つの新しいサードパーティ スクリプト** がリストに新しいエントリとして表示されます
+
+<Steps>
+1. **Risk Level** でソートします（High Risk を最初に）
+
+2. リスクの高いスクリプト（例：`main.js`）をクリックして、その詳細ページを表示します
+
+3. **Overview** タブには **Behaviors Over Time** チャートが表示され、スクリプトのリスク レベル、ソース ドメイン、および種類を時系列で追跡します
+
+   <Screenshot light="/images/csd-script-detail.png" alt="Script detail page showing Behaviors Over Time chart" />
+
+4. **Form Fields** タブをクリックして、スクリプトが読んでいる特定のフィールドを確認します
+
+5. **Affected Users** タブをクリックして、影響を受けたユーザーを確認します（以下の「Affected Users」セクションを参照）
+</Steps>
+
+## フォーム フィールド
+
+**Form Fields** ビューは、CSD が監視対象サイト全体で検出したスクリプトが読むすべてのフォーム フィールドを表示します。
+
+<Screenshot light="/images/csd-form-fields.png" alt="Form Fields view with sensitivity classification" />
+
+CSD はフィールドを感度で自動分類します。
+
+| フォーム フィールド | 分析 | 説明 |
+| --- | --- | --- |
+| **email** | Sensitive (by system) | ログイン メール フィールド — 権限のないスクリプトで読まれた場合はリスクが高い |
+| **password** | Sensitive (by system) | ログイン パスワード フィールド — 権限のないスクリプトで読まれた場合はリスクが高い |
+
+<Aside type="note">
+元のページ DOM に存在するフィールドのみが追跡されます。正確なフィールド名は Juice Shop Angular フォーム実装によって異なります。現在のフィールド識別子については、上記のスクリーンショットを確認してください。
+</Aside>
+
+各フィールドは、それを読むスクリプトの数、読取が観察された場所、および最後の読取タイムスタンプを表示します。フィールドにドリルダウンして、どのスクリプトがアクセスしているかを正確に確認します。
+
+## ネットワーク
+
+**Network** ビューを開いて、スクリプトが **ロードする** すべてのドメイン（fetch/XHR の宛先ではない）を表示します。
+
+<Screenshot light="/images/csd-network-view.png" alt="Network All Domains view" />
+
+**All Domains** タブは、各ドメインを以下の情報とともに一覧表示します。
+
+- **Last Seen** タイムスタンプ
+- **Domain Category**（例：Computer and Internet Info）
+- **Added to Allow/Mitigate List** ステータス（Unlisted、Allowed、または Mitigated）
+
+統合シミュレーションを実行した後、注入された `<script>` タグがこれらの CDN から JavaScript をロードしているため、[ダッシュボード セクション](#dashboard)にリストされている同じ 4 つの CDN ドメインが新しいエントリとして表示されます。
+
+**Mitigate List** と **Allow List** タブを使用して、既に処理されたドメインを確認します。
+
+## 影響を受けたユーザー
+
+**Affected Users** タブ（スクリプトの詳細ページからアクセス可能）は、選択したスクリプトの影響を受けたユーザーを表示します。
+
+<Screenshot light="/images/csd-affected-users.png" alt="Affected Users tab showing impacted users" />
+
+各エントリには以下が含まれます。
+
+| フィールド | 説明 |
+| --- | --- |
+| **IP Address** | 影響を受けたユーザーのソース IP |
+| **Device ID** | 一意のデバイス識別子ハッシュ |
+| **Geolocation** | IP から派生した国（フラグ アイコン付き） |
+| **Channel** | アクセス チャネル（例：Web） |
+| **User Agent** | ブラウザ名、バージョン、およびオペレーティング システム |
+| **Last Seen** | このユーザーの最新の検出タイムスタンプ |
+
+このビューは、検出された攻撃の影響を示しています。何人のユーザーが暴露され、どこからのユーザーか、どのプラットフォームかが分かります。このデータを使用して、フォームジャッキング インシデントの影響を評価し、軽減に優先順位を付けます。
+
+## アラート構成
+
+左側のナビゲーションから **Notifications** セクションを開いて、**Alerts** ページを表示します。
+
+<Screenshot light="/images/csd-notifications.png" alt="CSD Notifications UI showing the Alerts page on the f5-sales-demo tenant" />
+
+Alerts ページは、名前空間のプラットフォーム アラートと CSD アラートを表示します。インフラストラクチャ アラート（エンドポイント ヘルスチェック障害など）は自動的に表示されますが、CSD 固有のアラート ルールは、スクリプト検出通知が発火する前に管理者が明示的に構成する必要があります。構成可能なトリガー条件は以下のとおりです。
+
+- 新しい疑わしいスクリプト ドメインが検出された
+- スクリプトのリスク スコアが閾値を超える
+- 監視対象ページで新しいスクリプトが検出された
+- スクリプトの動作変更（例：新しいフォーム フィールドの読み取り）
+
+アラートはドメインごと、またはグローバルにスコープでき、メール通知は構成されたアラート レシーバーに送信されます。
+
+<Aside type="caution">
+デモテナントで CSD 固有のアラート ルールが構成されていない場合、インフラストラクチャ アラート（存在する場合）のみがここに表示されます。これは予期された動作です。CSD 検出（Script List、Dashboard、Form Fields）はアラート構成とは独立して機能します。プレゼンターは、アラートが CSD の常時監視の上のオプション通知レイヤーであることを説明する必要があります。
+</Aside>
+
+## 軽減
+
+**Dashboard** から、フラグが付いているドメインの **...** アクション メニューをクリックして、**Add To Mitigate List** を選択します。または、**Script List** から、個別のスクリプトでアクションを使用します。
+
+<Steps>
+1. 疑わしいドメインまたはスクリプトを選択します
+2. **Add To Mitigate List** をクリックします
+3. アクションを確認します。ドメイン ステータスが Actions 列で更新されます
+4. ドメインは **Action Needed** から **Found &amp; Mitigated** に移動します
+</Steps>
+
+アクション メニューは、[上記のダッシュボード セクション](#dashboard)に示されているのと同じものです。
+
+軽減されたスクリプトは、次のページ読み込み時に実行がブロックされます。軽減は可逆的です。Mitigate List からドメインを削除することで、スクリプト実行が復元されます。
+
+API を使用したプログラマティック軽減については、[API リファレンス — 軽減](/csd/api-reference/#mitigation)を参照してください。

@@ -1,0 +1,430 @@
+---
+title: API संदर्भ
+description: 'CSD डोमेन प्रबंधन, हमला स्क्रिप्ट, और शमन नियमों के लिए REST API एंडपॉइंट'
+sidebar:
+  order: 10
+  label: API संदर्भ
+i18n:
+  sourceHash: 6564ced2653f
+  translator: machine
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+CSD के पास डोमेन, स्क्रिप्ट, शमन, और निगरानी का प्रबंधन करने के लिए `/api/shape/csd/` पर एक समर्पित API है। CSD को लोड बैलेंसर कॉन्फ़िगरेशन API के माध्यम से HTTP लोड बैलेंसर पर भी सक्षम किया जा सकता है।
+
+## प्रमाणीकरण
+
+सभी API कॉल के लिए एक API टोकन की आवश्यकता है। XC कंसोल में **Administration** &rarr; **Credentials** &rarr; **API Credentials** के तहत एक जनरेट करें।
+
+अपने पर्यावरण चर सेट करें जैसा कि [API Automation &mdash; Environment Setup](/csd/demo/#environment-setup) में वर्णित है:
+
+```bash
+set -a && source .env && set +a
+```
+
+सभी curl उदाहरण `xTOKENx` प्लेसहोल्डर प्रारूप का उपयोग करते हैं। अपने पर्यावरण चर के साथ प्रतिस्थापित करें या पृष्ठ के शीर्ष पर इंटरैक्टिव फॉर्म का उपयोग करें। उदाहरण के लिए, `xF5XC_API_TOKENx` `$F5XC_API_TOKEN` के अनुरूप है।
+
+```bash
+-H "Authorization: APIToken xF5XC_API_TOKENx"
+```
+
+## API सम्मेलन
+
+<Aside type="note">
+ये सम्मेलन सभी F5 Distributed Cloud (F5 XC) कॉन्फ़िगरेशन और CSD API एंडपॉइंट पर लागू होते हैं। उन्हें समझने से सामान्य ऑटोमेशन गलतियों को रोका जा सकता है।
+</Aside>
+
+### प्रतिक्रिया निकाय
+
+- **POST** बनाए गए ऑब्जेक्ट को JSON के रूप में लौटाता है।
+- **PUT** और **DELETE** HTTP 200 पर एक खाली `\{\}` लौटाते हैं — यह सामान्य है, त्रुटि नहीं। खाली प्रतिक्रिया निकाय को विफलता के रूप में न मानें।
+
+### सूची बनाम GET एंडपॉइंट
+
+सूची एंडपॉइंट (जैसे `/healthchecks`, `/origin_pools`, `/protected_domains`) और व्यक्तिगत GET एंडपॉइंट (जैसे `/healthchecks/\{name\}`) **विभिन्न प्रतिक्रिया संरचनाएँ** लौटाते हैं:
+
+| एंडपॉइंट प्रकार | उदाहरण पथ | प्रतिक्रिया संरचना |
+| --- | --- | --- |
+| **सूची** | `/origin_pools` | आइटम के पास शीर्ष-स्तर `.name`, `.namespace`, `.tenant` है `metadata: null` और `get_spec: null` के साथ |
+| **व्यक्तिगत GET** | `/origin_pools/\{name\}` | ऑब्जेक्ट के पास `.metadata.name`, `.spec.*` पूर्ण कॉन्फ़िगरेशन के साथ है |
+
+प्रत्येक के लिए सही `jq` पथ का उपयोग करें। उदाहरण के लिए, सूची एंडपॉइंट से नाम निकालने के लिए `.items[].name` का उपयोग करें, न कि `.items[].metadata.name`।
+
+### सुरक्षित डोमेन पहचानकर्ता
+
+सुरक्षित डोमेन GET और DELETE संचालन के लिए, `\{name\}` पथ पैरामीटर **डोमेन मान स्वयं** है (जैसे `bankexample.com`), एक मनमानी ऑब्जेक्ट का नाम नहीं। यह अन्य F5 XC ऑब्जेक्ट से भिन्न है जहां नाम एक उपयोगकर्ता-चुना हुआ पहचानकर्ता है।
+
+## CSD API एंडपॉइंट
+
+मूल पथ: `/api/shape/csd/namespaces/\{namespace\}/`
+
+### स्थिति और आरंभीकरण
+
+| ऑपरेशन | विधि | पथ |
+| --- | --- | --- |
+| CSD सक्षम करें | `POST` | `/api/shape/csd/namespaces/system/init` |
+| स्थिति प्राप्त करें | `GET` | `/api/shape/csd/namespaces/\{namespace\}/status` |
+| JS कॉन्फ़िगरेशन प्राप्त करें | `GET` | `/api/shape/csd/namespaces/\{namespace\}/js_configuration` |
+| JS परीक्षण करें | `POST` | `/api/shape/csd/namespaces/\{namespace\}/testjs` |
+| डोमेन अपडेट करें | `POST` | `/api/shape/csd/namespaces/\{namespace\}/update_domains` |
+
+### सुरक्षित डोमेन
+
+| ऑपरेशन | विधि | पथ |
+| --- | --- | --- |
+| सूची | `GET` | `/api/shape/csd/namespaces/\{namespace\}/protected_domains` |
+| प्राप्त करें | `GET` | `/api/shape/csd/namespaces/\{namespace\}/protected_domains/\{name\}` |
+| बनाएं | `POST` | `/api/shape/csd/namespaces/\{namespace\}/protected_domains` |
+| हटाएं | `DELETE` | `/api/shape/csd/namespaces/\{namespace\}/protected_domains/\{name\}` |
+
+### पहचाने गए डोमेन
+
+| ऑपरेशन | विधि | पथ |
+| --- | --- | --- |
+| पहचाने गए सूची | `GET` | `/api/shape/csd/namespaces/\{namespace\}/detected_domains` |
+| विवरण प्राप्त करें | `GET` | `/api/shape/csd/namespaces/\{namespace\}/domain_details` |
+
+### अनुमत डोमेन
+
+| ऑपरेशन | विधि | पथ |
+| --- | --- | --- |
+| सूची | `GET` | `/api/shape/csd/namespaces/\{namespace\}/allowed_domains` |
+| प्राप्त करें | `GET` | `/api/shape/csd/namespaces/\{namespace\}/allowed_domains/\{name\}` |
+| बनाएं | `POST` | `/api/shape/csd/namespaces/\{namespace\}/allowed_domains` |
+| हटाएं | `DELETE` | `/api/shape/csd/namespaces/\{namespace\}/allowed_domains/\{name\}` |
+
+### शमित डोमेन
+
+| ऑपरेशन | विधि | पथ |
+| --- | --- | --- |
+| सूची | `GET` | `/api/shape/csd/namespaces/\{namespace\}/mitigated_domains` |
+| प्राप्त करें | `GET` | `/api/shape/csd/namespaces/\{namespace\}/mitigated_domains/\{name\}` |
+| बनाएं | `POST` | `/api/shape/csd/namespaces/\{namespace\}/mitigated_domains` |
+| हटाएं | `DELETE` | `/api/shape/csd/namespaces/\{namespace\}/mitigated_domains/\{name\}` |
+
+### स्क्रिप्ट
+
+| ऑपरेशन | विधि | पथ |
+| --- | --- | --- |
+| स्क्रिप्ट सूची | `POST` | `/api/shape/csd/namespaces/\{namespace\}/scripts` |
+| स्क्रिप्ट सूची (विरासत) | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts` |
+| स्क्रिप्ट अवलोकन प्राप्त करें | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/dashboard` |
+| व्यवहार सूची | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/behaviors` |
+| नेटवर्क इंटरैक्शन सूची | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/networkInteractions` |
+| औचित्य अपडेट करें | `POST` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{script_id\}/justification` |
+| औचित्य हटाएं | `DELETE` | `/api/shape/csd/namespaces/\{namespace\}/script/justification/\{justification_id\}` |
+| पढ़ने की स्थिति अपडेट करें | `POST` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/readStatus` |
+| प्रभावित उपयोगकर्ता सूची | `POST` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{script_id\}/affectedUsers` |
+
+### फॉर्म फील्ड
+
+| ऑपरेशन | विधि | पथ |
+| --- | --- | --- |
+| फॉर्म फील्ड सूची | `GET` | `/api/shape/csd/namespaces/\{namespace\}/formFields` |
+| फॉर्म फील्ड सूची (POST) | `POST` | `/api/shape/csd/namespaces/\{namespace\}/formFields` |
+| फॉर्म फील्ड प्राप्त करें | `GET` | `/api/shape/csd/namespaces/\{namespace\}/formFields/\{id\}` |
+| स्क्रिप्ट द्वारा सूची | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/formFields` |
+| फील्ड विश्लेषण अपडेट करें | `POST` | `/api/shape/csd/namespaces/\{namespace\}/formFields/analysis` |
+
+## CSD सक्षम करें
+
+किरायेदार के लिए CSD आरंभ करें:
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/system/init"
+```
+
+## CSD स्थिति प्राप्त करें
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq .
+```
+
+## सुरक्षित डोमेन
+
+### सुरक्षित डोमेन सूची
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq .
+```
+
+### एक सुरक्षित डोमेन जोड़ें
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "my-app",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {}
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq .
+```
+
+### एक सुरक्षित डोमेन हटाएं
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/my-app"
+```
+
+## पहचाने गए डोमेन
+
+### पहचाने गए डोमेन सूची
+
+क्वेरी पैरामीटर: `locations` (स्थान द्वारा फ़िल्टर करें), `risk` (जोखिम स्तर द्वारा फ़िल्टर करें)।
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq .
+```
+
+उच्च जोखिम द्वारा फ़िल्टर करें:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains?risk=high" \
+  | jq .
+```
+
+### डोमेन विवरण प्राप्त करें
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/domain_details?name=suspicious.example.com" \
+  | jq .
+```
+
+## स्क्रिप्ट
+
+### सभी स्क्रिप्ट सूची
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq .
+```
+
+### स्क्रिप्ट अवलोकन प्राप्त करें
+
+```bash
+SCRIPT_ID="your-script-id"
+
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/dashboard" \
+  | jq .
+```
+
+### स्क्रिप्ट व्यवहार सूची
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/behaviors" \
+  | jq .
+```
+
+### नेटवर्क इंटरैक्शन सूची
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/networkInteractions" \
+  | jq .
+```
+
+## शमन
+
+### एक शमित डोमेन जोड़ें
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "blocked-domain",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {}
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+```
+
+### शमित डोमेन सूची
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+```
+
+### शमन हटाएं
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/blocked-domain"
+```
+
+## अनुमत डोमेन
+
+### एक अनुमत डोमेन जोड़ें
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "trusted-cdn",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {}
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/allowed_domains" \
+  | jq .
+```
+
+### अनुमत डोमेन सूची
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/allowed_domains" \
+  | jq .
+```
+
+### एक अनुमत डोमेन हटाएं
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/allowed_domains/trusted-cdn"
+```
+
+## JS इंजेक्शन कॉन्फ़िगरेशन
+
+### वर्तमान कॉन्फ़िगरेशन प्राप्त करें
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq .
+```
+
+## HTTP लोड बैलेंसर CSD कॉन्फ़िगरेशन
+
+CSD जावास्क्रिप्ट इंजेक्शन को `/api/config/namespaces/\{namespace\}/http_loadbalancers/\{name\}` पर कॉन्फ़िगरेशन API के माध्यम से सीधे एक HTTP लोड बैलेंसर पर भी सक्षम किया जा सकता है।
+
+लोड बैलेंसर spec के भीतर `client_side_defense` फील्ड इंजेक्शन को नियंत्रित करता है:
+
+```json
+{
+  "client_side_defense": {
+    "policy": {
+      "js_insert_all_pages": {}
+    }
+  }
+}
+```
+
+`policy` निम्नलिखित में से एक को स्वीकार करता है:
+
+| फील्ड | विवरण |
+| --- | --- |
+| `js_insert_all_pages` | सभी पृष्ठों पर इंजेक्ट करें |
+| `js_insert_all_pages_except` | बहिष्करण नियमों को छोड़कर सभी पृष्ठों पर इंजेक्ट करें |
+| `js_insertion_rules` | केवल नियमों से मेल खाने वाले पृष्ठों पर इंजेक्ट करें |
+| `disable_js_insert` | इंजेक्ट न करें |
+
+लोड बैलेंसर पर CSD को अक्षम करने के लिए, `client_side_defense` को `disable_client_side_defense: \{\}` से बदलें।
+
+### लोड बैलेंसर से CSD कॉन्फ़िगरेशन पढ़ें
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  | jq '.spec.client_side_defense'
+```
+
+### एक लोड बैलेंसर पर CSD सक्षम करें
+
+पुनः प्राप्त करें, संशोधित करें, और लागू करें:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  > lb-config.json
+
+jq '.spec |= (
+  del(.disable_client_side_defense) |
+  .client_side_defense = {
+    "policy": {
+      "js_insert_all_pages": {}
+    }
+  }
+)' lb-config.json > lb-config-updated.json
+
+curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d @lb-config-updated.json \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  | jq '.spec.client_side_defense'
+```
+
+### बहिष्करण नियमों के लिए डोमेन और पथ मिलान
+
+`js_insert_all_pages_except` या `js_insertion_rules` का उपयोग करते समय, प्रत्येक नियम एक डोमेन और पथ संयोजन से मेल खाता है।
+
+**डोमेन** (एक चुनें):
+
+| फील्ड | उदाहरण |
+| --- | --- |
+| `any_domain: \{\}` | सभी डोमेन |
+| `domain.exact_value` | `"app.example.com"` |
+| `domain.suffix_value` | `".example.com"` |
+| `domain.regex_value` | `".*\\.example\\.com"` |
+
+**पथ** (एक चुनें):
+
+| फील्ड | उदाहरण |
+| --- | --- |
+| `path.path` | `"/login"` |
+| `path.prefix` | `"/checkout"` |
+| `path.regex` | `"/user/[0-9]+"` |
+
+## API संदर्भ
+
+- [CSD API संदर्भ](https://docs.cloud.f5.com/docs-v2/api/shape-client-side-defense) — संपूर्ण एंडपॉइंट दस्तावेज
+- [CSD कॉन्फ़िगर करें](https://docs.cloud.f5.com/docs-v2/client-side-defense/how-tos/configure-csd) — कंसोल कॉन्फ़िगरेशन गाइड
+- [API क्रेडेंशियल](https://docs.cloud.f5.com/docs-v2/administration/how-tos/user-mgmt/credentials) — API टोकन जनरेट करें

@@ -1,0 +1,1344 @@
+---
+title: デモ
+description: 4段階デモ演習の概要 — ビルド、攻撃、軽減、ティアダウン
+sidebar:
+  order: 1
+  label: 概要
+i18n:
+  sourceHash: abcf919aeb10
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+このガイドでは、F5 Distributed CloudのAPI を使用した**完全なクライアント側防御演習**を4段階に分けて説明します。AIアシスタントまたは人間のオペレーターがエンドツーエンドで実行できるように構成されています。各ステップには、実行可能な`curl`コマンドが含まれており、ページ上部のフォーム、`.env`ファイル、またはオートメーションツールを使用してプレースホルダー値をカスタマイズできます。
+
+<Aside type="caution">
+プレースホルダーフォームは、APIトークンを含む値をブラウザーの`localStorage`に保存します。共有またはパブリックマシンではプロダクションのトークンを使用しないでください。
+</Aside>
+
+## 演習フェーズ
+
+| フェーズ | 目標 | ステップ |
+| --- | --- | --- |
+| [フェーズ 1 — ビルド](/csd/demo/phase-1-build/) | CSD インフラストラクチャ全体をデプロイして検証 | ステップ 1–7 |
+| [フェーズ 2 — 攻撃](/csd/demo/phase-2-attack/) | シミュレートされた攻撃トラフィックを生成し、CSD が検出したことを確認 | ステップ 8–9 |
+| [フェーズ 3 — 軽減](/csd/demo/phase-3-mitigate/) | 軽減前後の証拠 — 攻撃を実行、軽減を適用、攻撃を再実行、比較 | ステップ 1–6 |
+| [フェーズ 4 — ティアダウン](/csd/demo/phase-4-teardown/) | 明示的な確認後にすべてのデプロイメントオブジェクトを削除 | ティアダウン |
+
+## プリフライトチェック
+
+フェーズ 1 を開始する前に、環境がクリーンであることを確認してください。以下の API チェックを実行して、以前の実行からの残存オブジェクトがあるかどうかを確認します。
+
+```bash
+# すべてのフェーズ 1 オブジェクトを確認してコンピューティング環境ステータスを取得
+HTTP_LB=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http")
+HTTPS_LB=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+ORIGIN=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx")
+HC=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx")
+PD_COUNT=$(curl -s -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '[.items // [] | .[] | select(.metadata.name != null)] | length')
+MD_COUNT=$(curl -s -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '[.items // [] | .[] | select(.metadata.name != null)] | length')
+
+# HTTPS LB が存在する場合は、スケルトン状態を検出するためにボディを取得
+HTTPS_IS_SKELETON="false"
+if [ "$HTTPS_LB" = "200" ]; then
+  HTTPS_LB_BODY=$(curl -s \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+  HTTPS_IS_SKELETON=$(echo "$HTTPS_LB_BODY" | jq '
+    ((.spec.default_route_pools // []) | length == 0) and
+    (.spec.client_side_defense == null)
+  ')
+fi
+
+# 決定論的な環境ステータスを計算
+jq -n \
+  --argjson http_lb "$HTTP_LB" \
+  --argjson https_lb "$HTTPS_LB" \
+  --argjson origin "$ORIGIN" \
+  --argjson hc "$HC" \
+  --argjson pd "$PD_COUNT" \
+  --argjson md "$MD_COUNT" \
+  --argjson https_skeleton "$HTTPS_IS_SKELETON" \
+'{
+  objects: [
+    { name: "http_lb",           http_code: $http_lb, exists: ($http_lb == 200) },
+    { name: "https_lb",          http_code: $https_lb, exists: ($https_lb == 200), is_skeleton: $https_skeleton },
+    { name: "origin_pool",       http_code: $origin, exists: ($origin == 200) },
+    { name: "healthcheck",       http_code: $hc, exists: ($hc == 200) },
+    { name: "protected_domains", count: $pd, exists: ($pd > 0) },
+    { name: "mitigated_domains", count: $md, exists: ($md > 0) }
+  ],
+  any_infra_exists: ($http_lb == 200 or ($https_lb == 200 and ($https_skeleton | not)) or $origin == 200 or $hc == 200),
+  any_csd_exists: ($pd > 0 or $md > 0),
+  status: (
+    if ($http_lb == 404 and $https_lb == 404 and $origin == 404 and $hc == 404 and $pd == 0 and $md == 0) then "CLEAN"
+    elif ($https_lb == 200 and $https_skeleton and $http_lb == 404 and $origin == 404 and $hc == 404 and $pd == 0 and $md == 0) then "HTTPS_SKELETON"
+    elif ($http_lb == 200 and $origin == 200) then "ALL_EXIST"
+    elif ($http_lb == 200 or ($https_lb == 200 and ($https_skeleton | not)) or $origin == 200 or $hc == 200) then "TEARDOWN_NEEDED"
+    elif ($md > 0 and $http_lb == 404 and ($https_lb == 404 or ($https_lb == 200 and $https_skeleton)) and $origin == 404 and $hc == 404) then "MITIGATIONS_ONLY"
+    else "TEARDOWN_NEEDED"
+    end
+  ),
+  action: (
+    if ($http_lb == 404 and $https_lb == 404 and $origin == 404 and $hc == 404 and $pd == 0 and $md == 0) then "フェーズ 1 に進む"
+    elif ($https_lb == 200 and $https_skeleton and $http_lb == 404 and $origin == 404 and $hc == 404 and $pd == 0 and $md == 0) then "フェーズ 1 に進む (HTTPS LB スケルトンは PUT で復元されます)"
+    elif ($http_lb == 200 and $origin == 200) then "すべてのフェーズ 1 オブジェクトが存在します — 健全性を確認し、オプションでフェーズ 2 にスキップ"
+    elif ($http_lb == 200 or ($https_lb == 200 and ($https_skeleton | not)) or $origin == 200 or $hc == 200) then "まずフェーズ 4 ティアダウンを実行してから再確認"
+    elif ($md > 0 and $http_lb == 404 and ($https_lb == 404 or ($https_lb == 200 and $https_skeleton)) and $origin == 404 and $hc == 404) then "軽減ドメインをインラインで削除してから進む"
+    else "まずフェーズ 4 ティアダウンを実行してから再確認"
+    end
+  )
+}'
+```
+
+### スキップ先検証
+
+すべてのフェーズ 1 オブジェクトが存在する場合 (`200`)、フェーズ 2 にスキップすることを計画している場合は、**フェーズ 1 ステップ 7 検証コマンド**を実行してインフラストラクチャの健全性を確認してからスキップしてください。[フェーズ 1 — ステップ 7: 検証](/csd/demo/phase-1-build/#step-7-verify)から正確なコマンドを使用してください。
+
+1. DNS解決: `dig +short xF5XC_DOMAINNAMEx A`
+2. HTTP LB状態: `GET .../http_loadbalancers/xF5XC_LB_NAMEx-http` をパイプして
+   `jq '{state: .spec.state}'` — `VIRTUAL_HOST_READY` を表示する必要があります
+3. CSD JS設定: `GET .../js_configuration` — `scriptTag` を含む必要があります
+4. CSD状態: `GET .../status` をパイプして `jq '{configured: .isConfigured,
+   enabled: .isEnabled}'` — 両方が `true` である必要があります
+
+フェーズ 2 にスキップする前に、すべての必須チェック (DNS-1、LB-1、CSD-1、CSD-2) が PASS の状態である必要があります。チェックが失敗した場合は、失敗したステップからフェーズ 1 を実行してください。
+
+<Aside type="note">
+軽減ドメインリストは、実際の軽減が存在しない場合でも、null メタデータを持つ 1 個のカウントを返すことができます。これはバックエンド アーティファクトです。決定ルール: 単一の項目が null メタデータを持つ場合 (名前が null または空)、0 として扱います。実際のメタデータを持つ場合は、進める前に名前別に各項目を削除します。
+</Aside>
+
+<Aside type="note">
+CSD 検出は、同じテナントで同じ保護ドメインが再登録された場合、インフラストラクチャのティアダウン/再構築全体で持続します。ティアダウンと再構築の後、`/detected_domains` に対して一度クエリを実行します。レスポンスに項目が含まれている場合は、すぐに進みます — 待機は不要です。レスポンスが空の場合は、30 秒待機してもう一度クエリを実行します。2 回目のクエリ後も空の場合は、とにかく進みます — シミュレーション実行時に検出が表示されます。
+</Aside>
+
+## 準備状況検証マトリックス
+
+上記のプリフライトチェックは、環境が**クリーン**であることを確認します。下記の準備マトリックスは、環境が**機能可能**であることを確認します — すべての前提条件、クォータ、接続性、プラットフォームサービスが成功したデモのために配置されていることを確認します。すべてのミーティングの前に、準備段階の一部として本マトリックスを実行してください。
+
+各チェックにはテスト ID、層 (T0–T5)、PASS/FAIL/WARN 基準、および是正パスがあります。層は順序立てられています — 早い層での FAIL は後の層の実行をブロックします。
+
+### 層の概要
+
+| 層 | カテゴリ | デモをブロック? | 目的 |
+| --- | --- | --- | --- |
+| T0 | 接続性と認証 | **はい** | プラットフォームに到達して認証できるか? |
+| T1 | クォータと容量 | **はい** (制限に達した場合) | デモオブジェクトを作成するスペースがあるか? |
+| T2 | プラットフォーム前提条件 | **はい** | テナントレベルのサービスが構成されているか? |
+| T3 | オリジンの健全性 | **警告** | バックエンドアプリケーションが応答しているか? |
+| T4 | 環境がクリーン | 自動修復 | 以前の実行からの残存オブジェクトがあるか? |
+| T5 | 証明書の準備状況 | 情報のみ | HTTPS は機能するか、それとも HTTP のみを計画すべきか? |
+
+### T0: 接続性と認証
+
+これらのチェックは、実行ホストが F5 XC API に到達でき、資格情報が有効であることを確認します。
+
+#### PF-T0-1: API 接続性
+
+```bash
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' --connect-timeout 10 --max-time 15 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T0-1",
+  http_code: .http_code,
+  status: (
+    if .http_code == 200 then "PASS"
+    elif .http_code == 401 then "FAIL"
+    else "FAIL"
+    end
+  ),
+  detail: (
+    if .http_code == 200 then "API に到達可能、トークン有効"
+    elif .http_code == 401 then "トークンの有効期限が切れているか無効 — 管理者 > 認証情報 > API 認証情報で再生成"
+    elif .http_code == 0 then "ネットワークに到達できません — 接続性、VPN、または TLS 互換性を確認 (--tlsv1.2 --tls-max 1.2 を試す)"
+    else "予期しない HTTP \(.http_code)"
+    end
+  )
+}'
+```
+
+#### PF-T0-2: ネームスペースアクセス
+
+```bash
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T0-2",
+  http_code: .http_code,
+  status: (
+    if .http_code == 200 then "PASS"
+    elif .http_code == 404 then "WARN"
+    else "FAIL"
+    end
+  ),
+  detail: (
+    if .http_code == 200 then "トークンはネームスペースアクセス権を有する"
+    elif .http_code == 403 then "トークンはネームスペースの権限を欠いている — ロールバインディングを確認"
+    elif .http_code == 404 then "ネームスペースは存在しません — フェーズ 1 ステップ 0 で作成されます"
+    else "予期しない HTTP \(.http_code)"
+    end
+  )
+}'
+```
+
+#### PF-T0-3: CSD API アクセス
+
+```bash
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T0-3",
+  http_code: .http_code,
+  status: (
+    if .http_code == 200 then "PASS"
+    elif .http_code == 404 then "WARN"
+    else "FAIL"
+    end
+  ),
+  detail: (
+    if .http_code == 200 then "トークンは CSD/Shape API の権限を有する"
+    elif .http_code == 403 then "トークンが CSD ロールバインディングを欠いている — テナント管理者に問い合わせ"
+    elif .http_code == 404 then "ネームスペースは存在しません — CSD アクセスはフェーズ 1 のネームスペース作成後に検証されます"
+    else "予期しない HTTP \(.http_code)"
+    end
+  )
+}'
+```
+
+#### PF-T0-4: RBAC 権限マトリックス
+
+非破壊的なプローブは、デモが必要とするすべてのオブジェクトタイプの読み取りおよび書き込み権限をテストします。読み取りはリストエンドポイントで `GET` を使用してテストします。書き込みは、既知の存在しないオブジェクトで `DELETE` を使用してテストします — RBAC が操作を拒否すると API は `403` を返し、操作は許可されるがオブジェクトが存在しない場合は `404` を返します。この副作用ゼロの技術により、一時的なプローブオブジェクトの作成を回避します。
+
+```bash
+PROBE_NAME="rbac-probe-nonexistent"
+
+# 読み取りプローブ
+NS_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx")
+HC_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks")
+OP_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools")
+LB_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers")
+CSD_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status")
+PD_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains")
+MD_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains")
+
+# 書き込みプローブ (非破壊的: 存在しないオブジェクトで DELETE/cascade_delete)
+NS_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X POST -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{\"name\":\"$PROBE_NAME\"}" \
+  "xF5XC_API_URLx/api/web/namespaces/$PROBE_NAME/cascade_delete")
+HC_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/$PROBE_NAME")
+OP_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/$PROBE_NAME")
+LB_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/$PROBE_NAME")
+PD_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/$PROBE_NAME.example.com")
+MD_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/$PROBE_NAME.example.com")
+
+# 決定論的権限マトリックスを計算
+jq -n \
+  --argjson ns_r "$NS_R" --argjson ns_w "$NS_W" \
+  --argjson hc_r "$HC_R" --argjson hc_w "$HC_W" \
+  --argjson op_r "$OP_R" --argjson op_w "$OP_W" \
+  --argjson lb_r "$LB_R" --argjson lb_w "$LB_W" \
+  --argjson csd_r "$CSD_R" \
+  --argjson pd_r "$PD_R" --argjson pd_w "$PD_W" \
+  --argjson md_r "$MD_R" --argjson md_w "$MD_W" \
+'{
+  check: "PF-T0-4",
+  permissions: [
+    { object: "namespace",          read: ($ns_r != 403),  write: ($ns_w != 403),  required: false, note: "条件付き — ネームスペースを作成する必要がある場合のみ" },
+    { object: "healthcheck",        read: ($hc_r != 403),  write: ($hc_w != 403),  required: false, note: "CSD 用はオプション" },
+    { object: "origin_pool",        read: ($op_r != 403),  write: ($op_w != 403),  required: true,  note: "" },
+    { object: "http_loadbalancer",  read: ($lb_r != 403),  write: ($lb_w != 403),  required: true,  note: "" },
+    { object: "csd_status",         read: ($csd_r != 403), write: true,            required: true,  note: "読み取り専用チェック" },
+    { object: "protected_domain",   read: ($pd_r != 403),  write: ($pd_w != 403),  required: true,  note: "" },
+    { object: "mitigated_domain",   read: ($md_r != 403),  write: ($md_w != 403),  required: false, note: "フェーズ 3 のみ" }
+  ],
+  status: (
+    if [
+      ($op_r == 403), ($op_w == 403),
+      ($lb_r == 403), ($lb_w == 403),
+      ($csd_r == 403),
+      ($pd_r == 403), ($pd_w == 403)
+    ] | any then "FAIL"
+    elif ($ns_w == 403 or $hc_w == 403 or $md_w == 403) then "WARN"
+    else "PASS"
+    end
+  ),
+  detail: (
+    [
+      (if ($op_r == 403 or $op_w == 403) then "オリジンプール: 権限なし" else null end),
+      (if ($lb_r == 403 or $lb_w == 403) then "ロードバランサー: 権限なし" else null end),
+      (if $csd_r == 403 then "CSD API: 権限なし — このネームスペースで CSD が有効でない可能性があります" else null end),
+      (if ($pd_r == 403 or $pd_w == 403) then "保護ドメイン: 権限なし" else null end),
+      (if $ns_w == 403 then "ネームスペース: 書き込み拒否 — ネームスペースは既に存在する必要があります (作成不可)" else null end),
+      (if $hc_w == 403 then "ヘルスチェック: 書き込み拒否 — ヘルスチェック作成をスキップ" else null end),
+      (if $md_w == 403 then "軽減ドメイン: 書き込み拒否 — フェーズ 3 軽減をスキップ" else null end)
+    ] | map(select(. != null)) | join("; ")
+  )
+}'
+```
+
+<Aside type="note">
+**ネームスペース + RBAC インタラクション。** PF-T0-2 が `404` を返した (ネームスペースが存在しない) AND PF-T0-4 がネームスペース書き込みが拒否されていることを示した場合、デモは**進行不可能**です — ネームスペースが存在せず、作成することもできません。PF-T0-2 が `200` を返した (ネームスペースが存在) かつネームスペース書き込みが拒否された場合、これは警告のみです — デモは事前に存在するネームスペースを使用できます。
+
+**CSD + RBAC。** CSD エンドポイントが `403` を返す場合、CSD サービスがこのネームスペースまたはテナント (プランベースのアクセス制御) で有効でない可能性があります。CSD はデモされているコア機能であるため、これは常に FAIL です。
+</Aside>
+
+### T1: クォータと容量
+
+これらのチェックはテナントのクォータ使用状況 API をクエリして、デモが必要とする各オブジェクトの種類の制限、現在の使用状況、および残りの容量を決定します。これにより、プローブアンドデリート テストを、正確な数値を報告する単一の読み取り専用 API 呼び出しに置き換えます。
+
+#### PF-T1-0: クォータ使用状況ゲート
+
+テナント全体のクォータ使用状況エンドポイントをクエリし、デモが必要とするすべてのオブジェクトの種類に対して決定論的な PASS/WARN/FAIL ステータスを計算します。このエンドポイントは `system` ネームスペースが必要です。単一の API 呼び出しで、すべてのプラットフォームレベルのクォータを一度にチェックします。
+
+ゲートは、デモが使用する各オブジェクトの種類の数、その種類が必須かどうか、デモを続行するのに必要な最小値を指定する `demo_needs` 配列を定義します。jq フィルターは `remaining` を `needed` と比較し、`status` フィールドを決定論的に計算します — オペレーターの解釈は不要です。
+
+```bash
+# ステップ 1: クォータデータを取得
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/system/quota/usage?namespace=system" \
+  > /tmp/quota.json
+
+# ステップ 2: ゲートステータスを計算
+jq '
+  . as $data |
+  [
+    { kind: "healthcheck",       needed: 1, required: false, min_proceed: 0 },
+    { kind: "origin_pool",       needed: 1, required: true,  min_proceed: 1 },
+    { kind: "endpoint",          needed: 1, required: true,  min_proceed: 1 },
+    { kind: "http_loadbalancer", needed: 2, required: true,  min_proceed: 1 }
+  ] | map(
+    . as $req |
+    $data.objects[$req.kind] as $obj |
+    $obj.limit.maximum as $limit |
+    $obj.usage.current as $usage |
+    (if $limit == -1 then null else ($limit - $usage) end) as $remaining |
+    {
+      kind:      $req.kind,
+      limit:     (if $limit == -1 then "unlimited" else $limit end),
+      usage:     $usage,
+      remaining: (if $remaining == null then "unlimited" else $remaining end),
+      needed:    $req.needed,
+      status:    (
+        if $remaining == null then "PASS"
+        elif $remaining >= $req.needed then "PASS"
+        elif $remaining >= $req.min_proceed then "WARN"
+        else
+          (if $req.required then "FAIL" else "WARN" end)
+        end
+      )
+    }
+  )
+  | {
+      checks: .,
+      gate: (if any(.[]; .status == "FAIL") then "FAIL"
+             elif any(.[]; .status == "WARN") then "WARN"
+             else "PASS" end)
+    }
+' /tmp/quota.json
+```
+
+**ゲート出力** — `gate` フィールドは単一の決定論的判定です。
+
+- **`PASS`** — すべてのオブジェクト種類に `remaining >= needed` があります。デモを続行できます。
+- **`WARN`** — 少なくとも 1 つの種類に容量が減少していますが、継続するための最小値は満たされています (例: LB スロット 2 個の代わりに 1 個のみ利用可能、またはヘルスチェック クォータ満杯)。デモは制限付きで続行できます。
+- **`FAIL`** — 少なくとも 1 つの必須の種類に `remaining < min_proceed` があります。クォータが解放されるまでデモを続行できません。
+
+**出力例** (WARN — エンドポイント容量達到、ヘルスチェック満杯に近い):
+
+```json
+{
+  "checks": [
+    { "kind": "healthcheck",       "limit": 150,         "usage": 149, "remaining": 1,           "needed": 1, "status": "PASS" },
+    { "kind": "origin_pool",       "limit": "unlimited", "usage": 420, "remaining": "unlimited", "needed": 1, "status": "PASS" },
+    { "kind": "endpoint",          "limit": 500,         "usage": 500, "remaining": 0,           "needed": 1, "status": "FAIL" },
+    { "kind": "http_loadbalancer", "limit": "unlimited", "usage": 116, "remaining": "unlimited", "needed": 2, "status": "PASS" }
+  ],
+  "gate": "FAIL"
+}
+```
+
+| `gate` 値 | アクション |
+| --- | --- |
+| **PASS** | PF-T1-4 (保護ドメインチェック) に進み、その後 T2 に進む |
+| **WARN** | 準備状況レポートに制限事項を記載し、削減した機能で続行 |
+| **FAIL** | 停止 — どの種類が満杯かをレポートし、以下の修復手順を実施 |
+
+**種類別の修復:**
+
+| 種類 | 修復 |
+| --- | --- |
+| `healthcheck` | 未使用のヘルスチェックを削除して容量を解放します。デモはヘルスチェック なしで進行します (CSD は 1 つを必須としません)。 |
+| `origin_pool` | 未使用のオリジンプールを削除するか、テナント制限を増やすよう管理者に問い合わせてください。 |
+| `endpoint` | 他のネームスペースの未使用オリジンプールを削除してエンドポイント容量を解放してください (エンドポイントはオリジンプールのサブオブジェクト)、またはテナント制限を増やすよう管理者に問い合わせてください。 |
+| `http_loadbalancer` | 未使用のロードバランサーを削除するか、テナント制限を増やすよう管理者に問い合わせてください。1 スロットのみ利用可能な場合、HTTP LB (プライマリ) は作成されますが、HTTPS LB (セカンダリ) はスキップされます。 |
+
+<Aside type="note">
+クォータ使用状況 API はテナント全体の合計をすべてのネームスペース全体で返すため、ネームスペースごとのカウントではありません。`limit` 値が `-1` (「無制限」として表示) の場合は、そのオブジェクト種類のクォータが上限なしであることを意味します。API が `403`、`404`、または予期しない形式を返す場合は、以下の[フォールバックプローブベースのチェック](#fallback-probe-based-quota-checks)に戻してください。
+</Aside>
+
+#### PF-T1-4: 保護ドメイン クォータ
+
+CSD 保護ドメインはプラットフォーム クォータ使用状況 API に表示されません。プローブベースのチェックを使用します: プローブ保護ドメインを作成してすぐに削除します。
+
+```bash
+# プローブを作成し、HTTP コードと応答ボディの両方をキャプチャ
+PROBE_BODY=$(curl -s -w '\n%\{http_code\}' -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "preflight-probe.example.com",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "protected_domain": "example.com"
+    }
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains")
+PROBE_HTTP=$(echo "$PROBE_BODY" | tail -1)
+PROBE_JSON=$(echo "$PROBE_BODY" | sed '$d')
+
+# ステータスを計算
+echo "$PROBE_JSON" | jq --argjson http "$PROBE_HTTP" '{
+  check: "PF-T1-4",
+  http_code: $http,
+  status: (
+    if $http == 409 then "PASS"
+    elif (.code // 0) == 8 then "FAIL"
+    elif .metadata.name then "PASS"
+    else "FAIL"
+    end
+  ),
+  detail: (
+    if $http == 409 then "example.com は既に登録されています — クォータは満杯ではありません"
+    elif (.code // 0) == 8 then "保護ドメイン クォータ満杯 — 未使用の保護ドメインを削除"
+    elif .metadata.name then "プローブ作成済み — クォータ利用可能"
+    else "予期しない応答"
+    end
+  )
+}'
+
+# クリーンアッププローブ (409 が発生した場合は 404 が予想されます)
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/preflight-probe.example.com" \
+  > /dev/null
+```
+
+<Aside type="note">
+プローブは RFC 2606 予約ドメイン `example.com` を使用します。`409` レスポンスは有効な PASS です — ドメインが既に登録されていることを意味し、クォータが満杯でないことを証明します。`409` が発生した場合、DELETE は `404` を返すことができます (プローブは作成されませんでした)。これは予想される動作です。
+</Aside>
+
+#### フォールバック: プローブベースのクォータチェック
+
+PF-T1-0 が失敗した場合 (クォータ使用状況 API が `403`、`404`、または予期しない形式を返す)、ヘルスチェック、オリジンプール、エンドポイント、ロードバランサー クォータに対してプローブアンドデリート チェックにフォールバックしてください。これらのチェックは一時的なオブジェクトを作成してすぐに削除します — 作成がエラーコード `8` で "exhausted limits" を返す場合、クォータが満杯です。
+
+<Aside type="caution">
+プローブベースのチェックはテナントに実際のオブジェクトを作成し、すぐに削除します。削除が失敗した場合 (例: ネットワーク問題)、古いプローブオブジェクトが残存する可能性があります。[T4 古いプローブクリーンアップ](#t4-environment-clean)は次のプリフライト実行時に古いプローブを検出して削除します。
+</Aside>
+
+各フォールバックプローブは同じパターンを使用します: 一時的なオブジェクトを作成し、応答から決定論的ステータスを計算し、プローブを削除します。`status` フィールドは、オブジェクトが作成された場合 (`.metadata.name` 存在) は `PASS`、エラーコード `8` (制限満杯) の場合は `WARN` または `FAIL` (その種類が必須かどうかによる) です。
+
+**ヘルスチェック プローブ** (満杯の場合は WARN — ヘルスチェックは CSD 用はオプション):
+
+```bash
+RESULT=$(curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "preflight-quota-probe",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "http_health_check": {
+        "use_origin_server_name": {},
+        "path": "/",
+        "use_http2": false
+      },
+      "timeout": 3,
+      "interval": 15,
+      "unhealthy_threshold": 1,
+      "healthy_threshold": 3
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks")
+echo "$RESULT" | jq '{
+  check: "fallback-healthcheck",
+  status: (if .metadata.name then "PASS" elif (.code // 0) == 8 then "WARN" else "FAIL" end),
+  detail: (if .metadata.name then "クォータ利用可能" elif (.code // 0) == 8 then "クォータ満杯 — ヘルスチェックはオプション、デモ続行" else "予期しない: \(.message // "unknown error")" end)
+}'
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/preflight-quota-probe" \
+  > /dev/null
+```
+
+**オリジンプール & エンドポイント プローブ** (満杯の場合は FAIL — 両方が必須):
+
+```bash
+RESULT=$(curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "preflight-origin-probe",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "origin_servers": [{
+        "public_ip": { "ip": "192.0.2.1" },
+        "labels": {}
+      }],
+      "no_tls": {},
+      "port": 80,
+      "same_as_endpoint_port": {},
+      "healthcheck": [],
+      "loadbalancer_algorithm": "LB_OVERRIDE",
+      "endpoint_selection": "LOCAL_PREFERRED"
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools")
+echo "$RESULT" | jq '{
+  check: "fallback-origin-pool",
+  status: (if .metadata.name then "PASS" elif (.code // 0) == 8 then "FAIL" else "FAIL" end),
+  detail: (if .metadata.name then "クォータ利用可能" elif (.code // 0) == 8 then "クォータ満杯 — \(.message // "limit reached")" else "予期しない: \(.message // "unknown error")" end)
+}'
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/preflight-origin-probe" \
+  > /dev/null
+```
+
+**HTTP ロードバランサー プローブ** (満杯の場合は FAIL — LB は必須):
+
+```bash
+RESULT=$(curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "preflight-lb-probe",
+      "namespace": "xF5XC_NAMESPACEx",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["preflight-probe.example.com"],
+      "http": {
+        "dns_volterra_managed": false,
+        "port": 80
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [],
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers")
+echo "$RESULT" | jq '{
+  check: "fallback-http-lb",
+  status: (if .metadata.name then "PASS" elif (.code // 0) == 8 then "FAIL" else "FAIL" end),
+  detail: (if .metadata.name then "クォータ利用可能" elif (.code // 0) == 8 then "クォータ満杯 — \(.message // "limit reached")" else "予期しない: \(.message // "unknown error")" end)
+}'
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/preflight-lb-probe" \
+  > /dev/null
+```
+
+### T2: プラットフォーム前提条件
+
+これらのチェックはデモが依存するテナントレベルのサービスを検証します。
+
+#### PF-T2-1: CSD テナント ステータス
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq '{
+    check: "PF-T2-1",
+    configured: .isConfigured,
+    enabled: .isEnabled,
+    status: (if .isConfigured and .isEnabled then "PASS" else "FAIL" end),
+    detail: (
+      if .isConfigured and .isEnabled then "CSD はアクティブ"
+      elif (.isConfigured | not) then "CSD がテナントレベルで有効ではありません — F5 XC 管理者に問い合わせ"
+      else "CSD は設定されていますが、アクティブではありません — 管理者に問い合わせ"
+      end
+    )
+  }'
+```
+
+#### PF-T2-2: DNS ゾーンが存在
+
+```bash
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T2-2",
+  http_code: .http_code,
+  status: (
+    if .http_code == 200 then "PASS"
+    elif .http_code == 404 then "WARN"
+    elif .http_code == 403 then "WARN"
+    else "FAIL"
+    end
+  ),
+  detail: (
+    if .http_code == 200 then "DNS ゾーンが F5 XC に存在"
+    elif .http_code == 404 then "F5 XC DNS ゾーンなし — 外部 DNS が使用されている可能性があります"
+    elif .http_code == 403 then "トークンが DNS ゾーン読み取りアクセスを欠いている (system ネームスペース)"
+    else "予期しない HTTP \(.http_code)"
+    end
+  )
+}'
+```
+
+#### PF-T2-3: DNS 管理対象レコードが有効
+
+PF-T2-2 が `200` を返した場合 (F5 XC DNS ゾーンが存在) にのみ実行します。
+
+**現在の状態を確認:**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq '{
+    check: "PF-T2-3",
+    managed_records: (.spec.primary.allow_http_lb_managed_records // false),
+    status: (if .spec.primary.allow_http_lb_managed_records == true then "PASS" else "WARN" end),
+    detail: (if .spec.primary.allow_http_lb_managed_records == true then "LB 管理対象 DNS レコード有効" else "管理対象レコードが有効ではありません — 自動修復が必要な場合があります" end)
+  }'
+```
+
+**必要な場合は自動修復:** `status` が `WARN` AND PF-T2-4 が F5 XC ネームサーバー (`ns1.f5clouddns.com`、`ns2.f5clouddns.com`) を示す場合、GET+PUT を使用して管理対象レコードを自動有効化します。
+
+```bash
+# 現在のゾーン設定を取得
+ZONE_CONFIG=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx")
+
+# 管理対象レコードを有効にして更新
+echo "$ZONE_CONFIG" \
+  | jq '.spec.primary.allow_http_lb_managed_records = true' \
+  | curl -s -X PUT \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d @- \
+    "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq .
+```
+
+その後、更新が有効になったことを確認するために再度チェック します。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq '.spec.primary.allow_http_lb_managed_records'
+```
+
+<Aside type="caution">
+ゾーン仕様には、プラットフォーム管理レコード付きの `x-ves-io-managed` rr_set_group が含まれます。`PUT` ペイロードは**このグループを保持する必要があります** — 省略すると HTTP 403 "内部目的で予約済み" を返します。常に `GET` で現在のゾーン設定を取得し、`allow_http_lb_managed_records` フィールドのみを変更し、完全な仕様を送信し直してください。
+</Aside>
+
+| 結果 | DNS 権限 | ステータス | 修復 |
+| --- | --- | --- | --- |
+| `true` | いずれか | **PASS** | LB 管理対象 DNS レコードが自動作成されます |
+| `false`/`null` | F5 XC | **自動修復** | GET+PUT で有効化し、検証し、結果をレポート |
+| `false`/`null` | 外部 | **情報** | 管理対象レコードは外部 DNS には適用されません — フェーズ 1 ステップ 4 は[オプション B](/csd/demo/phase-1-build/#option-b-external-dns-provider) (手動レコード作成) を使用 |
+| 自動修復失敗 | F5 XC | **FAIL** | トークンが system ネームスペース書き込みアクセスを欠いている可能性があります — テナント管理者に問い合わせ |
+
+#### PF-T2-4: DNS ネームサーバー権限
+
+```bash
+NS_RECORDS=$(dig +short NS xF5XC_ROOT_DOMAINx)
+echo "$NS_RECORDS" | jq -Rs '{
+  check: "PF-T2-4",
+  nameservers: (split("\n") | map(select(length > 0))),
+  status: (
+    if (split("\n") | map(select(length > 0)) | length) == 0 then "FAIL"
+    elif test("f5clouddns\\.com") then "PASS"
+    else "INFO"
+    end
+  ),
+  detail: (
+    if (split("\n") | map(select(length > 0)) | length) == 0 then "NS レコードなし — このドメインの DNS が壊れています"
+    elif test("f5clouddns\\.com") then "F5 XC が権限あり — 自動 DNS 管理が利用可能"
+    else "外部 DNS プロバイダー — フェーズ 1 ステップ 4 はオプション B (手動レコード作成) を使用"
+    end
+  )
+}'
+```
+
+### T3: オリジン健全性
+
+これらのチェックはバックエンドアプリケーションに到達可能かを検証します。
+
+<Aside type="tip" title="RFC 5737 TEST-NET アドレス">
+IP 範囲 `192.0.2.0/24` (TEST-NET-1)、`198.51.100.0/24`
+(TEST-NET-2)、`203.0.113.0/24` (TEST-NET-3) は
+[RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) で
+ドキュメントおよび例での使用のために予約されています。これらは
+**公開インターネット上でルーティング不可能**であり、接続テストに
+応答することはありません。`F5XC_ORIGIN_IP` がこれらの範囲の
+アドレスに設定されている場合、意図的なドキュメント プレースホルダーです —
+誤設定ではありません。
+</Aside>
+
+**スキップ条件チェック:** 接続性テストを実行する前に、オリジン IP が RFC 5737 TEST-NET アドレスかどうかを計算します。
+
+```bash
+echo "xF5XC_ORIGIN_IPx" | jq -Rs '{
+  check: "PF-T3-skip",
+  origin_ip: (rtrimstr("\n")),
+  is_test_net: (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")),
+  status: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "SKIP" else "CONTINUE" end),
+  detail: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "RFC 5737 TEST-NET アドレス — ルーティング不可能、接続テストをスキップ" else "ルーティング可能な IP — 接続テストに進む" end)
+}'
+```
+
+`status` が `SKIP` の場合、PF-T3-1 と PF-T3-2 を SKIP として記録し、T4 に進みます。それ以外の場合は、以下のチェックを実行します。
+
+#### PF-T3-1: オリジンサーバー接続性
+
+```bash
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' --connect-timeout 10 --max-time 15 \
+  "http://xF5XC_ORIGIN_IPx:xF5XC_ORIGIN_PORTx/")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T3-1",
+  http_code: .http_code,
+  status: (if .http_code >= 200 and .http_code < 600 then "PASS" elif .http_code == 0 then "WARN" else "WARN" end),
+  detail: (
+    if .http_code >= 200 and .http_code < 600 then "オリジンは HTTP \(.http_code) で応答"
+    elif .http_code == 0 then "このネットワークからオリジンに到達不可 — LB は異なるパスを使用する可能性があります"
+    else "予期しないレスポンスコード \(.http_code)"
+    end
+  )
+}'
+```
+
+<Aside type="note">
+CSD デモのデフォルトオリジンは、`44.232.69.192:3000` の Juice Shop アプリケーションです。カスタムオリジン (`F5XC_ORIGIN_IP` / `F5XC_ORIGIN_PORT`) を使用している場合は、フォーム要素を持つ HTML ページを提供することを確認してください — CSD は検出機能をデモンストレートするためにフォーム要素が必要です。
+</Aside>
+
+#### PF-T3-2: オリジンが HTML コンテンツを提供
+
+PF-T3-1 が有効な HTTP ステータスを返した場合のみ実行:
+
+```bash
+curl -s --max-time 10 "http://xF5XC_ORIGIN_IPx:xF5XC_ORIGIN_PORTx/" \
+  | grep -qi '</html>' && echo "PASS: HTML content" || echo "WARN: No HTML detected"
+```
+
+| 結果 | ステータス | 修復 |
+| --- | --- | --- |
+| `PASS: HTML content` | **PASS** | オリジンは HTML ページを提供 (CSD JS 挿入に必須) |
+| `WARN: No HTML detected` | **WARN** | オリジンは API のみのサービスまたは非 HTML を返す可能性があります — CSD JS 挿入には HTML ページレスポンスが必須 |
+
+### T4: 環境がクリーン
+
+これらのチェックは、**名前付き F5 XC 設定オブジェクト**が以前のデモ実行から残存していないことを確認します — HTTP ロードバランサー、HTTPS ロードバランサー、オリジンプール、ヘルスチェック、保護ドメイン、軽減ドメイン。T4 はオブジェクトレベルのクリーンアップについてです: フェーズ 1 作成と競合する API オブジェクトが存在しているかどうか。IP アドレス、ネットワーク接続、またはオリジンの健全性をテストするものではありません (これらの懸念は T3 に属します)。
+
+<Aside type="note">
+**ネームスペースが存在しない場合は T4 をスキップ。** PF-T0-2 が `404` を返した (ネームスペースが存在しない) 場合、T4 環境チェック全体をスキップして、ステータスを `CLEAN` として報告します。存在しないネームスペースには残存オブジェクトを含めることはできません。フェーズ 1 ステップ 0 はオブジェクトが作成される前にネームスペースを作成します。
+</Aside>
+
+上記の[プリフライトチェック](#pre-flight-check)セクションから 6 つのプリフライトコマンドを実行します。[決定ロジック](#decision-logic)を適用して次のステップを決定します。オブジェクトが存在する場合、自動ティアダウンは準備段階中に実行されます (確認は不要)。
+
+また、以前の中断したプリフライト実行から古いプローブオブジェクトを確認して削除します。これらのプローブは、クォータ使用状況 API が利用不可で[フォールバック プローブベースのチェック](#fallback-probe-based-quota-checks)が使用された場合、または常にプローブベースのチェック (PF-T1-4) を使用する保護ドメイン プローブの場合にのみ作成されます。
+
+```bash
+# 古いプローブのクリーンアップ (任意の順序で削除 — プローブに依存性なし)
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/preflight-quota-probe" \
+  > /dev/null
+
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/preflight-lb-probe" \
+  > /dev/null
+
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/preflight-origin-probe" \
+  > /dev/null
+
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/preflight-probe.example.com" \
+  > /dev/null
+```
+
+各 DELETE は、オブジェクトが存在した場合は `200` (空の `{}`) を返し、存在しなかった場合は `404` を返します — 両方とも予想されます。
+
+### T5: 証明書の準備状況
+
+これらのチェックは、HTTPS が機能するか、またはデモが HTTP のみを計画すべきかを評価します。
+
+#### PF-T5-1: 最近の証明書発行履歴
+
+Let's Encrypt 証明書が最近デモドメイン用に発行されたかどうかを確認します。頻繁な作成/削除サイクルは週単位のレート制限を枯渇させることができます (ドメイン当たり週 5 個の重複証明書)。
+
+<Aside type="note">
+Let's Encrypt のレート制限ステータスをクエリする API はありません。このチェックは HTTPS LB 証明書の状態をプロキシとして使用します。以前の実行から HTTPS LB が存在しない場合 (クリーン環境)、このチェックはスキップされます — リスクは最近のデモ頻度に基づいて情報として記載されます。
+</Aside>
+
+#### PF-T5-2: 既存の HTTPS LB 証明書状態
+
+以前の実行から HTTPS LB が存在する場合 (PF-T4 がオブジェクトを検出) のみ実行:
+
+```bash
+CERT_BODY=$(curl -s -w '\n%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+CERT_HTTP=$(echo "$CERT_BODY" | tail -1)
+CERT_JSON=$(echo "$CERT_BODY" | sed '$d')
+
+if [ "$CERT_HTTP" = "404" ]; then
+  echo '{"check":"PF-T5-2","cert_state":null,"status":"SKIP","detail":"HTTPS LB なし — 証明書状態はフェーズ 1 ステップ 3 の後に評価されます"}'
+else
+  echo "$CERT_JSON" | jq '{
+    check: "PF-T5-2",
+    cert_state: .spec.cert_state,
+    status: (
+      if .spec.cert_state == "CertificateValid" then "PASS"
+      elif .spec.cert_state == "AutoCertDomainRateLimited" then "INFO"
+      elif (.spec.cert_state | test("Pending|Started")) then "INFO"
+      else "INFO"
+      end
+    ),
+    detail: (
+      if .spec.cert_state == "CertificateValid" then "証明書は正常 — HTTPS は機能します"
+      elif .spec.cert_state == "AutoCertDomainRateLimited" then "Let'\''s Encrypt レート制限に達しました — HTTP のみのデモを計画"
+      elif (.spec.cert_state | test("Pending|Started")) then "証明書プロビジョニング進行中"
+      else "証明書状態: \(.spec.cert_state // "unknown")"
+      end
+    )
+  }'
+fi
+```
+
+### 準備状況レポート形式
+
+すべての層を実行した後、統合準備状況レポートを提示します。
+
+```
+## デモ準備状況: 準備完了 / 準備不完全 / 警告付き準備完了
+
+### T0: 接続性と認証
+| チェック | 結果 | ステータス |
+|---|---|---|
+| PF-T0-1: API 接続性 | 200 | PASS |
+| PF-T0-2: ネームスペースアクセス | 200 | PASS |
+| PF-T0-3: CSD API アクセス | 200 | PASS |
+
+### T1: クォータと容量
+| チェック | 種類 | 制限 | 使用状況 | 残り | 必要 | ステータス |
+|---|---|---|---|---|---|---|
+| PF-T1-0: クォータ使用状況ゲート | `healthcheck` | 150 | 148 | 2 | 1 | PASS |
+| PF-T1-0: クォータ使用状況ゲート | `origin_pool` | unlimited | 420 | unlimited | 1 | PASS |
+| PF-T1-0: クォータ使用状況ゲート | `endpoint` | 500 | 498 | 2 | 1 | PASS |
+| PF-T1-0: クォータ使用状況ゲート | `http_loadbalancer` | unlimited | 116 | unlimited | 2 | PASS |
+| PF-T1-0: クォータ使用状況ゲート | **ゲート** | — | — | — | — | **PASS** |
+| PF-T1-4: 保護ドメイン | — | — | — | — | 1 | PASS (プローブ) |
+
+### T2: プラットフォーム前提条件
+| チェック | 結果 | ステータス |
+|---|---|---|
+| PF-T2-1: CSD テナント ステータス | configured + enabled | PASS |
+| PF-T2-2: DNS ゾーンが存在 | 200 | PASS |
+| PF-T2-3: DNS 管理対象レコード | true | PASS |
+| PF-T2-4: DNS ネームサーバー権限 | f5clouddns.com | PASS |
+
+### T3: オリジン健全性
+| チェック | 結果 | ステータス |
+|---|---|---|
+| PF-T3-1: オリジン接続性 | TEST-NET アドレス (192.0.2.1) | SKIP |
+| PF-T3-2: HTML コンテンツ | TEST-NET アドレス | SKIP |
+
+### T4: 環境がクリーン
+| チェック | 結果 | ステータス |
+|---|---|---|
+| HTTP LB | 404 | PASS |
+| HTTPS LB | 404 | PASS |
+| オリジンプール | 404 | PASS |
+| ヘルスチェック | 404 | PASS |
+| 保護ドメイン | 0 | PASS |
+| 軽減ドメイン | 0 | PASS |
+
+### T5: 証明書の準備状況
+| チェック | 結果 | ステータス |
+|---|---|---|
+| PF-T5-2: 証明書状態 | SKIP (HTTPS LB なし) | INFO |
+
+### 警告
+- (WARN または INFO 項目と背景を含むリスト)
+```
+
+**全体的なステータスルール:**
+
+| 条件 | ステータス |
+| --- | --- |
+| すべての T0–T4 チェックが PASS | **準備完了** |
+| すべての T0–T4 チェックが PASS だが T3 または T5 に WARN/INFO がある | **警告付き準備完了** |
+| T0、T1、または T2 チェックが FAIL | **準備不完全** — 進める前に解決 |
+| T4 に残存オブジェクトがある | 自動修復 (ティアダウン)、その後再確認 |
+
+## AI アシスタント実行プロトコル
+
+このセクションは、API オートメーション ステップを実行する AI アシスタント (Claude Code、Copilot など) のための**決定論的ワークフロー**を定義します。このプロトコルに従うことで、推測を排除し、すべての決定ポイントに定義された解決パスが存在します。
+
+### 変数解決プロトコル
+
+この正確な順序で各変数を解決します。最初の値を提供するソースで停止します。
+
+1. **`.env` ファイルを確認** — リポジトリルートで `.env` を探します。存在する場合、すべての `KEY=VALUE` ペアをパースします。
+2. **シェル環境を確認** — `env | grep F5XC_` を実行して現在のセッションにエクスポートされた値を探します。
+3. **不足している値を特定** — 解決された値を以下の必須/オプション テーブルと比較します。値が不在、空、またはプレースホルダーデフォルト (例: `example-api-token`、`example-tenant`、`example-namespace`、`app.example.com`、`user@example.com`) に設定されている場合、その値は "不足" しています。
+4. **オペレーターにプロンプト** — 各不足している**必須**変数について、オペレーターに値の提供を依頼します。すべての必須変数が解決されるまで進まないでください。
+5. **デフォルトを適用** — 各不足している**オプション**変数について、プロンプトなしで以下のテーブルのデフォルトを使用します。
+
+> **空文字列 = 不足:** 空の値でエクスポートされた変数 (例: `F5XC_HC_NAME=""`) は、設定されていない変数と同じに扱われます — デフォルトを適用します。シェル パラメーター展開 (`${F5XC_HC_NAME:-csd-hc}`) を使用して 1 ステップでデフォルトを適用します。
+
+6. **確認を表示** — 解決された変数テーブルをオペレーターに表示し、API 呼び出しを実行する前に承認を待ちます。
+
+> **準備段階オーバーライド:** ステージ 1 準備中は、手順 6 での待機をスキップします。記録用に解決された変数テーブルを表示してから、すぐに進みます。ステップ 1–5 は依然として適用されます — `.env` とシェルを確認した後、不足している必須変数がある場合は停止し、不足している変数をレポートします。
+
+### 必須対オプション変数
+
+| 変数 | 必須 | デフォルト | プレースホルダー (不足として扱う) |
+| --- | --- | --- | --- |
+| `F5XC_API_TOKEN` | **はい** | — | `example-api-token` |
+| `F5XC_API_URL` | **はい** | — | `https://example-tenant.console.ves.volterra.io` |
+| `F5XC_NAMESPACE` | **はい** | — | `example-namespace` |
+| `F5XC_DOMAINNAME` | **はい** | — | `app.example.com` |
+| `F5XC_ROOT_DOMAIN` | **はい** | — | `example.com` |
+| `F5XC_LB_NAME` | **はい** | — | `example-lb-name`、`example-lb` |
+| `F5XC_EMAIL` | **はい** | — | `user@example.com` |
+| `F5XC_HC_NAME` | オプション | `csd-hc` | — |
+| `F5XC_ORIGIN_IP` | オプション | `44.232.69.192` | — |
+| `F5XC_ORIGIN_POOL` | オプション | `csd-origin` | — |
+| `F5XC_ORIGIN_PORT` | オプション | `3000` | — |
+
+### 実行モード
+
+AI アシスタントは、デモ中に 3 つの実行モードのいずれかで動作します。
+
+| モード | いつアクティブ | 動作 |
+| --- | --- | --- |
+| 通常 | 準備、実行、ティアダウン中はデフォルト | ドキュメント化されたコマンドのみ逐語的 |
+| デバッグ | 失敗時に自動アクティベート | 創意工夫に満ちたトラブルシューティング、ドキュメント更新 |
+| Q&A | Q&A ステージ中 | アドホック形式 — 一時的なコマンドが許可される |
+
+**通常モード** (デフォルト):
+
+- すべての API 呼び出し、検証クエリ、シェル コマンドは、フェーズファイル (フェーズ 1–4) またはプリフライトチェック セクションからの逐語的である**必要があります**
+- `xTOKENx` プレースホルダーのみを解決済み変数値に置き換えます
+- API エンドポイント、jq フィルター、または cURL コマンドを一般知識または推論から構築しないでください
+- 必要なコマンドがドキュメント化されていない場合は、停止してオペレーターに報告します。
+  "このチェックステップはフェーズドキュメントでカバーされていません"
+
+**デバッグモード** (失敗時に自動アクティベート):
+
+- ドキュメント化されたコマンドが予期しない結果を生成したときに自動的にアクティベートします。非 2xx HTTP レスポンス、jq 解析エラー、コマンド タイムアウト、または証拠テーブルと矛盾するレスポンス本体
+- デバッグモードでは、AI アシスタントは診断コマンドを構築し、生の API レスポンスを検査し、エンドポイント変動をテストし、根本原因を見つけるために創意工夫に満ちたトラブルシューティングを使用できます
+- すべてのデバッグ出力に `[DEBUG]` をプレフィックスして、オペレーターが診断アクティビティを通常の実行と区別できるようにします
+- **学習したことをドキュメント化**: 問題を解決した後、関連するフェーズファイルまたはトラブルシューティング セクションを以下で更新します。
+  1. 失敗シナリオ (何が起こったか)
+  2. 試みたが機能しなかったもの (次の実行が繰り返さないため)
+  3. 作業した解決方法 (問題を解決したコマンドまたはフィックス)
+- デバッグモードの目的は**自らを排除すること** — すべてのデバッグセッションは、次の実行を完全に決定論的にするドキュメント更新を生成する必要があります
+- ドキュメントが更新され、問題が解決されたら、通常モードに戻り、最後の成功したドキュメント化されたステップから再開します
+- デバッグモードが問題を解決できない場合、オペレーターに検出結果をレポートして停止します — 次のフェーズに進まないでください
+
+**Q&A モード** (Q&A ステージ中):
+
+- デモ終了後の Q&A ミーティング ステージ中のみアクティブ
+- AI アシスタントは、アドホック API 呼び出しを構築し、診断コマンドを実行し、ドキュメント化されていないページに移動し、聴衆の質問への回答を説明するためにライブ デモ環境を変更できます
+- `[DEBUG]` プレフィックスなし — これはエラー回復ではなく、意図的な即興動作です
+- `DEMO_EXECUTOR.md` の CSD 製品専門知識セクションを製品質問の知識ベースとして使用します
+
+### ブラウザーコンテキスト管理
+
+initScript の蓄積は、デモ失敗の一般的な原因です。`initScript` パラメーターを含む各 `navigate_page` 呼び出しは、スクリプトを永続リストに追加され、後続のすべてのドキュメント読み込みで実行されます。以下のルールに従ってください。
+
+- **常に `about:blank` に移動** してから、`initScript` を含む任意のナビゲーションの前に、以前の実行から蓄積されたスクリプトをクリア
+- **デモフェーズを切り替える時に `new_page` を `isolatedContext` で使用** (例: フェーズ 2 → フェーズ 3) 完全にクリーンなブラウザー状態を確保
+- **応答しないページからの回復** — `take_screenshot` または `take_snapshot` がタイムアウトした場合、ブラウザーコンテキストはリソース枯渇しています。新しいコンテキストを作成するには `new_page` を `isolatedContext` で使用し、`about:blank` ナビゲーション ステップから再試行
+- [フェーズ 2 攻撃シミュレーション](/csd/demo/phase-2-attack/)の一時的なオリジン失敗とリソース枯渇回復に関する詳細なガイダンスについては、アサイド を参照してください。
+
+### 証拠表示プロトコル
+
+すべての API 呼び出しの後、AI アシスタントはこの形式を使用して人間のオペレーターに構造化された証拠を提示する必要があります。
+
+**作成ステップ** (POST):
+
+| フィールド | 値 | ステータス |
+| --- | --- | --- |
+| HTTP ステータス | `200` | PASS |
+| オブジェクト名 | `csd-origin` | — |
+| キープロパティ | _(jq で抽出)_ | — |
+
+各作成ステップの後、**GET** を実行してオブジェクトが存在することを確認し、その主要プロパティを表示します。GET が `404` を返す場合、FAIL をレポートして停止します。
+
+**検証ステップ** (GET/dig):
+
+| テスト | 結果 | ステータス |
+| --- | --- | --- |
+| DNS-1: A レコード | `198.51.100.10` | PASS |
+| LB-1: HTTP LB ステータス | `VIRTUAL_HOST_READY` | PASS |
+| LB-2: HTTPS LB ステータス | `VIRTUAL_HOST_READY` | INFO (オプション) |
+| TLS-1: 証明書状態 | `CertificateValid` | INFO (オプション) |
+| CSD-1: JS タグ | `scriptTag` 存在 | PASS |
+
+各層の検証標準として[診断と検証](/csd/diagnostics/)のテストケース ID (DNS-1、TLS-1、LB-1、CSD-1 など) を参照します。
+
+### 実行フローの概要
+
+**フェーズ実行は順序立てられ、ゲート付き:** 各フェーズは次のフェーズが開始する前に、すべての必須チェックで PASS に到達する必要があります。デモは `DEMO_EXECUTOR.md` のミーティング ライフサイクル セクションで定義された 4 つのステージミーティング に従います — トリガーフレーズと動作ルールについては「ミーティング ステージ」セクションを参照してください。
+
+AI アシスタントは次のシーケンスに従います。
+
+1. **準備** — 変数を解決し、プリフライトチェックを実行し、クリーン環境を確認 (ミーティング前に別途実行可能)
+2. **紹介** — SE が自己紹介し、成果目標を述べる (クライアント側の脅威への可視性、PCI コンプライアンス、リアルタイム検出)
+3. **フェーズ 1 実行** (ステップ 1–7) — インフラストラクチャ作成と検証; フェーズ 1 チェックすべてが進む前に PASS である必要があります
+4. **フェーズ 2 実行** (ステップ 8–9) — ブラウザーで攻撃シミュレーションを実行し、5–10 分待ち、API 経由で検出を検証 (`/scripts`、`/detected_domains`、`/formFields`); ブラウザーオートメーション付き AI アシスタントがブラウザーステップを直接実行し、ブラウザーツールなしのオペレーターが手動で実行
+5. **フェーズ 3 実行** — すべての検出ドメインに対する軽減を確認してから応用し、検出ドメインを再実行、軽減が有効であることを確認、軽減前後の比較を提示
+6. **結論** — 成果目標を再述べ、各フェーズからの証拠を要約し、主要な検出と軽減をハイライト
+7. **Q&A** — 即興的なステージ、デモはライブのまま、SE が聴衆の質問に回答し、返却質問を尋ねる
+8. **ティアダウン** _(会議後)_ — フェーズ 4、明示的なオペレーター確認が必須、すべてのオブジェクトを逆の依存性順で削除し、クリーン環境を確認
+
+いずれかのステップが FAIL を返す場合は、停止して関連するトラブルシューティング セクション リンク付きで失敗をレポートしてから続行します。
+
+## 前提条件
+
+- **F5 XC API トークン** — **管理者** → **認証情報** → **API 認証情報** で生成
+- `curl` と `jq` がローカルにインストール
+- ヘルスチェック、オリジンプール、HTTP ロードバランサーを作成する権限を持つネームスペース
+
+## 環境セットアップ
+
+環境値を持つ `.env` ファイルを作成します。テンプレートはリポジトリで提供されています。
+
+```bash
+cp .env.example .env
+```
+
+実際の値で `.env` を編集します。
+
+```bash title=".env"
+# 必須 — 環境
+F5XC_API_TOKEN=example-api-token
+F5XC_API_URL=https://example-tenant.console.ves.volterra.io
+F5XC_DOMAINNAME=app.example.com
+F5XC_EMAIL=user@example.com
+F5XC_LB_NAME=example-lb-name
+F5XC_NAMESPACE=example-namespace
+F5XC_ROOT_DOMAIN=example.com
+
+# オプション — 設定されていない場合は Juice Shop デモのデフォルトを使用
+# F5XC_HC_NAME=csd-hc
+# F5XC_ORIGIN_IP=44.232.69.192
+# F5XC_ORIGIN_POOL=csd-origin
+# F5XC_ORIGIN_PORT=3000
+```
+
+<Aside type="caution">
+`.env` ファイルには API トークンが含まれています。`.gitignore` にリストされており、バージョン管理にコミットされてはいけません。
+</Aside>
+
+ファイルをソースして、シェルセッションに変数を読み込みます。
+
+```bash
+set -a && source .env && set +a
+```
+
+<Aside type="tip">
+API トークンに `/` または `=` 文字が含まれている場合は、`.env` の値をシングルクォーテーションで囲みます (例: `F5XC_API_TOKEN='abc/def='`) シェル解釈を防ぐため。
+
+一部のコンテナランタイムとシークレットマネージャーは、リテラル引用文字を環境変数値に挿入します。有効なトークンにもかかわらず API 呼び出しが `401 Unauthorized` を返す場合は、使用前に不正な引用符を削除します。
+
+```bash
+export F5XC_API_TOKEN=$(echo "$F5XC_API_TOKEN" | tr -d "'")
+```
+</Aside>
+
+各 `xTOKENx` プレースホルダーは、環境変数に直接マップされます — たとえば、`xF5XC_API_TOKENx` は `$F5XC_API_TOKEN` に対応します。これらの値は、ページ上部のインタラクティブ フォームを使用するか、Claude Code などの AI アシスタントに `.env` を読み込ませてコマンドを構築させることで置き換えることができます。
+
+## プレースホルダートークン
+
+| トークン | デフォルト | 説明 |
+| --- | --- | --- |
+| `xF5XC_API_URLx` | `https://example-tenant.console.ves.volterra.io` | XC コンソール API URL |
+| `xF5XC_API_TOKENx` | `example-api-token` | API 認証情報トークン |
+| `xF5XC_EMAILx` | `user@example.com` | CSD 通知メールアドレス |
+| `xF5XC_NAMESPACEx` | `example-namespace` | ネームスペース |
+| `xF5XC_LB_NAMEx` | `example-lb` | HTTP ロードバランサーベース名 (`${name}-http` と `${name}-https` を作成) |
+| `xF5XC_DOMAINNAMEx` | `app.example.com` | 保護する FQDN |
+| `xF5XC_ROOT_DOMAINx` | `example.com` | ルートドメイン (eTLD+1) CSD 保護ドメイン用 |
+| `xF5XC_ORIGIN_POOLx` | `csd-origin` | オリジンプール名 |
+| `xF5XC_ORIGIN_IPx` | `44.232.69.192` | オリジンサーバー IP |
+| `xF5XC_ORIGIN_PORTx` | `3000` | オリジンサーバーポート |
+| `xF5XC_HC_NAMEx` | `csd-hc` | ヘルスチェック名 |
+
+<Aside type="tip">
+**テナントは自動:** テナント識別子は API URL から派生します (例: `https://f5-amer-ent.console.ves.volterra.io` から `f5-amer-ent`)。テナント参照を提供する必要はありません — オブジェクトを作成する際にプラットフォームが自動的に入力します。
+</Aside>
+
+## オートメーション参照
+
+このセクションでは、スクリプトまたはオートメーションのための完全な演習ワークフローを要約します。
+
+### クイックスタート
+
+1. リポジトリをクローンし、環境テンプレートをコピー: `cp .env.example .env`
+2. テナント URL、API トークン、ネームスペース、ドメイン値で `.env` を編集
+3. 環境をソース: `set -a && source .env && set +a`
+4. 各フェーズを順序で実行し、各証拠ブロックで PASS を検証してから次のフェーズに進みます
+
+### 変数解決
+
+値は、[AI アシスタント実行プロトコル](#variable-resolution-protocol)で定義された決定論的プロトコルを使用して解決されます。
+
+1. **`.env` ファイル** — リポジトリルートから `KEY=VALUE` ペアをパース
+2. **シェル環境** — `env | grep F5XC_` でエクスポートされた値を確認
+3. **プレースホルダー検出** — プレースホルダーデフォルトと一致する値 (例: `example-api-token`、`example-namespace`) をフラグとして表示
+4. **オペレーターへプロンプト** — 各不足している**必須**変数について質問
+5. **デフォルトを適用** — 不足している**オプション**変数に対して組み込みデフォルトを使用
+6. **確認** — 解決された変数テーブルを表示してオペレーターの承認を待つ
+
+### 実行順序
+
+<Steps>
+1. **フェーズ 1 — ビルド**: インフラストラクチャをデプロイ (ヘルスチェック、オリジンプール、HTTP LB + HTTPS LB)、DNS を設定、CSD を有効化、保護ドメインを登録、すべてのコンポーネントを検証。HTTP LB はプライマリデモターゲット、HTTPS LB はオプション。
+2. **フェーズ 2 — 攻撃**: ブラウザーで攻撃シミュレーションを実行して `http://` URL を使用、5–10 分待ち、API 経由で検出を検証 (`/scripts`、`/detected_domains`、`/formFields`)
+3. **フェーズ 3 — 軽減**: クリーンなベースラインを確認、攻撃を実行 (軽減前証拠)、各ドメインを `/mitigated_domains` に POST、軽減が適用されたことを検証、`http://` URL を使用して攻撃を再実行 (軽減後証拠)、軽減前後の比較を提示
+4. **フェーズ 4 — ティアダウン** _(明示的な人間確認が必須)_: HTTPS LB → HTTP LB → オリジンプール → DNS ゾーンクリーンアップ (手動レコードのみ) → ヘルスチェック → 保護ドメインを逆の依存性順で削除。DNS ゾーンを削除**しないで**ください。
+</Steps>
+
+### 変数
+
+| トークン | 説明 | デフォルト |
+| --- | --- | --- |
+| `xF5XC_API_URLx` | XC コンソール API URL | `https://example-tenant.console.ves.volterra.io` |
+| `xF5XC_API_TOKENx` | API 認証情報トークン | (ユーザー提供) |
+| `xF5XC_EMAILx` | CSD 通知メール | `user@example.com` |
+| `xF5XC_NAMESPACEx` | ネームスペース | `example-namespace` |
+| `xF5XC_LB_NAMEx` | HTTP ロードバランサーベース名 (`${name}-http` と `${name}-https` を作成) | `example-lb` |
+| `xF5XC_DOMAINNAMEx` | 保護する FQDN | `app.example.com` |
+| `xF5XC_ROOT_DOMAINx` | ルートドメイン (eTLD+1) | `example.com` |
+| `xF5XC_ORIGIN_POOLx` | オリジンプール名 | `csd-origin` |
+| `xF5XC_ORIGIN_IPx` | オリジンサーバー IP | `44.232.69.192` |
+| `xF5XC_ORIGIN_PORTx` | オリジンサーバーポート | `3000` |
+| `xF5XC_HC_NAMEx` | ヘルスチェック名 | `csd-hc` |
+
+### oneOf 選択グループ
+
+HTTP ロードバランサー仕様は、グループごとに正確に 1 つのオプションを設定する必要がある `oneOf` 選択グループを使用します。グループで 0 個またはそれ以上のオプションを設定すると、`422` エラーが発生します。
+
+**主要な CSD 関連の選択:**
+
+| 選択グループ | オプション | CSD デフォルト |
+| --- | --- | --- |
+| `client_side_defense_choice` | `client_side_defense`、`disable_client_side_defense` | `client_side_defense` |
+| `java_script_choice` (CSD で入力)| `disable_js_insert`、`js_insert_all_pages`、`js_insert_all_pages_except`、`js_insertion_rules` | `js_insert_all_pages` |
+
+**リスナー型の選択 (HTTP 対 HTTPS):**
+
+デモは異なるリスナー設定を持つ 2 つの LB を作成します。
+
+| LB | リスナー選択 | 設定 |
+| --- | --- | --- |
+| `${F5XC_LB_NAME}-http` (プライマリ) | `http` | `"http": { "dns_volterra_managed": true, "port": 80 }` |
+| `${F5XC_LB_NAME}-https` (セカンダリ) | `https_auto_cert` | `"https_auto_cert": { "http_redirect": true, "port": 443, ... }` |
+
+`http` と `https_auto_cert` キーは相互排他的です — 各 LB は正確に 1 つを使用します。
+
+**HTTPS オートセッティング入れ子選択** (セカンダリ LB のみ):
+
+| 選択グループ | オプション | デフォルト |
+| --- | --- | --- |
+| ポート | `port` (数値) | `443` |
+| `server_header_choice` | `default_header`、`server_name`、`append_server_name` | `default_header` |
+| `path_normalize_choice` | `enable_path_normalize`、`disable_path_normalize` | `enable_path_normalize` |
+| `mtls_choice` | `no_mtls`、`use_mtls` | `no_mtls` |
+| `default_loadbalancer_choice` | `default_loadbalancer`、`non_default_loadbalancer` | `default_loadbalancer` |
+
+**`single_lb_app` 入れ子選択** (ML 設定):
+
+`single_lb_app` オブジェクトには独自の必須 `oneOf` グループがあります。これらの入れ子選択なしで `single_lb_app: \{\}` を設定すると、`400` エラーが発生します。
+
+| 選択グループ | オプション | デフォルト |
+| --- | --- | --- |
+| `api_discovery_choice` | `disable_discovery`、`enable_discovery` | `disable_discovery` |
+| `ddos_detection_choice` | `disable_ddos_detection`、`enable_ddos_detection` | `disable_ddos_detection` |
+| `malicious_user_detection_choice` | `disable_malicious_user_detection`、`enable_malicious_user_detection` | `disable_malicious_user_detection` |
+
+**その他の LB レベル選択 (すべてを無効化/デフォルトに設定):**
+
+`disable_rate_limit` · `no_service_policies` · `round_robin` · `disable_waf` · `no_challenge` · `disable_bot_defense` · `disable_api_definition` · `disable_api_discovery` · `disable_ip_reputation` · `disable_malicious_user_detection` · `single_lb_app` · `disable_trust_client_ip_headers` · `user_id_client_ip` · `disable_threat_mesh` · `l7_ddos_action_default` · `system_default_timeouts` · `default_sensitive_data_policy` · `disable_malware_protection` · `disable_api_testing`
+
+### エラー処理
+
+- **401 認証されていない** — API トークンが無効または有効期限切れ。**管理者** → **認証情報** で再生成。
+- **403 禁止** — トークンはネームスペースの権限を欠いている。ロールバインディングを確認。
+- **404 見つからない** — ネームスペースまたはオブジェクト名が正しくありません。オブジェクトを `GET /api/config/namespaces/\{namespace\}/\{object_type\}` でリスト。
+- **409 競合** — オブジェクトは既に存在。保護ドメインの場合、"domain already exists (in uriList)" のある `409` は成功条件であり、エラーではありません。他のオブジェクトの場合は、最初に削除するか `PUT` で更新。
+- **422 処理不可** — JSON スキーマ検証が失敗。一般的な原因: 不足している `oneOf` 選択、同じグループで複数の選択を設定、間違ったフィールド型。エラーメッセージで特定のフィールドを確認。
+- **オブジェクト制限が満杯** (エラーコード `8`、メッセージ `"Object kind {kind} has exhausted limits({N})"`) — テナントがオブジェクト クォータ制限に達しました。API は `429` ではなく `"code": 8` を含む JSON エラーボディの HTTP 200 を返します。[クォータ使用状況 API](#pf-t1-0-quota-usage-query) (`GET /api/web/namespaces/system/quota/usage?namespace=system`) を使用して、このエラーに遭遇する前に事前にクォータ容量を確認できます。動作はオブジェクトの種類によります。
+  - **ヘルスチェック** (制限 ~150): **ブロックなし** — フェーズ 1 ステップ 1 をスキップし、ヘルスチェック参照なしでオリジンプールを作成。CSD はヘルスモニタリングに依存しません。
+  - **エンドポイント** (制限 ~500): **ブロック** — エンドポイントはオリジンプール内に作成されるサブオブジェクト。この制限に達した場合、オリジンプール作成は失敗。未使用のオリジンプールを削除 (エンドポイントサブオブジェクトを解放) するか、テナント制限を増やすよう管理者に問い合わせ。
+  - **オリジンプール**: **ブロック** — 未使用のオリジンプールを削除するか、管理者に問い合わせ。
+  - **HTTP ロードバランサー**: **ブロック** — 未使用のロードバランサーを削除するか、管理者に問い合わせ。
+  - **保護ドメイン**: **ブロック** — 未使用の保護ドメインを削除するか、管理者に問い合わせ。
+
+## トラブルシューティング
+
+### ヘルスチェックがオリジンプールにリンクされていない
+
+フェーズ 1 ステップ 2 (ヘルスチェック リンク検証) が空配列 `[]` を表示する場合:
+
+1. オリジンプールを削除: `DELETE /api/config/namespaces/{namespace}/origin_pools/{pool_name}`
+2. ヘルスチェックが存在することを確認: `GET /api/config/namespaces/{namespace}/healthchecks/{hc_name}`
+3. 正しいヘルスチェック参照でオリジンプールを再作成
+
+### LB が VIRTUAL_HOST_PENDING_A_RECORD にスタック
+
+フェーズ 1 ステップ 4 の後、ロードバランサー `state` が `VIRTUAL_HOST_PENDING_A_RECORD` のままである場合:
+
+1. **DNS ゾーンが存在することを確認** (F5 XC マネージド DNS のみ):
+   ```bash
+   curl -s \
+     -H "Authorization: APIToken xF5XC_API_TOKENx" \
+     "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+     | jq '.metadata.name'
+   ```
+   `404` は DNS ゾーンが F5 XC で作成されていないことを意味します。
+
+2. **`allow_http_lb_managed_records` を確認** — ゾーンが存在する場合、LB が保留中である場合は、管理対象レコードが無効になっている可能性があります。
+   ```bash
+   curl -s \
+     -H "Authorization: APIToken xF5XC_API_TOKENx" \
+     "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+     | jq '.spec.primary.allow_http_lb_managed_records'
+   ```
+   `false` または `null` の場合は、[フェーズ 1 ステップ 4、オプション A](/csd/demo/phase-1-build/#option-a-f5-xc-managed-dns) で `PUT` コマンドを使用して有効化。
+
+3. **外部 DNS** — F5 XC が権限がない場合は、DNS プロバイダーで A レコードと ACME CNAME レコードを手動で作成します ([フェーズ 1 ステップ 4、オプション B](/csd/demo/phase-1-build/#option-b-external-dns-provider) を参照)。
+
+4. **解決を確認** — DNS を修正した後、確認します。
+   ```bash
+   dig +short xF5XC_DOMAINNAMEx A
+   ```
+   A レコードが解決される場合、LB は `VIRTUAL_HOST_READY` に遷移します。30 秒ごと、最大 4 回 (合計 2 分) ポーリングします。2 分後も `VIRTUAL_HOST_PENDING_A_RECORD` の場合、DNS の伝播を再確認し、オペレーターに報告します。
+
+### CSD ステータスが isConfigured: false を表示
+
+CSD はテナントレベルで有効にする必要があります。テナントのクライアント側防御を有効にするよう F5 XC 管理者に問い合わせてください。これはテナント全体の設定であり、API で設定することはできません。
+
+### JS 挿入が機能していない
+
+1. CSD がテナントレベルで有効であることを確認 (フェーズ 1 ステップ 5)
+2. ロードバランサーが仕様で `client_side_defense` を設定していることを確認
+3. JS 設定エンドポイントが `scriptTag` を返すことを確認
+4. ブラウザーで保護ドメインにアクセスしてページソースを表示してスクリプトが挿入されていることを確認
+
+### 保護ドメイン登録が 409 を返す
+
+"domain already exists (in uriList)" のある `409` は、ルートドメインが既にテナントに登録されていることを意味します。保護ドメインはテナント スコープ — 単一のネームスペースに属しません。これは成功条件です: ドメインは既に保護されており、追加のアクションは不要です。フェーズ 1 ステップ 7 に進みます。
+
+### AutoCertDomainRateLimited
+
+HTTPS LB `cert_state` が `AutoCertDomainRateLimited` を表示する場合、これは Let's Encrypt がこのドメインの証明書発行をレート制限したことを意味します。これはデモ環境で**予想される**ことです (インフラストラクチャが頻繁に作成および削除されます)。
+
+**影響:** HTTPS LB は、レート制限がリセットされるまで (通常 1 時間) トラフィックを提供しません。HTTP LB は完全に影響を受けません — すべてのデモトラフィックは `http://` 上で通常通り進行します。
+
+**解決:** デモ進行に対する追加アクションは不要です。HTTP LB (`${F5XC_LB_NAME}-http`) はプライマリデモターゲットであり、証明書プロビジョニング依存関係はありません。HTTPS が必要な場合は、レート制限がリセットされるまで待ち、証明書は自動プロビジョニングされます。
+
+### 証明書スタック — クリーン再作成 (オプション)
+
+<Aside type="note">
+このトラブルシューティング ステップは**HTTPS LB** (`${F5XC_LB_NAME}-https`) のみに適用され、デモ進行に**オプション**です。HTTP LB には証明書依存関係はありません。
+</Aside>
+
+HTTPS LB 証明書が 15 分以上 `DomainChallengePending` または `PreDomainChallengePending` で止まっている場合、最速の回復パスは HTTPS LB を削除して再作成することです。DNS ゾーンが既に設定済み (管理対象レコード有効) で、クリーン再作成は通常、5–7 分以内に `CertificateValid` を生成します — レート制限がない限り。
+
+1. HTTPS ロードバランサーを削除: `DELETE .../http_loadbalancers/${F5XC_LB_NAME}-https`
+2. 30 秒待機してプラットフォームクリーンアップを実施
+3. HTTPS ロードバランサーを再作成 ([フェーズ 1 ステップ 3](/csd/demo/phase-1-build/#step-3-create-http-load-balancers-with-csd))
+4. 証明書ステータスを監視 ([フェーズ 1 ステップ 7](/csd/demo/phase-1-build/#step-7-verify)) — 5–10 分以内に `CertificateValid` を予想
+
+<Aside type="tip">
+DNS ゾーンを再設定したり、保護ドメインを再登録したり、HTTP LB を変更する必要はありません。これらはこれらの永続的なリソースで HTTPS LB 再作成に影響を受けません。
+</Aside>
+
+## OpenAPI リファレンス
+
+標準の F5 Distributed Cloud API 仕様は以下で利用可能:
+
+`https://docs.cloud.f5.com/docs-v2/downloads/f5-distributed-cloud-open-api.zip`
+
+この ZIP には `ves.io.schema.views.http_loadbalancer`、`ves.io.schema.healthcheck`、`ves.io.schema.origin_pool`、`ves.io.schema.shape.csd` を含むすべての API グループの OpenAPI 3.0 仕様が含まれています。これらの仕様を使用して JSON ペイロードを検証し、追加フィールドを発見してください。

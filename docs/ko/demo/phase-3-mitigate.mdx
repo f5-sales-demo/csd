@@ -1,0 +1,334 @@
+---
+title: Phase 3 — Mitigate
+description: CSD 완화 정책을 적용하고 공격 트래픽이 차단되었는지 확인
+sidebar:
+  order: 4
+  label: Phase 3 — Mitigate
+i18n:
+  sourceHash: 5d336f6c3bde
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Phase 3는 CSD 완화의 **사전/사후 증거**를 생성합니다. 완화 없이 공격을 다시 실행하여 기준을 설정하고, 완화를 적용한 후 동일한 공격을 다시 실행하여 CSD가 네트워크 호출을 차단함을 증명합니다. Phase 2가 완료되어야 합니다 — 모든 DET 확인 PASS — 진행하기 전에.
+
+<Aside type="note">
+**CSD 완화는 완화된 도메인에서의 스크립트 로딩을 차단합니다.** 도메인이 완화 목록에 있으면, CSD JavaScript는 `&lt;script&gt;` 태그 소스 URL을 가로채고 스크립트 로딩을 방지하여 공급망 공격을 근원에서 차단합니다. CSD는 `fetch()` 또는 `XMLHttpRequest` 호출을 가로채지 않습니다. 이 단계는 완화 전후로 동일한 공격을 실행하여 스크립트 차단의 증거를 캡처합니다.
+</Aside>
+
+<Aside type="caution">
+**라이브 테스트 참고:** 완화 POST/DELETE 엔드포인트는 개발 환경에서 검증되었지만 동작 세부사항(응답 타이밍, 스크립트 감지 상태에 미치는 영향)은 테넌트 구성에 따라 다를 수 있습니다. 예상치 못한 응답이 발생하면 [API 참고](/csd/api-reference/#mitigated-domains)에서 정식 엔드포인트 정의를 확인하세요.
+</Aside>
+
+## Step 1: 활성 완화가 없음을 확인(기준)
+
+"이전" 스냅샷을 캡처하기 전에 환경이 깨끗한지 확인하세요 — 활성 완화가 없어야 합니다. 이는 기준 공격이 CSD 차단 없이 실행되도록 보장합니다.
+
+### 완화된 도메인 수 확인
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '{count: (.items | length)}'
+```
+
+개수가 **0이 아닌** 경우, 이전 실행의 완화가 남아 있습니다. 진행하기 전에 각각을 삭제하세요:
+
+```bash
+# 완화된 도메인 삭제(각 도메인 이름에 대해 반복)
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/<domain-name>" \
+  | jq .
+```
+
+`<domain-name>`을 도메인이 완화될 때 사용된 `metadata.name`으로 바꾸세요(예: `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io`, `httpbin.org`, `jsonplaceholder.typicode.com`). `httpbin.org` 정리 후 남은 항목이 있으면 `www.httpbin.org`도 삭제해 보세요 — 일부 이전 실행에서는 metadata 이름으로 사용되었을 수 있습니다.
+
+### Phase 2 감지 확인
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
+```
+
+### 증거
+
+| 확인 | 예상 | 상태 |
+| --- | --- | --- |
+| 완화된 도메인 수 | `0`(깨끗한 기준) | 0이면 PASS, > 0이면 정리 필요 |
+| 감지된 도메인 수 | > 0(Phase 2 감지 존재) | > 0이면 PASS |
+| Exfil 도메인 존재 | `www.httpbin.org`, `jsonplaceholder.typicode.com` | 적어도 하나가 나타나면 PASS |
+
+## Step 2: 공격 실행 — 완화 전
+
+**활성 완화 없이** 결합된 시뮬레이션을 다시 실행하여 새로운 기준을 캡처합니다. 이것은 **"이전" 스냅샷** — CSD 완화가 적용되지 않을 때 공격이 성공함을 증명합니다.
+
+<Aside type="note">
+이 단계는 브라우저측 JavaScript 실행이 필요합니다 — `curl`은 CSD 감지를 트리거할 수 없습니다. 브라우저 자동화 도구가 있는 AI 어시스턴트(MCP Chrome DevTools, Playwright, Puppeteer)는 아래 **AI-자동화 실행** 시퀀스를 사용하여 이 단계를 직접 실행합니다. 브라우저 자동화 도구가 없는 운영자는 수동 단계를 수행합니다.
+</Aside>
+
+### AI-자동화 실행
+
+브라우저 자동화 도구가 있는 AI 어시스턴트는 동일한 Phase 2 initScript를 사용하여 프로그래밍 방식으로 공격 시뮬레이션을 실행합니다(기본 `fetch` 저장):
+
+1. **initScript로 탐색** — 먼저 `about:blank`로 탐색하여 깨끗한 문서 컨텍스트 보장(이전 탐색에서 낡은 initScript 회피), 그 다음 **Phase 2 initScript**를 사용하여 `http://$F5XC_DOMAINNAME/#/login`으로 `navigate_page`. 이 initScript는 기본 `setInterval`, `clearInterval`, `fetch`, `console.log` 저장 — 기본 `fetch` 참조는 활성 완화가 없기 때문에 여기서 맞습니다
+2. **Welcome Banner 해제** — `Escape` 키를 사용하여 `press_key`로 Welcome Banner 닫기. 후속 방문에서는 배너가 나타나지 않을 수 있습니다(쿠키 유지됨). 쿠키 동의 대화는 Escape 키로 자동 해제됩니다
+3. **완료 대기** — 모든 CDN 스크립트 로드/에러 콜백 및 fetch 프로미스 해결 완료를 위해 10초 대기
+4. **증거 캡처** — `[CSD Demo] Simulation complete` 및 CDN 로드 결과 확인을 위해 `list_console_messages`; HTTP 상태 코드(`200`/`201` 성공)를 확인하기 위해 `script` 및 `fetch` 유형으로 필터링된 `list_network_requests`
+
+<Aside type="caution">
+**zone.js 비호환성** — Juice Shop은 Angular의 zone.js를 사용하며, `setTimeout`, `setInterval`, `fetch`, `XMLHttpRequest` 및 기타 브라우저 API를 패치합니다. 이는 MCP `evaluate_script`, `fill`, `click` 도구를 `Cannot read properties of undefined (reading 'call')`로 손상시킵니다. 대신 `initScript`를 사용한 `navigate_page`를 사용하세요 — `initScript`는 zone.js 로드 전에 실행되므로 기본 API 참조를 저장하고 폴링 콜백에서 사용할 수 있습니다. initScript는 기본 `HTMLInputElement.prototype.value` setter(not `fill`)를 사용하여 폼 필드를 채우고 감지 스크립트를 인라인으로 실행해야 합니다(`setTimeout`이 아닌, zone.js는 페이지 로드 후 가로챌 수 있음). 자세한 내용은 [감지 트리거 — AI-자동화 실행](/csd/trigger-detection/#ai-automated-execution)을 참조하세요.
+</Aside>
+
+<Aside type="note">
+**initScript 누적** — 각 `initScript` 매개변수를 사용한 `navigate_page` 호출은 스크립트를 모든 후속 문서 로드에서 실행되는 영속 목록에 추가합니다. 낡은 스크립트가 간섭하지 않도록 실행 간에 `about:blank`로 탐색하거나 깨끗한 브라우저 컨텍스트를 위해 `isolatedContext`를 사용한 `new_page`를 사용하세요.
+</Aside>
+
+### 수동 실행
+
+브라우저 자동화 도구가 없는 운영자는 [Phase 2 — Step 8: Attack Simulation](/csd/demo/phase-2-attack/#step-8-attack-simulation)과 동일한 절차를 사용하여 시뮬레이션을 수동으로 실행합니다:
+
+1. `http://xF5XC_DOMAINNAMEx/#/login`으로 탐색
+2. Email 및 Password 필드에 더미 자격증명 입력(제출 안 함)
+3. DevTools 열기 — **F12** 누르고 **Console** 탭으로 전환
+4. [Trigger Detection](/csd/trigger-detection/#run-the-combined-simulation-script)에서 Combined Detection Script 붙여넣기 및 실행
+5. 콘솔 출력 확인 — 모든 CDN 스크립트가 로드되어야 하고 `[Supply Chain] Loaded from` 메시지가 나타나야 하며, 네트워크 탭에서 `200`/`201` 응답을 보여줍니다
+
+### 증거 — 완화 전
+
+| 확인 | 예상(완화 전) | 상태 |
+| --- | --- | --- |
+| CDN 스크립트 삽입됨 | 모든 4개의 스크립트 태그 로드됨 — `[Supply Chain] Loaded from` 메시지 나타남, 네트워크 탭에서 `200` 표시 | PASS |
+| `www.httpbin.org`로 Exfil fetch | 네트워크 탭에서 `200` 표시 — 데이터 전송됨 | PASS |
+| jsonplaceholder.typicode.com로 Exfil fetch | 네트워크 탭에서 `201` 표시 — 데이터 전송됨 | PASS |
+| 콘솔 출력 | `[CSD Demo] Simulation complete` | PASS |
+
+<Aside type="note">
+**네트워크 요청으로 확인:** 가장 신뢰할 수 있는 증거는 **Network 탭**(AI 어시스턴트의 경우 `list_network_requests`)이지, 콘솔 콜백이 아닙니다. Juice Shop의 zone.js는 프로미스 `.then()` 콜백 및 스크립트 `onload` 핸들러를 손상시킬 수 있으며, 네트워크 요청이 성공해도 콘솔 메시지가 불완전할 수 있습니다. 항상 콘솔 출력을 네트워크 요청 상태 코드와 상호 참조하세요.
+</Aside>
+
+<Aside type="tip">
+이것이 기준 증거입니다: 활성 완화 없이, 공격자의 스크립트가 자유롭게 로드되고 데이터 유출이 성공합니다. 이 증거를 저장하거나 스크린샷하세요 — Step 5에서 "이후" 결과와 직접 비교할 것입니다.
+</Aside>
+
+## Step 3: 완화 적용
+
+각 감지된 도메인에 대해 완화된 도메인 엔드포인트에 POST를 수행합니다. Phase 2 시뮬레이션의 주요 대상은 4개의 CDN 주입 도메인 및 감지된 모든 데이터 유출 도메인입니다.
+
+**주요 완화 대상**(결합된 시뮬레이션 스크립트에서):
+
+| 도메인 | 역할 |
+| --- | --- |
+| `cdn.jsdelivr.net` | CDN 스크립트 주입 |
+| `esm.sh` | CDN 스크립트 주입 |
+| `unpkg.com` | CDN 스크립트 주입 |
+| `ga.jspm.io` | CDN 스크립트 주입 |
+| `www.httpbin.org` | 데이터 유출 엔드포인트 |
+| `jsonplaceholder.typicode.com` | 데이터 유출 엔드포인트 |
+
+<Aside type="note">
+POST 본문에는 **`metadata.name`**(객체의 식별자) 및 **`spec.mitigated_domain`**(CSD가 분류할 도메인 문자열) 모두가 필요합니다. 둘 다 설정해야 합니다 — `spec: {}`는 `400` 오류를 발생시킵니다. 대부분의 도메인의 경우 두 필드 모두 동일한 값을 사용합니다(예: `cdn.jsdelivr.net`). 아래의 `httpbin.org` 예외를 참조하세요.
+</Aside>
+
+**도메인 완화**(도메인당 한 번 실행):
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "cdn.jsdelivr.net",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "mitigated_domain": "cdn.jsdelivr.net"
+    }
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+```
+
+각 도메인에 대해 반복:
+
+```bash
+# esm.sh
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"esm.sh","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"esm.sh"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# unpkg.com
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"unpkg.com","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"unpkg.com"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# ga.jspm.io
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"ga.jspm.io","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"ga.jspm.io"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# httpbin.org — mitigated_domain로 www.httpbin.org 사용(아래 참고 참조)
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"httpbin.org","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"www.httpbin.org"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# jsonplaceholder.typicode.com
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"jsonplaceholder.typicode.com","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"jsonplaceholder.typicode.com"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+```
+
+<Aside type="note">
+**`httpbin.org` eTLD+1 제약:** API는 `mitigated_domain` 값으로 맨 eTLD+1 도메인을 거부하며 `"Invalid root domain: cannot derive eTLD+1"`로 응답합니다. `metadata.name`으로 `httpbin.org`를 유지하면서 `spec.mitigated_domain` 값으로 `www.httpbin.org`를 사용하세요. 완화는 올바르게 적용됩니다 — `name` 식별자가 완화된 도메인 목록에 나타나는 것입니다. 사용자 정의 시뮬레이션 스크립트에서 exfil 대상으로 사용된 맨 도메인(서브도메인 없음)은 동일한 제약이 있습니다.
+</Aside>
+
+`200` 응답은 생성된 완화된 도메인 객체를 반환합니다. `409` 응답은 도메인이 이미 완화 목록에 있다는 뜻입니다 — 이는 성공 조건입니다.
+
+## Step 4: 완화가 적용되었는지 확인
+
+모든 완화된 도메인을 나열하고 개수가 방금 제출한 도메인 개수와 일치하는지 확인합니다:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '{count: (.items | length)}'
+```
+
+<Aside type="note">
+완화된 도메인 목록 엔드포인트는 모든 항목에 대해 null `metadata.name`을 포함한 항목을 반환합니다 — 개별 도메인 이름은 목록 응답에 보이지 않습니다. Step 3에서 수행한 POST 요청 개수와 항목 개수가 일치하는지 확인하여 검증하세요(표준 시뮬레이션의 경우 6개). 각 개별 POST의 `200` 응답이 각 완화 생성의 권위 있는 증거입니다. 개수가 1이고 null-name 항목을 가지며 완화가 적용되지 않았으면, 개수를 0으로 처리하세요 — 이는 백엔드 아티팩트입니다([Pre-flight Check](/csd/demo/#pre-flight-check) 결정 규칙 참조).
+</Aside>
+
+### 증거
+
+| 확인 | 예상 | 상태 |
+| --- | --- | --- |
+| 완화된 도메인 수 | 6(POST 개수와 일치) | 개수가 일치하면 PASS |
+| 모든 Step 3 POST가 `200` 또는 `409` 반환 | 각 도메인이 수락됨 | PASS |
+
+개수가 예상보다 낮으면 Step 3에서 누락된 도메인의 POST 명령을 다시 실행하세요.
+
+## Step 5: 공격 실행 — 완화 후
+
+**정확히 동일한** 결합된 시뮬레이션을 다시 실행하여 **"이후" 스냅샷**을 캡처합니다. 시뮬레이션 스크립트는 동일합니다 — CSD의 완화 상태만 변경되었습니다. 완화된 도메인에서의 스크립트 로드는 이제 CSD JavaScript에 의해 차단됩니다(`&lt;script&gt;` 태그 `src`가 빈 문자열로 지워집니다).
+
+<Aside type="note">
+이 단계는 Step 2와 동일한 브라우저 자동화 시퀀스를 사용합니다. 차이점은 실행 내용이 아니라 관찰 내용입니다. 활성 완화 상태에서 CSD는 완화된 도메인에서 `&lt;script&gt;` 태그 로드를 차단합니다. 완화된 도메인에 대한 Fetch API 호출은 계속 완료됩니다 — CSD 완화는 스크립트 로딩을 대상으로 하며, fetch/XHR을 대상으로 하지 않습니다.
+</Aside>
+
+### AI-자동화 실행
+
+브라우저 자동화 도구가 있는 AI 어시스턴트는 **동일한 Phase 2 initScript**를 사용하여 프로그래밍 방식으로 공격 시뮬레이션을 다시 실행합니다([Phase 2 — AI-자동화 실행](/csd/demo/phase-2-attack/#ai-automated-execution)의 정식 코드). initScript는 기본 `fetch`를 저장하여 zone.js 오류를 피합니다 — CSD가 `fetch()` 호출을 가로채지 않기 때문에 CSD 완화에 영향을 주지 않습니다.
+
+1. **initScript로 탐색** — 깨끗한 브라우저 컨텍스트를 위해 `isolatedContext`를 사용하여 `new_page` 사용(Step 2의 낡은 initScript 회피), 그 다음 `about:blank`로 탐색, 그 다음 **Phase 2 initScript**를 사용하여 로그인 페이지로 탐색
+2. **Welcome Banner 해제** — `Escape` 키를 사용하여 `press_key`
+3. **완료 대기** — 모든 비동기 콜백 완료를 위해 10초 대기
+4. **증거 캡처** — `[CSD Demo] Simulation complete` 확인을 위해 `list_console_messages`; CDN 스크립트 로드가 **없음**(CSD가 스크립트 src를 지움)을 관찰하기 위해 `script` 및 `fetch` 유형으로 필터링된 `list_network_requests`; exfil 도메인에 대한 fetch 호출이 계속 정상적으로 완료됨
+
+### 수동 실행
+
+브라우저 자동화 도구가 없는 운영자는 [Phase 2 — Step 8: Attack Simulation](/csd/demo/phase-2-attack/#step-8-attack-simulation)과 동일한 절차를 사용하여 시뮬레이션을 수동으로 다시 실행합니다:
+
+1. `http://xF5XC_DOMAINNAMEx/#/login`으로 탐색
+2. Email 및 Password 필드에 더미 자격증명 입력(제출 안 함)
+3. DevTools 열기 — **F12** 누르고 **Console** 탭으로 전환
+4. [Trigger Detection](/csd/trigger-detection/#run-the-combined-simulation-script)에서 Combined Detection Script 붙여넣기 및 실행
+5. 콘솔 및 네트워크 출력 확인 — 완화된 도메인에 대한 CDN 스크립트 `onload` 및 `onerror` 콜백이 발생하지 않습니다(CSD가 스크립트 `src`를 빈 문자열로 지워 네트워크 요청을 완전히 방지). exfil 도메인(`www.httpbin.org`, `jsonplaceholder.typicode.com`)에 대한 Fetch 호출은 **계속 완료** — `200`/`201` 반환 — CSD 완화는 스크립트 로딩을 차단하며, fetch/XHR 호출을 차단하지 않습니다
+
+<Aside type="caution" title="완화 전파 타이밍">
+CSD JavaScript는 `&lt;script&gt;` 태그 `src` setter를 가로채서 완화된 도메인에서의 스크립트 로드를 차단해야 합니다. 그러나 HTTP(port 80)에서의 테스트에서 스크립트 `src` 정리가 완화 적용 후 5분 이내에 관찰되지 않았습니다 — 모든 CDN 스크립트가 계속 정상적으로 로드되었습니다. 이는 완화 전파에 5분 이상이 필요하거나, 메커니즘이 HTTP와 HTTPS 간에 다르게 동작함을 나타낼 수 있습니다. 완화 차단이 관찰되지 않으면 추가 전파 시간을 허용하고 CSD 원격 측정 스크립트가 구성을 새로고침했는지 확인하세요.
+
+**Fetch 호출은 CSD 완화에 의해 가로채지지 않습니다**(검증됨). 완화된 도메인에 대한 exfil fetch 호출(`www.httpbin.org`, `jsonplaceholder.typicode.com`)은 완화 전후 모두 `200`/`201` 응답으로 정상적으로 완료됩니다. CSD 완화는 공급망 벡터(악성 스크립트 로딩)를 대상으로 하며, fetch/XHR을 통한 데이터 유출을 대상으로 하지 않습니다. Step 2 및 Step 5 모두에 동일한 Phase 2 initScript(기본 `fetch` 저장)를 사용하세요.
+</Aside>
+
+### 증거 — 완화 후
+
+| 확인 | 예상(완화 후) | 상태 |
+| --- | --- | --- |
+| CDN 스크립트 로드 | **차단됨** — 스크립트가 네트워크 탭에 나타나지 않음(CSD가 `src`를 빈 문자열로 지움) | PASS |
+| CDN 스크립트 콜백 | 완화된 도메인에 대해 `onload` 및 `onerror` 모두 발생 안 함 | PASS |
+| `www.httpbin.org`로 Exfil fetch | `200` — fetch가 계속 완료됨(CSD가 fetch를 가로채지 않음) | INFO |
+| jsonplaceholder.typicode.com로 Exfil fetch | `201` — fetch가 계속 완료됨(CSD가 fetch를 가로채지 않음) | INFO |
+| 콘솔 출력 | `[CSD Demo] Simulation complete` | PASS |
+
+<Aside type="tip">
+**백엔드 검증이 가장 신뢰할 수 있는 증거입니다.** 데모 시간 프레임 내에 브라우저 가시 스크립트 차단이 관찰되지 않으면 `detected_domains` API 응답을 주요 증거로 사용하세요. 도메인 요약의 `mitigatedDomains` 개수 및 감소된 `actionNeededCount`는 CSD JavaScript가 브라우저에서 아직 구성을 새로고침하여 차단을 적용하지 않았더라도 백엔드에서 완화가 활성임을 확인합니다.
+</Aside>
+
+## Step 6: 이전 대 이후 비교
+
+이는 데모의 성과 — 동일한 페이지, 동일한 스크립트의 동일한 공격이 이제 완전히 다른 결과를 생성함을 증명하는 나란한 증거입니다.
+
+### 비교 표
+
+| 신호 | 완화 전(Step 2) | 완화 후(Step 5) |
+| --- | --- | --- |
+| CDN 스크립트 로드 | `200` — 모든 4개의 CDN 스크립트 정상 로드 | **차단됨** — 네트워크 탭에서 스크립트 없음(CSD가 `src`를 빈 문자열로 지움) |
+| CDN `onload` 콜백 | `[Supply Chain] Loaded from` 메시지 나타남 | 콜백이 발생하지 않음(네트워크 요청이 수행되지 않음) |
+| `www.httpbin.org`로 Exfil | `200` — 데이터 유출됨 | `200` — fetch가 계속 완료됨(CSD가 fetch를 가로채지 않음) |
+| jsonplaceholder.typicode.com로 Exfil | `201` — 데이터 유출됨 | `201` — fetch가 계속 완료됨(CSD가 fetch를 가로채지 않음) |
+| CSD 완화된 도메인 API | 0 완화됨 | 6 완화됨 |
+
+### 백엔드 데이터에서 완화 확인
+
+쿼리를 60초마다 최대 10회 반복(10분)하여 `/detected_domains` 쿼리를 수행합니다. 쿼리가 반환되거나 10분 최대 후에 비교 표로 진행합니다 — 이 확인은 정보성이며 Phase 4를 차단하지 않습니다.
+
+**완화 후 감지된 도메인 확인:**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
+```
+
+**완화된 상태의 스크립트 확인:**
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 86400 ))
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq '{total: (.scripts | length), scripts: [.scripts[]? | {script_name: .script_name, risk_level: .risk_level}]}'
+```
+
+### Phase 3 증거 요약
+
+| 확인 | 예상 | 상태 |
+| --- | --- | --- |
+| 기준 깨끗함(Step 1) | 시작 시 완화된 도메인 0개 | PASS / FAIL |
+| 이전 — 공격 성공(Step 2) | 스크립트 로드, exfil은 200/201 반환 | PASS / FAIL |
+| 완화 적용됨(Step 3) | 모든 6개 도메인이 POST를 통해 수락(200 또는 409) | PASS / FAIL |
+| 완화된 개수 확인(Step 4) | 목록에 6개 항목 | PASS / FAIL |
+| 이후 — 스크립트 로드 차단됨(Step 5) | CDN 스크립트가 네트워크 탭에 없음, fetch 호출은 계속 완료됨 | PASS / FAIL |
+| 이전 대 이후 비교(Step 6) | Step 2 및 Step 5 증거 간 명확한 차이 | PASS / FAIL |
+
+<Aside type="note">
+완화 후 감지 상태 업데이트는 API 응답에 나타나는 데 시간이 걸릴 수 있습니다. 완화 직후 도메인이 여전히 "Action Needed"를 표시하면, `/detected_domains`를 60초마다 최대 10회 반복(10분)하여 쿼리하세요. 10회 반복 후에도 업데이트되지 않으면, 현재 상태를 INFO로 기록하세요 — Phase 4를 차단하지 않습니다.
+</Aside>
+
+---
+
+**Phase 3 완료.** [Phase 4 — Teardown](/csd/demo/phase-4-teardown/)으로 진행하여 모든 배포 객체를 제거할 준비가 되면 진행하세요.

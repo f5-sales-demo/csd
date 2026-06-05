@@ -1,0 +1,879 @@
+---
+title: Phase 1 — Build
+description: >-
+  ปรับใช้ CSD infrastructure ผ่าน F5 XC API — healthcheck, origin pool, load
+  balancer, protected domain
+sidebar:
+  order: 2
+  label: Phase 1 — Build
+i18n:
+  sourceHash: 6ecd8b98f257
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Phase 1 ปรับใช้และตรวจสอบ CSD infrastructure แบบสมบูรณ์ ทำตามขั้นตอนทั้งหมดตามลำดับ — แต่ละขั้นตอนต้องผ่าน (PASS) ก่อนการดำเนินการต่อ กลับไปที่ [index](/csd/demo/) เพื่อดำเนินการตั้งค่าสภาพแวดล้อมและแก้ไขตัวแปรก่อนเรียกใช้คำสั่งเหล่านี้
+
+## Step 0: ตรวจสอบและสร้าง Namespace (ตามเงื่อนไข)
+
+ตรวจสอบว่า target namespace มีอยู่แล้วในผู้เช่า หากไม่มีอยู่ให้สร้างขึ้นมา ติดตามผลลัพธ์ในตัวแปร shell `NAMESPACE_CREATED` — Phase 4 teardown ใช้สิ่งนี้เพื่อตัดสินใจว่าจะลบ namespace หรือไม่
+
+```bash
+NS_CHECK=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx")
+
+NAMESPACE_CREATED="false"
+if [ "$NS_CHECK" = "404" ]; then
+  curl -s -X POST \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d '{"metadata": {"name": "xF5XC_NAMESPACEx"}, "spec": {}}' \
+    "xF5XC_API_URLx/api/web/namespaces" | jq .
+  NAMESPACE_CREATED="true"
+fi
+```
+
+<Aside type="note">
+**ฟิลด์ `spec` เป็นสิ่งจำเป็น** F5 XC namespace API ต้องการฟิลด์ `spec` ในเนื้อหาคำขอแม้ว่าไม่จำเป็นต้องมีการกำหนดค่า — ส่งผ่านออบเจ็กต์เปล่า `{}` การละเว้น `spec` จะส่งคืนรหัสข้อผิดพลาด `3` ("spec should not be empty in request")
+</Aside>
+
+### Evidence
+
+ยืนยันว่า namespace มีอยู่จริงและบันทึกว่ามีการสร้างหรือไม่:
+
+```bash
+curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx"
+echo "NAMESPACE_CREATED=$NAMESPACE_CREATED"
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| HTTP Status | `200` | PASS หากส่งคืน FAIL หากเป็น `404` หรืออื่น ๆ |
+| `NAMESPACE_CREATED` | `true` (สร้าง) หรือ `false` (มีอยู่ก่อนแล้ว) | ข้อมูล — ใช้โดย Phase 4 teardown |
+
+## Step 1: Create Healthcheck (Optional)
+
+สร้าง HTTP healthcheck ที่ origin pool สามารถใช้เพื่อตรวจสอบสุขภาพของแบ็กเอนด์
+
+<Aside type="note">
+**Healthcheck เป็นตัวเลือกสำหรับ CSD** ฟีเจอร์ Client-Side Defense ไม่ขึ้นอยู่กับการตรวจสอบสุขภาพของต้นทาง หากผู้เช่าของคุณหมดจำกัดออบเจ็กต์ healthcheck (รหัสข้อผิดพลาด `8` — ดู Error Handling) ให้ข้ามขั้นตอนนี้และสร้าง origin pool โดยไม่อ้างอิง healthcheck CSD จะทำงานปกติ
+
+หากคุณสร้าง healthcheck ให้สร้างมันก่อน origin pool origin pool ต้องอ้างอิง healthcheck ที่มีอยู่ — หากไม่มี healthcheck เมื่อคุณสร้าง origin pool การอ้างอิงจะเป็นค่าว่างเปล่า
+</Aside>
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_HC_NAMEx",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "disable": false
+    },
+    "spec": {
+      "http_health_check": {
+        "use_origin_server_name": {},
+        "path": "/",
+        "use_http2": false,
+        "headers": {},
+        "request_headers_to_remove": [],
+        "expected_status_codes": ["200"]
+      },
+      "timeout": 3,
+      "interval": 15,
+      "jitter": 0,
+      "unhealthy_threshold": 1,
+      "healthy_threshold": 3,
+      "jitter_percent": 30
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks" \
+  | jq .
+```
+
+การตอบสนอง `200` พร้อมกับออบเจ็กต์ที่สร้างขึ้นยืนยันว่า healthcheck ถูกสร้าง หากการตอบสนองมี `"code": 8` พร้อมข้อความเช่น `"Object kind healthcheck has exhausted limits(150)"` ผู้เช่าได้ถึงขีดจำกัด healthcheck แล้ว — ข้ามไปยัง Step 2 และละเว้นการอ้างอิง healthcheck CSD ไม่ขึ้นอยู่กับการตรวจสอบสุขภาพ
+
+### Evidence
+
+ยืนยันว่า healthcheck มีอยู่จริง:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx" \
+  | jq '{name: .metadata.name, namespace: .metadata.namespace, path: .spec.http_health_check.path, interval: .spec.interval}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| HTTP Status | `200` พร้อมออบเจ็กต์ | PASS หากส่งคืน FAIL หาก `404` |
+| `name` | ตรงกับ `F5XC_HC_NAME` | PASS |
+| `path` | `/` | PASS |
+| Step 1 ข้าม (รหัสข้อผิดพลาด `8`, ขีดจำกัดหมด) | — | PASS (healthcheck เป็นตัวเลือกสำหรับ CSD) |
+
+## Step 2: Create Origin Pool
+
+สร้าง origin pool ที่ชี้ไปยังเซิร์ฟเวอร์แบ็กเอนด์ของคุณ หากคุณสร้าง healthcheck ใน Step 1 ให้รวมการอ้างอิง `healthcheck` หาก Step 1 ถูกข้ามให้ใช้อาร์เรย์เปล่า
+
+**มี healthcheck** (Step 1 สำเร็จ):
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_ORIGIN_POOLx",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "Origin pool for CSD demo",
+      "disable": false
+    },
+    "spec": {
+      "origin_servers": [{
+        "public_ip": { "ip": "xF5XC_ORIGIN_IPx" },
+        "labels": {}
+      }],
+      "no_tls": {},
+      "port": xF5XC_ORIGIN_PORTx,
+      "same_as_endpoint_port": {},
+      "healthcheck": [{
+        "namespace": "xF5XC_NAMESPACEx",
+        "name": "xF5XC_HC_NAMEx",
+        "kind": "healthcheck"
+      }],
+      "loadbalancer_algorithm": "LB_OVERRIDE",
+      "endpoint_selection": "LOCAL_PREFERRED"
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools" \
+  | jq .
+```
+
+**ไม่มี healthcheck** (Step 1 ข้าม):
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_ORIGIN_POOLx",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "Origin pool for CSD demo",
+      "disable": false
+    },
+    "spec": {
+      "origin_servers": [{
+        "public_ip": { "ip": "xF5XC_ORIGIN_IPx" },
+        "labels": {}
+      }],
+      "no_tls": {},
+      "port": xF5XC_ORIGIN_PORTx,
+      "same_as_endpoint_port": {},
+      "healthcheck": [],
+      "loadbalancer_algorithm": "LB_OVERRIDE",
+      "endpoint_selection": "LOCAL_PREFERRED"
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools" \
+  | jq .
+```
+
+การตอบสนอง `200` ยืนยันว่า origin pool ถูกสร้าง
+
+<Aside type="caution">
+หากการตอบสนองมี `"code": 8` พร้อมข้อความเช่น `"Object kind endpoint has exhausted limits(500)"` หรือ `"Object kind origin_pool has exhausted limits"` ผู้เช่าได้ถึงโควตา ต่างจาก healthcheck origin pool เป็น **จำเป็น** สำหรับ demo — demo ไม่สามารถดำเนินต่อได้หากไม่มี ลบ origin pool ที่ไม่ใช้จาก namespace อื่น ๆ เพื่อคืนพื้นที่ (การลบ origin pool ยังเพิ่มวัตถุย่อยของ endpoint) จากนั้นลองใหม่ หากไม่สามารถแก้ไขขีดจำกัดได้ให้ติดต่อแอดมิน F5 Distributed Cloud (F5 XC) เพื่อเพิ่มโควตาผู้เช่า
+</Aside>
+
+### ตรวจสอบว่า Healthcheck ถูกเชื่อมโยง
+
+หากคุณรวมการอ้างอิง healthcheck ให้ยืนยันว่าเชื่อมโยงอย่างถูกต้อง:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '.spec.healthcheck'
+```
+
+อาร์เรย์ที่มีข้อมูลยืนยันการเชื่อมโยง อาร์เรย์เปล่า `[]` เป็นไปตามที่คาดหวัก หากข้ามขั้น 1 หรือหมายความว่า healthcheck ไม่พบหากคุณตั้งใจจะเชื่อมโยง
+
+### Evidence
+
+ยืนยันว่า origin pool มีอยู่จริงและมีการกำหนดค่าที่ถูกต้อง:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '{name: .metadata.name, origin_ip: .spec.origin_servers[0].public_ip.ip, port: .spec.port, healthcheck_count: (.spec.healthcheck | length)}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| HTTP Status | `200` | PASS หากส่งคืน FAIL หาก `404` |
+| `name` | ตรงกับ `F5XC_ORIGIN_POOL` | PASS |
+| `origin_ip` | ตรงกับ `F5XC_ORIGIN_IP` | PASS |
+| `port` | ตรงกับ `F5XC_ORIGIN_PORT` | PASS |
+| `healthcheck_count` | `1` (มี HC) หรือ `0` (ไม่มี) | PASS ตัวใดตัวหนึ่ง |
+
+## Step 3: สร้าง HTTP Load Balancers ด้วย CSD
+
+สร้าง **สอง** load balancer โดยเปิดใช้ Client-Side Defense — HTTP LB (หลัก, port 80) และ HTTPS LB (รอง, port 443 ด้วยการจัดการใบรับรองอัตโนมัติ) HTTP LB เป็นค่าเริ่มต้นสำหรับ traffic ทั้งหมดของ demo HTTPS LB เป็นสิ่งที่ดีที่มี ซึ่งขึ้นอยู่กับการจัดสรรใบรับรอง Let's Encrypt ซึ่งสามารถถูก rate limit ในสภาพแวดล้อม demo
+
+<Aside type="note">
+HTTP Load Balancer spec มีกลุ่มตัวเลือก `oneOf` มากกว่า 22 รายการ ทุกกลุ่มต้องมีตัวเลือกที่กำหนดไว้เพียงหนึ่งตัวหรือ API จะส่งคืนข้อผิดพลาด `422` การกำหนดค่าด้านล่างปิดใช้งาน feature ความปลอดภัยตามลำดับที่เป็นทางเลือกทั้งหมด ยกเว้น CSD — แก้ไขตามต้องการสำหรับสภาพแวดล้อมของคุณ LB ทั้งสองใช้ origin pool เดียวกัน CSD settings และ domain — เฉพาะประเภท listener ที่แตกต่างกัน
+</Aside>
+
+<Aside type="tip">
+ชื่อ LB ทั้งสองมาจาก `F5XC_LB_NAME`: HTTP LB คือ `${F5XC_LB_NAME}-http` และ HTTPS LB คือ `${F5XC_LB_NAME}-https` ไม่จำเป็นต้องใช้ตัวแปรสภาพแวดล้อมเพิ่มเติม
+</Aside>
+
+### HTTP Load Balancer (หลัก)
+
+นี่คือ **HTTP LB หลัก** สำหรับ demo โดยใช้ listener `http` บน port 80 ด้วย F5 XC managed DNS ไม่ขึ้นอยู่กับการจัดสรรใบรับรอง TLS ดังนั้นจึงพร้อมใช้งานทันทีหลังจาก DNS แก้ไข
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_LB_NAMEx-http",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "HTTP LB with Client-Side Defense enabled (primary demo LB)",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["xF5XC_DOMAINNAMEx"],
+      "http": {
+        "dns_volterra_managed": true,
+        "port": 80
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [{
+        "pool": {
+          "namespace": "xF5XC_NAMESPACEx",
+          "name": "xF5XC_ORIGIN_POOLx",
+          "kind": "origin_pool"
+        },
+        "weight": 1,
+        "priority": 1
+      }],
+      "client_side_defense": {
+        "policy": {
+          "js_insert_all_pages": {}
+        }
+      },
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers" \
+  | jq .
+```
+
+การตอบสนอง `200` ยืนยันว่า HTTP load balancer ถูกสร้างด้วย CSD เปิดใช้งาน
+
+<Aside type="caution">
+หากการตอบสนองมี `"code": 8` พร้อมข้อความเช่น `"Object kind http_loadbalancer has exhausted limits"` ผู้เช่าได้ถึงโควตา load balancer Load balancer เป็น **จำเป็น** สำหรับ demo ลบ load balancer ที่ไม่ใช้เพื่อคืนพื้นที่ จากนั้นลองใหม่
+</Aside>
+
+### HTTPS Load Balancer (รอง)
+
+นี่คือ **HTTPS LB รอง** โดยใช้ `https_auto_cert` บน port 443 ด้วยการจัดสรรใบรับรอง Let's Encrypt อัตโนมัติ ก่อนสร้าง ให้ตรวจสอบว่า **skeleton HTTPS LB** มีอยู่จาก teardown ครั้งก่อน — หากมี ให้คืนค่าผ่าน PUT แทน POST เพื่อรักษาใบรับรอง Let's Encrypt ที่มีอยู่และหลีกเลี่ยง rate limit (ใบรับรองที่ซ้ำกัน 5 ใบต่อชุดตัวระบุที่แน่นอนต่อ 7 วัน)
+
+**ตรวจสอบว่า HTTPS LB มีอยู่แล้ว:**
+
+```bash
+HTTPS_CHECK=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+```
+
+หาก `HTTPS_CHECK` เป็น `200` skeleton HTTPS LB มีอยู่ — ใช้ **Path A (PUT)** หาก `404` ใช้ **Path B (POST)**
+
+#### Path A: คืนค่า Skeleton ผ่าน PUT (HTTPS LB มีอยู่)
+
+เมื่อ skeleton HTTPS LB มีอยู่จาก teardown ก่อนหน้า ให้คืนค่าการกำหนดค่าแบบเต็มผ่าน PUT ซึ่งจะเชื่อมต่อ origin pool อีกครั้ง และเปิดใช้งาน CSD อีกครั้ง **โดยไม่ทำให้มีการขอใบรับรอง Let's Encrypt ใหม่** — ใบรับรองที่มีอยู่ยังคงมีประสิทธิ
+
+```bash
+curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_LB_NAMEx-https",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "HTTPS LB with Client-Side Defense enabled (secondary, cert-dependent)",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["xF5XC_DOMAINNAMEx"],
+      "https_auto_cert": {
+        "http_redirect": false,
+        "add_hsts": false,
+        "port": 443,
+        "default_header": {},
+        "enable_path_normalize": {},
+        "no_mtls": {},
+        "default_loadbalancer": {}
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [{
+        "pool": {
+          "namespace": "xF5XC_NAMESPACEx",
+          "name": "xF5XC_ORIGIN_POOLx",
+          "kind": "origin_pool"
+        },
+        "weight": 1,
+        "priority": 1
+      }],
+      "client_side_defense": {
+        "policy": {
+          "js_insert_all_pages": {}
+        }
+      },
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq .
+```
+
+การตอบสนอง `200` ยืนยันว่า skeleton ถูกคืนค่าด้วยการกำหนดค่าแบบเต็ม สถานะใบรับรองควรยังคง `CertificateValid` — ไม่มีการจัดสรรใบรับรอง Let's Encrypt ใหม่เกิดขึ้น
+
+<Aside type="note">
+**Skeleton restoration** PUT แทนที่ข้อมูล spec ทั้งหมด Skeleton HTTPS LB รักษาการผูกมัด domain และใบรับรองในระหว่าง teardown PUT นี้คืนค่าการอ้างอิง origin pool และเปิดใช้งาน Client-Side Defense ใหม่อีกครั้ง โดยไม่ทำให้มีการขอใบรับรอง Let's Encrypt ใหม่ HTTPS พร้อมใช้งานทันที
+</Aside>
+
+#### Path B: สร้างใหม่ผ่าน POST (HTTPS LB ไม่มีอยู่)
+
+เมื่อไม่มี HTTPS LB (รัน first หรือหลัง full teardown) ให้สร้างผ่าน POST ซึ่งจะทำให้มีการจัดสรรใบรับรอง Let's Encrypt ที่อาจใช้เวลา 5–10 นาที
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_LB_NAMEx-https",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "HTTPS LB with Client-Side Defense enabled (secondary, cert-dependent)",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["xF5XC_DOMAINNAMEx"],
+      "https_auto_cert": {
+        "http_redirect": false,
+        "add_hsts": false,
+        "port": 443,
+        "default_header": {},
+        "enable_path_normalize": {},
+        "no_mtls": {},
+        "default_loadbalancer": {}
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [{
+        "pool": {
+          "namespace": "xF5XC_NAMESPACEx",
+          "name": "xF5XC_ORIGIN_POOLx",
+          "kind": "origin_pool"
+        },
+        "weight": 1,
+        "priority": 1
+      }],
+      "client_side_defense": {
+        "policy": {
+          "js_insert_all_pages": {}
+        }
+      },
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers" \
+  | jq .
+```
+
+การตอบสนอง `200` ยืนยันว่า HTTPS load balancer ถูกสร้าง การจัดสรรใบรับรองจะเริ่มขึ้นโดยอัตโนมัติ
+
+<Aside type="caution">
+หากการตอบสนองมี `"code": 8` พร้อมข้อความ "exhausted limits" HTTPS LB ไม่สามารถสร้างได้ HTTPS LB เป็นตัวเลือก — demo ดำเนินต่อโดยใช้ HTTP LB บันทึกข้อจำกัด quota ใน Phase 1 Evidence Summary เป็น INFO
+</Aside>
+
+<Aside type="note">
+**Let's Encrypt rate limits** การสร้าง HTTPS LB ใหม่จะทำให้มีการขอใบรับรอง Let's Encrypt Let's Encrypt อนุญาตเพียง 5 ใบรับรองที่ซ้ำกันต่อชุดตัวระบุที่แน่นอนต่อ 7 วัน หาก `cert_state` แสดง `AutoCertDomainRateLimited` demo จะดำเนินต่อโดยใช้ HTTP LB เพื่อหลีกเลี่ยงการถึงขีดจำกัดนี้ teardown เริ่มต้นจะรักษา HTTPS LB เป็น skeleton — ดู [Phase 4 — Teardown](/csd/demo/phase-4-teardown/)
+</Aside>
+
+### Evidence
+
+ยืนยันว่า load balancer ทั้งสองมีอยู่จริงด้วย CSD เปิดใช้งาน ใช้ **GET** สำหรับ evidence เสมอ — การตอบสนอง POST จะส่งกลับค่าสถานะชั่วคราวที่อาจไม่สะท้อนการกำหนดค่าที่ได้รับการยอมรับ
+
+**HTTP LB (หลัก):**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{name: .metadata.name, domains: .spec.domains, csd_enabled: (.spec.client_side_defense != null), state: .spec.state}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| HTTP Status | `200` | PASS หากส่งคืน FAIL หาก `404` |
+| `name` | `${F5XC_LB_NAME}-http` | PASS |
+| `domains` | มี `F5XC_DOMAINNAME` | PASS |
+| `csd_enabled` | `true` | PASS — CSD ได้รับการกำหนดค่าบน LB นี้ |
+| `state` | `VIRTUAL_HOST_READY` หรือ `VIRTUAL_HOST_PENDING_A_RECORD` | คาดหวัง — HTTP LB เปลี่ยนเป็น READY เมื่อ DNS แก้ไข สถานะอื่น ๆ (เช่น `VIRTUAL_HOST_FAILED`) คือ FAIL — รายงานต่อผู้ปฏิบัติการและไม่ดำเนินต่อ |
+
+**HTTPS LB (รอง):**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{name: .metadata.name, domains: .spec.domains, csd_enabled: (.spec.client_side_defense != null), state: .spec.state, cert_state: .spec.cert_state}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| HTTP Status | `200` | PASS หากส่งคืน FAIL หาก `404` |
+| `name` | `${F5XC_LB_NAME}-https` | PASS |
+| `domains` | มี `F5XC_DOMAINNAME` | PASS |
+| `csd_enabled` | `true` | PASS — CSD ได้รับการกำหนดค่าบน LB นี้ |
+| `creation_method` | PUT (skeleton ที่คืนค่า) หรือ POST (ใหม่) | INFO — PUT รักษาใบรับรองที่มีอยู่ |
+| `state` | `VIRTUAL_HOST_READY` (PUT) หรือ `VIRTUAL_HOST_PENDING_A_RECORD` (POST) | คาดหวัง — path PUT อาจเป็น READY แล้วเนื่องจาก DNS ยังคงมี skeleton |
+| `cert_state` | `CertificateValid` (PUT) หรือ `PreDomainChallengePending` (POST) | PUT รักษาใบรับรองที่มีอยู่; POST ทำให้มีการจัดสรรใหม่ |
+
+## Step 4: กำหนดค่า DNS
+
+หลังจากสร้าง load balancer มันจะเข้าสู่สถานะ `VIRTUAL_HOST_PENDING_A_RECORD` และใบรับรองอัตโนมัติจะอยู่ใน `PreDomainChallengePending` ต้องมีระเบียน DNS สองรายการก่อนที่ LB จะทำงานแบบเต็มที่:
+
+1. **A record** — `xF5XC_DOMAINNAMEx` ชี้ไปที่ VIP IP address (จาก `dns_info` ในการตอบสนอง LB)
+2. **ACME challenge record** — `_acme-challenge.xF5XC_DOMAINNAMEx` สำหรับการตรวจสอบใบรับรอง TLS (จัดการโดยอัตโนมัติเมื่อใช้ F5 XC DNS ด้วยระเบียน managed; CNAME ด้วยตนเอง จำเป็นสำหรับ DNS ภายนอก)
+
+วิธีการขึ้นอยู่กับว่า F5 XC เป็นผู้ให้บริการ DNS เก่าแก่สำหรับ domain ของคุณ
+
+### ตรวจสอบ DNS Authority
+
+ตรวจสอบ nameserver สำหรับ root domain ของคุณ:
+
+```bash
+dig +short NS xF5XC_ROOT_DOMAINx
+```
+
+หากการตอบสนองมี `ns1.f5clouddns.com` และ `ns2.f5clouddns.com` F5 XC เป็นผู้ให้บริการ DNS เก่าแก่ — ทำตาม **Option A** มิฉะนั้นทำตาม **Option B** สำหรับ DNS ภายนอก
+
+### Option A: F5 XC Managed DNS
+
+เมื่อ F5 XC เป็นผู้ให้บริการ DNS เก่าแก่ platform สามารถสร้าง A record และ ACME challenge CNAME โดยอัตโนมัติ — แต่เฉพาะเมื่อ DNS zone มี `allow_http_lb_managed_records` เปิดใช้งาน
+
+<Aside type="note">
+DNS zone อยู่ใน **system** namespace ไม่ใช่ใน user namespace ชื่อ zone ตรงกับ root domain (เช่น `bankexample.com`)
+</Aside>
+
+**1. ตรวจสอบว่าระเบียน managed เปิดใช้งานแล้ว:**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq '.spec.primary.allow_http_lb_managed_records'
+```
+
+หากการตอบสนองเป็น `true` platform จะสร้างระเบียน DNS สำหรับ load balancer โดยอัตโนมัติ — ข้ามไปยัง **3. ตรวจสอบการแก้ไข DNS** หาก `false` หรือ `null` ดำเนินการขั้นตอนถัดไป
+
+**2. เปิดใช้งานระเบียน managed:**
+
+<Aside type="caution">
+เพย์โหลด `PUT` ต้องรวม **zone spec แบบเต็ม** — metadata และฟิลด์การกำหนดค่าที่มีอยู่ทั้งหมด การละเว้นฟิลด์จะรีเซ็ตให้เป็นค่าเริ่มต้น ดึง zone configuration ปัจจุบันก่อน จากนั้นแก้ไขเฉพาะฟิลด์ `allow_http_lb_managed_records`
+</Aside>
+
+ดึง zone configuration ปัจจุบัน เปิดใช้งานระเบียน managed และอัปเดต:
+
+```bash
+# ดึง zone config ปัจจุบัน
+ZONE_CONFIG=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx")
+
+# อัปเดตด้วยระเบียน managed เปิดใช้งาน
+echo "$ZONE_CONFIG" \
+  | jq '.spec.primary.allow_http_lb_managed_records = true' \
+  | curl -s -X PUT \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d @- \
+    "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq .
+```
+
+<Aside type="caution">
+Zone spec มี `x-ves-io-managed` rr_set_group พร้อมระเบียน managed ของ platform เพย์โหลด `PUT` ของคุณ **ต้องรักษากลุ่มนี้** — การละเว้นจะทำให้เกิด HTTP 403 "reserved for internal purposes" ดึง zone configuration ปัจจุบันด้วย `GET` ก่อนเสมอ แก้ไขเฉพาะฟิลด์ที่คุณต้องการ และส่งกลับ spec ที่สมบูรณ์
+</Aside>
+
+การตอบสนอง `200` (ว่าง `\{\}`) ยืนยันว่า zone ถูกอัปเดต F5 XC จะสร้าง A record และระเบียน ACME challenge ในกลุ่มระเบียน auto-managed ของ zone หากระเบียน managed ไม่ปรากฏภายใน 60 วินาที ให้ใช้งาน load balancer อีกครั้งเพื่อทำให้สร้างระเบียน:
+
+```bash
+LB_CONFIG=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http")
+echo "$LB_CONFIG" | curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d @- \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq .
+```
+
+GET+PUT นี้ไม่เปลี่ยนการกำหนดค่า LB — มันทำให้ platform ประเมิน DNS zone อีกครั้งและสร้างระเบียน managed A record ยังคงไม่แก้ไขภายใน 60 วินาทีหลัง re-apply ให้หยุดและรายงานต่อผู้ปฏิบัติการ — ไม่ลองใหม่ re-apply มากกว่าครั้งเดียว
+
+**3. ตรวจสอบการแก้ไข DNS:**
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A
+```
+
+การตอบสนองควรส่งกลับ VIP IP address การแพร่ระบาด DNS โดยปกติจะทันทีสำหรับ F5 XC managed zone แต่อนุญาต 60 วินาที
+
+<Aside type="tip">
+**Negative DNS cache:** หากคุณค้นหา domain ก่อนที่ระเบียนจะมีอยู่ recursive resolver ของคุณอาจแคช `NXDOMAIN` ตรวจสอบกับ authoritative nameserver หรือ public resolver เพื่อตัดบัญชี stale cache:
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A @ns1.f5clouddns.com
+dig +short xF5XC_DOMAINNAMEx A @8.8.8.8
+```
+</Aside>
+
+### Option B: DNS Provider ภายนอก
+
+เมื่อ domain ของคุณใช้ DNS provider ภายนอก ต้องสร้างระเบียนด้วยตนเอง ดึงค่าที่จำเป็นจาก load balancer:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{
+    vip_ip: .spec.dns_info[0].ip_address,
+    acme_target: .spec.auto_cert_info.dns_records
+  }'
+```
+
+สร้างระเบียนเหล่านี้ที่ DNS provider:
+
+| Type | Name | Value |
+| --- | --- | --- |
+| A | `xF5XC_DOMAINNAMEx` | VIP IP จาก `dns_info[0].ip_address` |
+| CNAME | `_acme-challenge.xF5XC_DOMAINNAMEx` | `*.autocerts.ves.volterra.io` |
+
+หลังจากสร้างระเบียนให้ตรวจสอบการแก้ไข:
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+```
+
+<Aside type="tip">
+A record จำเป็นสำหรับ LB ในการเปลี่ยนจาก `VIRTUAL_HOST_PENDING_A_RECORD` เป็น `VIRTUAL_HOST_READY` ACME CNAME จำเป็นสำหรับการจัดสรรใบรับรอง TLS อัตโนมัติ หากไม่มีระเบียนทั้งสอง LB จะอยู่ในสถานะ pending
+</Aside>
+
+### Evidence
+
+| Test | Command | Expected | Status |
+| --- | --- | --- | --- |
+| DNS-1: A Record | `dig +short $F5XC_DOMAINNAME A` | ส่งกลับ VIP IP address | PASS หากส่งกลับ IP FAIL หากเว้นไว้ |
+| DNS-2: ACME CNAME | `dig +short _acme-challenge.$F5XC_DOMAINNAME CNAME` | `*.autocerts.ves.volterra.io` | PASS หากส่งกลับ CNAME |
+| DNS authority | `dig +short NS $F5XC_ROOT_DOMAIN` | F5 XC หรือ nameserver ภายนอก | ข้อมูล — กำหนด Option A vs B |
+
+หาก DNS-1 ส่งกลับว่างเปล่าหลัง 60 วินาที ดู [Troubleshooting — LB Stuck in VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record)
+
+## Step 5: ตรวจสอบว่า CSD เปิดใช้งาน
+
+ตรวจสอบว่า Client-Side Defense เปิดใช้งานสำหรับผู้เช่า CSD ได้รับการกำหนดค่าที่ระดับผู้เช่า — หากยังไม่เปิดใช้งาน ให้ติดต่อแอดมิน F5 XC ของคุณ
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq .
+```
+
+การตอบสนองที่มี `"isConfigured": true` และ `"isEnabled": true` ยืนยันว่า CSD ทำงานอยู่
+
+### Evidence
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq '{configured: .isConfigured, enabled: .isEnabled}'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| `configured` | `true` | PASS |
+| `enabled` | `true` | PASS |
+| ตัวใดตัวหนึ่งเป็น `false` | — | FAIL — ติดต่อแอดมิน F5 XC เพื่อเปิดใช้งาน CSD ที่ระดับผู้เช่า |
+
+## Step 6: ลงทะเบียน Protected Domain
+
+ลงทะเบียน root domain ที่ CSD จะตรวจสอบ ฟิลด์ `protected_domain` ต้องเป็น **eTLD+1** root domain (เช่น `f5demos.com`) ไม่ใช่ full FQDN
+
+<Aside type="caution">
+**Protected domain มีขอบเขต tenant ไม่ใช่ namespace** ต่างจาก healthcheck, origin pool และ load balancer protected domain ถูกลงทะเบียนทั่วโลกบนผู้เช่า — namespace ใน API URL เป็นพารามิเตอร์กำหนดเส้นทาง ไม่ใช่ขอบเขตความเป็นเจ้าของ อย่างไรก็ตาม protected domain เป็นออบเจ็กต์กำหนดค่า CSD ที่เกี่ยวข้องกับ deployment นี้ และ **ควรลบระหว่าง teardown** เมื่อ deployment ถูกลบอย่างสมบูรณ์ ไม่สับสนกับ DNS zone ซึ่งเป็นโครงสร้างพื้นฐานที่ใช้ร่วมกันและไม่ควรลบ
+</Aside>
+
+### ตรวจสอบว่าลงทะเบียนแล้ว
+
+ก่อนสร้าง ตรวจสอบว่า domain ลงทะเบียนแล้วบนผู้เช่า การตอบสนอง `409` กับ POST หมายความว่า domain มีอยู่แล้ว — นี่คือสภาวะสำเร็จ ไม่ใช่ข้อผิดพลาด
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_DOMAINNAMEx",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "protected_domain": "xF5XC_ROOT_DOMAINx"
+    }
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq .
+```
+
+| Response | Meaning | Action |
+| --- | --- | --- |
+| `200` | Domain ลงทะเบียนสำเร็จ | ดำเนินต่อไป Step 7 |
+| `409` (domain มีอยู่แล้ว) | Domain ลงทะเบียนก่อนหน้านี้บนผู้เช่า | สำเร็จแล้ว — ดำเนินต่อไป Step 7 |
+| `"code": 8` (ขีดจำกัดหมด) | โควตา protected domain เต็ม | **Blocking** — protected domain จำเป็นสำหรับ CSD ลบ protected domain ที่ไม่ใช้หรือติดต่อแอดมิน |
+
+### Evidence
+
+การตอบสนอง POST เองเป็น evidence หลัก — จะส่งกลับออบเจ็กต์ protected domain ที่ลงทะเบียนด้วย `spec.protected_domain` ตรงกับ root domain ของคุณ อีกทางเลือก ให้ระบุ protected domain ทั้งหมดเพื่อยืนยัน:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '.items | length'
+```
+
+| Field | Expected | Status |
+| --- | --- | --- |
+| POST ส่งกลับ `protected_domain` | ตรงกับ `F5XC_ROOT_DOMAIN` | PASS |
+| POST ส่งกลับ `200` หรือ `409` | Domain ลงทะเบียนหรือมีอยู่แล้ว | PASS |
+| นับรายการ list | &gt; 0 | PASS |
+
+<Aside type="note">
+Endpoint GET ส่วนบุคคล (`/protected_domains/\{name\}`) ไม่พร้อมใช้งานสำหรับ protected domain ใช้การตอบสนอง POST หรือ endpoint list เพื่อตรวจสอบ
+</Aside>
+
+## Step 7: ตรวจสอบ
+
+### การแก้ไข DNS
+
+ยืนยันว่า A record แก้ไขและ ACME challenge CNAME มีอยู่:
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+```
+
+A record ควรส่งกลับ VIP IP address CNAME ควรชี้ไปที่ `*.autocerts.ves.volterra.io` (หรือเป้าหมาย autocerts ที่เกี่ยวข้อง)
+
+### สถานะ Load Balancer
+
+ตรวจสอบว่า load balancer ทั้งสองออกจากสถานะ pending HTTP LB เป็นการตรวจสอบหลัก — ควรถึง `VIRTUAL_HOST_READY` เมื่อ DNS แก้ไข ด้วยปราศจากการพึ่งพาใบรับรอง สถานะใบรับรอง HTTPS LB เป็นข้อมูลเท่านั้น
+
+**HTTP LB (หลัก — ต้อง READY เพื่อดำเนินต่อ):**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{state: .spec.state}'
+```
+
+| Field | Expected | Intermediate States |
+| --- | --- | --- |
+| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS ไม่ได้รับการกำหนดค่า (ดู Step 4) |
+
+**HTTPS LB (รอง — ข้อมูล ไม่บล็อกการดำเนินการ):**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{state: .spec.state, cert_state: .spec.cert_state}'
+```
+
+| Field | Expected | Intermediate States |
+| --- | --- | --- |
+| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS ไม่ได้รับการกำหนดค่า; `VIRTUAL_HOST_DNS_A_RECORD_ADDED` — พบ A record รอใบรับรอง |
+| `cert_state` | `CertificateValid` | `PreDomainChallengePending` — รอ ACME CNAME; `DomainChallengeStarted` — ACME challenge กำลังดำเนิน; `AutoCertDomainRateLimited` — เข้าสู่ rate limit Let's Encrypt (คาดหวัง ไม่ส่งผลต่อ HTTP LB) |
+
+<Aside type="note">
+การจัดสรรใบรับรองสามารถใช้เวลา **5–10 นาที** หลังจากสร้างระเบียน DNS หาก `cert_state` แสดง `AutoCertDomainRateLimited` นี่เป็นไปตามที่คาดหวังในสภาพแวดล้อม demo ที่มีการสร้างและลบโครงสร้างพื้นฐานบ่อยครั้ง HTTP LB ไม่ได้รับผลกระทบ — ดำเนินการ demo โดยใช้ URL `http://`
+</Aside>
+
+### JS Configuration
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq .
+```
+
+การตอบสนองมี `scriptTag` field พร้อมกับแท็ก HTML `<script>` แบบเต็มที่ load balancer ฉีดเข้าไปในการตอบสนองหน้า
+
+### Detected Domains
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{summary: .domain_summary, domains: .domains_list}'
+```
+
+### Detected Scripts
+
+Script endpoint ต้องใช้ช่วงเวลาโดยใช้ timestamp epoch (วินาทีตั้งแต่ Unix epoch) ตัวอย่างด้านล่างค้นหา 7 วันที่ผ่านมา
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq '[.scripts[]? | {script_name: .script_name, risk_level: .risk_level}]'
+```
+
+### Form Fields
+
+Form field endpoint ต้องใช้ช่วงเวลาโดยใช้ timestamp epoch ส่งผ่านเป็น query parameter
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields?startTime=$START&endTime=$NOW" \
+  | jq '.form_fields'
+```
+
+### Phase 1 Evidence Summary
+
+หลังจากทำตามการตรวจสอบทั้งหมด ผู้ช่วย AI ควรแสดงตารางสถานะแบบรวม:
+
+| Test ID | Check | Expected | Required | Status |
+| --- | --- | --- | --- | --- |
+| DNS-1 | A Record แก้ไข | ส่งกลับ VIP IP | **Yes** | PASS / FAIL |
+| DNS-2 | ACME CNAME มีอยู่ | `*.autocerts.ves.volterra.io` | No | PASS / PENDING |
+| LB-1 | HTTP LB state | `VIRTUAL_HOST_READY` | **Yes** | PASS / PENDING |
+| LB-2 | HTTPS LB state | `VIRTUAL_HOST_READY` | No | PASS / PENDING / INFO |
+| TLS-1 | Certificate state | `CertificateValid` | No | PASS / PENDING / INFO |
+| CSD-1 | JS configuration | `scriptTag` present | **Yes** | PASS / FAIL |
+| CSD-2 | CSD status | `isEnabled: true` | **Yes** | PASS / FAIL |
+| CSD-3 | Protected domain | Domain ลงทะเบียน | **Yes** | PASS / FAIL |
+
+<Aside type="note">
+**Phase 2 ใช้ HTTP LB** HTTPS เป็นตัวเลือก — หาก TLS-1 แสดง `AutoCertDomainRateLimited` หรือ LB-2 ยังคง PENDING demo ดำเนินต่อปกติโดยใช้ URL `http://` เฉพาะ DNS-1, LB-1, CSD-1, CSD-2 และ CSD-3 ต้องผ่านก่อนดำเนินต่อไป Phase 2
+</Aside>
+
+หาก LB-1 แสดง PENDING โปลทุก 30 วินาที มากถึง 4 ครั้ง (2 นาทีรวม) หาก LB-1 ยังคง `VIRTUAL_HOST_READY` หลัง 4 ครั้ง ให้ตรวจสอบการแก้ไข DNS ด้วย `dig` และรายงานต่อผู้ปฏิบัติการ — ไม่ดำเนินต่อจนกว่า LB-1 จะถึง READY สำหรับ LB-2 และ TLS-1 โปลทุก 60 วินาที มากถึง 10 ครั้ง (10 นาที) หาก ยังอยู่ในสถานะกลางหลัง 10 ครั้ง ให้บันทึกสถานะปัจจุบันเป็น INFO และดำเนินต่อ — เป็นข้อมูลและไม่บล็อกความก้าวหน้าของ demo
+
+<Aside type="note">
+ฟิลด์ `dns_info` ในการตอบสนอง LB อาจเว้นไว้ (`[]`) แม้ว่า DNS จะแก้ไขอย่างถูกต้อง — สิ่งนี้เกิดขึ้นหลังจากการสร้างใหม่อย่างสะอาด ตรวจสอบการแก้ไข DNS ด้วย `dig` เสมอแทนการอาศัย `dns_info` สำหรับ VIP address
+</Aside>
+
+---
+
+**Phase 1 สมบูรณ์** ดำเนินต่อไป [Phase 2 — Attack](/csd/demo/phase-2-attack/) เพื่อเรียกใช้ simulation การโจมตี

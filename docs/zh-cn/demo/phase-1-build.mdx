@@ -1,0 +1,877 @@
+---
+title: 第 1 阶段 — 构建
+description: 通过 F5 XC API 部署 CSD 基础设施 — 健康检查、源池、负载均衡器、受保护域名
+sidebar:
+  order: 2
+  label: 第 1 阶段 — 构建
+i18n:
+  sourceHash: 6ecd8b98f257
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+第 1 阶段部署并验证完整的 CSD 基础设施。按顺序完成所有步骤 — 每个步骤必须通过后才能继续。在运行这些命令之前，返回[索引](/csd/demo/)完成环境设置和变量解析。
+
+## 步骤 0：检查和创建命名空间（有条件）
+
+检查目标命名空间是否已存在于租户中。如果不存在，创建它。在 `NAMESPACE_CREATED` shell 变量中跟踪结果 — 第 4 阶段清理使用此变量决定是否删除命名空间。
+
+```bash
+NS_CHECK=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx")
+
+NAMESPACE_CREATED="false"
+if [ "$NS_CHECK" = "404" ]; then
+  curl -s -X POST \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d '{"metadata": {"name": "xF5XC_NAMESPACEx"}, "spec": {}}' \
+    "xF5XC_API_URLx/api/web/namespaces" | jq .
+  NAMESPACE_CREATED="true"
+fi
+```
+
+<Aside type="note">
+**`spec` 字段是必需的。** F5 XC 命名空间 API 要求请求体中必须有 `spec` 字段，即使不需要配置时也要传递空对象 `{}`。省略 `spec` 会返回错误代码 `3`（"spec 在请求中不应为空"）。
+</Aside>
+
+### 证据
+
+确认命名空间存在并记录它是否被创建：
+
+```bash
+curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx"
+echo "NAMESPACE_CREATED=$NAMESPACE_CREATED"
+```
+
+| 字段 | 预期 | 状态 |
+| --- | --- | --- |
+| HTTP 状态 | `200` | 如果返回则通过，如果为 `404` 或其他则失败 |
+| `NAMESPACE_CREATED` | `true`（已创建）或 `false`（预先存在） | 信息性 — 由第 4 阶段清理使用 |
+
+## 步骤 1：创建健康检查（可选）
+
+创建 HTTP 健康检查，源池可以使用它来监控后端健康。
+
+<Aside type="note">
+**健康检查对 CSD 是可选的。** 客户端防护功能不依赖源健康监控。如果租户已达到健康检查对象限制（错误代码 `8` — 参见错误处理），请跳过此步骤并创建源池而不引用健康检查。CSD 将正常运行。
+
+如果确实创建了健康检查，必须在源池之前创建它。源池必须引用现有的健康检查 — 如果创建源池时健康检查不存在，引用将为空。
+</Aside>
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_HC_NAMEx",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "disable": false
+    },
+    "spec": {
+      "http_health_check": {
+        "use_origin_server_name": {},
+        "path": "/",
+        "use_http2": false,
+        "headers": {},
+        "request_headers_to_remove": [],
+        "expected_status_codes": ["200"]
+      },
+      "timeout": 3,
+      "interval": 15,
+      "jitter": 0,
+      "unhealthy_threshold": 1,
+      "healthy_threshold": 3,
+      "jitter_percent": 30
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks" \
+  | jq .
+```
+
+`200` 响应和创建的对象确认健康检查已创建。如果响应包含 `"code": 8` 和类似 `"Object kind healthcheck has exhausted limits(150)"` 的消息，租户已达到健康检查限制 — 跳到步骤 2 并省略健康检查引用。CSD 不依赖健康监控。
+
+### 证据
+
+确认健康检查存在：
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx" \
+  | jq '{name: .metadata.name, namespace: .metadata.namespace, path: .spec.http_health_check.path, interval: .spec.interval}'
+```
+
+| 字段 | 预期 | 状态 |
+| --- | --- | --- |
+| HTTP 状态 | `200` 且包含对象 | 如果返回则通过，如果为 `404` 则失败 |
+| `name` | 匹配 `F5XC_HC_NAME` | 通过 |
+| `path` | `/` | 通过 |
+| 步骤 1 已跳过（错误代码 `8`，限制已用尽） | — | 通过（健康检查对 CSD 是可选的） |
+
+## 步骤 2：创建源池
+
+创建指向后端服务器的源池。如果在步骤 1 中创建了健康检查，包括 `healthcheck` 引用。如果跳过了步骤 1，使用空数组。
+
+**带有健康检查**（步骤 1 成功）：
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_ORIGIN_POOLx",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "Origin pool for CSD demo",
+      "disable": false
+    },
+    "spec": {
+      "origin_servers": [{
+        "public_ip": { "ip": "xF5XC_ORIGIN_IPx" },
+        "labels": {}
+      }],
+      "no_tls": {},
+      "port": xF5XC_ORIGIN_PORTx,
+      "same_as_endpoint_port": {},
+      "healthcheck": [{
+        "namespace": "xF5XC_NAMESPACEx",
+        "name": "xF5XC_HC_NAMEx",
+        "kind": "healthcheck"
+      }],
+      "loadbalancer_algorithm": "LB_OVERRIDE",
+      "endpoint_selection": "LOCAL_PREFERRED"
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools" \
+  | jq .
+```
+
+**不带健康检查**（步骤 1 已跳过）：
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_ORIGIN_POOLx",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "Origin pool for CSD demo",
+      "disable": false
+    },
+    "spec": {
+      "origin_servers": [{
+        "public_ip": { "ip": "xF5XC_ORIGIN_IPx" },
+        "labels": {}
+      }],
+      "no_tls": {},
+      "port": xF5XC_ORIGIN_PORTx,
+      "same_as_endpoint_port": {},
+      "healthcheck": [],
+      "loadbalancer_algorithm": "LB_OVERRIDE",
+      "endpoint_selection": "LOCAL_PREFERRED"
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools" \
+  | jq .
+```
+
+`200` 响应确认源池已创建。
+
+<Aside type="caution">
+如果响应包含 `"code": 8` 和类似 `"Object kind endpoint has exhausted limits(500)"` 或 `"Object kind origin_pool has exhausted limits"` 的消息，租户已达到配额。与健康检查不同，源池是演示的**必需的** — 没有源池演示无法进行。从其他命名空间删除未使用的源池以释放容量（删除源池也会释放其端点子对象），然后重试。如果无法解决限制，请联系 F5 分布式云 (F5 XC) 管理员增加租户配额。
+</Aside>
+
+### 验证健康检查是否已链接
+
+如果包含了健康检查引用，确认它已正确链接：
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '.spec.healthcheck'
+```
+
+已填充的数组确认链接。如果跳过了步骤 1，空数组 `[]` 是预期的，或者意味着在打算链接一个时找不到健康检查。
+
+### 证据
+
+确认源池存在且具有正确的配置：
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '{name: .metadata.name, origin_ip: .spec.origin_servers[0].public_ip.ip, port: .spec.port, healthcheck_count: (.spec.healthcheck | length)}'
+```
+
+| 字段 | 预期 | 状态 |
+| --- | --- | --- |
+| HTTP 状态 | `200` | 如果返回则通过，如果为 `404` 则失败 |
+| `name` | 匹配 `F5XC_ORIGIN_POOL` | 通过 |
+| `origin_ip` | 匹配 `F5XC_ORIGIN_IP` | 通过 |
+| `port` | 匹配 `F5XC_ORIGIN_PORT` | 通过 |
+| `healthcheck_count` | `1`（带 HC）或 `0`（无） | 两者都可以通过 |
+
+## 步骤 3：使用 CSD 创建 HTTP 负载均衡器
+
+创建**两个**启用客户端防护的负载均衡器 — 一个 HTTP LB（主要，端口 80）和一个 HTTPS LB（次要，端口 443，带自动证书管理）。HTTP LB 是所有演示流量的默认。HTTPS LB 是可选的，取决于 Let's Encrypt 证书配置，这在演示环境中可能会触发速率限制。
+
+<Aside type="note">
+HTTP 负载均衡器规范有 22+ 个 `oneOf` 选择组。每个组必须恰好设置一个选择，否则 API 返回 `422` 错误。以下配置禁用除 CSD 外的所有可选安全功能 — 根据需要为环境修改。两个 LB 共享相同的源池、CSD 设置和域 — 仅侦听器类型不同。
+</Aside>
+
+<Aside type="tip">
+两个 LB 名称都源自 `F5XC_LB_NAME`：HTTP LB 是 `${F5XC_LB_NAME}-http`，HTTPS LB 是 `${F5XC_LB_NAME}-https`。不需要额外的环境变量。
+</Aside>
+
+### HTTP 负载均衡器（主要）
+
+这是演示的**主要**负载均衡器。它使用端口 80 上的 `http` 侦听器和 F5 XC 托管 DNS。它不依赖 TLS 证书配置，因此在 DNS 解析后立即就绪。
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_LB_NAMEx-http",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "HTTP LB with Client-Side Defense enabled (primary demo LB)",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["xF5XC_DOMAINNAMEx"],
+      "http": {
+        "dns_volterra_managed": true,
+        "port": 80
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [{
+        "pool": {
+          "namespace": "xF5XC_NAMESPACEx",
+          "name": "xF5XC_ORIGIN_POOLx",
+          "kind": "origin_pool"
+        },
+        "weight": 1,
+        "priority": 1
+      }],
+      "client_side_defense": {
+        "policy": {
+          "js_insert_all_pages": {}
+        }
+      },
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers" \
+  | jq .
+```
+
+`200` 响应确认 HTTP 负载均衡器已创建且启用了 CSD。
+
+<Aside type="caution">
+如果响应包含 `"code": 8` 和类似 `"Object kind http_loadbalancer has exhausted limits"` 的消息，租户已达到负载均衡器配额。负载均衡器对演示是**必需的**。删除未使用的负载均衡器以释放容量，然后重试。
+</Aside>
+
+### HTTPS 负载均衡器（次要）
+
+这是**次要**负载均衡器。它在端口 443 上使用 `https_auto_cert` 和自动 Let's Encrypt 证书配置。在创建之前，检查是否存在来自先前清理的**骨架 HTTPS LB** — 如果存在，通过 PUT 恢复它而不是 POST，以保留现有的 Let's Encrypt 证书并避免速率限制（每 7 天每个精确标识符集 5 个重复证书）。
+
+**检查 HTTPS LB 是否已存在：**
+
+```bash
+HTTPS_CHECK=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+```
+
+如果 `HTTPS_CHECK` 是 `200`，存在骨架 HTTPS LB — 使用**路径 A (PUT)**。如果是 `404`，使用**路径 B (POST)**。
+
+#### 路径 A：通过 PUT 恢复骨架（HTTPS LB 存在）
+
+当存在来自先前清理的骨架 HTTPS LB 时，通过 PUT 恢复完整配置。这将重新附加源池并重新启用 CSD，**而不触发新的 Let's Encrypt 证书请求** — 现有证书保持有效。
+
+```bash
+curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_LB_NAMEx-https",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "HTTPS LB with Client-Side Defense enabled (secondary, cert-dependent)",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["xF5XC_DOMAINNAMEx"],
+      "https_auto_cert": {
+        "http_redirect": false,
+        "add_hsts": false,
+        "port": 443,
+        "default_header": {},
+        "enable_path_normalize": {},
+        "no_mtls": {},
+        "default_loadbalancer": {}
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [{
+        "pool": {
+          "namespace": "xF5XC_NAMESPACEx",
+          "name": "xF5XC_ORIGIN_POOLx",
+          "kind": "origin_pool"
+        },
+        "weight": 1,
+        "priority": 1
+      }],
+      "client_side_defense": {
+        "policy": {
+          "js_insert_all_pages": {}
+        }
+      },
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq .
+```
+
+`200` 响应确认骨架已恢复为完整配置。证书状态应保持 `CertificateValid` — 不会触发新的 Let's Encrypt 配置。
+
+<Aside type="note">
+**骨架恢复。** PUT 替换整个对象规范。骨架 HTTPS LB 在清理期间保留其域绑定和证书。此 PUT 恢复源池引用并重新启用客户端防护，而不触发新的 Let's Encrypt 证书请求。HTTPS 立即可用。
+</Aside>
+
+#### 路径 B：通过 POST 新建（HTTPS LB 不存在）
+
+当不存在 HTTPS LB 时（首次运行或完全清理后），通过 POST 创建它。这会触发 Let's Encrypt 证书配置，可能需要 5–10 分钟。
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_LB_NAMEx-https",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "HTTPS LB with Client-Side Defense enabled (secondary, cert-dependent)",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["xF5XC_DOMAINNAMEx"],
+      "https_auto_cert": {
+        "http_redirect": false,
+        "add_hsts": false,
+        "port": 443,
+        "default_header": {},
+        "enable_path_normalize": {},
+        "no_mtls": {},
+        "default_loadbalancer": {}
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [{
+        "pool": {
+          "namespace": "xF5XC_NAMESPACEx",
+          "name": "xF5XC_ORIGIN_POOLx",
+          "kind": "origin_pool"
+        },
+        "weight": 1,
+        "priority": 1
+      }],
+      "client_side_defense": {
+        "policy": {
+          "js_insert_all_pages": {}
+        }
+      },
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers" \
+  | jq .
+```
+
+`200` 响应确认 HTTPS 负载均衡器已创建。证书配置自动开始。
+
+<Aside type="caution">
+如果响应包含 `"code": 8` 和"已用尽限制"，则无法创建 HTTPS LB。HTTPS LB 是可选的 — 演示使用 HTTP LB 继续进行。在第 1 阶段证据摘要中记录配额限制为 INFO。
+</Aside>
+
+<Aside type="note">
+**Let's Encrypt 速率限制。** 创建新的 HTTPS LB 会触发 Let's Encrypt 证书请求。Let's Encrypt 每 7 天允许每个精确标识符集最多 5 个重复证书。如果 `cert_state` 显示 `AutoCertDomainRateLimited`，演示使用 HTTP LB 继续进行。为了避免触发此限制，默认清理保留 HTTPS LB 作为骨架 — 参见[第 4 阶段 — 清理](/csd/demo/phase-4-teardown/)。
+</Aside>
+
+### 证据
+
+确认两个负载均衡器都存在且启用了 CSD。始终使用 **GET** 来获取证据 — POST 响应返回可能不反映已解决配置的瞬时状态值。
+
+**HTTP LB（主要）：**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{name: .metadata.name, domains: .spec.domains, csd_enabled: (.spec.client_side_defense != null), state: .spec.state}'
+```
+
+| 字段 | 预期 | 状态 |
+| --- | --- | --- |
+| HTTP 状态 | `200` | 如果返回则通过，如果为 `404` 则失败 |
+| `name` | `${F5XC_LB_NAME}-http` | 通过 |
+| `domains` | 包含 `F5XC_DOMAINNAME` | 通过 |
+| `csd_enabled` | `true` | 通过 — 此 LB 上配置了 CSD |
+| `state` | `VIRTUAL_HOST_READY` 或 `VIRTUAL_HOST_PENDING_A_RECORD` | 预期 — HTTP LB 在 DNS 解析后转换为 READY。任何其他状态（例如 `VIRTUAL_HOST_FAILED`）都是失败 — 报告给操作员，不要继续 |
+
+**HTTPS LB（次要）：**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{name: .metadata.name, domains: .spec.domains, csd_enabled: (.spec.client_side_defense != null), state: .spec.state, cert_state: .spec.cert_state}'
+```
+
+| 字段 | 预期 | 状态 |
+| --- | --- | --- |
+| HTTP 状态 | `200` | 如果返回则通过，如果为 `404` 则失败 |
+| `name` | `${F5XC_LB_NAME}-https` | 通过 |
+| `domains` | 包含 `F5XC_DOMAINNAME` | 通过 |
+| `csd_enabled` | `true` | 通过 — 此 LB 上配置了 CSD |
+| `creation_method` | PUT（恢复骨架）或 POST（新建） | 信息 — PUT 保留现有证书 |
+| `state` | `VIRTUAL_HOST_READY`（PUT）或 `VIRTUAL_HOST_PENDING_A_RECORD`（POST） | 预期 — PUT 路径可能已经是 READY，因为 DNS 在骨架中保持不变 |
+| `cert_state` | `CertificateValid`（PUT）或 `PreDomainChallengePending`（POST） | PUT 保留现有证书；POST 触发新的配置 |
+
+## 步骤 4：配置 DNS
+
+创建负载均衡器后，它进入 `VIRTUAL_HOST_PENDING_A_RECORD` 状态，自动证书保持在 `PreDomainChallengePending`。LB 完全可操作之前必须存在两条 DNS 记录：
+
+1. **A 记录** — `xF5XC_DOMAINNAMEx` 指向 VIP IP 地址（来自 LB 响应中的 `dns_info`）
+2. **ACME 质询记录** — `_acme-challenge.xF5XC_DOMAINNAMEx` 用于 TLS 证书验证（使用 F5 XC DNS 和托管记录时自动管理；外部 DNS 需要手动 CNAME）
+
+方法取决于 F5 XC 是否是域的权威 DNS 提供商。
+
+### 检测 DNS 权限
+
+检查根域的名称服务器：
+
+```bash
+dig +short NS xF5XC_ROOT_DOMAINx
+```
+
+如果响应包含 `ns1.f5clouddns.com` 和 `ns2.f5clouddns.com`，F5 XC 是权威 DNS 提供商 — 遵循**选项 A**。否则，遵循**选项 B**获取外部 DNS。
+
+### 选项 A：F5 XC 托管 DNS
+
+当 F5 XC 是权威 DNS 提供商时，平台可以自动创建 A 记录和 ACME 质询 CNAME — 但仅当 DNS 区域启用了 `allow_http_lb_managed_records` 时。
+
+<Aside type="note">
+DNS 区域位于**系统**命名空间中，而不是用户命名空间中。区域名称与根域匹配（例如，`bankexample.com`）。
+</Aside>
+
+**1. 检查托管记录是否启用：**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq '.spec.primary.allow_http_lb_managed_records'
+```
+
+如果响应是 `true`，平台将自动为负载均衡器创建 DNS 记录 — 跳到**3. 验证 DNS 解析**。如果 `false` 或 `null`，继续执行下一步。
+
+**2. 启用托管记录：**
+
+<Aside type="caution">
+`PUT` 有效载荷必须包含**完整的区域规范** — 元数据和所有现有配置字段。省略字段将将其重置为默认值。首先检索当前的区域配置，然后仅修改 `allow_http_lb_managed_records` 字段。
+</Aside>
+
+检索当前区域配置，启用托管记录，并更新：
+
+```bash
+# Get current zone config
+ZONE_CONFIG=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx")
+
+# Update with managed records enabled
+echo "$ZONE_CONFIG" \
+  | jq '.spec.primary.allow_http_lb_managed_records = true' \
+  | curl -s -X PUT \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d @- \
+    "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq .
+```
+
+<Aside type="caution">
+区域规范包含一个 `x-ves-io-managed` rr_set_group，其中包含平台托管的记录。您的 `PUT` 有效载荷**必须保留此组** — 省略它会导致 HTTP 403"保留用于内部用途"。始终先用 `GET` 检索当前区域配置，仅修改所需的字段，然后发送回完整的规范。
+</Aside>
+
+`200` 响应（空 `\{\}`）确认区域已更新。F5 XC 将在区域的自动托管记录组中创建 A 记录和 ACME 质询记录。如果托管记录在 60 秒内没有出现，重新应用负载均衡器以触发记录创建：
+
+```bash
+LB_CONFIG=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http")
+echo "$LB_CONFIG" | curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d @- \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq .
+```
+
+此 GET+PUT 重新应用不会更改 LB 配置 — 它仅触发平台重新评估 DNS 区域并创建托管记录。如果 A 记录在重新应用后 60 秒内仍未解析，停止并报告给操作员 — 不要重试重新应用多次。
+
+**3. 验证 DNS 解析：**
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A
+```
+
+响应应返回 VIP IP 地址。对于 F5 XC 托管区域，DNS 传播通常是即时的，但最多允许 60 秒。
+
+<Aside type="tip">
+**否定 DNS 缓存：** 如果在记录存在之前查询了域，递归解析器可能已缓存 `NXDOMAIN` 响应。对权威名称服务器或公共解析器进行验证以排除陈旧缓存：
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A @ns1.f5clouddns.com
+dig +short xF5XC_DOMAINNAMEx A @8.8.8.8
+```
+</Aside>
+
+### 选项 B：外部 DNS 提供商
+
+当域使用外部 DNS 提供商时，必须手动创建记录。从负载均衡器提取所需的值：
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{
+    vip_ip: .spec.dns_info[0].ip_address,
+    acme_target: .spec.auto_cert_info.dns_records
+  }'
+```
+
+在 DNS 提供商处创建这些记录：
+
+| 类型 | 名称 | 值 |
+| --- | --- | --- |
+| A | `xF5XC_DOMAINNAMEx` | 来自 `dns_info[0].ip_address` 的 VIP IP |
+| CNAME | `_acme-challenge.xF5XC_DOMAINNAMEx` | `*.autocerts.ves.volterra.io` |
+
+创建记录后，验证解析：
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+```
+
+<Aside type="tip">
+A 记录是 LB 从 `VIRTUAL_HOST_PENDING_A_RECORD` 转换到 `VIRTUAL_HOST_READY` 所必需的。ACME CNAME 是自动 TLS 证书配置所必需的。没有两条记录，LB 将保持挂起状态。
+</Aside>
+
+### 证据
+
+| 测试 | 命令 | 预期 | 状态 |
+| --- | --- | --- | --- |
+| DNS-1：A 记录 | `dig +short $F5XC_DOMAINNAME A` | 返回 VIP IP 地址 | 如果返回 IP 则通过，如果为空则失败 |
+| DNS-2：ACME CNAME | `dig +short _acme-challenge.$F5XC_DOMAINNAME CNAME` | `*.autocerts.ves.volterra.io` | 如果返回 CNAME 则通过 |
+| DNS 权限 | `dig +short NS $F5XC_ROOT_DOMAIN` | F5 XC 或外部名称服务器 | 信息性 — 确定选项 A 与 B |
+
+如果 60 秒后 DNS-1 返回空，参见[故障排除 &mdash; LB 卡在 VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record)。
+
+## 步骤 5：验证 CSD 已启用
+
+检查客户端防护是否为租户启用。CSD 在租户级别配置 — 如果还未启用，请联系 F5 XC 管理员。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq .
+```
+
+包含 `"isConfigured": true` 和 `"isEnabled": true` 的响应确认 CSD 处于活动状态。
+
+### 证据
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq '{configured: .isConfigured, enabled: .isEnabled}'
+```
+
+| 字段 | 预期 | 状态 |
+| --- | --- | --- |
+| `configured` | `true` | 通过 |
+| `enabled` | `true` | 通过 |
+| 任一为 `false` | — | 失败 — 联系 F5 XC 管理员在租户级别启用 CSD |
+
+## 步骤 6：注册受保护域名
+
+注册 CSD 将监控的根域。`protected_domain` 字段必须是**eTLD+1** 根域（例如，`f5demos.com`），而不是完整的 FQDN。
+
+<Aside type="caution">
+**受保护的域名是租户范围的，而不是命名空间范围的。** 与健康检查、源池和负载均衡器不同，受保护的域名在租户全局注册 — API URL 中的命名空间是路由参数，而不是所有权边界。但是，受保护的域名是与此部署相关的 CSD 配置对象，**应在清理时删除**当部署被完全移除时。不要将其与共享基础设施的 DNS 区域混淆，后者永远不应删除。
+</Aside>
+
+### 检查是否已注册
+
+创建之前，检查域名是否已在租户中注册。对 POST 的 `409` 响应表示域已存在 — 这是成功条件，不是错误。
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_DOMAINNAMEx",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "protected_domain": "xF5XC_ROOT_DOMAINx"
+    }
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq .
+```
+
+| 响应 | 含义 | 操作 |
+| --- | --- | --- |
+| `200` | 域成功注册 | 继续步骤 7 |
+| `409`（域已存在） | 域名之前在此租户中注册 | 已完成 — 继续步骤 7 |
+| `"code": 8`（已用尽限制） | 受保护的域名配额已满 | **阻止性** — CSD 需要受保护的域名。删除未使用的受保护域名或联系管理员。 |
+
+### 证据
+
+POST 响应本身是主要证据 — 它返回注册的域对象，其中 `spec.protected_domain` 与根域匹配。或者，列出所有受保护的域名以确认：
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '.items | length'
+```
+
+| 字段 | 预期 | 状态 |
+| --- | --- | --- |
+| POST 返回 `protected_domain` | 匹配 `F5XC_ROOT_DOMAIN` | 通过 |
+| POST 返回 `200` 或 `409` | 域已注册或已存在 | 通过 |
+| 列表项计数 | &gt; 0 | 通过 |
+
+<Aside type="note">
+受保护的域名不提供单个 GET 端点（`/protected_domains/\{name\}`）。使用 POST 响应或列表端点进行验证。
+</Aside>
+
+## 步骤 7：验证
+
+### DNS 解析
+
+确认 A 记录已解析且 ACME 质询 CNAME 已就位：
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+```
+
+A 记录应返回 VIP IP 地址。CNAME 应指向 `*.autocerts.ves.volterra.io`（或相关的 autocerts 目标）。
+
+### 负载均衡器状态
+
+检查两个负载均衡器是否已从挂起状态转出。HTTP LB 是主要检查 — 一旦 DNS 解析，它应到达 `VIRTUAL_HOST_READY`，没有证书依赖。HTTPS LB 证书状态仅为信息性。
+
+**HTTP LB（主要 — 必须就绪才能继续）：**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{state: .spec.state}'
+```
+
+| 字段 | 预期 | 中间状态 |
+| --- | --- | --- |
+| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS 未配置（参见步骤 4） |
+
+**HTTPS LB（次要 — 信息性，不阻止进展）：**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{state: .spec.state, cert_state: .spec.cert_state}'
+```
+
+| 字段 | 预期 | 中间状态 |
+| --- | --- | --- |
+| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS 未配置；`VIRTUAL_HOST_DNS_A_RECORD_ADDED` — 找到 A 记录，等待证书 |
+| `cert_state` | `CertificateValid` | `PreDomainChallengePending` — 等待 ACME CNAME；`DomainChallengeStarted` — ACME 质询进行中；`AutoCertDomainRateLimited` — Let's Encrypt 速率限制命中（演示环境中预期，不影响 HTTP LB） |
+
+<Aside type="note">
+证书配置可能需要**5–10 分钟**才能在创建 DNS 记录后完成。如果 `cert_state` 显示 `AutoCertDomainRateLimited`，这在演示环境中是预期的，其中基础设施频繁创建和销毁。HTTP LB 不受影响 — 使用 `http://` URL 继续演示。
+</Aside>
+
+### JS 配置
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq .
+```
+
+响应包含一个 `scriptTag` 字段，其中包含负载均衡器注入到页面响应中的完整 HTML `<script>` 标签。
+
+### 检测到的域名
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{summary: .domain_summary, domains: .domains_list}'
+```
+
+### 检测到的脚本
+
+脚本端点需要使用 epoch 时间戳（Unix 纪元以来的秒数）的时间范围。下面的示例查询过去 7 天。
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq '[.scripts[]? | {script_name: .script_name, risk_level: .risk_level}]'
+```
+
+### 表单字段
+
+表单字段端点需要使用 epoch 时间戳的时间范围，作为查询参数传递。
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields?startTime=$START&endTime=$NOW" \
+  | jq '.form_fields'
+```
+
+### 第 1 阶段证据摘要
+
+完成所有验证检查后，AI 助手应呈现一个合并的状态表：
+
+| 测试 ID | 检查 | 预期 | 必需 | 状态 |
+| --- | --- | --- | --- | --- |
+| DNS-1 | A 记录解析 | 返回 VIP IP | **是** | 通过/失败 |
+| DNS-2 | ACME CNAME 存在 | `*.autocerts.ves.volterra.io` | 否 | 通过/待处理 |
+| LB-1 | HTTP LB 状态 | `VIRTUAL_HOST_READY` | **是** | 通过/待处理 |
+| LB-2 | HTTPS LB 状态 | `VIRTUAL_HOST_READY` | 否 | 通过/待处理/信息 |
+| TLS-1 | 证书状态 | `CertificateValid` | 否 | 通过/待处理/信息 |
+| CSD-1 | JS 配置 | 存在 `scriptTag` | **是** | 通过/失败 |
+| CSD-2 | CSD 状态 | `isEnabled: true` | **是** | 通过/失败 |
+| CSD-3 | 受保护域名 | 域已注册 | **是** | 通过/失败 |
+
+<Aside type="note">
+**第 2 阶段使用 HTTP LB。** HTTPS 是可选的 — 如果 TLS-1 显示 `AutoCertDomainRateLimited` 或 LB-2 保持待处理，演示将正常继续使用 `http://` URL。只有 DNS-1、LB-1、CSD-1、CSD-2 和 CSD-3 是必需的才能通过，然后继续进行第 2 阶段。
+</Aside>
+
+如果 LB-1 显示待处理，每 30 秒轮询最多 4 次迭代（总共 2 分钟）。如果 4 次迭代后 LB-1 仍不是 `VIRTUAL_HOST_READY`，使用 `dig` 检查 DNS 解析并报告给操作员 — 在 LB-1 达到就绪之前不要继续。对于 LB-2 和 TLS-1，每 60 秒轮询最多 10 次迭代（10 分钟）。如果 10 次迭代后仍处于中间状态，将当前状态记录为信息并继续 — 这些是信息性的，不阻止演示进展。
+
+<Aside type="note">
+LB 响应中的 `dns_info` 字段可能即使在 DNS 正确解析时也为空（`[]`）— 这发生在干净重建之后。始终使用 `dig` 验证 DNS 解析，而不是依赖 `dns_info` 来获取 VIP 地址。
+</Aside>
+
+---
+
+**第 1 阶段完成。** 继续[第 2 阶段 — 攻击](/csd/demo/phase-2-attack/)运行攻击模拟。

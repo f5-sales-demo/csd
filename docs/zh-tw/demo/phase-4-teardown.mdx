@@ -1,0 +1,234 @@
+---
+title: Phase 4 — 拆除
+description: 在示範完成後清理 F5 XC 租戶中的示範物件
+sidebar:
+  order: 5
+  label: Phase 4 — 拆除
+i18n:
+  sourceHash: 95b0184f156c
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Phase 4 以相反的依賴順序移除在練習過程中建立的所有物件。此階段在執行任何破壞性操作之前需要明確的人工確認。
+
+<Aside type="caution">
+**確認後再繼續。** 如果您是 AI 助手，您必須詢問人類操作員：「Phase 4 將永久刪除所有部署物件。您已準備好拆除嗎？回覆 'yes' 以繼續。」在操作員確認之前，請勿執行任何 DELETE 命令。
+
+**例外：** 當拆除作為 Stage 1 準備（會議前清理）的一部分執行時，操作員的「準備示範」觸發語句可作為隱含授權。無需額外確認。上述確認閘道僅在獨立拆除或會議後 Stage 4 期間適用。
+</Aside>
+
+## 拆除順序
+
+以 **相反的建立順序** 移除物件 — 先刪除依賴其他物件的物件：
+
+1. **緩解域名** — 刪除在 Phase 3 中建立的所有 CSD 緩解域名
+2. **HTTPS 負載平衡器** (`${F5XC_LB_NAME}-https`) — 精簡為基本狀態（保留 Let's Encrypt 憑證）；如果 `NAMESPACE_CREATED=true` 或有明確要求時進行完全 DELETE
+3. **HTTP 負載平衡器** (`${F5XC_LB_NAME}-http`) — 依賴源池
+4. **源池** — 依賴健康檢查（如已建立）
+5. **DNS 區域清理** — HTTPS LB 基本狀態保留其託管 A 和 ACME 記錄（這是預期行為 — 它保持憑證有效）。HTTP LB 的託管記錄在刪除時自動清理。`default_rr_set_group` 中的手動記錄需要通過 `PUT` 手動清理
+6. **健康檢查** — 僅在 Phase 1 Step 1 中建立的情況下
+7. **受保護域名** — 刪除 CSD 受保護域名註冊
+8. **命名空間** — 僅在 Phase 1 Step 0 期間建立的情況下 (`NAMESPACE_CREATED=true`)
+
+<Aside type="caution">
+**不要刪除 DNS 區域。** DNS 區域是支援平台上許多其他 DNS 記錄的共享基礎設施，絕不應刪除。只清理您手動新增至 `default_rr_set_group` 的記錄。但是，受保護域名是與此部署相關的 CSD 配置物件，在完全拆除時 **應該** 被刪除。
+</Aside>
+
+## 刪除緩解域名
+
+如果已執行 Phase 3，在移除基礎設施物件之前刪除所有緩解域名。標準模擬建立 6 個緩解域名：
+
+```bash
+for domain in cdn.jsdelivr.net esm.sh unpkg.com ga.jspm.io httpbin.org jsonplaceholder.typicode.com; do
+  curl -s -X DELETE \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/$domain"
+done
+```
+
+驗證：列出緩解域名以確認計數為 0（或 1 — 請參閱下面的附註）：
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '{count: (.items | length)}'
+```
+
+<Aside type="note">
+在刪除所有緩解域名後，緩解域名列表可能會傳回虛擬項目（計數 = 1），其中包含 null 中繼資料。這是一個後端成品，在 CSD 服務狀態進行配置更改時出現 — 它不代表真實的緩解，可以忽略。嘗試刪除此虛擬項目會傳回 `"Delete list when service not configured"`。
+</Aside>
+
+## HTTPS 負載平衡器
+
+HTTPS LB 拆除行為取決於是否在此示範會話期間建立了命名空間（Phase 1 Step 0 中的 `NAMESPACE_CREATED` 變數）：
+
+- **`NAMESPACE_CREATED=false`**（預先存在的命名空間）— 精簡至 **基本** 狀態，保留 Let's Encrypt 憑證以供重複使用
+- **`NAMESPACE_CREATED=true`**（示範期間建立的命名空間）— **完全 DELETE**，因為命名空間本身將被刪除，憑證無法保留
+
+### 方案 A：精簡至基本狀態（預先存在的命名空間）
+
+當命名空間預先存在時，將 HTTPS LB 精簡至 **基本** 狀態 — 移除源池參考和 CSD 配置，同時保留域名綁定、`https_auto_cert` 設定和 Let's Encrypt 憑證。這避免了在下一個示範執行時觸發新的憑證請求（Let's Encrypt 對每 7 天內精確標識符集的重複憑證強制執行 5 個的限制）。
+
+**Step 1 — 取得目前的 HTTPS LB 配置：**
+
+```bash
+HTTPS_LB_JSON=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+```
+
+**Step 2 — 通過 jq 精簡至基本狀態並 PUT 回：**
+
+```bash
+echo "$HTTPS_LB_JSON" | jq '{
+  metadata: .metadata,
+  spec: (.spec | del(.client_side_defense) | .disable_client_side_defense = {} | .default_route_pools = [])
+}' | curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d @- \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq .
+```
+
+jq 篩選器保留整個 spec（域名、`https_auto_cert`、`advertise_on_public_default_vip` 和所有已禁用的功能旗標），同時移除 `client_side_defense`（替換為 `disable_client_side_defense: {}`）並將 `default_route_pools` 清空為空陣列。憑證和 DNS 綁定保持完整。
+
+**驗證** HTTPS LB 現在是基本狀態：
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{
+    name: .metadata.name,
+    domains: .spec.domains,
+    has_origin_pools: ((.spec.default_route_pools // []) | length > 0),
+    has_csd: (.spec.client_side_defense != null),
+    cert_state: .spec.cert_state
+  }'
+```
+
+預期：`has_origin_pools: false`、`has_csd: false`、`domains` 仍有值、`cert_state` 未變更（例如 `CertificateValid`）。
+
+### 方案 B：完全刪除（示範期間建立的命名空間）
+
+當命名空間在此示範會話期間建立時，必須完全刪除 HTTPS LB — 基本狀態保留是不必要的，因為命名空間本身將在拆除結束時被移除。
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https"
+```
+
+驗證：`GET /api/config/namespaces/\{namespace\}/http_loadbalancers` 應該不包含 `${F5XC_LB_NAME}-https`。
+
+<Aside type="tip">
+**完全拆除選項（預先存在的命名空間）。** 即使命名空間預先存在，如果永久停用示範域名或操作員明確要求「完全拆除」或「強制刪除」，您也可以完全刪除 HTTPS LB。僅在域名在 7 天內不會被重複使用時使用完全 DELETE。刪除 HTTPS LB 會在下一個示範執行時觸發新的 Let's Encrypt 憑證請求。
+</Aside>
+
+## 刪除 HTTP 負載平衡器
+
+刪除主要 HTTP LB：
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http"
+```
+
+驗證：`GET /api/config/namespaces/\{namespace\}/http_loadbalancers` 應該不包含 `${F5XC_LB_NAME}-http`。如果 DELETE 傳回 `200` 後物件仍出現在列表中，請等待 30 秒並再次檢查。如果在第二次檢查後仍然存在，向操作員報告 — 不要繼續。
+
+## 刪除源池
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx"
+```
+
+驗證：`GET /api/config/namespaces/\{namespace\}/origin_pools` 應該不包含該池名稱。如果 DELETE 傳回 `200` 後物件仍出現在列表中，請等待 30 秒並再次檢查。如果在第二次檢查後仍然存在，向操作員報告。
+
+## 刪除健康檢查
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx"
+```
+
+驗證：`GET /api/config/namespaces/\{namespace\}/healthchecks` 應該不包含健康檢查名稱。如果 DELETE 傳回 `200` 後物件仍出現在列表中，請等待 30 秒並再次檢查。如果在第二次檢查後仍然存在，向操作員報告。
+
+## 刪除受保護域名
+
+刪除 CSD 受保護域名註冊。受保護域名是租戶範圍內（不是命名空間範圍內），但它是與此部署相關的 CSD 配置物件 — 而不是像 DNS 區域這樣的共享基礎設施。
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/xF5XC_ROOT_DOMAINx"
+```
+
+驗證：列出受保護域名以確認域名不再被註冊：
+
+```bash
+curl -s -X GET \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '.items // [] | map(.metadata.name)'
+```
+
+<Aside type="note">
+個別 GET 端點 (`/protected_domains/\{name\}`) 可能會傳回「API Group could not be determined.」如果 DELETE 端點傳回相同的錯誤，請使用列表端點驗證域名不再出現，或者通過 F5 Distributed Cloud (F5 XC) Console UI 改為刪除受保護域名。
+</Aside>
+
+## 刪除命名空間（條件式）
+
+此步驟 **僅** 在 Phase 1 Step 0 期間建立了命名空間時執行（`NAMESPACE_CREATED=true`）。如果命名空間預先存在（`NAMESPACE_CREATED=false`），請完全跳過此步驟 — 命名空間是必須不被刪除的共享基礎設施。
+
+<Aside type="caution">
+**級聯刪除移除所有命名空間範圍內的物件。** 級聯刪除端點移除命名空間和其中的每個物件。所有基礎設施物件（負載平衡器、源池、健康檢查）應該已被之前的拆除步驟刪除。級聯刪除作為最終清理以捕捉任何剩餘物件並移除命名空間本身。
+</Aside>
+
+```bash
+if [ "$NAMESPACE_CREATED" = "true" ]; then
+  curl -s -X POST \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d '{"name": "xF5XC_NAMESPACEx"}' \
+    "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx/cascade_delete" | jq .
+fi
+```
+
+<Aside type="note">
+標準 `DELETE /api/web/namespaces/{name}` 端點傳回 `"Not Implemented"`（錯誤代碼 `12`）。您 **必須** 使用級聯刪除端點（`POST .../cascade_delete`）來刪除命名空間。
+</Aside>
+
+驗證：確認命名空間不再存在：
+
+```bash
+curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx"
+```
+
+預期：如果 `NAMESPACE_CREATED=true` 則傳回 `404`，如果 `NAMESPACE_CREATED=false` 則傳回 `200`。
+
+## Phase 4 證據摘要
+
+| 物件 | 刪除狀態 | 驗證狀態 |
+| --- | --- | --- |
+| 緩解域名 (6) | 全部 `200`（空 `\{\}`）或如果未執行 Phase 3 則跳過 | 計數 0（或 1 虛擬）— PASS |
+| HTTPS 負載平衡器 (`-https`) | `200`（基本狀態 PUT）或 `200`（如果 `NAMESPACE_CREATED=true` 則完全 DELETE） | 已驗證基本狀態或不在列表中 — PASS |
+| HTTP 負載平衡器 (`-http`) | `200`（空 `\{\}`) | 不在列表中 — PASS |
+| 源池 | `200`（空 `\{\}`) | 不在列表中 — PASS |
+| 健康檢查 | `200`（空 `\{\}`）或跳過 | 不在列表中 — PASS |
+| 受保護域名 | `200`（空 `\{\}`) | 不在列表中 — PASS |
+| DNS 區域 | 未刪除（共享基礎設施） | 區域仍然存在 — PASS |
+| 命名空間 | `200`（級聯刪除）如果 `NAMESPACE_CREATED=true`，否則跳過 | 如果已刪除則傳回 `404`，如果已保留則傳回 `200` — PASS |
+
+---
+
+**拆除完成。** 當命名空間預先存在（`NAMESPACE_CREATED=false`）時，除了保留 Let's Encrypt 憑證和域名綁定以供下一個示範執行的 HTTPS LB 基本狀態外，所有部署物件都已被移除。當命名空間在示範期間建立（`NAMESPACE_CREATED=true`）時，包括 HTTPS LB 和命名空間的所有物件都已被完全刪除。在兩種情況下，DNS 區域及其非託管記錄都保持完整。

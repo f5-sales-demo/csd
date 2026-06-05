@@ -1,0 +1,80 @@
+---
+title: تكوين XC
+description: تكوين منصة F5 XC المطلوب لتمكين وتشغيل Client-Side Defense
+sidebar:
+  order: 2
+  label: تكوين XC
+i18n:
+  sourceHash: 1ca5f1c4ac1c
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+import Screenshot from "@f5xc-salesdemos/docs-theme/components/Screenshot.astro";
+
+يتم تمكين CSD بالفعل على تطبيق العرض التوضيحي. يوضح هذا القسم شاشات التكوين.
+
+## الانتقال إلى Client-Side Defense
+
+<Steps>
+1. قم بتسجيل الدخول إلى **F5 Distributed Cloud Console**
+2. حدد مساحة عمل **Client-Side Defense**
+3. اضبط namespace على **bot-defense**
+4. انتقل إلى **Manage** &rarr; **Configuration**
+</Steps>
+
+<Screenshot light="/images/csd-config.png" alt="صفحة تكوين CSD تعرض قائمة النطاقات" />
+
+## تكوين النطاق
+
+إضافة نطاق على صفحة تكوين CSD يسجله مع محرك تقارير CSD. يحدد هذا نطاق namespace الذي يجمع CSD ويقرر عليه بيانات التلمتري — كشف السكريبت، إشعارات التنبيه، وإجراءات التخفيف كلها تتراكم تحت النطاق المسجل.
+
+يتم تسجيل نطاق العرض التوضيحي (`botdemo.sales-demo.f5demos.com`) هنا.
+
+<Aside type="note">
+صفحة تكوين CSD **لا** تتحكم في حقن JavaScript. يتم تكوين نطاق الحقن على HTTP Load Balancer (انظر أدناه). لا تعدل تكوين نطاق العرض التوضيحي — قم بمراجعة الإعدادات في الوضع للقراءة فقط.
+</Aside>
+
+## طريقة HTTP Load Balancer
+
+HTTP Load Balancer هو المكان الذي يتم فيه تكوين حقن JavaScript. يتحكم هذا فيما إذا وأين يتم إدراج نصوص CSD في صفحات التطبيق المخدومة من خلال متوازن التحميل.
+
+<Steps>
+1. انتقل إلى **Multi-Cloud App Connect** &rarr; **HTTP Load Balancers**
+2. انقر على قائمة **&hellip;** (الإجراءات) على متوازن التحميل الذي يخدم التطبيق وحدد **Manage Configuration**
+
+   <Screenshot light="/images/csd-lb-config.png" alt="قائمة HTTP Load Balancers تعرض متوازن التحميل التوضيحي" />
+3. انتقل لأسفل إلى قسم **Client-Side Defense** في الشريط الجانبي الأيسر
+
+   يتم تعيين حقل **Client-Side Defense** إلى **Enable** وتعرض **Client-Side Defense Policy** **Configured**.
+
+   <Screenshot light="/images/csd-lb-csd-settings.png" alt="بديل CSD والإعدادات ضمن تكوين HTTP Load Balancer" />
+4. انقر على **View Configuration** لفتح تفاصيل سياسة CSD
+
+   يعرض حقل **JavaScript Insertion Settings** نطاق الحقن. يتم تعيين متوازن التحميل التوضيحي إلى **Insert JavaScript in All Pages**.
+
+   <Screenshot light="/images/csd-lb-injection-scope.png" alt="نطاق حقن JavaScript في تكوين فرعي CSD" />
+</Steps>
+
+<Aside type="tip">
+صفحة تكوين CSD (أعلاه) تسجل نطاق مع محرك التقارير. يتحكم HTTP Load Balancer في حقن النص. يجب تكوين كليهما لعمل CSD من النهاية إلى النهاية.
+</Aside>
+
+## التحقق من حقن النص البرمجي
+
+<Steps>
+1. افتح [التطبيق التوضيحي](https://botdemo.sales-demo.f5demos.com) في Chrome
+2. اضغط على **F12** لفتح DevTools
+3. انتقل إلى تبويب **Elements**
+4. ابحث عن `__imp_apg__` أو `zeronaught` في HTML لتحديد موقع نصوص أداة CSD
+5. تأكد من وجود علامة واحدة أو أكثر من علامات `<script>` الخاصة بـ CSD في `<head>` — مسارات النص البرمجي الدقيقة تختلف حسب التطبيق
+6. تأكد من أنه تم حقن النصوص بواسطة متوازن التحميل (فهي ليست جزء من مصدر التطبيق)
+</Steps>
+
+<Screenshot light="/images/csd-injected-scripts-light.png" dark="/images/csd-injected-scripts-dark.png" alt="النصوص البرمجية المحقونة في تبويب عناصر DevTools" />
+
+يتم حقن نصوص أداة CSD بواسطة متوازن تحميل F5 XC — فهي ليست جزء من مصدر التطبيق.
+
+<Aside type="caution">
+إذا لم تكن النصوص موجودة، تحقق من أن النطاق مكون وأنك تقوم بالوصول إلى التطبيق من خلال متوازن تحميل F5 XC (وليس مباشرة إلى الأصل).
+</Aside>

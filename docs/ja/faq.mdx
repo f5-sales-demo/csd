@@ -1,0 +1,85 @@
+---
+title: FAQ
+description: Client-Side Defense のデプロイと運用に関するよくある質問
+sidebar:
+  order: 12
+  label: FAQ
+i18n:
+  sourceHash: af7af812001b
+  translator: machine
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+F5 Distributed Cloud Client-Side Defense に関するよくある質問です。デモセッションと顧客との対話から厳選されています。
+
+## CSD は違反検出時にアラートを生成しますか？
+
+はい、ただし CSD 固有のアラートルールは明示的に設定する必要があります。CSD は設定時に指定されたアカウントメールアドレスを使用してアラートレシーバーを自動作成します。以下のアラートトリガーを設定できます：
+
+- 新しい疑わしいドメインが検出された
+- リスクスコアしきい値を超過した
+- 保護されたページで新しいスクリプトが検出された
+- 以前に確認されたスクリプトの動作が変更された
+
+アラートはドメインごとにスコープ設定することも、保護されたすべてのドメイン全体に適用することもできます。セットアップの詳細は [CSD Console — Alert Configuration](/csd/csd-console/#alert-configuration) セクションを参照してください。
+
+<Aside type="note">
+アラートルールは CSD ダッシュボードで設定され、オートメーション API 経由ではありません。API エンドポイント（`/scripts`、`/detected_domains`）は検出データを提供しますが、単独ではアラートをトリガーしません。
+</Aside>
+
+## CSD イベントの HTTP リクエストログを表示できますか？
+
+CSD は **クライアント側 JavaScript テレメトリ** 経由で動作します。スクリプト検出や緩和実行のサーバー側 HTTP ログはありません。検出パイプラインは以下のように機能します：
+
+1. CSD JavaScript タグ（ロードバランサーによって注入）は訪問者のブラウザで実行されます
+2. スクリプト読み込み、DOM ミューテーション、フォームフィールドアクセスを監視します
+3. テレメトリビーコンが F5 バックエンドに送信され分析されます
+4. 検出結果が CSD API とダッシュボードに表示されます
+
+**ロードバランサーアクセスログ**（`/api/data/namespaces/\{ns\}/access_logs`）には、CSD スクリプトタグが応答に注入されたかどうかを確認する `csd_js_injection` フィールドが含まれています。CSD 検出データについては、API エンドポイント [`/scripts`](/csd/api-reference/#detected-scripts)、[`/detected_domains`](/csd/api-reference/#detected-domains)、[`/formFields`](/csd/api-reference/#form-fields) を使用してください。
+
+完全な Layer 7（HTTP）および Layer 8（CSD テレメトリ）検証テストについては、[Diagnostics](/csd/diagnostics/) ガイドを参照してください。
+
+## CSD は SIEM ツール（Splunk、Datadog など）と統合されますか？
+
+CSD 固有のネイティブ SIEM webhook または syslog 統合は記載されていません。CSD 検出データは REST API エンドポイント経由で利用可能です：
+
+- `/scripts` — リスクレベル付きの検出されたスクリプト
+- `/detected_domains` — カテゴリ分類されたドメイン（CDN、流出など）
+- `/formFields` — スクリプトによってアクセスされたフォームフィールド（機密性分類付き）
+
+顧客はこれらの API エンドポイントをスケジュール通りにポーリングし、検出データを SIEM に転送できます。エンドポイントの詳細と認証については、[API Reference](/csd/api-reference/) を参照してください。
+
+<Aside type="tip">
+F5 Distributed Cloud プラットフォームは、HTTP アクセスログを外部システム（Splunk、Datadog、S3 など）にストリーミングするための **Global Log Receiver** 設定をサポートしています。これはロードバランサーアクセスログ（`csd_js_injection` フィールドを含む）をカバーしますが、CSD 検出イベントは含まれません。検出データについては、上記で説明した API ポーリングアプローチを使用してください。
+</Aside>
+
+## CSD 緩和は実際に何をブロックしますか？
+
+CSD 緩和は、`src` 属性をインターセプトすることで、緩和されたドメインからの `<script>` タグ読み込みをブロックします。CSD JavaScript は `src` を空の文字列にクリアし、ネットワークリクエストを完全に防止します。これは **サプライチェーンベクトル** をターゲットにしています：`<script>` タグ経由でページに注入される悪意のあるサードパーティスクリプト。
+
+CSD 緩和は以下を**インターセプトしません**：
+
+- `fetch()` 呼び出し
+- `XMLHttpRequest` 呼び出し
+- `<img>` または `<link>` タグ読み込み
+- WebSocket 接続
+
+この設計は意図的です。CSD はサプライチェーン攻撃（Magecart、フォームジャッキング、スキミング）が悪意のあるコードを注入するために使用するスクリプト読み込みメカニズムに焦点を当てています。`fetch()` または `XMLHttpRequest` 経由で行われたアプリケーションレベルの API 呼び出しは CSD のスコープ外であり、他の F5 XC セキュリティ機能（WAF、Bot Defense、API Protection）によって処理されます。
+
+スクリプトブロック動作を示す実前/実後の証明については、[Phase 3 — Mitigate](/csd/demo/phase-3-mitigate/) を参照してください。
+
+## 攻撃を実行してから検出が表示されるまでどのくらい時間がかかりますか？
+
+検出タイミングはエンドポイントによって異なります：
+
+| エンドポイント | 標準的なタイミング | 注記 |
+| --- | --- | --- |
+| `/detected_domains` | 数分 | 最初に入力されます。これは CSD パイプラインが処理している主要な指標です |
+| `/scripts` | 10～30 分 | より遅いバックエンド処理スケジュールを使用します |
+| `/formFields` | 20～30 分 | ML 機密性分類（`Sensitive` vs `Not Sensitive`）は追加処理が必要です |
+
+検出は、同じテナント上で同じ保護されたドメインが再登録されている場合、インフラストラクチャのティアダウン/リビルド全体で**永続化します**。ティアダウンとリビルド後、`/detected_domains` を一度クエリします。応答にアイテムが含まれている場合、以前の検出はまだ利用可能であり、待機は不要です。
+
+推奨ポーリングプロトコルについては、[Phase 2 — Detection Verification](/csd/demo/phase-2-attack/#step-9-detection-verification-via-api) セクションを参照してください。

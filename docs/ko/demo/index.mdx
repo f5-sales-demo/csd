@@ -1,0 +1,1344 @@
+---
+title: 데모
+description: '4단계 데모 연습 개요 — 구축, 공격, 완화, 해체'
+sidebar:
+  order: 1
+  label: 개요
+i18n:
+  sourceHash: abcf919aeb10
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+이 가이드는 F5 Distributed Cloud의 API를 사용한 **완전한 클라이언트 측 방어 연습**을 4단계로 구성하여 안내합니다. 각 단계는 AI 어시스턴트 또는 사람 운영자가 엔드투엔드로 실행할 수 있습니다. 각 단계에는 페이지 상단의 양식, `.env` 파일 또는 자동화 도구를 사용하여 자리 표시자 값을 사용자 정의할 수 있는 바로 실행 가능한 `curl` 명령이 포함되어 있습니다.
+
+<Aside type="caution">
+자리 표시자 양식은 API 토큰을 포함한 값들을 브라우저의 `localStorage`에 저장합니다. 공유되거나 공개된 머신에서 프로덕션 토큰을 사용하지 마십시오.
+</Aside>
+
+## 연습 단계
+
+| 단계 | 목표 | 스텝 |
+| --- | --- | --- |
+| [단계 1 — 구축](/csd/demo/phase-1-build/) | CSD 인프라 배포 및 검증 | 스텝 1–7 |
+| [단계 2 — 공격](/csd/demo/phase-2-attack/) | 시뮬레이션된 공격 트래픽 생성 및 CSD 감지 확인 | 스텝 8–9 |
+| [단계 3 — 완화](/csd/demo/phase-3-mitigate/) | 완화 전후 증명 — 공격 실행, 완화 적용, 공격 재실행, 비교 | 스텝 1–6 |
+| [단계 4 — 해체](/csd/demo/phase-4-teardown/) | 명시적 확인 후 모든 배포 객체 제거 | 해체 |
+
+## 출발 전 점검
+
+단계 1을 시작하기 전에 환경이 깨끗한지 확인하세요. 이전 실행에서 남은 객체가 있는지 확인하기 위해 이 API 점검을 실행하세요:
+
+```bash
+# 모든 단계 1 객체 및 컴퓨팅 환경 상태 확인
+HTTP_LB=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http")
+HTTPS_LB=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+ORIGIN=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx")
+HC=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx")
+PD_COUNT=$(curl -s -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '[.items // [] | .[] | select(.metadata.name != null)] | length')
+MD_COUNT=$(curl -s -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '[.items // [] | .[] | select(.metadata.name != null)] | length')
+
+# HTTPS LB가 있으면 본문을 가져와서 스켈레톤 상태 감지
+HTTPS_IS_SKELETON="false"
+if [ "$HTTPS_LB" = "200" ]; then
+  HTTPS_LB_BODY=$(curl -s \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+  HTTPS_IS_SKELETON=$(echo "$HTTPS_LB_BODY" | jq '
+    ((.spec.default_route_pools // []) | length == 0) and
+    (.spec.client_side_defense == null)
+  ')
+fi
+
+# 결정론적 환경 상태 계산
+jq -n \
+  --argjson http_lb "$HTTP_LB" \
+  --argjson https_lb "$HTTPS_LB" \
+  --argjson origin "$ORIGIN" \
+  --argjson hc "$HC" \
+  --argjson pd "$PD_COUNT" \
+  --argjson md "$MD_COUNT" \
+  --argjson https_skeleton "$HTTPS_IS_SKELETON" \
+'{
+  objects: [
+    { name: "http_lb",           http_code: $http_lb, exists: ($http_lb == 200) },
+    { name: "https_lb",          http_code: $https_lb, exists: ($https_lb == 200), is_skeleton: $https_skeleton },
+    { name: "origin_pool",       http_code: $origin, exists: ($origin == 200) },
+    { name: "healthcheck",       http_code: $hc, exists: ($hc == 200) },
+    { name: "protected_domains", count: $pd, exists: ($pd > 0) },
+    { name: "mitigated_domains", count: $md, exists: ($md > 0) }
+  ],
+  any_infra_exists: ($http_lb == 200 or ($https_lb == 200 and ($https_skeleton | not)) or $origin == 200 or $hc == 200),
+  any_csd_exists: ($pd > 0 or $md > 0),
+  status: (
+    if ($http_lb == 404 and $https_lb == 404 and $origin == 404 and $hc == 404 and $pd == 0 and $md == 0) then "CLEAN"
+    elif ($https_lb == 200 and $https_skeleton and $http_lb == 404 and $origin == 404 and $hc == 404 and $pd == 0 and $md == 0) then "HTTPS_SKELETON"
+    elif ($http_lb == 200 and $origin == 200) then "ALL_EXIST"
+    elif ($http_lb == 200 or ($https_lb == 200 and ($https_skeleton | not)) or $origin == 200 or $hc == 200) then "TEARDOWN_NEEDED"
+    elif ($md > 0 and $http_lb == 404 and ($https_lb == 404 or ($https_lb == 200 and $https_skeleton)) and $origin == 404 and $hc == 404) then "MITIGATIONS_ONLY"
+    else "TEARDOWN_NEEDED"
+    end
+  ),
+  action: (
+    if ($http_lb == 404 and $https_lb == 404 and $origin == 404 and $hc == 404 and $pd == 0 and $md == 0) then "단계 1로 진행"
+    elif ($https_lb == 200 and $https_skeleton and $http_lb == 404 and $origin == 404 and $hc == 404 and $pd == 0 and $md == 0) then "단계 1로 진행 (HTTPS LB 스켈레톤이 PUT을 통해 복원됨)"
+    elif ($http_lb == 200 and $origin == 200) then "모든 단계 1 객체가 존재함 — 상태 확인, 필요시 단계 2로 건너뜀"
+    elif ($http_lb == 200 or ($https_lb == 200 and ($https_skeleton | not)) or $origin == 200 or $hc == 200) then "먼저 단계 4 해체 실행, 다시 확인"
+    elif ($md > 0 and $http_lb == 404 and ($https_lb == 404 or ($https_lb == 200 and $https_skeleton)) and $origin == 404 and $hc == 404) then "완화된 도메인 삭제, 진행"
+    else "먼저 단계 4 해체 실행, 다시 확인"
+    end
+  )
+}'
+```
+
+### 선행 검증
+
+모든 단계 1 객체가 존재(`200`)하고 단계 2로 건너뛸 계획이 있으면,
+**단계 1 스텝 7 검증 명령**을 실행하여 건너뛰기 전에 인프라
+상태를 확인하세요. [단계 1 — 스텝 7: 검증](/csd/demo/phase-1-build/#step-7-verify)에서
+정확한 명령을 사용하세요:
+
+1. DNS 해석: `dig +short xF5XC_DOMAINNAMEx A`
+2. HTTP LB 상태: `GET .../http_loadbalancers/xF5XC_LB_NAMEx-http` 파이프
+   `jq '{state: .spec.state}'` — `VIRTUAL_HOST_READY` 표시 필요
+3. CSD JS 구성: `GET .../js_configuration` — `scriptTag` 포함 필요
+4. CSD 상태: `GET .../status` 파이프 `jq '{configured: .isConfigured, enabled: .isEnabled}'` — 둘 다 `true` 필요
+
+건너뛰기 전에 모든 필수 검사(DNS-1, LB-1, CSD-1, CSD-2)가 PASS 되어야 합니다. 검사가 실패하면 실패한 스텝부터 단계 1을 실행하세요.
+
+<Aside type="note">
+완화된 도메인 목록은 실제 완화가 없을 때도 null 메타데이터와 함께 1의 개수를 반환할 수 있습니다. 이것은 백엔드 아티팩트입니다. 결정 규칙: 단일 항목이 null 메타데이터(이름이 null이거나 비어 있음)를 가지면 0으로 취급합니다. 실제 메타데이터가 있으면 각 항목을 이름으로 삭제한 후 진행합니다.
+</Aside>
+
+<Aside type="note">
+CSD 감지는 동일한 테넌트에서 동일한 보호된 도메인이 다시 등록될 때 인프라 해체/재구축 전체에 걸쳐 지속됩니다. 해체 및 재구축 후 `/detected_domains`를 한 번 쿼리하세요. 응답에 항목이 포함되면 즉시 진행하세요 — 대기 필요 없음. 응답이 비어 있으면 30초 대기 후 한 번 더 쿼리하세요. 두 번째 쿼리 후에도 여전히 비어 있으면 어쨌든 진행하세요 — 시뮬레이션이 실행되면 감지가 나타납니다.
+</Aside>
+
+## 준비 상태 검증 매트릭스
+
+위의 출발 전 점검은 환경이 **깨끗한지** 검증합니다. 아래의 준비 상태 매트릭스는 환경이 **유능한지** 검증합니다 — 모든 전제 조건, 할당량, 연결성 및 플랫폼 서비스가 성공적인 데모를 위해 준비되어 있는지 검증합니다. 모든 회의 전에 준비 단계의 일부로 이 매트릭스를 실행하세요.
+
+각 검사에는 테스트 ID, 계층(T0–T5), PASS/FAIL/WARN 기준 및 개선 경로가 있습니다. 계층은 순차적입니다 — 이전 계층의 FAIL은 이후 계층 실행을 차단합니다.
+
+### 계층 요약
+
+| 계층 | 카테고리 | 데모 차단? | 목적 |
+| --- | --- | --- | --- |
+| T0 | 연결성 &amp; 인증 | **예** | 플랫폼에 도달하고 인증할 수 있는가? |
+| T1 | 할당량 &amp; 용량 | **예** (한계 도달 시) | 데모 객체를 생성할 공간이 있는가? |
+| T2 | 플랫폼 전제 조건 | **예** | 테넌트 수준 서비스가 구성되었는가? |
+| T3 | 원본 상태 | **경고** | 백엔드 애플리케이션이 응답하는가? |
+| T4 | 환경 정리 | 자동 개선 | 이전 실행에서 남은 객체가 있는가? |
+| T5 | 인증서 준비 | 정보 | HTTPS가 작동하거나 HTTP 전용으로 계획해야 하는가? |
+
+### T0: 연결성 &amp; 인증
+
+이 검사는 실행 호스트가 F5 XC API에 도달하고 자격증이 유효한지 확인합니다.
+
+#### PF-T0-1: API 연결성
+
+```bash
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' --connect-timeout 10 --max-time 15 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T0-1",
+  http_code: .http_code,
+  status: (
+    if .http_code == 200 then "PASS"
+    elif .http_code == 401 then "FAIL"
+    else "FAIL"
+    end
+  ),
+  detail: (
+    if .http_code == 200 then "API에 도달 가능, 토큰 유효"
+    elif .http_code == 401 then "토큰 만료 또는 유효하지 않음 — 관리 > 자격증 > API 자격증에서 다시 생성"
+    elif .http_code == 0 then "네트워크에 도달 불가 — 연결, VPN 또는 TLS 호환성 확인 (--tlsv1.2 --tls-max 1.2 시도)"
+    else "예상치 못한 HTTP \(.http_code)"
+    end
+  )
+}'
+```
+
+#### PF-T0-2: 네임스페이스 접근
+
+```bash
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T0-2",
+  http_code: .http_code,
+  status: (
+    if .http_code == 200 then "PASS"
+    elif .http_code == 404 then "WARN"
+    else "FAIL"
+    end
+  ),
+  detail: (
+    if .http_code == 200 then "토큰이 네임스페이스 접근권 있음"
+    elif .http_code == 403 then "토큰이 네임스페이스 권한 부족 — 역할 바인딩 확인"
+    elif .http_code == 404 then "네임스페이스가 존재하지 않음 — 단계 1 스텝 0에서 생성됨"
+    else "예상치 못한 HTTP \(.http_code)"
+    end
+  )
+}'
+```
+
+#### PF-T0-3: CSD API 접근
+
+```bash
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T0-3",
+  http_code: .http_code,
+  status: (
+    if .http_code == 200 then "PASS"
+    elif .http_code == 404 then "WARN"
+    else "FAIL"
+    end
+  ),
+  detail: (
+    if .http_code == 200 then "토큰이 CSD/Shape API 권한 있음"
+    elif .http_code == 403 then "토큰이 CSD 역할 바인딩 부족 — 테넌트 관리자 연락"
+    elif .http_code == 404 then "네임스페이스가 존재하지 않음 — CSD 접근은 단계 1에서 네임스페이스 생성 후 검증됨"
+    else "예상치 못한 HTTP \(.http_code)"
+    end
+  )
+}'
+```
+
+#### PF-T0-4: RBAC 권한 매트릭스
+
+비파괴 프로브는 데모가 필요로 하는 모든 객체 유형에 대한 읽기 및 쓰기 권한을 테스트합니다. 읽기는 목록 엔드포인트의 `GET`을 통해 테스트됩니다. 쓰기는 존재하지 않는 객체의 `DELETE`를 통해 테스트됩니다 — RBAC가 작업을 거부하면 API는 `403`을 반환하거나, 작업이 허용되지만 객체가 없으면 `404`를 반환합니다. 이 제로 부작용 기법은 임시 프로브 객체 생성을 피합니다.
+
+```bash
+PROBE_NAME="rbac-probe-nonexistent"
+
+# 읽기 프로브
+NS_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx")
+HC_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks")
+OP_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools")
+LB_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers")
+CSD_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status")
+PD_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains")
+MD_R=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains")
+
+# 쓰기 프로브 (비파괴: 존재하지 않는 객체의 DELETE/cascade_delete)
+NS_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X POST -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{\"name\":\"$PROBE_NAME\"}" \
+  "xF5XC_API_URLx/api/web/namespaces/$PROBE_NAME/cascade_delete")
+HC_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/$PROBE_NAME")
+OP_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/$PROBE_NAME")
+LB_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/$PROBE_NAME")
+PD_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/$PROBE_NAME.example.com")
+MD_W=$(curl -s -o /dev/null -w '%\{http_code\}' --max-time 10 \
+  -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/$PROBE_NAME.example.com")
+
+# 결정론적 권한 매트릭스 계산
+jq -n \
+  --argjson ns_r "$NS_R" --argjson ns_w "$NS_W" \
+  --argjson hc_r "$HC_R" --argjson hc_w "$HC_W" \
+  --argjson op_r "$OP_R" --argjson op_w "$OP_W" \
+  --argjson lb_r "$LB_R" --argjson lb_w "$LB_W" \
+  --argjson csd_r "$CSD_R" \
+  --argjson pd_r "$PD_R" --argjson pd_w "$PD_W" \
+  --argjson md_r "$MD_R" --argjson md_w "$MD_W" \
+'{
+  check: "PF-T0-4",
+  permissions: [
+    { object: "namespace",          read: ($ns_r != 403),  write: ($ns_w != 403),  required: false, note: "조건부 — ns 생성이 필요한 경우만" },
+    { object: "healthcheck",        read: ($hc_r != 403),  write: ($hc_w != 403),  required: false, note: "CSD에 선택사항" },
+    { object: "origin_pool",        read: ($op_r != 403),  write: ($op_w != 403),  required: true,  note: "" },
+    { object: "http_loadbalancer",  read: ($lb_r != 403),  write: ($lb_w != 403),  required: true,  note: "" },
+    { object: "csd_status",         read: ($csd_r != 403), write: true,            required: true,  note: "읽기 전용 검사" },
+    { object: "protected_domain",   read: ($pd_r != 403),  write: ($pd_w != 403),  required: true,  note: "" },
+    { object: "mitigated_domain",   read: ($md_r != 403),  write: ($md_w != 403),  required: false, note: "단계 3에만 해당" }
+  ],
+  status: (
+    if [
+      ($op_r == 403), ($op_w == 403),
+      ($lb_r == 403), ($lb_w == 403),
+      ($csd_r == 403),
+      ($pd_r == 403), ($pd_w == 403)
+    ] | any then "FAIL"
+    elif ($ns_w == 403 or $hc_w == 403 or $md_w == 403) then "WARN"
+    else "PASS"
+    end
+  ),
+  detail: (
+    [
+      (if ($op_r == 403 or $op_w == 403) then "원본 풀: 권한 거부" else null end),
+      (if ($lb_r == 403 or $lb_w == 403) then "로드 밸런서: 권한 거부" else null end),
+      (if $csd_r == 403 then "CSD API: 권한 거부 — CSD가 이 네임스페이스에 대해 활성화되지 않을 수 있음" else null end),
+      (if ($pd_r == 403 or $pd_w == 403) then "보호된 도메인: 권한 거부" else null end),
+      (if $ns_w == 403 then "네임스페이스: 쓰기 거부 — 네임스페이스가 이미 존재해야 함 (생성 불가)" else null end),
+      (if $hc_w == 403 then "헬스체크: 쓰기 거부 — 헬스체크 생성 건너뜀" else null end),
+      (if $md_w == 403 then "완화된 도메인: 쓰기 거부 — 단계 3 완화 건너뜀" else null end)
+    ] | map(select(. != null)) | join("; ")
+  )
+}'
+```
+
+<Aside type="note">
+**네임스페이스 + RBAC 상호작용.** PF-T0-2가 `404`를 반환했다면(네임스페이스가 존재하지 않음) AND PF-T0-4가 네임스페이스 쓰기가 거부됨을 보여주면, 데모는 **진행할 수 없습니다** — 네임스페이스가 존재하지 않고 생성할 수 없습니다. PF-T0-2가 `200`을 반환했다면(네임스페이스가 존재) 그리고 네임스페이스 쓰기가 거부되면, 이것은 경고일 뿐입니다 — 데모는 기존 네임스페이스를 사용할 수 있습니다.
+
+**CSD + RBAC.** CSD 엔드포인트가 `403`을 반환하면, CSD 서비스가 이 네임스페이스 또는 테넌트에 대해 활성화되지 않을 수 있습니다(계획 기반 접근 제어). CSD가 시연되는 핵심 기능이므로, 이것은 항상 FAIL입니다.
+</Aside>
+
+### T1: 할당량 &amp; 용량
+
+이 검사는 테넌트의 할당량 사용 API를 쿼리하여 데모가 필요로 하는 각 객체 종류에 대한 한계, 현재 사용량 및 남은 용량을 결정합니다. 이것은 프로브 및 삭제 테스트를 정확한 숫자를 보고하는 단일 읽기 전용 API 호출로 대체합니다.
+
+#### PF-T1-0: 할당량 사용 게이트
+
+테넌트 전체 할당량 사용 엔드포인트를 쿼리하고 데모가 필요로 하는 모든 객체 종류에 대해 결정론적 PASS/WARN/FAIL 상태를 계산합니다. 이 엔드포인트는 `system` 네임스페이스가 필요합니다. 단일 API 호출로 모든 플랫폼 수준 할당량을 한 번에 확인합니다.
+
+게이트는 데모가 소비할 각 객체 종류의 수, 종류가 필요한지 여부 및 데모 진행을 위한 최소 필요량을 지정하는 `demo_needs` 배열을 정의합니다. jq 필터는 `remaining`을 `needed`와 비교하고 결정론적으로 `status` 필드를 계산합니다 — 운영자의 해석이 필요하지 않습니다.
+
+```bash
+# 스텝 1: 할당량 데이터 가져오기
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/system/quota/usage?namespace=system" \
+  > /tmp/quota.json
+
+# 스텝 2: 게이트 상태 계산
+jq '
+  . as $data |
+  [
+    { kind: "healthcheck",       needed: 1, required: false, min_proceed: 0 },
+    { kind: "origin_pool",       needed: 1, required: true,  min_proceed: 1 },
+    { kind: "endpoint",          needed: 1, required: true,  min_proceed: 1 },
+    { kind: "http_loadbalancer", needed: 2, required: true,  min_proceed: 1 }
+  ] | map(
+    . as $req |
+    $data.objects[$req.kind] as $obj |
+    $obj.limit.maximum as $limit |
+    $obj.usage.current as $usage |
+    (if $limit == -1 then null else ($limit - $usage) end) as $remaining |
+    {
+      kind:      $req.kind,
+      limit:     (if $limit == -1 then "unlimited" else $limit end),
+      usage:     $usage,
+      remaining: (if $remaining == null then "unlimited" else $remaining end),
+      needed:    $req.needed,
+      status:    (
+        if $remaining == null then "PASS"
+        elif $remaining >= $req.needed then "PASS"
+        elif $remaining >= $req.min_proceed then "WARN"
+        else
+          (if $req.required then "FAIL" else "WARN" end)
+        end
+      )
+    }
+  )
+  | {
+      checks: .,
+      gate: (if any(.[]; .status == "FAIL") then "FAIL"
+             elif any(.[]; .status == "WARN") then "WARN"
+             else "PASS" end)
+    }
+' /tmp/quota.json
+```
+
+**게이트 출력** — `gate` 필드는 단일 결정론적 판정입니다:
+
+- **`PASS`** — 모든 객체 종류가 `remaining >= needed`를 가집니다. 데모가 진행할 수 있습니다.
+- **`WARN`** — 최소 하나의 종류가 감소된 용량을 가지지만 진행 최소값은 충족됩니다 (예: 필요한 2 대신 LB 슬롯 1만 사용 가능, 또는 헬스체크 할당량 소진). 데모는 제한과 함께 진행할 수 있습니다.
+- **`FAIL`** — 최소 하나의 필수 종류가 `remaining < min_proceed`를 가집니다. 할당량이 해제될 때까지 데모는 진행할 수 없습니다.
+
+**예시 출력** (WARN — 엔드포인트 용량 소진, 헬스체크 거의 가득 참):
+
+```json
+{
+  "checks": [
+    { "kind": "healthcheck",       "limit": 150,         "usage": 149, "remaining": 1,           "needed": 1, "status": "PASS" },
+    { "kind": "origin_pool",       "limit": "unlimited", "usage": 420, "remaining": "unlimited", "needed": 1, "status": "PASS" },
+    { "kind": "endpoint",          "limit": 500,         "usage": 500, "remaining": 0,           "needed": 1, "status": "FAIL" },
+    { "kind": "http_loadbalancer", "limit": "unlimited", "usage": 116, "remaining": "unlimited", "needed": 2, "status": "PASS" }
+  ],
+  "gate": "FAIL"
+}
+```
+
+| `gate` 값 | 조치 |
+| --- | --- |
+| **PASS** | PF-T1-4(보호된 도메인 검사) 진행, 그 다음 T2 |
+| **WARN** | 준비 상태 보고서에 제한사항 기록, 감소된 용량으로 진행 |
+| **FAIL** | 중단 — 어떤 종류가 소진되었는지 보고하고 아래 개선 단계 |
+
+**종류별 개선:**
+
+| 종류 | 개선 |
+| --- | --- |
+| `healthcheck` | 사용하지 않는 헬스체크를 삭제하여 용량 확보. 데모는 헬스체크 없이 진행합니다 (CSD에는 필수 아님). |
+| `origin_pool` | 사용하지 않는 원본 풀을 삭제하거나 관리자에게 테넌트 한계 증가를 요청합니다. |
+| `endpoint` | 다른 네임스페이스의 사용하지 않는 원본 풀을 삭제하여 엔드포인트 용량 확보 (엔드포인트는 원본 풀의 하위 객체), 또는 관리자에게 문의합니다. |
+| `http_loadbalancer` | 사용하지 않는 로드 밸런서를 삭제하거나 관리자에게 문의합니다. 슬롯 1만 사용 가능한 경우, HTTP LB (기본)은 생성되지만 HTTPS LB (보조)은 건너뜁니다. |
+
+<Aside type="note">
+할당량 사용 API는 모든 네임스페이스에 걸친 테넌트 전체 합계를 반환하며, 네임스페이스별 개수가 아닙니다. `limit` 값 `-1` (표시: `"unlimited"`)은 해당 객체 종류에 할당량 상한이 없음을 의미합니다. API가 `403`, `404` 또는 예상치 못한 형식을 반환하면, 아래의 [폴백 프로브 기반 할당량 검사](#fallback-probe-based-quota-checks)로 돌아갑니다.
+</Aside>
+
+#### PF-T1-4: 보호된 도메인 할당량
+
+CSD 보호된 도메인은 플랫폼 할당량 사용 API에 나타나지 않습니다. 프로브 기반 검사를 사용합니다: 보호된 도메인 프로브를 생성하고 즉시 삭제합니다.
+
+```bash
+# 프로브 생성 및 HTTP 코드 및 응답 본문 모두 캡처
+PROBE_BODY=$(curl -s -w '\n%\{http_code\}' -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "preflight-probe.example.com",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "protected_domain": "example.com"
+    }
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains")
+PROBE_HTTP=$(echo "$PROBE_BODY" | tail -1)
+PROBE_JSON=$(echo "$PROBE_BODY" | sed '$d')
+
+# 상태 계산
+echo "$PROBE_JSON" | jq --argjson http "$PROBE_HTTP" '{
+  check: "PF-T1-4",
+  http_code: $http,
+  status: (
+    if $http == 409 then "PASS"
+    elif (.code // 0) == 8 then "FAIL"
+    elif .metadata.name then "PASS"
+    else "FAIL"
+    end
+  ),
+  detail: (
+    if $http == 409 then "example.com이 이미 등록됨 — 할당량이 소진되지 않음"
+    elif (.code // 0) == 8 then "보호된 도메인 할당량 소진 — 사용하지 않는 보호된 도메인 삭제"
+    elif .metadata.name then "프로브 생성됨 — 할당량 사용 가능"
+    else "예상치 못한 응답"
+    end
+  )
+}'
+
+# 프로브 정리 (409가 발생하면 404 예상)
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/preflight-probe.example.com" \
+  > /dev/null
+```
+
+<Aside type="note">
+프로브는 RFC 2606 예약 도메인 `example.com`을 사용합니다. `409` 응답은 유효한 PASS입니다 — 도메인이 이미 등록되어 있음을 의미하며, 할당량이 소진되지 않았음을 증명합니다. `409`가 발생하면 DELETE는 `404`를 반환할 수 있으며(프로브가 생성되지 않음), 이것은 예상됩니다.
+</Aside>
+
+#### 폴백: 프로브 기반 할당량 검사
+
+PF-T1-0이 실패하면(할당량 사용 API가 `403`, `404` 또는 예상치 못한 형식을 반환), 헬스체크, 원본 풀, 엔드포인트 및 로드 밸런서 할당량에 대한 프로브 및 삭제 검사로 돌아갑니다. 이 검사들은 임시 객체를 생성하고 즉시 삭제합니다 — 생성이 오류 코드 `8`과 함께 "exhausted limits"를 반환하면, 할당량이 가득 찼습니다.
+
+<Aside type="caution">
+프로브 기반 검사는 테넌트에 실제 객체를 생성하고 즉시 삭제합니다. 삭제가 실패하면(예: 네트워크 문제), 멈춘 프로브 객체가 남을 수 있습니다. [T4 멈춘 프로브 정리](#t4-environment-clean)는 다음 출발 전 점검 실행 시 이들을 감지하고 제거합니다.
+</Aside>
+
+각 폴백 프로브는 동일한 패턴을 사용합니다: 임시 객체 생성, 응답으로부터 결정론적 상태 계산, 프로브 삭제. `status` 필드는 객체가 생성되었다면 PASS (`.metadata.name` 있음), 오류 코드 `8`(할당량 소진)이면 WARN 또는 FAIL입니다. 종류가 필수인지 여부에 따라 결정됩니다.
+
+**헬스체크 프로브** (소진되면 WARN — 헬스체크는 CSD에 선택사항):
+
+```bash
+RESULT=$(curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "preflight-quota-probe",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "http_health_check": {
+        "use_origin_server_name": {},
+        "path": "/",
+        "use_http2": false
+      },
+      "timeout": 3,
+      "interval": 15,
+      "unhealthy_threshold": 1,
+      "healthy_threshold": 3
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks")
+echo "$RESULT" | jq '{
+  check: "fallback-healthcheck",
+  status: (if .metadata.name then "PASS" elif (.code // 0) == 8 then "WARN" else "FAIL" end),
+  detail: (if .metadata.name then "할당량 사용 가능" elif (.code // 0) == 8 then "할당량 가득 참 — 헬스체크 선택사항, 데모 진행" else "예상치 못함: \(.message // "알 수 없는 오류")" end)
+}'
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/preflight-quota-probe" \
+  > /dev/null
+```
+
+**원본 풀 &amp; 엔드포인트 프로브** (소진되면 FAIL — 둘 다 필수):
+
+```bash
+RESULT=$(curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "preflight-origin-probe",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "origin_servers": [{
+        "public_ip": { "ip": "192.0.2.1" },
+        "labels": {}
+      }],
+      "no_tls": {},
+      "port": 80,
+      "same_as_endpoint_port": {},
+      "healthcheck": [],
+      "loadbalancer_algorithm": "LB_OVERRIDE",
+      "endpoint_selection": "LOCAL_PREFERRED"
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools")
+echo "$RESULT" | jq '{
+  check: "fallback-origin-pool",
+  status: (if .metadata.name then "PASS" elif (.code // 0) == 8 then "FAIL" else "FAIL" end),
+  detail: (if .metadata.name then "할당량 사용 가능" elif (.code // 0) == 8 then "할당량 소진 — \(.message // "한계 도달")" else "예상치 못함: \(.message // "알 수 없는 오류")" end)
+}'
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/preflight-origin-probe" \
+  > /dev/null
+```
+
+**HTTP 로드 밸런서 프로브** (소진되면 FAIL — LB는 필수):
+
+```bash
+RESULT=$(curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "preflight-lb-probe",
+      "namespace": "xF5XC_NAMESPACEx",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["preflight-probe.example.com"],
+      "http": {
+        "dns_volterra_managed": false,
+        "port": 80
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [],
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers")
+echo "$RESULT" | jq '{
+  check: "fallback-http-lb",
+  status: (if .metadata.name then "PASS" elif (.code // 0) == 8 then "FAIL" else "FAIL" end),
+  detail: (if .metadata.name then "할당량 사용 가능" elif (.code // 0) == 8 then "할당량 소진 — \(.message // "한계 도달")" else "예상치 못함: \(.message // "알 수 없는 오류")" end)
+}'
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/preflight-lb-probe" \
+  > /dev/null
+```
+
+### T2: 플랫폼 전제 조건
+
+이 검사는 데모가 의존하는 테넌트 수준 서비스를 검증합니다.
+
+#### PF-T2-1: CSD 테넌트 상태
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq '{
+    check: "PF-T2-1",
+    configured: .isConfigured,
+    enabled: .isEnabled,
+    status: (if .isConfigured and .isEnabled then "PASS" else "FAIL" end),
+    detail: (
+      if .isConfigured and .isEnabled then "CSD가 활성화됨"
+      elif (.isConfigured | not) then "CSD가 테넌트 수준에서 활성화되지 않음 — F5 XC 관리자에게 문의"
+      else "CSD가 구성되었지만 활성화되지 않음 — 관리자에게 문의"
+      end
+    )
+  }'
+```
+
+#### PF-T2-2: DNS 영역이 존재함
+
+```bash
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T2-2",
+  http_code: .http_code,
+  status: (
+    if .http_code == 200 then "PASS"
+    elif .http_code == 404 then "WARN"
+    elif .http_code == 403 then "WARN"
+    else "FAIL"
+    end
+  ),
+  detail: (
+    if .http_code == 200 then "DNS 영역이 F5 XC에 존재"
+    elif .http_code == 404 then "F5 XC DNS 영역 없음 — 외부 DNS를 사용할 수 있습니다"
+    elif .http_code == 403 then "토큰이 DNS 영역 읽기 접근 부족 (system 네임스페이스)"
+    else "예상치 못한 HTTP \(.http_code)"
+    end
+  )
+}'
+```
+
+#### PF-T2-3: DNS 관리되는 레코드 활성화됨
+
+PF-T2-2가 `200`을 반환한 경우에만 실행 (F5 XC DNS 영역이 존재):
+
+**현재 상태 확인:**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq '{
+    check: "PF-T2-3",
+    managed_records: (.spec.primary.allow_http_lb_managed_records // false),
+    status: (if .spec.primary.allow_http_lb_managed_records == true then "PASS" else "WARN" end),
+    detail: (if .spec.primary.allow_http_lb_managed_records == true then "LB 관리 DNS 레코드 활성화됨" else "관리되는 레코드가 활성화되지 않음 — 자동 개선이 필요할 수 있음" end)
+  }'
+```
+
+**필요하면 자동 개선:** `status`가 `WARN` AND PF-T2-4가 F5 XC 네임서버(`ns1.f5clouddns.com`, `ns2.f5clouddns.com`)를 보여주면, GET+PUT을 사용하여 관리되는 레코드를 자동으로 활성화합니다:
+
+```bash
+# 현재 영역 구성 가져오기
+ZONE_CONFIG=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx")
+
+# 관리되는 레코드 활성화로 업데이트
+echo "$ZONE_CONFIG" \
+  | jq '.spec.primary.allow_http_lb_managed_records = true' \
+  | curl -s -X PUT \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d @- \
+    "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq .
+```
+
+업데이트가 적용되었는지 다시 확인:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq '.spec.primary.allow_http_lb_managed_records'
+```
+
+<Aside type="caution">
+영역 스펙에는 플랫폼 관리 레코드가 있는 `x-ves-io-managed` rr_set_group이 포함됩니다. `PUT` 페이로드는 **이 그룹을 보존해야 합니다** — 이를 생략하면 HTTP 403 "내부 용도로 예약됨"이 발생합니다. 항상 먼저 `GET`으로 현재 영역 구성을 검색하고, `allow_http_lb_managed_records` 필드만 수정하고, 완전한 스펙을 다시 전송하세요.
+</Aside>
+
+| 결과 | DNS 권한 | 상태 | 개선 |
+| --- | --- | --- | --- |
+| `true` | 모든 | **PASS** | LB 관리 DNS 레코드가 자동으로 생성됨 |
+| `false`/`null` | F5 XC | **자동 개선** | GET+PUT을 통해 활성화, 검증, 결과 보고 |
+| `false`/`null` | 외부 | **정보** | 관리되는 레코드가 외부 DNS에 적용되지 않음 — 단계 1 스텝 4에서 [옵션 B](/csd/demo/phase-1-build/#option-b-external-dns-provider)(수동 레코드 생성) 사용 |
+| 자동 개선 실패 | F5 XC | **FAIL** | 토큰이 system 네임스페이스 쓰기 접근 부족 — 테넌트 관리자에게 문의 |
+
+#### PF-T2-4: DNS 네임서버 권한
+
+```bash
+NS_RECORDS=$(dig +short NS xF5XC_ROOT_DOMAINx)
+echo "$NS_RECORDS" | jq -Rs '{
+  check: "PF-T2-4",
+  nameservers: (split("\n") | map(select(length > 0))),
+  status: (
+    if (split("\n") | map(select(length > 0)) | length) == 0 then "FAIL"
+    elif test("f5clouddns\\.com") then "PASS"
+    else "정보"
+    end
+  ),
+  detail: (
+    if (split("\n") | map(select(length > 0)) | length) == 0 then "NS 레코드 없음 — 이 도메인에 대해 DNS가 손상됨"
+    elif test("f5clouddns\\.com") then "F5 XC가 권한 — 자동 DNS 관리 사용 가능"
+    else "외부 DNS 공급자 — 단계 1 스텝 4에서 옵션 B(수동 레코드 생성) 사용"
+    end
+  )
+}'
+```
+
+### T3: 원본 상태
+
+이 검사는 백엔드 애플리케이션에 도달할 수 있는지 검증합니다.
+
+<Aside type="tip" title="RFC 5737 TEST-NET 주소">
+IP 범위 `192.0.2.0/24` (TEST-NET-1), `198.51.100.0/24`
+(TEST-NET-2), 및 `203.0.113.0/24` (TEST-NET-3)은
+[RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737)에 의해
+문서 및 예제에서 사용하도록 예약됩니다. 이들은 공개 인터넷에서
+**라우팅되지 않으며** 연결성 테스트에 응답하지 않습니다.
+`F5XC_ORIGIN_IP`가 이 범위 중 하나의 주소로 설정된 경우, 이것은
+의도적인 문서 자리 표시자입니다 — 오구성이 아닙니다.
+</Aside>
+
+**건너뜀 조건 확인:** 연결성 테스트를 실행하기 전에 원본 IP가 RFC 5737 TEST-NET 주소인지 계산합니다:
+
+```bash
+echo "xF5XC_ORIGIN_IPx" | jq -Rs '{
+  check: "PF-T3-skip",
+  origin_ip: (rtrimstr("\n")),
+  is_test_net: (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")),
+  status: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "건너뜀" else "계속" end),
+  detail: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "RFC 5737 TEST-NET 주소 — 라우팅 불가, 연결성 테스트 건너뜀" else "라우팅 가능한 IP — 연결성 테스트 진행" end)
+}'
+```
+
+`status`가 `건너뜀`이면, PF-T3-1 및 PF-T3-2를 SKIP로 기록하고 T4로 이동합니다. 그 외의 경우 아래 검사를 실행합니다.
+
+#### PF-T3-1: 원본 서버 연결성
+
+```bash
+HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' --connect-timeout 10 --max-time 15 \
+  "http://xF5XC_ORIGIN_IPx:xF5XC_ORIGIN_PORTx/")
+echo "{\"http_code\": $HTTP_CODE}" | jq '{
+  check: "PF-T3-1",
+  http_code: .http_code,
+  status: (if .http_code >= 200 and .http_code < 600 then "PASS" elif .http_code == 0 then "경고" else "경고" end),
+  detail: (
+    if .http_code >= 200 and .http_code < 600 then "원본이 HTTP \(.http_code)로 응답 중"
+    elif .http_code == 0 then "원본이 이 네트워크에서 도달 불가 — LB는 다른 경로를 사용할 수 있습니다"
+    else "예상치 못한 응답 코드 \(.http_code)"
+    end
+  )
+}'
+```
+
+<Aside type="note">
+CSD 데모의 기본 원본은 `44.232.69.192:3000`의 Juice Shop 애플리케이션입니다. 사용자 정의 원본(`F5XC_ORIGIN_IP` / `F5XC_ORIGIN_PORT`)을 사용하는 경우, 양식 필드가 있는 HTML 페이지를 제공하는지 확인하세요 — CSD는 감지 기능을 시연하기 위해 양식 요소가 필요합니다.
+</Aside>
+
+#### PF-T3-2: 원본이 HTML 콘텐츠 제공
+
+PF-T3-1이 유효한 HTTP 상태를 반환한 경우에만 실행:
+
+```bash
+curl -s --max-time 10 "http://xF5XC_ORIGIN_IPx:xF5XC_ORIGIN_PORTx/" \
+  | grep -qi '</html>' && echo "PASS: HTML 콘텐츠" || echo "경고: HTML 감지되지 않음"
+```
+
+| 결과 | 상태 | 개선 |
+| --- | --- | --- |
+| `PASS: HTML 콘텐츠` | **PASS** | 원본이 HTML 페이지를 제공함 (CSD JS 주입 필수) |
+| `경고: HTML 감지되지 않음` | **경고** | 원본이 API 전용 서비스이거나 HTML이 아닌 것을 반환 — CSD JS 주입은 HTML 페이지 응답이 필요함 |
+
+### T4: 환경 정리
+
+이 검사는 이전 데모 실행에서 남은 **명명된 F5 XC 구성 객체**가 없는지 검증합니다 — HTTP 로드 밸런서, HTTPS 로드 밸런서, 원본 풀, 헬스체크, 보호된 도메인 및 완화된 도메인. T4는 객체 수준 정리에 관한 것입니다: 단계 1 생성과 충돌할 API 객체가 여전히 존재하는지 여부. IP 주소, 네트워크 연결성 또는 원본 상태를 테스트하지 않습니다 (이러한 관심사는 T3에 속함).
+
+<Aside type="note">
+**네임스페이스가 존재하지 않으면 T4 건너뜀.** PF-T0-2가 `404`를 반환했으면(네임스페이스가 존재하지 않음), T4 환경 검사를 완전히 건너뛰고 상태를 `정리됨`으로 보고하세요. 존재하지 않는 네임스페이스는 남은 객체를 포함할 수 없습니다. 단계 1 스텝 0이 어떤 객체도 생성되기 전에 네임스페이스를 생성합니다.
+</Aside>
+
+위 [출발 전 점검](#pre-flight-check) 섹션의 여섯 가지 출발 전 명령을 실행합니다. [결정 논리](#decision-logic)를 적용하여 다음 단계를 결정합니다. 객체가 존재하면, 자동 해체는 준비 단계 중에 수행됩니다 (확인이 필요하지 않음).
+
+또한 이전의 중단된 출발 전 점검 실행에서 남은 멈춘 프로브 객체를 확인하고 삭제합니다. 이 프로브는 할당량 사용 API가 사용 불가능할 때 생성되며 [폴백 프로브 기반 검사](#fallback-probe-based-quota-checks)가 사용되었거나, 보호된 도메인 프로브(PF-T1-4)의 경우 항상 프로브 기반 검사를 사용합니다:
+
+```bash
+# 멈춘 프로브 정리 (프로브가 의존성이 없으므로 모든 순서로 삭제 가능)
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/preflight-quota-probe" \
+  > /dev/null
+
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/preflight-lb-probe" \
+  > /dev/null
+
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/preflight-origin-probe" \
+  > /dev/null
+
+curl -s -X DELETE -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/preflight-probe.example.com" \
+  > /dev/null
+```
+
+각 DELETE는 객체가 존재했으면 `200` (빈 `{}`), 없었으면 `404`를 반환합니다 — 둘 다 예상됩니다.
+
+### T5: 인증서 준비
+
+이 검사는 HTTPS가 작동할지 또는 데모가 HTTP 전용으로 계획해야 하는지 평가합니다.
+
+#### PF-T5-1: 최근 인증서 발급 이력
+
+데모 도메인에 대해 Let's Encrypt 인증서가 최근에 발급되었는지 확인합니다. 빈번한 생성/삭제 사이클은 주간 한계(주당 도메인별 5개의 중복 인증서)를 소진할 수 있습니다.
+
+<Aside type="note">
+Let's Encrypt 한계 상태를 직접 쿼리할 API가 없습니다. 이 검사는 HTTPS LB 인증서 상태를 프록시로 사용합니다. 아직 HTTPS LB가 없으면(정리된 환경), 이 검사는 건너뜁니다 — 위험은 최근 데모 빈도를 기반으로 정보로 기록됩니다.
+</Aside>
+
+#### PF-T5-2: 기존 HTTPS LB 인증서 상태
+
+이전 실행에서 HTTPS LB가 있는 경우에만 실행 (PF-T4에서 객체를 발견):
+
+```bash
+CERT_BODY=$(curl -s -w '\n%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+CERT_HTTP=$(echo "$CERT_BODY" | tail -1)
+CERT_JSON=$(echo "$CERT_BODY" | sed '$d')
+
+if [ "$CERT_HTTP" = "404" ]; then
+  echo '{"check":"PF-T5-2","cert_state":null,"status":"건너뜀","detail":"HTTPS LB 없음 — 인증서 상태는 단계 1 스텝 3 후에 평가됨"}'
+else
+  echo "$CERT_JSON" | jq '{
+    check: "PF-T5-2",
+    cert_state: .spec.cert_state,
+    status: (
+      if .spec.cert_state == "CertificateValid" then "PASS"
+      elif .spec.cert_state == "AutoCertDomainRateLimited" then "정보"
+      elif (.spec.cert_state | test("Pending|Started")) then "정보"
+      else "정보"
+      end
+    ),
+    detail: (
+      if .spec.cert_state == "CertificateValid" then "인증서 정상 — HTTPS가 작동함"
+      elif .spec.cert_state == "AutoCertDomainRateLimited" then "Let'\''s Encrypt 한계 도달 — HTTP 전용 데모 계획"
+      elif (.spec.cert_state | test("Pending|Started")) then "인증서 프로비저닝 진행 중"
+      else "인증서 상태: \(.spec.cert_state // "알 수 없음")"
+      end
+    )
+  }'
+fi
+```
+
+### 준비 상태 보고서 형식
+
+모든 계층을 실행한 후 통합 준비 상태 보고서를 제시합니다:
+
+```
+## 데모 준비 상태: 준비됨 / 준비되지 않음 / 경고와 함께 준비됨
+
+### T0: 연결성 & 인증
+| 검사 | 결과 | 상태 |
+|---|---|---|
+| PF-T0-1: API 연결성 | 200 | PASS |
+| PF-T0-2: 네임스페이스 접근 | 200 | PASS |
+| PF-T0-3: CSD API 접근 | 200 | PASS |
+
+### T1: 할당량 & 용량
+| 검사 | 종류 | 한계 | 사용량 | 남은량 | 필요 | 상태 |
+|---|---|---|---|---|---|---|
+| PF-T1-0: 할당량 사용 게이트 | `healthcheck` | 150 | 148 | 2 | 1 | PASS |
+| PF-T1-0: 할당량 사용 게이트 | `origin_pool` | unlimited | 420 | unlimited | 1 | PASS |
+| PF-T1-0: 할당량 사용 게이트 | `endpoint` | 500 | 498 | 2 | 1 | PASS |
+| PF-T1-0: 할당량 사용 게이트 | `http_loadbalancer` | unlimited | 116 | unlimited | 2 | PASS |
+| PF-T1-0: 할당량 사용 게이트 | **gate** | — | — | — | — | **PASS** |
+| PF-T1-4: 보호된 도메인 | — | — | — | — | 1 | PASS (프로브) |
+
+### T2: 플랫폼 전제 조건
+| 검사 | 결과 | 상태 |
+|---|---|---|
+| PF-T2-1: CSD 테넌트 상태 | configured + enabled | PASS |
+| PF-T2-2: DNS 영역이 존재 | 200 | PASS |
+| PF-T2-3: DNS 관리되는 레코드 | true | PASS |
+| PF-T2-4: DNS 네임서버 권한 | f5clouddns.com | PASS |
+
+### T3: 원본 상태
+| 검사 | 결과 | 상태 |
+|---|---|---|
+| PF-T3-1: 원본 연결성 | TEST-NET 주소 (192.0.2.1) | 건너뜀 |
+| PF-T3-2: HTML 콘텐츠 | TEST-NET 주소 | 건너뜀 |
+
+### T4: 환경 정리
+| 검사 | 결과 | 상태 |
+|---|---|---|
+| HTTP LB | 404 | PASS |
+| HTTPS LB | 404 | PASS |
+| 원본 풀 | 404 | PASS |
+| 헬스체크 | 404 | PASS |
+| 보호된 도메인 | 0 | PASS |
+| 완화된 도메인 | 0 | PASS |
+
+### T5: 인증서 준비
+| 검사 | 결과 | 상태 |
+|---|---|---|
+| PF-T5-2: 인증서 상태 | 건너뜀 (HTTPS LB 없음) | 정보 |
+
+### 경고
+- (WARN 또는 정보 항목 목록 및 컨텍스트)
+```
+
+**전체 상태 규칙:**
+
+| 조건 | 상태 |
+| --- | --- |
+| 모든 T0–T4 검사 PASS | **준비됨** |
+| 모든 T0–T4 검사 PASS이지만 T3 또는 T5에 WARN/정보 있음 | **경고와 함께 준비됨** |
+| T0, T1 또는 T2 검사가 FAIL | **준비되지 않음** — 진행 전 해결 필요 |
+| T4에 남은 객체 있음 | 자동 개선 (해체), 다시 확인 |
+
+## AI 어시스턴트 실행 프로토콜
+
+이 섹션은 API 자동화 단계를 실행하는 AI 어시스턴트(Claude Code, Copilot 등)에 대한 **결정론적 워크플로우**를 정의합니다. 이 프로토콜을 따르면 추측을 제거합니다 — 모든 결정 지점에는 정의된 해결 경로가 있습니다.
+
+### 변수 해석 프로토콜
+
+각 변수를 이 정확한 순서로 해석합니다. 비자리 표시자 값을 제공하는 첫 번째 원본에서 중단합니다:
+
+1. **`.env` 파일 확인** — 저장소 루트에 `.env`가 있는지 확인합니다. 존재하면 모든 `KEY=VALUE` 쌍을 파싱합니다.
+2. **셸 환경 확인** — `env | grep F5XC_`를 실행하여 현재 세션에서 이미 내보낸 값을 찾습니다.
+3. **누락된 값 식별** — 해결된 값을 아래의 필수/선택사항 테이블과 비교합니다. 값이 없거나, 비어 있거나, 여전히 자리 표시자 기본값으로 설정되었으면(예: `example-api-token`, `example-tenant`, `example-namespace`, `app.example.com`, `user@example.com`) "누락됨" 입니다.
+4. **운영자에게 프롬프트** — 각 누락된 **필수** 변수에 대해 운영자에게 값을 제공하도록 요청합니다. 모든 필수 변수가 해결될 때까지 진행하지 않습니다.
+5. **기본값 적용** — 각 누락된 **선택사항** 변수에 대해 프롬프트 없이 아래 테이블의 기본값을 사용합니다.
+
+> **빈 문자열 = 누락됨:** 빈 값으로 내보낸 변수(예: `F5XC_HC_NAME=""`)는 설정되지 않은 변수와 동일하게 취급됩니다 — 기본값을 적용합니다. 셸 매개변수 확장(`${F5XC_HC_NAME:-csd-hc}`)을 사용하여 한 단계에서 기본값을 적용합니다.
+
+6. **확인 표시** — 해결된 변수 테이블을 운영자에게 표시하고 API 호출을 실행하기 전에 승인을 기다립니다.
+
+> **준비 단계 무시:** 단계 1 준비 중에 6단계의 대기를 건너뜁니다. 레코드를 위해 해결된 변수 테이블을 표시한 후 즉시 진행합니다. 단계 1–5는 여전히 적용됩니다 — `.env` 및 셸을 확인한 후 필수 변수가 누락되었으면 중단하고 누락된 변수를 보고합니다.
+
+### 필수 vs 선택사항 변수
+
+| 변수 | 필수 | 기본값 | 자리 표시자 (누락됨으로 취급) |
+| --- | --- | --- | --- |
+| `F5XC_API_TOKEN` | **예** | — | `example-api-token` |
+| `F5XC_API_URL` | **예** | — | `https://example-tenant.console.ves.volterra.io` |
+| `F5XC_NAMESPACE` | **예** | — | `example-namespace` |
+| `F5XC_DOMAINNAME` | **예** | — | `app.example.com` |
+| `F5XC_ROOT_DOMAIN` | **예** | — | `example.com` |
+| `F5XC_LB_NAME` | **예** | — | `example-lb-name`, `example-lb` |
+| `F5XC_EMAIL` | **예** | — | `user@example.com` |
+| `F5XC_HC_NAME` | 선택사항 | `csd-hc` | — |
+| `F5XC_ORIGIN_IP` | 선택사항 | `44.232.69.192` | — |
+| `F5XC_ORIGIN_POOL` | 선택사항 | `csd-origin` | — |
+| `F5XC_ORIGIN_PORT` | 선택사항 | `3000` | — |
+
+### 실행 모드
+
+AI 어시스턴트는 데모 중에 세 가지 모드 중 하나로 작동합니다:
+
+| 모드 | 활성화 시기 | 동작 |
+| --- | --- | --- |
+| 정상 | 준비, 실행, 해체 중 기본값 | 정확한 문서화된 명령만 |
+| 디버그 | 실패 시 자동 활성화 | 창의적인 문제 해결, 문서 업데이트 |
+| Q&A | Q&A 단계 중 | 즉흥적 — 청중 질문에 답변하기 위해 임시 명령 허용 |
+
+**정상 모드** (기본값):
+
+- 모든 API 호출, 검증 쿼리 및 셸 명령은 **위상 파일(위상 1–4) 또는 위의 출발 전 점검 섹션에서 정확히 나타나야 합니다**
+- `xTOKENx` 자리 표시자만 해석된 변수 값으로 대체합니다
+- API 엔드포인트, jq 필터 또는 cURL 명령을 일반 지식이나 추론에서 구성하지 않습니다
+- 필요한 명령이 문서화되지 않았으면 중단하고 운영자에게 보고합니다: "이 검증 단계는 위상 문서에서 다루어지지 않습니다"
+
+**디버그 모드** (실패 시 자동 활성화):
+
+- 문서화된 명령이 예상치 못한 결과를 생성할 때 자동 활성화: 2xx가 아닌 HTTP 응답, jq 파싱 오류, 명령 시간 초과 또는 증거 테이블과 모순되는 응답 본문
+- 디버그 모드에서 AI 어시스턴트는 진단 명령을 구성하고, 원본 API 응답을 검사하고, 엔드포인트 변형을 테스트하고, 근본 원인을 찾기 위해 창의적인 문제 해결을 사용할 수 있습니다
+- 모든 디버그 출력을 `[DEBUG]`로 접두사를 붙여서 운영자가 진단 활동을 정상 실행과 구별할 수 있도록 합니다
+- **배우는 것을 문서화합니다**: 문제를 해결한 후 관련 위상 파일 또는 문제 해결 섹션을 업데이트하세요:
+  1. 실패 시나리오 (무엇이 잘못되었는가)
+  2. 시도했으나 작동하지 **않은** 것 (향후 실행이 반복하지 않도록)
+  3. 작동하는 해결책 (문제를 해결한 명령 또는 수정)
+- 디버그 모드의 목표는 **자신을 제거하는 것**입니다 — 모든 디버그 세션은 다음 실행을 완전히 결정론적으로 만드는 문서 업데이트를 생성해야 합니다
+- 문서가 업데이트되고 문제가 해결되면 정상 모드로 돌아가서 마지막 성공한 문서화 단계에서 계속합니다
+- 디버그 모드가 문제를 해결할 수 없으면 발견 사항을 운영자에게 보고하고 중단합니다 — 다음 위상으로 계속 진행하지 않습니다
+
+**Q&A 모드** (Q&A 단계 중):
+
+- 데모 결론 후 Q&A 회의 단계 중에만 활성입니다
+- AI 어시스턴트는 임시 API 호출을 구성하고, 진단 명령을 실행하고, 스크립트되지 않은 페이지로 이동하고, 청중 질문에 대한 답변을 설명하기 위해 라이브 데모 환경을 수정할 수 있습니다
+- `[DEBUG]` 접두사 없음 — 이것은 의도적인 즉흥적 동작이며, 오류 복구가 아닙니다
+- `DEMO_EXECUTOR.md`의 CSD 제품 전문 섹션을 제품 질문의 지식 기반으로 사용합니다
+
+### 브라우저 컨텍스트 관리
+
+initScript 누적은 공통적인 데모 실패의 원인입니다. `initScript` 매개변수가 있는 각 `navigate_page` 호출은 스크립트를 지속적인 목록에 추가하여 모든 후속 문서 로드에서 실행됩니다. 이 규칙을 따릅니다:
+
+- **항상 `about:blank`로 이동** `initScript`를 사용한 모든 이동 전에 이전 실행으로부터 누적된 스크립트를 정리합니다
+- **데모 위상을 전환할 때 `isolatedContext`로 `new_page` 사용** (예: 위상 2 → 위상 3) 완전히 깨끗한 브라우저 상태를 보장합니다
+- **응답 없는 페이지에서 복구** — `take_screenshot` 또는 `take_snapshot` 시간 초과가 발생하면, 브라우저 컨텍스트는 리소스 소진됩니다. `isolatedContext`를 사용한 `new_page`로 새 컨텍스트를 생성한 후 `about:blank` 이동 단계에서 다시 시도합니다
+- 임시 원본 실패 및 리소스 소진 복구에 대한 자세한 지침은 [위상 2 공격 시뮬레이션](/csd/demo/phase-2-attack/) 옆 섹션을 참조합니다
+
+### 증거 표시 프로토콜
+
+모든 API 호출 후 AI 어시스턴트는 이 형식을 사용하여 인간 운영자에게 구조화된 증거를 제시해야 합니다:
+
+**생성 단계** (POST):
+
+| 필드 | 값 | 상태 |
+| --- | --- | --- |
+| HTTP 상태 | `200` | PASS |
+| 객체 이름 | `csd-origin` | — |
+| 주요 속성 | _(jq를 통해 추출)_ | — |
+
+각 생성 단계 후 **GET**을 실행하여 객체가 존재하는지 확인하고 주요 속성을 표시합니다. GET이 `404`를 반환하면 FAIL을 보고하고 중단합니다.
+
+**검증 단계** (GET/dig):
+
+| 테스트 | 결과 | 상태 |
+| --- | --- | --- |
+| DNS-1: A 레코드 | `198.51.100.10` | PASS |
+| LB-1: HTTP LB 상태 | `VIRTUAL_HOST_READY` | PASS |
+| LB-2: HTTPS LB 상태 | `VIRTUAL_HOST_READY` | 정보 (선택사항) |
+| TLS-1: 인증서 상태 | `CertificateValid` | 정보 (선택사항) |
+| CSD-1: JS 태그 | `scriptTag` 있음 | PASS |
+
+[진단 &amp; 검증](/csd/diagnostics/) 테스트 케이스 ID(DNS-1, TLS-1, LB-1, CSD-1 등)를 각 계층에 대한 검증 표준으로 참조합니다.
+
+### 실행 흐름 요약
+
+**위상 실행은 순차적이고 제어됩니다:** 각 위상은 다음 위상이 시작되기 전에 모든 필수 검사에서 PASS에 도달해야 합니다. 데모는 네 단계 회의 생명주기를 따릅니다 — `DEMO_EXECUTOR.md`의 회의 단계 섹션에서 트리거 구문 및 동작 규칙을 참조합니다.
+
+AI 어시스턴트는 이 순서를 따릅니다:
+
+1. **준비** — 변수 해석, 출발 전 점검 실행, 깨끗한 환경 확인 (회의 전에 별도로 실행할 수 있음)
+2. **소개** — SE가 자신을 소개하고 결과 목표를 설명합니다 (클라이언트 측 위협에 대한 가시성, PCI 규정 준수, 실시간 감지)
+3. **위상 1 실행** (단계 1–7) — 인프라 생성 및 검증; 모든 위상 1 검사는 진행 전에 PASS 되어야 합니다
+4. **위상 2 실행** (단계 8–9) — 브라우저에서 공격 시뮬레이션 실행, 5–10분 대기, API를 통해 감지 검증 (`/scripts`, `/detected_domains`, `/formFields`)
+5. **위상 3 실행** — 모든 감지된 도메인에 대한 완화 적용, 공격 재실행, 차단이 효과적임을 검증
+6. **결론** — 결과 목표 재설명, 각 위상의 증거 요약, 주요 감지 및 완화 강조
+7. **Q&A** — 즉흥적인 단계, 데모는 라이브 상태, SE가 청중 질문에 답변하고 반문합니다
+8. **해체** (회의 후) — 위상 4, 명시적 인간 확인 필요, 모든 객체를 역 의존성 순서로 삭제, 깨끗한 환경 확인
+
+단계가 FAIL을 반환하면 진행하기 전에 관련 문제 해결 섹션 링크와 함께 실패를 보고하고 중단합니다.
+
+## 전제 조건
+
+- **F5 XC API 토큰** — **관리** → **자격증** → **API 자격증** 아래에서 생성
+- 로컬에 설치된 `curl` 및 `jq`
+- 헬스체크, 원본 풀 및 HTTP 로드 밸런서를 생성할 권한이 있는 네임스페이스
+
+## 환경 설정
+
+환경 값으로 `.env` 파일을 생성합니다. 템플릿은 저장소에 제공됩니다:
+
+```bash
+cp .env.example .env
+```
+
+실제 값으로 `.env`를 편집합니다:
+
+```bash title=".env"
+# 필수 — 환경
+F5XC_API_TOKEN=example-api-token
+F5XC_API_URL=https://example-tenant.console.ves.volterra.io
+F5XC_DOMAINNAME=app.example.com
+F5XC_EMAIL=user@example.com
+F5XC_LB_NAME=example-lb-name
+F5XC_NAMESPACE=example-namespace
+F5XC_ROOT_DOMAIN=example.com
+
+# 선택사항 — Juice Shop 데모 기본값이 설정되지 않았을 때 사용
+# F5XC_HC_NAME=csd-hc
+# F5XC_ORIGIN_IP=44.232.69.192
+# F5XC_ORIGIN_POOL=csd-origin
+# F5XC_ORIGIN_PORT=3000
+```
+
+<Aside type="caution">
+`.env` 파일에는 API 토큰이 포함됩니다. `.gitignore`에 나열되어 있으며 버전 관리에 커밋되면 안 됩니다.
+</Aside>
+
+파일을 소싱하여 변수를 셸 세션에 로드합니다:
+
+```bash
+set -a && source .env && set +a
+```
+
+<Aside type="tip">
+API 토큰에 `/` 또는 `=` 문자가 포함되어 있으면 `.env`의 값을 단일 따옴표로 감싸세요 (예: `F5XC_API_TOKEN='abc/def='`) 소싱할 때 셸 해석 문제를 방지합니다.
+
+일부 컨테이너 런타임 및 비밀 관리자는 리터럴 따옴표 문자를 환경 변수 값에 주입합니다. 유효한 토큰에도 불구하고 API 호출이 `401 Unauthorized`를 반환하면 사용 전에 어수선한 따옴표를 제거하세요:
+
+```bash
+export F5XC_API_TOKEN=$(echo "$F5XC_API_TOKEN" | tr -d "'")
+```
+</Aside>
+
+각 `xTOKENx` 자리 표시자는 환경 변수에 직접 매핑됩니다 — 예를 들어 `xF5XC_API_TOKENx`는 `$F5XC_API_TOKEN`에 해당합니다. 페이지 상단의 대화형 양식을 사용하거나 Claude Code와 같은 AI 어시스턴트가 `.env`를 읽고 명령을 구축하도록 할 수 있습니다.
+
+## 자리 표시자 토큰
+
+| 토큰 | 기본값 | 설명 |
+| --- | --- | --- |
+| `xF5XC_API_URLx` | `https://example-tenant.console.ves.volterra.io` | XC 콘솔 API URL |
+| `xF5XC_API_TOKENx` | `example-api-token` | API 자격증 토큰 |
+| `xF5XC_EMAILx` | `user@example.com` | CSD 알림 이메일 주소 |
+| `xF5XC_NAMESPACEx` | `example-namespace` | 네임스페이스 |
+| `xF5XC_LB_NAMEx` | `example-lb` | HTTP 로드 밸런서 기본 이름 (`${name}-http` 및 `${name}-https` 생성) |
+| `xF5XC_DOMAINNAMEx` | `app.example.com` | 보호할 FQDN |
+| `xF5XC_ROOT_DOMAINx` | `example.com` | CSD 보호된 도메인의 루트 도메인 (eTLD+1) |
+| `xF5XC_ORIGIN_POOLx` | `csd-origin` | 원본 풀 이름 |
+| `xF5XC_ORIGIN_IPx` | `44.232.69.192` | 원본 서버 IP |
+| `xF5XC_ORIGIN_PORTx` | `3000` | 원본 서버 포트 |
+| `xF5XC_HC_NAMEx` | `csd-hc` | 헬스체크 이름 |
+
+<Aside type="tip">
+**테넌트가 자동입니다**: 테넌트 식별자는 API URL에서 파생됩니다 (예: `https://f5-amer-ent.console.ves.volterra.io`에서 `f5-amer-ent`). 이를 제공할 필요가 없습니다 — 플랫폼은 객체 생성 시 테넌트 참조를 자동으로 채웁니다.
+</Aside>
+
+## 자동화 참조
+
+이 섹션은 스크립팅 또는 자동화를 위한 전체 연습 워크플로우를 요약합니다.
+
+### 빠른 시작
+
+1. 저장소를 복제하고 환경 템플릿을 복사합니다: `cp .env.example .env`
+2. 테넌트 URL, API 토큰, 네임스페이스 및 도메인 값으로 `.env`를 편집합니다
+3. 환경을 소싱합니다: `set -a && source .env && set +a`
+4. 각 단계를 순서대로 실행하고 각 증거 블록에서 PASS를 확인한 후 다음 단계로 진행합니다
+
+### 변수 해석
+
+값은 [AI 어시스턴트 실행 프로토콜](#variable-resolution-protocol)에 정의된 결정론적 프로토콜을 사용하여 해석됩니다:
+
+1. **`.env` 파일** — 저장소 루트에서 `KEY=VALUE` 쌍을 파싱합니다
+2. **셸 환경** — 내보낸 값을 위해 `env | grep F5XC_`를 확인합니다
+3. **자리 표시자 감지** — 자리 표시자 기본값과 일치하는 값을 누락됨으로 플래그합니다 (예: `example-api-token`, `example-namespace`)
+4. **운영자에게 프롬프트** — 각 누락된 **필수** 변수를 요청합니다
+5. **기본값 적용** — 누락된 **선택사항** 변수에 기본값을 사용합니다
+6. **확인** — 해결된 변수 테이블을 표시하고 운영자 승인을 기다립니다
+
+### 실행 순서
+
+<Steps>
+1. **위상 1 — 구축**: 인프라 배포 (헬스체크, 원본 풀, HTTP LB + HTTPS LB), DNS 구성, CSD 활성화, 보호된 도메인 등록, 모든 구성 요소 검증. HTTP LB는 기본 데모 대상입니다; HTTPS LB는 선택사항입니다.
+2. **위상 2 — 공격**: `http://` URL을 사용하여 브라우저에서 공격 시뮬레이션 실행, 5–10분 대기, API를 통해 감지 검증 (`/scripts`, `/detected_domains`, `/formFields`)
+3. **위상 3 — 완화**: 깨끗한 기준선 확인, 공격 실행 (완화 전 증명), 각 도메인을 `/mitigated_domains`에 POST, 완화 적용 검증, `http://` URL을 사용하여 공격 재실행 (완화 후 증명), 완화 전/후 비교 제시
+4. **위상 4 — 해체** _(명시적 인간 확인 필수)_: HTTPS LB 삭제 → HTTP LB 삭제 → 원본 풀 삭제 → DNS 영역 정리 (수동 레코드만) → 헬스체크 삭제 → 보호된 도메인 삭제. DNS 영역을 삭제하지 **않습니다**.
+</Steps>
+
+### 변수
+
+| 토큰 | 설명 | 기본값 |
+| --- | --- | --- |
+| `xF5XC_API_URLx` | XC 콘솔 API URL | `https://example-tenant.console.ves.volterra.io` |
+| `xF5XC_API_TOKENx` | API 자격증 토큰 | (사용자 제공) |
+| `xF5XC_EMAILx` | CSD 알림 이메일 | `user@example.com` |
+| `xF5XC_NAMESPACEx` | 네임스페이스 | `example-namespace` |
+| `xF5XC_LB_NAMEx` | HTTP 로드 밸런서 기본 이름 (`${name}-http` 및 `${name}-https` 생성) | `example-lb` |
+| `xF5XC_DOMAINNAMEx` | 보호할 FQDN | `app.example.com` |
+| `xF5XC_ROOT_DOMAINx` | 루트 도메인 (eTLD+1) | `example.com` |
+| `xF5XC_ORIGIN_POOLx` | 원본 풀 이름 | `csd-origin` |
+| `xF5XC_ORIGIN_IPx` | 원본 서버 IP | `44.232.69.192` |
+| `xF5XC_ORIGIN_PORTx` | 원본 서버 포트 | `3000` |
+| `xF5XC_HC_NAMEx` | 헬스체크 이름 | `csd-hc` |
+
+### oneOf 선택 그룹
+
+HTTP 로드 밸런서 스펙은 각 그룹에서 정확히 하나의 옵션이 설정되어야 하는 `oneOf` 선택 그룹을 사용합니다. 그룹에서 0개 또는 1개 이상의 옵션을 설정하면 `422` 오류가 발생합니다.
+
+**주요 CSD 관련 선택:**
+
+| 선택 그룹 | 옵션 | CSD 기본값 |
+| --- | --- | --- |
+| `client_side_defense_choice` | `client_side_defense`, `disable_client_side_defense` | `client_side_defense` |
+| `java_script_choice` (CSD 내에 중첩) | `disable_js_insert`, `js_insert_all_pages`, `js_insert_all_pages_except`, `js_insertion_rules` | `js_insert_all_pages` |
+
+**리스너 타입 선택 (HTTP vs HTTPS):**
+
+데모는 다른 리스너 구성을 사용하는 두 LB를 생성합니다:
+
+| LB | 리스너 선택 | 구성 |
+| --- | --- | --- |
+| `${F5XC_LB_NAME}-http` (기본) | `http` | `"http": { "dns_volterra_managed": true, "port": 80 }` |
+| `${F5XC_LB_NAME}-https` (보조) | `https_auto_cert` | `"https_auto_cert": { "http_redirect": true, "port": 443, ... }` |
+
+`http` 및 `https_auto_cert` 키는 상호 배타적입니다 — 각 LB는 정확히 하나를 사용합니다.
+
+**HTTPS 자동 인증서 중첩 선택** (보조 LB만):
+
+| 선택 그룹 | 옵션 | 기본값 |
+| --- | --- | --- |
+| 포트 | `port` (숫자) | `443` |
+| `server_header_choice` | `default_header`, `server_name`, `append_server_name` | `default_header` |
+| `path_normalize_choice` | `enable_path_normalize`, `disable_path_normalize` | `enable_path_normalize` |
+| `mtls_choice` | `no_mtls`, `use_mtls` | `no_mtls` |
+| `default_loadbalancer_choice` | `default_loadbalancer`, `non_default_loadbalancer` | `default_loadbalancer` |
+
+**`single_lb_app` 중첩 선택** (ML 구성):
+
+`single_lb_app` 객체는 자체 필수 `oneOf` 그룹을 가집니다. 이 중첩 선택 없이 `single_lb_app: \{\}`를 설정하면 `400` 오류가 발생합니다.
+
+| 선택 그룹 | 옵션 | 기본값 |
+| --- | --- | --- |
+| `api_discovery_choice` | `disable_discovery`, `enable_discovery` | `disable_discovery` |
+| `ddos_detection_choice` | `disable_ddos_detection`, `enable_ddos_detection` | `disable_ddos_detection` |
+| `malicious_user_detection_choice` | `disable_malicious_user_detection`, `enable_malicious_user_detection` | `disable_malicious_user_detection` |
+
+**기타 LB 수준 선택 (모두 비활성화/기본값으로 설정):**
+
+`disable_rate_limit` · `no_service_policies` · `round_robin` · `disable_waf` · `no_challenge` · `disable_bot_defense` · `disable_api_definition` · `disable_api_discovery` · `disable_ip_reputation` · `disable_malicious_user_detection` · `single_lb_app` · `disable_trust_client_ip_headers` · `user_id_client_ip` · `disable_threat_mesh` · `l7_ddos_action_default` · `system_default_timeouts` · `default_sensitive_data_policy` · `disable_malware_protection` · `disable_api_testing`
+
+### 오류 처리
+
+- **401 인증 없음** — API 토큰이 유효하지 않거나 만료되었습니다. **관리** → **자격증** 아래에서 다시 생성합니다.
+- **403 금지됨** — 토큰이 네임스페이스에 대한 권한이 부족합니다. 역할 바인딩을 확인합니다.
+- **404 찾을 수 없음** — 네임스페이스 또는 객체 이름이 올바르지 않습니다. `GET /api/config/namespaces/\{namespace\}/\{object_type\}`로 객체를 나열합니다.
+- **409 충돌** — 객체가 이미 존재합니다. 보호된 도메인의 경우 "domain already exists (in uriList)"와 함께 `409`는 루트 도메인이 이미 테넌트에 등록되어 있음을 의미합니다 — 성공 조건이며 오류가 아닙니다. 다른 객체의 경우 먼저 삭제하거나 `PUT`을 사용하여 업데이트합니다.
+- **422 처리 불가능한 엔티티** — JSON 스키마 검증이 실패했습니다. 일반적인 원인: 누락된 `oneOf` 선택, 동일한 그룹에서 여러 선택 설정, 잘못된 필드 유형. 구체적인 필드에 대한 오류 메시지를 확인합니다.
+- **객체 한계 소진됨** (오류 코드 `8`, 메시지 `"Object kind {kind} has exhausted limits({N})"`) — 테넌트가 객체 할당량 한계에 도달했습니다. API는 HTTP 200을 반환하며 `"code": 8`을 포함하는 JSON 오류 본문입니다. HTTP 429가 아닙니다. 객체 유형에 따라 동작이 다릅니다:
+  - **헬스체크** (한계 ~150): **차단 아님** — 단계 1 스텝 1을 건너뛰고 헬스체크 참조 없이 원본 풀을 생성합니다. CSD는 상태 모니터링에 의존하지 않습니다.
+  - **엔드포인트** (한계 ~500): **차단** — 엔드포인트는 원본 풀 내에 생성된 하위 객체입니다. 이 한계에 도달하면 원본 풀 생성이 실패합니다. 사용하지 않는 원본 풀을 삭제(해당 엔드포인트 하위 객체 해제) 하거나 관리자에게 테넌트 한계 증가를 요청합니다.
+  - **원본 풀**: **차단** — 사용하지 않는 원본 풀을 삭제하거나 관리자에게 문의합니다.
+  - **HTTP 로드 밸런서**: **차단** — 사용하지 않는 로드 밸런서를 삭제하거나 관리자에게 문의합니다.
+  - **보호된 도메인**: **차단** — 사용하지 않는 보호된 도메인을 삭제하거나 관리자에게 문의합니다.
+
+## 문제 해결
+
+### 헬스체크가 원본 풀에 연결되지 않음
+
+단계 1 스텝 2 (헬스체크 연결 확인)가 빈 배열 `[]`을 보여주면:
+
+1. 원본 풀을 삭제합니다: `DELETE /api/config/namespaces/{namespace}/origin_pools/{pool_name}`
+2. 헬스체크가 존재하는지 확인합니다: `GET /api/config/namespaces/{namespace}/healthchecks/{hc_name}`
+3. 올바른 헬스체크 참조로 원본 풀을 다시 생성합니다
+
+### LB가 VIRTUAL_HOST_PENDING_A_RECORD에서 멈춤
+
+로드 밸런서 `state`가 단계 1 스텝 4 후 `VIRTUAL_HOST_PENDING_A_RECORD`로 남아 있으면:
+
+1. **DNS 영역이 존재하는지 확인합니다** (F5 XC 관리 DNS만):
+   ```bash
+   curl -s \
+     -H "Authorization: APIToken xF5XC_API_TOKENx" \
+     "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+     | jq '.metadata.name'
+   ```
+   `404`는 DNS 영역이 F5 XC에 생성되지 않았음을 의미합니다.
+
+2. **`allow_http_lb_managed_records` 확인** — 영역이 존재하지만 LB가 보류 중이면, 관리되는 레코드가 비활성화될 수 있습니다:
+   ```bash
+   curl -s \
+     -H "Authorization: APIToken xF5XC_API_TOKENx" \
+     "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+     | jq '.spec.primary.allow_http_lb_managed_records'
+   ```
+   `false` 또는 `null`이면 [단계 1 스텝 4, 옵션 A](/csd/demo/phase-1-build/#option-a-f5-xc-managed-dns)의 `PUT` 명령을 사용하여 활성화합니다.
+
+3. **외부 DNS** — F5 XC가 권한이 아니면 DNS 공급자에서 A 및 ACME CNAME 레코드를 수동으로 생성합니다 ([단계 1 스텝 4, 옵션 B](/csd/demo/phase-1-build/#option-b-external-dns-provider) 참조).
+
+4. **해석 검증** — DNS를 수정한 후 확인합니다:
+   ```bash
+   dig +short xF5XC_DOMAINNAMEx A
+   ```
+   A 레코드가 해석되면 LB는 `VIRTUAL_HOST_READY`로 전환됩니다. 30초마다 폴링합니다, 최대 4회 반복 (총 2분). 2분 후에도 여전히 `VIRTUAL_HOST_PENDING_A_RECORD`이면 DNS 전파를 다시 확인하고 운영자에게 보고합니다.
+
+### CSD 상태가 isConfigured: false를 표시
+
+CSD는 테넌트 수준에서 활성화되어야 합니다. F5 XC 관리자에게 연락하여 테넌트에 대해 클라이언트 측 방어를 활성화합니다. 이것은 API를 통해 구성할 수 없는 테넌트 수준 설정입니다.
+
+### JS 주입이 작동하지 않음
+
+1. CSD가 테넌트 수준에서 활성화되었는지 확인합니다 (단계 1 스텝 5)
+2. 로드 밸런서의 스펙에 `client_side_defense`가 설정되어 있는지 확인합니다
+3. JS 구성 엔드포인트가 `scriptTag`를 반환하는지 확인합니다
+4. 브라우저에서 보호된 도메인을 방문하고 페이지 소스를 보여 스크립트가 주입되었는지 확인합니다
+
+### 보호된 도메인 등록이 409를 반환
+
+"domain already exists (in uriList)"과 함께 `409`는 루트 도메인이 이미 테넌트에 등록되어 있음을 의미합니다. 보호된 도메인은 **테넌트 범위** — 단일 네임스페이스에 속하지 않습니다. 이것은 성공 조건입니다: 도메인이 이미 보호되고 있으며 추가 조치가 필요하지 않습니다. 단계 1 스텝 7로 계속합니다.
+
+### AutoCertDomainRateLimited
+
+HTTPS LB `cert_state`가 `AutoCertDomainRateLimited`를 표시하면, Let's Encrypt가 이 도메인에 대해 인증서 발급을 한계했음을 의미합니다. 이것은 **데모 환경에서 예상됩니다** 여기서 인프라가 자주 생성되고 삭제됩니다.
+
+**영향:** HTTPS LB는 한계가 재설정될 때까지(일반적으로 1시간) 트래픽을 제공하지 않습니다. HTTP LB는 완전히 영향을 받지 않습니다 — 모든 데모 트래픽은 `http://`을 통해 정상적으로 진행됩니다.
+
+**해결:** 데모 진행에 대한 조치가 필요 없습니다. HTTP LB (`${F5XC_LB_NAME}-http`)는 기본 데모 대상이며 인증서 프로비저닝에 의존하지 않습니다. HTTPS가 원하면 한계가 재설정될 때까지 대기하면 인증서가 자동으로 프로비저닝됩니다.
+
+### 인증서가 멈춤 — 깨끗한 재생성 (선택사항)
+
+<Aside type="note">
+이 문제 해결 단계는 **HTTPS LB** (`${F5XC_LB_NAME}-https`)에만 적용되며 **데모 진행에 선택사항**입니다. HTTP LB는 인증서 의존성을 가지지 않습니다.
+</Aside>
+
+HTTPS LB 인증서가 15분 이상 `DomainChallengePending` 또는 `PreDomainChallengePending`에서 멈춘 경우, 가장 빠른 복구 경로는 HTTPS LB를 삭제하고 다시 생성하는 것입니다. DNS 영역이 이미 구성되어 있으면(관리되는 레코드 활성화), 깨끗한 재생성은 일반적으로 5–7분 내에 `CertificateValid`를 생성합니다 — 한계가 아니면.
+
+1. HTTPS 로드 밸런서를 삭제합니다: `DELETE .../http_loadbalancers/${F5XC_LB_NAME}-https`
+2. 30초 플랫폼 정리를 기다립니다
+3. HTTPS 로드 밸런서를 다시 생성합니다 ([단계 1 스텝 3](/csd/demo/phase-1-build/#step-3-create-http-load-balancers-with-csd))
+4. 인증서 상태를 모니터링합니다 ([단계 1 스텝 7](/csd/demo/phase-1-build/#step-7-verify)) — 5–10분 내에 `CertificateValid` 예상
+
+<Aside type="tip">
+DNS 영역을 재구성하거나, 보호된 도메인을 다시 등록하거나, HTTP LB를 건드릴 필요가 없습니다. 이들은 HTTPS LB 재생성의 영향을 받지 않는 지속적인 리소스입니다.
+</Aside>
+
+## OpenAPI 참조
+
+규범적인 F5 Distributed Cloud API 스펙은 다음에서 사용 가능합니다:
+
+`https://docs.cloud.f5.com/docs-v2/downloads/f5-distributed-cloud-open-api.zip`
+
+이 ZIP에는 `ves.io.schema.views.http_loadbalancer`, `ves.io.schema.healthcheck`, `ves.io.schema.origin_pool` 및 `ves.io.schema.shape.csd`를 포함한 모든 API 그룹에 대한 OpenAPI 3.0 스펙이 포함됩니다. 이 스펙을 사용하여 JSON 페이로드를 검증하고 추가 필드를 발견합니다.

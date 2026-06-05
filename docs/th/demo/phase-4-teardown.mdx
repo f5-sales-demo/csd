@@ -1,0 +1,234 @@
+---
+title: Phase 4 — ปิดการใช้งาน
+description: ล้างวัตถุสาธารณะประชาชนจากผู้เช่า F5 XC หลังจากเสร็จสิ้นการสาธิต
+sidebar:
+  order: 5
+  label: Phase 4 — ปิดการใช้งาน
+i18n:
+  sourceHash: 95b0184f156c
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Phase 4 ลบวัตถุทั้งหมดที่สร้างขึ้นระหว่างการออกกำลังกายในลำดับการอ้างอิงผกผัน โปรแกรมเฟสนี้ต้องการการยืนยันอย่างชัดแจ้งจากมนุษย์ก่อนดำเนินการทำลายข้อมูลใดๆ
+
+<Aside type="caution">
+**ยืนยันก่อนดำเนินการ** หากคุณเป็นผู้ช่วยด้าน AI คุณ **ต้อง** ถามผู้ดำเนินการ: "Phase 4 จะลบวัตถุการปรับใช้ทั้งหมดอย่างถาวร คุณพร้อมที่จะปิดการใช้งานหรือไม่? ตอบ 'yes' เพื่อดำเนินการต่อ" อย่าดำเนินการคำสั่ง DELETE ใดๆ จนกว่าผู้ดำเนินการยืนยัน
+
+**ข้อยกเว้น:** เมื่อการปิดการใช้งานทำงานเป็นส่วนหนึ่งของ Stage 1 Prepare (การล้างก่อนการประชุม) วลีทริกเกอร์ "prepare the demo" ของผู้ดำเนินการทำหน้าที่เป็นการอนุญาตโดยปริยาย ไม่จำเป็นต้องมีการยืนยันเพิ่มเติม ประตูการยืนยันข้างต้นใช้เฉพาะในระหว่างการปิดการใช้งานแบบสแตนด์อโลนหรือ Stage 4 หลังการประชุม
+</Aside>
+
+## ลำดับการปิดการใช้งาน
+
+ลบวัตถุในลำดับการสร้างผกผัน — ลบวัตถุที่ขึ้นอยู่กับวัตถุอื่นก่อน:
+
+1. **โดเมนที่ได้รับการบรรเทา** — ลบโดเมน CSD ที่ได้รับการบรรเทาทั้งหมดที่สร้างใน Phase 3
+2. **ตัวโหลดเบลนเซอร์ HTTPS** (`${F5XC_LB_NAME}-https`) — ลบข้อมูลทั้งหมดให้เหลือเพียงโครงกระดูก (เก็บรักษาใบรับรอง Let's Encrypt); ลบอย่างสมบูรณ์ถ้า `NAMESPACE_CREATED=true` หรือตามคำขอที่ชัดแจ้ง
+3. **ตัวโหลดเบลนเซอร์ HTTP** (`${F5XC_LB_NAME}-http`) — ขึ้นอยู่กับ Origin Pool
+4. **Origin Pool** — ขึ้นอยู่กับ Healthcheck (ถ้าสร้างไว้)
+5. **การล้างเขตข้อมูล DNS** — โครงกระดูก HTTPS LB เก็บรักษาบันทึก A และ ACME ที่จัดการ (สิ่งนี้เป็นสิ่งที่ต้องการ — มันเก็บรักษาใบรับรองให้ใช้ได้) บันทึกที่จัดการของ HTTP LB จะทำความสะอาดโดยอัตโนมัติเมื่อลบ บันทึกด้วยตนเองใน `default_rr_set_group` ต้องการการทำความสะอาดด้วยตนเองผ่าน `PUT`
+6. **Healthcheck** — เฉพาะถ้าสร้างไว้ใน Phase 1 Step 1
+7. **โดเมนที่ได้รับการป้องกัน** — ลบการลงทะเบียนโดเมนที่ได้รับการป้องกัน CSD
+8. **Namespace** — เฉพาะถ้าสร้างไว้ระหว่าง Phase 1 Step 0 (`NAMESPACE_CREATED=true`)
+
+<Aside type="caution">
+**อย่าลบเขตข้อมูล DNS** เขตข้อมูล DNS เป็นโครงสร้างพื้นฐานที่ใช้ร่วมกันซึ่งสนับสนุนบันทึก DNS อื่นๆ จำนวนมากทั่วทั้งแพลตฟอร์ม และไม่ควรลบออกไปเพียงแต่ให้ทำความสะอาดบันทึกที่คุณเพิ่มด้วยตนเองลงใน `default_rr_set_group` โดเมนที่ได้รับการป้องกัน อย่างไรก็ตาม เป็นวัตถุการกำหนดค่า CSD ที่เชื่อมโยงกับการปรับใช้นี้ และ **ควร** ลบออกเมื่อปิดการใช้งานอย่างสมบูรณ์
+</Aside>
+
+## ลบโดเมนที่ได้รับการบรรเทา
+
+หาก Phase 3 ถูกดำเนินการ ให้ลบโดเมนที่ได้รับการบรรเทาทั้งหมดก่อนลบวัตถุโครงสร้างพื้นฐาน การจำลองมาตรฐานสร้าง 6 โดเมนที่ได้รับการบรรเทา:
+
+```bash
+for domain in cdn.jsdelivr.net esm.sh unpkg.com ga.jspm.io httpbin.org jsonplaceholder.typicode.com; do
+  curl -s -X DELETE \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/$domain"
+done
+```
+
+ยืนยัน: แสดงรายชื่อโดเมนที่ได้รับการบรรเทาเพื่อยืนยันว่าจำนวนคือ 0 (หรือ 1 — ดูหมายเหตุด้านล่าง):
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '{count: (.items | length)}'
+```
+
+<Aside type="note">
+รายการโดเมนที่ได้รับการบรรเทาอาจส่งกลับรายการ幻影ูป (count = 1) ที่มีข้อมูลเมตาเป็นโมฆะหลังจากลบโดเมนที่ได้รับการบรรเทาทั้งหมด นี่คือสิ่งประดิษฐ์ของแบ็คเอนด์ที่ปรากฏเมื่อสถานะบริการ CSD อยู่ระหว่างการกำหนดค่า — ไม่ได้แสดงถึงการบรรเทาที่แท้จริงและสามารถละเว้นได้ การพยายามลบรายการ幻ูป นี้จะส่งกลับ `"Delete list when service not configured"`
+</Aside>
+
+## ตัวโหลดเบลนเซอร์ HTTPS
+
+พฤติกรรมการปิดการใช้งาน HTTPS LB ขึ้นอยู่กับว่า namespace ถูกสร้างขึ้นระหว่างเซสชันการสาธิตนี้หรือไม่ (ตัวแปร `NAMESPACE_CREATED` จาก Phase 1 Step 0):
+
+- **`NAMESPACE_CREATED=false`** (namespace ที่มีอยู่ก่อน) — ลบข้อมูลทั้งหมดให้เหลือเพียง **โครงกระดูก** เพื่อเก็บรักษาใบรับรอง Let's Encrypt เพื่อใช้ซ้ำ
+- **`NAMESPACE_CREATED=true`** (namespace ที่สร้างขึ้นระหว่างการสาธิต) — **ลบอย่างสมบูรณ์** เนื่องจาก namespace เองจะถูกลบและไม่สามารถเก็บรักษาใบรับรองได้
+
+### เส้นทาง A: ลบข้อมูลให้เหลือเพียงโครงกระดูก (Namespace ที่มีอยู่ก่อน)
+
+เมื่อ namespace มีอยู่ก่อนแล้ว ให้ลบข้อมูล HTTPS LB ให้เหลือเพียง **โครงกระดูก** — ลบการอ้างอิง origin pool และการกำหนดค่า CSD ในขณะที่เก็บรักษาการผูกโดเมน การตั้งค่า `https_auto_cert` และใบรับรอง Let's Encrypt สิ่งนี้หลีกเลี่ยงการทำให้เกิดคำขอใบรับรองใหม่ในการรันการสาธิตครั้งถัดไป (Let's Encrypt บังคับใช้ขีด จำกัด ของ 5 ใบรับรองซ้ำกันต่อชุดตัวระบุที่แน่นอนต่อ 7 วัน)
+
+**ขั้นตอนที่ 1 — GET การกำหนดค่า HTTPS LB ปัจจุบัน:**
+
+```bash
+HTTPS_LB_JSON=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+```
+
+**ขั้นตอนที่ 2 — ลบข้อมูลให้เหลือเพียงโครงกระดูกผ่าน jq และ PUT กลับ:**
+
+```bash
+echo "$HTTPS_LB_JSON" | jq '{
+  metadata: .metadata,
+  spec: (.spec | del(.client_side_defense) | .disable_client_side_defense = {} | .default_route_pools = [])
+}' | curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d @- \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq .
+```
+
+ตัวกรอง jq เก็บรักษา spec ทั้งหมด (โดเมน, `https_auto_cert`, `advertise_on_public_default_vip` และธงคุณลักษณะที่ปิดใช้งานทั้งหมด) พร้อมกับลบ `client_side_defense` (แทนที่ด้วย `disable_client_side_defense: {}`) และล้าง `default_route_pools` เป็นอาร์เรย์ว่าง ใบรับรองและการผูกโดเมน DNS ยังคงอยู่
+
+**ยืนยัน** ว่า HTTPS LB เป็นโครงกระดูกแล้ว:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{
+    name: .metadata.name,
+    domains: .spec.domains,
+    has_origin_pools: ((.spec.default_route_pools // []) | length > 0),
+    has_csd: (.spec.client_side_defense != null),
+    cert_state: .spec.cert_state
+  }'
+```
+
+ที่คาดหวัง: `has_origin_pools: false`, `has_csd: false`, `domains` ยังคงเต็มไปด้วยข้อมูล, `cert_state` ไม่เปลี่ยนแปลง (เช่น `CertificateValid`)
+
+### เส้นทาง B: ลบอย่างสมบูรณ์ (Namespace ที่สร้างขึ้นระหว่างการสาธิต)
+
+เมื่อ namespace ถูกสร้างขึ้นระหว่างเซสชันการสาธิตนี้ HTTPS LB จะต้องลบอย่างสมบูรณ์ — การเก็บรักษาโครงกระดูกไม่จำเป็น เนื่องจาก namespace เองจะถูกลบออกเมื่อสิ้นสุดการปิดการใช้งาน
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https"
+```
+
+ยืนยัน: `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` ไม่ควรมี `${F5XC_LB_NAME}-https`
+
+<Aside type="tip">
+**ตัวเลือกการปิดการใช้งานแบบสมบูรณ์ (namespace ที่มีอยู่ก่อน)** แม้ว่า namespace มีอยู่ก่อนแล้ว คุณสามารถลบ HTTPS LB อย่างสมบูรณ์ได้หากปิดโดเมนการสาธิตอย่างถาวร หรือหากผู้ดำเนินการขอ "full teardown" หรือ "force delete" อย่างชัดแจ้ง ใช้ DELETE แบบสมบูรณ์เฉพาะเมื่อโดเมนจะไม่ถูกใช้ซ้ำในภายใน 7 วัน การลบ HTTPS LB จะทำให้เกิดคำขอใบรับรอง Let's Encrypt ใหม่ในการรันการสาธิตครั้งถัดไป
+</Aside>
+
+## ลบตัวโหลดเบลนเซอร์ HTTP
+
+ลบ HTTP LB หลัก:
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http"
+```
+
+ยืนยัน: `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` ไม่ควรมี `${F5XC_LB_NAME}-http` หากวัตถุยังคงปรากฏในรายการหลังจาก DELETE ส่งกลับ `200` ให้รอ 30 วินาทีและตรวจสอบอีกครั้ง หากยังคงอยู่หลังจากการตรวจสอบครั้งที่สอง ให้รายงานให้ผู้ดำเนินการ — อย่าดำเนินการต่อ
+
+## ลบ Origin Pool
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx"
+```
+
+ยืนยัน: `GET /api/config/namespaces/\{namespace\}/origin_pools` ไม่ควรมีชื่อพูล หากวัตถุยังคงปรากฏในรายการหลังจาก DELETE ส่งกลับ `200` ให้รอ 30 วินาทีและตรวจสอบอีกครั้ง หากยังคงอยู่หลังจากการตรวจสอบครั้งที่สอง ให้รายงานให้ผู้ดำเนินการ
+
+## ลบ Healthcheck
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx"
+```
+
+ยืนยัน: `GET /api/config/namespaces/\{namespace\}/healthchecks` ไม่ควรมีชื่อ healthcheck หากวัตถุยังคงปรากฏในรายการหลังจาก DELETE ส่งกลับ `200` ให้รอ 30 วินาทีและตรวจสอบอีกครั้ง หากยังคงอยู่หลังจากการตรวจสอบครั้งที่สอง ให้รายงานให้ผู้ดำเนินการ
+
+## ลบโดเมนที่ได้รับการป้องกัน
+
+ลบการลงทะเบียนโดเมนที่ได้รับการป้องกัน CSD โดเมนที่ได้รับการป้องกันถูกกำหนดขอบเขตตามผู้เช่า (ไม่ใช่ namespace) แต่มันเป็นวัตถุการกำหนดค่า CSD ที่เชื่อมโยงกับการปรับใช้นี้ — ไม่ใช่โครงสร้างพื้นฐานที่ใช้ร่วมกันเช่นเขตข้อมูล DNS
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/xF5XC_ROOT_DOMAINx"
+```
+
+ยืนยัน: แสดงรายชื่อโดเมนที่ได้รับการป้องกันเพื่อยืนยันว่าโดเมนไม่ได้ลงทะเบียนอีกต่อไป:
+
+```bash
+curl -s -X GET \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '.items // [] | map(.metadata.name)'
+```
+
+<Aside type="note">
+จุดสิ้นสุด GET ส่วนบุคคล (`/protected_domains/\{name\}`) อาจส่งกลับ "API Group could not be determined" หากจุดสิ้นสุด DELETE ส่งกลับข้อผิดพลาดเดียวกัน ให้ใช้จุดสิ้นสุดรายการเพื่อยืนยันว่าโดเมนไม่ปรากฏอีกต่อไป หรือลบโดเมนที่ได้รับการป้องกันผ่าน F5 Distributed Cloud (F5 XC) Console UI แทน
+</Aside>
+
+## ลบ Namespace (ตามเงื่อนไข)
+
+ขั้นตอนนี้ทำงาน **เฉพาะเมื่อ** namespace ถูกสร้างขึ้นระหว่าง Phase 1 Step 0 (`NAMESPACE_CREATED=true`) หาก namespace มีอยู่ก่อนแล้ว (`NAMESPACE_CREATED=false`) ให้ข้ามขั้นตอนนี้ทั้งหมด — namespace เป็นโครงสร้างพื้นฐานที่ใช้ร่วมกันและไม่ควรลบออก
+
+<Aside type="caution">
+**การลบแบบ cascade ลบวัตถุทั้งหมดในขอบเขต namespace** จุดสิ้นสุดการลบแบบ cascade ลบ namespace และทุกวัตถุภายในนั้น วัตถุโครงสร้างพื้นฐานทั้งหมด (ตัวโหลดเบลนเซอร์, origin pools, healthchecks) ควรถูกลบแล้วจากขั้นตอนการปิดการใช้งานที่ก่อนหน้านี้ การลบแบบ cascade ทำหน้าที่เป็นการทำความสะอาดขั้นสุดท้ายเพื่อจับวัตถุที่เหลืออยู่และลบ namespace เอง
+</Aside>
+
+```bash
+if [ "$NAMESPACE_CREATED" = "true" ]; then
+  curl -s -X POST \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d '{"name": "xF5XC_NAMESPACEx"}' \
+    "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx/cascade_delete" | jq .
+fi
+```
+
+<Aside type="note">
+จุดสิ้นสุด `DELETE /api/web/namespaces/{name}` มาตรฐานส่งกลับ `"Not Implemented"` (รหัสข้อผิดพลาด `12`) คุณ **ต้อง** ใช้จุดสิ้นสุดการลบแบบ cascade (`POST .../cascade_delete`) เพื่อลบ namespace
+</Aside>
+
+ยืนยัน: ยืนยันว่า namespace ไม่มีอยู่อีกต่อไป:
+
+```bash
+curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx"
+```
+
+ที่คาดหวัง: `404` ถ้า `NAMESPACE_CREATED=true`, `200` ถ้า `NAMESPACE_CREATED=false`
+
+## สรุปหลักฐาน Phase 4
+
+| วัตถุ | สถานะการลบ | สถานะการยืนยัน |
+| --- | --- | --- |
+| โดเมนที่ได้รับการบรรเทา (6) | `200` ทั้งหมด (`\{\}`) หรือข้ามไปหาก Phase 3 ไม่ดำเนินการ | จำนวน 0 (หรือ 1 幻影) — PASS |
+| ตัวโหลดเบลนเซอร์ HTTPS (`-https`) | `200` (PUT โครงกระดูก) หรือ `200` (DELETE แบบสมบูรณ์ถ้า `NAMESPACE_CREATED=true`) | โครงกระดูกถูกยืนยันหรือไม่อยู่ในรายการ — PASS |
+| ตัวโหลดเบลนเซอร์ HTTP (`-http`) | `200` (`\{\}`) | ไม่อยู่ในรายการ — PASS |
+| Origin Pool | `200` (`\{\}`) | ไม่อยู่ในรายการ — PASS |
+| Healthcheck | `200` (`\{\}`) หรือข้ามไป | ไม่อยู่ในรายการ — PASS |
+| โดเมนที่ได้รับการป้องกัน | `200` (`\{\}`) | ไม่อยู่ในรายการ — PASS |
+| เขตข้อมูล DNS | ไม่ลบ (โครงสร้างพื้นฐานร่วม) | เขตข้อมูลยังคงอยู่ — PASS |
+| Namespace | `200` (cascade delete) ถ้า `NAMESPACE_CREATED=true` ข้ามไปหากไม่ใช่ | `404` ถ้าลบแล้ว `200` ถ้าเก็บรักษาไว้ — PASS |
+
+---
+
+**ปิดการใช้งานเสร็จสิ้น** เมื่อ namespace มีอยู่ก่อนแล้ว (`NAMESPACE_CREATED=false`) วัตถุการปรับใช้ทั้งหมดจะถูกลบแล้วยกเว้นโครงกระดูก HTTPS LB ซึ่งเก็บรักษาใบรับรอง Let's Encrypt และการผูกโดเมนสำหรับการรันการสาธิตครั้งถัดไป เมื่อ namespace ถูกสร้างขึ้นระหว่างการสาธิต (`NAMESPACE_CREATED=true`) วัตถุทั้งหมดรวมถึง HTTPS LB และ namespace จะถูกลบอย่างสมบูรณ์ เขตข้อมูล DNS และบันทึกที่ไม่ได้จัดการของบันทึกยังคงอยู่ในทั้งสองกรณี

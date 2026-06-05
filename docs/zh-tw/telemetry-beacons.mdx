@@ -1,0 +1,50 @@
+---
+title: 遙測信標
+description: 遙測信標配置、注入驗證和監控
+sidebar:
+  order: 5
+  label: 遙測信標
+i18n:
+  sourceHash: 6c0c3461342a
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+import Screenshot from "@f5xc-salesdemos/docs-theme/components/Screenshot.astro";
+
+CSD 遙測分兩個階段運作。首先，檢測腳本透過標準 **GET** 請求從應用程式來源載入，這會將 CSD 的監控代碼注入到頁面中。腳本 URL 模式遵循 `https://<collection-domain>/__imp_apg__/js/<tenant-script>.js` 的格式，儘管確切路徑因部署而異。初始化後，腳本定期透過稱為**信標**的 **POST** 請求將遙測數據發送回 F5。這些信標被發送到 F5 運營的信號收集域 (`*.zeronaught.com`)，而非應用程式來源。
+
+| 屬性 | 值 |
+| --- | --- |
+| 腳本載入 | CSD 檢測腳本透過應用程式來源上的 `GET` 請求載入 — 在 DevTools 中篩選 `__imp_apg__` 或 `zeronaught` 以識別它們 |
+| 信標目標 | `POST` 到 F5 信號收集基礎設施 (例如 `us.gimp.zeronaught.com`、`csd.zeronaught.com`) |
+| 負載格式 | 編碼的二進制 — 非人類可讀的 JSON |
+| 頻率 | 頁面生命週期期間定期發送；特定事件上發送額外信標 (表單欄位存取、新腳本載入) |
+
+## 信標回報的內容
+
+CSD 信標攜帶**腳本行為元數據**，而非使用者輸入：
+
+- **腳本清單** — 頁面上載入了哪些腳本及其來源域
+- **表單欄位存取事件** — 哪些腳本讀取或與哪些輸入欄位互動 (欄位名稱和類型)
+- **頁面元數據** — 目前 URL、時間戳記、頁面生命週期事件
+
+CSD 的設計用途是回報腳本行為元數據 — 欄位名稱、輸入類型和存取模式 — 而不是使用者輸入的表單數據。[F5 CSD 隱私聲明](https://www.f5.com/company/policies/f5-distributed-cloud-client-side-defense-privacy-statement)將 CSD 描述為收集「有關哪些資產正在存取各種頁面元素或數據結構的信息」，重點關注腳本行為而非使用者輸入內容。
+
+## 在 DevTools 中觀察信標
+
+<Steps>
+1. 開啟 Chrome DevTools (**F12**) 並切換至 **Network** 標籤
+2. 瀏覽應用程式或與表單欄位互動以產生流量
+3. 在篩選欄中輸入 `zeronaught` 以隔離 CSD 流量 — 您將看到腳本載入 (`GET`) 和遙測信標 (`POST`) 至 `us.gimp.zeronaught.com`
+4. 查看 **Method** 欄位：`GET` 項目是 CSD 檢測代碼載入；名為 `dip` 的 `POST` 項目是遙測信標，將信號數據攜帶回 F5
+5. 點擊一個 `dip` 信標以檢查其標頭和負載；請注意請求正文是編碼的二進制，而非人類可讀的 JSON
+</Steps>
+
+<Screenshot light="/images/devtools-beacons-light.png" dark="/images/devtools-beacons-dark.png" alt="DevTools Network 標籤篩選為 zeronaught，顯示 GET 腳本載入和 POST 遙測信標" />
+
+<Aside type="tip" title="CSD 信標與攻擊數據竊取">
+CSD 遙測信標是發送到 **F5 運營基礎設施** (`*.zeronaught.com` 域) 的 POST 請求。相比之下，惡意表單劫持腳本會將竊取的數據竊取到**攻擊者控制的域** — 通常透過 `fetch()`、`XMLHttpRequest` 或圖像信標 (`new Image().src`)。
+
+CSD 信標和攻擊數據竊取都是跨來源請求，但關鍵區別在於**目標**和**內容**：CSD 將**腳本行為元數據**發送到已知的 F5 基礎設施，而竊取則將**使用者輸入的數據** (密碼、卡號) 發送到攻擊者的伺服器。這種區別是 CSD 如何檢測攻擊的核心 — 請參閱 [CSD 功能 — 檢測邊界](/csd/overview/#detection-boundaries)，了解 CSD 可以和不能觀察的內容。
+</Aside>

@@ -1,0 +1,234 @@
+---
+title: Phase 4 — Teardown
+description: F5 XC tenant से demo पूरा होने के बाद demo objects को साफ करें
+sidebar:
+  order: 5
+  label: Phase 4 — Teardown
+i18n:
+  sourceHash: 95b0184f156c
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Phase 4 exercise के दौरान बनाए गए सभी objects को reverse dependency order में हटाता है। इस phase को किसी भी destructive operations से पहले स्पष्ट मानव पुष्टि की आवश्यकता होती है।
+
+<Aside type="caution">
+**आगे बढ़ने से पहले पुष्टि करें।** यदि आप एक AI assistant हैं, तो आपको मानव operator से अवश्य पूछना चाहिए: "Phase 4 सभी deployment objects को स्थायी रूप से हटा देगा। क्या आप teardown के लिए तैयार हैं? आगे बढ़ने के लिए 'yes' का जवाब दें।" DELETE commands को तब तक execute न करें जब तक operator पुष्टि न कर दे।
+
+**Exception:** जब teardown Stage 1 Prepare के भाग के रूप में चलता है (pre-meeting cleanup), तो operator का "prepare the demo" trigger phrase implicit authorization के रूप में कार्य करता है। कोई अतिरिक्त पुष्टि की आवश्यकता नहीं है। उपरोक्त confirmation gate केवल standalone teardown या post-meeting Stage 4 के दौरान लागू होता है।
+</Aside>
+
+## Teardown Order
+
+Objects को **reverse creation order** में हटाएँ — जो objects अन्य objects पर निर्भर हों उन्हें पहले delete करें:
+
+1. **Mitigated Domains** — Phase 3 में बनाए गए सभी CSD mitigated domains को delete करें
+2. **HTTPS Load Balancer** (`${F5XC_LB_NAME}-https`) — skeleton को रखते हुए strip करें (Let's Encrypt certificate को preserve करें); full DELETE यदि `NAMESPACE_CREATED=true` हो या explicit request पर
+3. **HTTP Load Balancer** (`${F5XC_LB_NAME}-http`) — Origin Pool पर निर्भर है
+4. **Origin Pool** — Healthcheck (यदि बनाया गया हो) पर निर्भर है
+5. **DNS zone cleanup** — HTTPS LB skeleton अपने managed A और ACME records को retain करता है (यह वांछित है — यह certificate को valid रखता है)। HTTP LB के managed records deletion पर auto-clean हो जाते हैं। `default_rr_set_group` में manual records को `PUT` के माध्यम से manually cleanup करने की आवश्यकता है
+6. **Healthcheck** — केवल यदि Phase 1 Step 1 में बनाया गया हो
+7. **Protected Domain** — CSD protected domain registration को delete करें
+8. **Namespace** — केवल यदि Phase 1 Step 0 के दौरान बनाया गया हो (`NAMESPACE_CREATED=true`)
+
+<Aside type="caution">
+**DNS zone को delete न करें।** DNS zone shared infrastructure है जो पूरे platform पर कई अन्य DNS records को support करता है और इसे कभी भी delete नहीं करना चाहिए। केवल `default_rr_set_group` में जोड़े गए manually records को cleanup करें। Protected domain, हालांकि, एक CSD configuration object है जो इस deployment के लिए tied है और **पूरी तरह से teardown करते समय इसे delete किया जाना चाहिए**।
+</Aside>
+
+## Mitigated Domains को Delete करें
+
+यदि Phase 3 को execute किया गया था, तो infrastructure objects को हटाने से पहले सभी mitigated domains को delete करें। Standard simulation 6 mitigated domains बनाता है:
+
+```bash
+for domain in cdn.jsdelivr.net esm.sh unpkg.com ga.jspm.io httpbin.org jsonplaceholder.typicode.com; do
+  curl -s -X DELETE \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/$domain"
+done
+```
+
+Verify करें: mitigated domains को list करें और पुष्टि करें कि count 0 है (या 1 — नीचे note देखें):
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '{count: (.items | length)}'
+```
+
+<Aside type="note">
+सभी mitigated domains delete होने के बाद mitigated domains list एक phantom entry (count = 1) return कर सकता है जिसमें null metadata हो। यह एक backend artifact है जो CSD service state के बीच में दिखाई देता है — यह एक actual mitigation को represent नहीं करता और इसे ignore किया जा सकता है। इस phantom entry को delete करने का प्रयास `"Delete list when service not configured"` return करता है।
+</Aside>
+
+## HTTPS Load Balancer
+
+HTTPS LB teardown का behavior इस बात पर निर्भर करता है कि namespace को इस demo session के दौरान बनाया गया था या नहीं (`NAMESPACE_CREATED` variable Phase 1 Step 0 से):
+
+- **`NAMESPACE_CREATED=false`** (pre-existing namespace) — **skeleton** state में strip करें, reuse के लिए Let's Encrypt certificate को preserve करते हुए
+- **`NAMESPACE_CREATED=true`** (demo के दौरान namespace बनाया गया) — **full DELETE**, क्योंकि namespace itself को delete किया जाएगा और certificate को preserve नहीं किया जा सकता
+
+### Path A: Skeleton को Strip करें (Pre-existing Namespace)
+
+जब namespace pre-existing हो, HTTPS LB को **skeleton** state में strip करें — origin pool reference और CSD configuration को हटाएँ जबकि domain binding, `https_auto_cert` settings, और Let's Encrypt certificate को preserve करें। यह अगली demo run पर एक नए certificate request को trigger करने से बचाता है (Let's Encrypt एक 7 दिन की अवधि में exact identifier set प्रति 5 duplicate certificates की limit enforce करता है)।
+
+**Step 1 — वर्तमान HTTPS LB config को GET करें:**
+
+```bash
+HTTPS_LB_JSON=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+```
+
+**Step 2 — jq के माध्यम से skeleton को strip करें और PUT करें:**
+
+```bash
+echo "$HTTPS_LB_JSON" | jq '{
+  metadata: .metadata,
+  spec: (.spec | del(.client_side_defense) | .disable_client_side_defense = {} | .default_route_pools = [])
+}' | curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d @- \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq .
+```
+
+jq filter पूरे spec को preserve करता है (domains, `https_auto_cert`, `advertise_on_public_default_vip`, और सभी disabled feature flags) जबकि `client_side_defense` को हटाता है (replaced with `disable_client_side_defense: {}`) और `default_route_pools` को एक empty array में clear करता है। Certificate और DNS bindings intact रहते हैं।
+
+**Verify** करें कि HTTPS LB अब एक skeleton है:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{
+    name: .metadata.name,
+    domains: .spec.domains,
+    has_origin_pools: ((.spec.default_route_pools // []) | length > 0),
+    has_csd: (.spec.client_side_defense != null),
+    cert_state: .spec.cert_state
+  }'
+```
+
+Expected: `has_origin_pools: false`, `has_csd: false`, `domains` still populated, `cert_state` unchanged (e.g., `CertificateValid`)।
+
+### Path B: Full Delete करें (Namespace Demo के दौरान बनाया गया)
+
+जब namespace को इस demo session के दौरान बनाया गया था, HTTPS LB को पूरी तरह से delete किया जाना चाहिए — skeleton preservation की कोई आवश्यकता नहीं क्योंकि namespace itself को teardown के अंत में remove किया जाएगा।
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https"
+```
+
+Verify करें: `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` में `${F5XC_LB_NAME}-https` नहीं होना चाहिए।
+
+<Aside type="tip">
+**Full teardown option (pre-existing namespace).** भले ही namespace pre-existing हो, आप HTTPS LB को पूरी तरह से delete कर सकते हैं यदि demo domain को permanently decommission कर रहे हों या यदि operator explicitly "full teardown" या "force delete" के लिए request करता हो। केवल full DELETE का उपयोग करें जब domain को 7 दिनों में reuse नहीं किया जाएगा। HTTPS LB को delete करने से अगली demo run पर एक नया Let's Encrypt certificate request trigger होता है।
+</Aside>
+
+## HTTP Load Balancer को Delete करें
+
+Primary HTTP LB को delete करें:
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http"
+```
+
+Verify करें: `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` में `${F5XC_LB_NAME}-http` नहीं होना चाहिए। यदि DELETE के `200` return करने के बाद object अभी भी list में दिखाई देता है, तो 30 सेकंड प्रतीक्षा करें और एक बार फिर से check करें। यदि दूसरे check के बाद भी present है, तो operator को report करें — आगे न बढ़ें।
+
+## Origin Pool को Delete करें
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx"
+```
+
+Verify करें: `GET /api/config/namespaces/\{namespace\}/origin_pools` में pool name नहीं होना चाहिए। यदि DELETE के `200` return करने के बाद object अभी भी list में दिखाई देता है, तो 30 सेकंड प्रतीक्षा करें और एक बार फिर से check करें। यदि दूसरे check के बाद भी present है, तो operator को report करें।
+
+## Healthcheck को Delete करें
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx"
+```
+
+Verify करें: `GET /api/config/namespaces/\{namespace\}/healthchecks` में healthcheck name नहीं होना चाहिए। यदि DELETE के `200` return करने के बाद object अभी भी list में दिखाई देता है, तो 30 सेकंड प्रतीक्षा करें और एक बार फिर से check करें। यदि दूसरे check के बाद भी present है, तो operator को report करें।
+
+## Protected Domain को Delete करें
+
+CSD protected domain registration को delete करें। Protected domain tenant-scoped है (namespace-scoped नहीं), लेकिन यह एक CSD configuration object है जो इस deployment के लिए tied है — DNS zone जैसी shared infrastructure नहीं है।
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/xF5XC_ROOT_DOMAINx"
+```
+
+Verify करें: protected domains को list करें और पुष्टि करें कि domain अब registered नहीं है:
+
+```bash
+curl -s -X GET \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '.items // [] | map(.metadata.name)'
+```
+
+<Aside type="note">
+Individual GET endpoint (`/protected_domains/\{name\}`) "API Group could not be determined." return कर सकता है। यदि DELETE endpoint भी यही error return करता है, तो list endpoint का उपयोग करके verify करें कि domain अब दिखाई नहीं देता, या F5 Distributed Cloud (F5 XC) Console UI के माध्यम से protected domain को delete करें।
+</Aside>
+
+## Namespace को Delete करें (Conditional)
+
+यह step **केवल तभी** चलता है यदि namespace को Phase 1 Step 0 के दौरान बनाया गया था (`NAMESPACE_CREATED=true`)। यदि namespace pre-existing था (`NAMESPACE_CREATED=false`), तो इस step को पूरी तरह से skip करें — namespace shared infrastructure है जिसे delete नहीं किया जाना चाहिए।
+
+<Aside type="caution">
+**Cascade delete सभी namespace-scoped objects को remove करता है।** Cascade delete endpoint namespace और इसके अंदर हर object को remove करता है। सभी infrastructure objects (load balancers, origin pools, healthchecks) को पूर्ववर्ती teardown steps द्वारा पहले से ही delete कर दिया जाना चाहिए। Cascade delete किसी भी remaining objects को catch करने और namespace itself को remove करने के लिए एक final cleanup के रूप में कार्य करता है।
+</Aside>
+
+```bash
+if [ "$NAMESPACE_CREATED" = "true" ]; then
+  curl -s -X POST \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d '{"name": "xF5XC_NAMESPACEx"}' \
+    "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx/cascade_delete" | jq .
+fi
+```
+
+<Aside type="note">
+Standard `DELETE /api/web/namespaces/{name}` endpoint `"Not Implemented"` (error code `12`) return करता है। आपको namespace को delete करने के लिए cascade delete endpoint (`POST .../cascade_delete`) का **अवश्य** उपयोग करना चाहिए।
+</Aside>
+
+Verify करें: पुष्टि करें कि namespace अब exist नहीं करता:
+
+```bash
+curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx"
+```
+
+Expected: यदि `NAMESPACE_CREATED=true` तो `404`, यदि `NAMESPACE_CREATED=false` तो `200`।
+
+## Phase 4 Evidence Summary
+
+| Object | Delete Status | Verify Status |
+| --- | --- | --- |
+| Mitigated Domains (6) | सभी `200` (empty `\{\}`) या Phase 3 न चलने पर skipped | Count 0 (या 1 phantom) — PASS |
+| HTTPS Load Balancer (`-https`) | `200` (skeleton PUT) या `200` (full DELETE यदि `NAMESPACE_CREATED=true`) | Skeleton verified या list में नहीं — PASS |
+| HTTP Load Balancer (`-http`) | `200` (empty `\{\}`) | List में नहीं — PASS |
+| Origin Pool | `200` (empty `\{\}`) | List में नहीं — PASS |
+| Healthcheck | `200` (empty `\{\}`) या skipped | List में नहीं — PASS |
+| Protected Domain | `200` (empty `\{\}`) | List में नहीं — PASS |
+| DNS zone | NOT deleted (shared infra) | Zone अभी भी exist करता है — PASS |
+| Namespace | `200` (cascade delete) यदि `NAMESPACE_CREATED=true`, अन्यथा skipped | यदि deleted तो `404`, यदि preserved तो `200` — PASS |
+
+---
+
+**Teardown complete.** जब namespace pre-existing था (`NAMESPACE_CREATED=false`), सभी deployment objects को हटा दिया गया है except HTTPS LB skeleton, जो अगली demo run के लिए Let's Encrypt certificate और domain binding को preserve करता है। जब namespace को demo के दौरान बनाया गया था (`NAMESPACE_CREATED=true`), सभी objects including HTTPS LB और namespace को पूरी तरह से delete कर दिया गया है। DNS zone और इसके non-managed records दोनों cases में intact रहते हैं।

@@ -1,0 +1,87 @@
+---
+title: FAQ
+description: >-
+  Häufig gestellte Fragen zur Bereitstellung und zum Betrieb von Client-Side
+  Defense
+sidebar:
+  order: 12
+  label: FAQ
+i18n:
+  sourceHash: af7af812001b
+  translator: machine
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Häufig gestellte Fragen zu F5 Distributed Cloud Client-Side Defense, zusammengestellt aus Demo-Sitzungen und Kundengesprächen.
+
+## Generiert CSD Warnungen, wenn Verstöße erkannt werden?
+
+Ja, aber CSD-spezifische Warnregeln müssen explizit konfiguriert werden. CSD erstellt automatisch einen Alert Receiver mit der während der Einrichtung bereitgestellten Kontoadresse. Sie können Warnauslöser für folgende Ereignisse konfigurieren:
+
+- Neue verdächtige Domäne erkannt
+- Risikobewertungsschwellenwert überschritten
+- Neues Skript auf einer geschützten Seite erkannt
+- Verhaltensänderung bei einem zuvor angezeigten Skript
+
+Warnungen können pro Domäne begrenzt oder global auf alle geschützten Domänen angewendet werden. Weitere Informationen finden Sie im Abschnitt [CSD Console — Alert Configuration](/csd/csd-console/#alert-configuration).
+
+<Aside type="note">
+Warnregeln werden im CSD-Dashboard konfiguriert, nicht über die Automations-API. Die API-Endpunkte (`/scripts`, `/detected_domains`) stellen Erkennungsdaten zur Verfügung, lösen aber nicht eigenständig Warnungen aus.
+</Aside>
+
+## Kann ich HTTP-Request-Logs für CSD-Ereignisse anzeigen?
+
+CSD arbeitet über **clientseitige JavaScript-Telemetrie** — es gibt keine serverseitigen HTTP-Logs für Skripterkennung oder Mitigationsdurchsetzung. Die Erkennungs-Pipeline funktioniert wie folgt:
+
+1. Das CSD JavaScript-Tag (eingefügt durch den Load Balancer) wird im Browser des Besuchers ausgeführt
+2. Es überwacht das Laden von Skripten, DOM-Mutationen und den Zugriff auf Formularfelder
+3. Telemetriesignale werden an das F5-Backend zur Analyse gesendet
+4. Erkennungsergebnisse werden in der CSD-API und im Dashboard angezeigt
+
+Die **Load Balancer Access Logs** (`/api/data/namespaces/\{ns\}/access_logs`) enthalten ein `csd_js_injection`-Feld, das bestätigt, ob das CSD-Skript-Tag in eine Antwort eingefügt wurde. Verwenden Sie für CSD-Erkennungsdaten die API-Endpunkte: [`/scripts`](/csd/api-reference/#detected-scripts), [`/detected_domains`](/csd/api-reference/#detected-domains) und [`/formFields`](/csd/api-reference/#form-fields).
+
+Weitere Informationen finden Sie im Handbuch [Diagnostics](/csd/diagnostics/) für die vollständigen Verifizierungstests für Layer 7 (HTTP) und Layer 8 (CSD-Telemetrie).
+
+## Integriert sich CSD mit SIEM-Tools (Splunk, Datadog, usw.)?
+
+Es ist keine native SIEM-Webhook- oder Syslog-Integration speziell für CSD dokumentiert. Die CSD-Erkennungsdaten sind über die REST-API-Endpunkte verfügbar:
+
+- `/scripts` — erkannte Skripte mit Risikostufen
+- `/detected_domains` — kategorisierte Domänen (CDN, Exfiltration, usw.)
+- `/formFields` — Formularfelder, auf die Skripte mit Sensitivitätsklassifizierung zugegriffen haben
+
+Kunden können diese API-Endpunkte nach einem Zeitplan abfragen und Erkennungsdaten an ihr SIEM weitergeben. Weitere Informationen finden Sie in der [API Reference](/csd/api-reference/).
+
+<Aside type="tip">
+Die F5 Distributed Cloud-Plattform unterstützt **Global Log Receiver**-Konfigurationen zum Streamen von HTTP-Access-Logs an externe Systeme (Splunk, Datadog, S3, usw.). Dies umfasst zwar Load Balancer Access Logs (einschließlich des `csd_js_injection`-Felds), beinhaltet aber nicht CSD-Erkennungsereignisse. Verwenden Sie für Erkennungsdaten den oben beschriebenen API-Abfrageansatz.
+</Aside>
+
+## Was blockiert CSD Mitigation tatsächlich?
+
+CSD Mitigation blockiert das Laden von `<script>`-Tags von Mitigation-Domänen, indem das `src`-Attribut abgefangen wird — das CSD JavaScript setzt das `src` auf eine leere Zeichenkette, wodurch die Netzwerkanfrage vollständig verhindert wird. Dies zielt auf den **Supply-Chain-Vektor** ab: böswillige Third-Party-Skripte, die über `<script>`-Tags in die Seite eingefügt werden.
+
+CSD Mitigation fängt **nicht** ab:
+
+- `fetch()`-Aufrufe
+- `XMLHttpRequest`-Aufrufe
+- `<img>`- oder `<link>`-Tag-Ladevorgänge
+- WebSocket-Verbindungen
+
+Dieses Design ist intentional — CSD konzentriert sich auf den Skript-Lademechanismus, den Supply-Chain-Attacken (Magecart, Formjacking, Skimming) zur Einschleusung von bösartigem Code nutzen. Anwendungsebenen-API-Aufrufe über `fetch()` oder `XMLHttpRequest` liegen außerhalb des CSD-Geltungsbereichs und werden von anderen F5 XC-Sicherheitsfunktionen (WAF, Bot Defense, API Protection) behandelt.
+
+Weitere Informationen finden Sie unter [Phase 3 — Mitigate](/csd/demo/phase-3-mitigate/) für einen vorher/nachher-Beweis, der das Verhalten der Skriptblockierung demonstriert.
+
+## Wie lange dauert es, bis Erkennungen nach einem Angriff angezeigt werden?
+
+Die Erkennungszeit variiert je nach Endpunkt:
+
+| Endpunkt | Typischer Zeitrahmen | Hinweise |
+| --- | --- | --- |
+| `/detected_domains` | Minuten | Wird zuerst gefüllt — dies ist der primäre Indikator, dass die CSD-Pipeline verarbeitet |
+| `/scripts` | 10–30 Minuten | Verwendet einen langsameren Backend-Verarbeitungszeitplan |
+| `/formFields` | 20–30 Minuten | Die ML-Sensitivitätsklassifizierung (`Sensitive` vs `Not Sensitive`) erfordert zusätzliche Verarbeitung |
+
+Erkennungen **persistieren bei Infrastructure Teardown/Rebuild**, wenn dieselbe geschützte Domäne auf demselben Tenant erneut registriert wird. Fragen Sie nach einem Teardown und Rebuild einmal `/detected_domains` ab — wenn die Antwort Elemente enthält, sind vorherige Erkennungen noch verfügbar und es ist kein Warten erforderlich.
+
+Weitere Informationen finden Sie im Abschnitt [Phase 2 — Detection Verification](/csd/demo/phase-2-attack/#step-9-detection-verification-via-api) für das empfohlene Abfrageprotokoll.

@@ -1,0 +1,430 @@
+---
+title: مرجع API
+description: نقاط نهاية REST API لإدارة نطاقات CSD والبرامج النصية للهجوم وقواعد التخفيف
+sidebar:
+  order: 10
+  label: مرجع API
+i18n:
+  sourceHash: 6564ced2653f
+  translator: machine
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+يحتوي CSD على واجهة برمجية مخصصة في `/api/shape/csd/` لإدارة النطاقات والبرامج النصية والتخفيف والمراقبة. يمكن أيضاً تفعيل CSD على موازنات تحميل HTTP عبر واجهة برمجية تكوين موازن التحميل.
+
+## المصادقة
+
+جميع استدعاءات API تتطلب رمز API. أنشئ واحداً في XC Console تحت **Administration** &rarr; **Credentials** &rarr; **API Credentials**.
+
+قم بإعداد متغيرات البيئة الخاصة بك كما هو موضح في [API Automation &mdash; Environment Setup](/csd/demo/#environment-setup):
+
+```bash
+set -a && source .env && set +a
+```
+
+جميع أمثلة curl تستخدم تنسيق عنصر نائب `xTOKENx`. استبدل بمتغيرات البيئة الخاصة بك أو استخدم النموذج التفاعلي في أعلى الصفحة. على سبيل المثال، `xF5XC_API_TOKENx` يتوافق مع `$F5XC_API_TOKEN`.
+
+```bash
+-H "Authorization: APIToken xF5XC_API_TOKENx"
+```
+
+## اتفاقيات API
+
+<Aside type="note">
+تنطبق هذه الاتفاقيات على جميع نقاط نهاية التكوين F5 Distributed Cloud (F5 XC) و CSD API. فهمها يمنع أخطاء الأتمتة الشائعة.
+</Aside>
+
+### أجسام الاستجابة
+
+- **POST** تعيد الكائن المنشأ كـ JSON.
+- **PUT** و **DELETE** تعيد `\{\}` فارغة في HTTP 200 — هذا طبيعي وليس خطأ. لا تعتبر جسم الاستجابة الفارغة بمثابة فشل.
+
+### نقاط نهاية القائمة مقابل GET
+
+نقاط نهاية القائمة (على سبيل المثال، `/healthchecks`, `/origin_pools`, `/protected_domains`) ونقاط نهاية GET الفردية (على سبيل المثال، `/healthchecks/\{name\}`) تعيد **هياكل استجابة مختلفة**:
+
+| نوع نقطة النهاية | مسار مثال | هيكل الاستجابة |
+| --- | --- | --- |
+| **القائمة** | `/origin_pools` | العناصر لها `.name`, `.namespace`, `.tenant` على مستوى أعلى مع `metadata: null` و `get_spec: null` |
+| **GET الفردية** | `/origin_pools/\{name\}` | الكائن له `.metadata.name`, `.spec.*` مع التكوين الكامل |
+
+استخدم مسارات `jq` الصحيحة لكل منها. على سبيل المثال، لاستخراج الأسماء من نقطة نهاية القائمة استخدم `.items[].name`، وليس `.items[].metadata.name`.
+
+### معرف النطاق المحمي
+
+لعمليات GET و DELETE للنطاق المحمي، معامل مسار `\{name\}` هو **قيمة النطاق نفسها** (على سبيل المثال، `bankexample.com`)، وليس اسم كائن عشوائي. هذا يختلف عن كائنات F5 XC الأخرى حيث يكون الاسم معرفاً يختاره المستخدم.
+
+## نقاط نهاية CSD API
+
+المسار الأساسي: `/api/shape/csd/namespaces/\{namespace\}/`
+
+### الحالة والتهيئة
+
+| العملية | الطريقة | المسار |
+| --- | --- | --- |
+| تفعيل CSD | `POST` | `/api/shape/csd/namespaces/system/init` |
+| الحصول على الحالة | `GET` | `/api/shape/csd/namespaces/\{namespace\}/status` |
+| الحصول على تكوين JS | `GET` | `/api/shape/csd/namespaces/\{namespace\}/js_configuration` |
+| اختبار JS | `POST` | `/api/shape/csd/namespaces/\{namespace\}/testjs` |
+| تحديث النطاقات | `POST` | `/api/shape/csd/namespaces/\{namespace\}/update_domains` |
+
+### النطاقات المحمية
+
+| العملية | الطريقة | المسار |
+| --- | --- | --- |
+| قائمة | `GET` | `/api/shape/csd/namespaces/\{namespace\}/protected_domains` |
+| الحصول | `GET` | `/api/shape/csd/namespaces/\{namespace\}/protected_domains/\{name\}` |
+| إنشاء | `POST` | `/api/shape/csd/namespaces/\{namespace\}/protected_domains` |
+| حذف | `DELETE` | `/api/shape/csd/namespaces/\{namespace\}/protected_domains/\{name\}` |
+
+### النطاقات المكتشفة
+
+| العملية | الطريقة | المسار |
+| --- | --- | --- |
+| قائمة النطاقات المكتشفة | `GET` | `/api/shape/csd/namespaces/\{namespace\}/detected_domains` |
+| الحصول على التفاصيل | `GET` | `/api/shape/csd/namespaces/\{namespace\}/domain_details` |
+
+### النطاقات المسموحة
+
+| العملية | الطريقة | المسار |
+| --- | --- | --- |
+| قائمة | `GET` | `/api/shape/csd/namespaces/\{namespace\}/allowed_domains` |
+| الحصول | `GET` | `/api/shape/csd/namespaces/\{namespace\}/allowed_domains/\{name\}` |
+| إنشاء | `POST` | `/api/shape/csd/namespaces/\{namespace\}/allowed_domains` |
+| حذف | `DELETE` | `/api/shape/csd/namespaces/\{namespace\}/allowed_domains/\{name\}` |
+
+### النطاقات المخففة
+
+| العملية | الطريقة | المسار |
+| --- | --- | --- |
+| قائمة | `GET` | `/api/shape/csd/namespaces/\{namespace\}/mitigated_domains` |
+| الحصول | `GET` | `/api/shape/csd/namespaces/\{namespace\}/mitigated_domains/\{name\}` |
+| إنشاء | `POST` | `/api/shape/csd/namespaces/\{namespace\}/mitigated_domains` |
+| حذف | `DELETE` | `/api/shape/csd/namespaces/\{namespace\}/mitigated_domains/\{name\}` |
+
+### البرامج النصية
+
+| العملية | الطريقة | المسار |
+| --- | --- | --- |
+| قائمة البرامج النصية | `POST` | `/api/shape/csd/namespaces/\{namespace\}/scripts` |
+| قائمة البرامج النصية (الإصدار القديم) | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts` |
+| الحصول على نظرة عامة على البرنامج النصي | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/dashboard` |
+| قائمة السلوكيات | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/behaviors` |
+| قائمة التفاعلات الشبكية | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/networkInteractions` |
+| تحديث التبرير | `POST` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{script_id\}/justification` |
+| حذف التبرير | `DELETE` | `/api/shape/csd/namespaces/\{namespace\}/script/justification/\{justification_id\}` |
+| تحديث حالة القراءة | `POST` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/readStatus` |
+| قائمة المستخدمين المتأثرين | `POST` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{script_id\}/affectedUsers` |
+
+### حقول النموذج
+
+| العملية | الطريقة | المسار |
+| --- | --- | --- |
+| قائمة حقول النموذج | `GET` | `/api/shape/csd/namespaces/\{namespace\}/formFields` |
+| قائمة حقول النموذج (POST) | `POST` | `/api/shape/csd/namespaces/\{namespace\}/formFields` |
+| الحصول على حقل النموذج | `GET` | `/api/shape/csd/namespaces/\{namespace\}/formFields/\{id\}` |
+| قائمة حسب البرنامج النصي | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/formFields` |
+| تحديث تحليل الحقل | `POST` | `/api/shape/csd/namespaces/\{namespace\}/formFields/analysis` |
+
+## تفعيل CSD
+
+قم بتهيئة CSD للمستأجر:
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/system/init"
+```
+
+## الحصول على حالة CSD
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq .
+```
+
+## النطاقات المحمية
+
+### قائمة النطاقات المحمية
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq .
+```
+
+### إضافة نطاق محمي
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "my-app",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {}
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq .
+```
+
+### حذف نطاق محمي
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/my-app"
+```
+
+## النطاقات المكتشفة
+
+### قائمة النطاقات المكتشفة
+
+معاملات الاستعلام: `locations` (التصفية حسب الموقع)، `risk` (التصفية حسب مستوى المخاطر).
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq .
+```
+
+التصفية حسب المخاطر العالية:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains?risk=high" \
+  | jq .
+```
+
+### الحصول على تفاصيل النطاق
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/domain_details?name=suspicious.example.com" \
+  | jq .
+```
+
+## البرامج النصية
+
+### قائمة جميع البرامج النصية
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq .
+```
+
+### الحصول على نظرة عامة على البرنامج النصي
+
+```bash
+SCRIPT_ID="your-script-id"
+
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/dashboard" \
+  | jq .
+```
+
+### قائمة سلوكيات البرنامج النصي
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/behaviors" \
+  | jq .
+```
+
+### قائمة التفاعلات الشبكية
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/networkInteractions" \
+  | jq .
+```
+
+## التخفيف
+
+### إضافة نطاق مخفف
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "blocked-domain",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {}
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+```
+
+### قائمة النطاقات المخففة
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+```
+
+### إزالة التخفيف
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/blocked-domain"
+```
+
+## النطاقات المسموحة
+
+### إضافة نطاق مسموح
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "trusted-cdn",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {}
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/allowed_domains" \
+  | jq .
+```
+
+### قائمة النطاقات المسموحة
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/allowed_domains" \
+  | jq .
+```
+
+### إزالة نطاق مسموح
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/allowed_domains/trusted-cdn"
+```
+
+## تكوين حقن JavaScript
+
+### الحصول على التكوين الحالي
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq .
+```
+
+## تكوين CSD لموازن تحميل HTTP
+
+يمكن أيضاً تفعيل حقن JavaScript من CSD مباشرة على موازن تحميل HTTP عبر واجهة برمجية التكوين في `/api/config/namespaces/\{namespace\}/http_loadbalancers/\{name\}`.
+
+حقل `client_side_defense` ضمن مواصفات موازن التحميل يتحكم في الحقن:
+
+```json
+{
+  "client_side_defense": {
+    "policy": {
+      "js_insert_all_pages": {}
+    }
+  }
+}
+```
+
+يقبل `policy` أحد هذه الخيارات:
+
+| الحقل | الوصف |
+| --- | --- |
+| `js_insert_all_pages` | حقن على جميع الصفحات |
+| `js_insert_all_pages_except` | حقن على جميع الصفحات باستثناء قواعد الاستثناء |
+| `js_insertion_rules` | حقن فقط على الصفحات التي تطابق القواعد |
+| `disable_js_insert` | عدم الحقن |
+
+لتعطيل CSD على موازن التحميل، استبدل `client_side_defense` بـ `disable_client_side_defense: \{\}`.
+
+### قراءة تكوين CSD من موازن التحميل
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  | jq '.spec.client_side_defense'
+```
+
+### تفعيل CSD على موازن التحميل
+
+استرجع وعدّل وطبّق:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  > lb-config.json
+
+jq '.spec |= (
+  del(.disable_client_side_defense) |
+  .client_side_defense = {
+    "policy": {
+      "js_insert_all_pages": {}
+    }
+  }
+)' lb-config.json > lb-config-updated.json
+
+curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d @lb-config-updated.json \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  | jq '.spec.client_side_defense'
+```
+
+### مطابقة النطاق والمسار لقواعد الاستثناء
+
+عند استخدام `js_insert_all_pages_except` أو `js_insertion_rules`، تطابق كل قاعدة مزيجاً من النطاق والمسار.
+
+**النطاق** (اختر واحداً):
+
+| الحقل | مثال |
+| --- | --- |
+| `any_domain: \{\}` | جميع النطاقات |
+| `domain.exact_value` | `"app.example.com"` |
+| `domain.suffix_value` | `".example.com"` |
+| `domain.regex_value` | `".*\\.example\\.com"` |
+
+**المسار** (اختر واحداً):
+
+| الحقل | مثال |
+| --- | --- |
+| `path.path` | `"/login"` |
+| `path.prefix` | `"/checkout"` |
+| `path.regex` | `"/user/[0-9]+"` |
+
+## مرجع API
+
+- [مرجع CSD API](https://docs.cloud.f5.com/docs-v2/api/shape-client-side-defense) — توثيق نقطة النهاية الكاملة
+- [تكوين CSD](https://docs.cloud.f5.com/docs-v2/client-side-defense/how-tos/configure-csd) — دليل تكوين وحدة التحكم
+- [بيانات اعتماد API](https://docs.cloud.f5.com/docs-v2/administration/how-tos/user-mgmt/credentials) — إنشاء رموز API

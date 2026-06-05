@@ -1,0 +1,334 @@
+---
+title: Phase 3 — Mitigate
+description: ใช้นโยบายการบรรเทา CSD และยืนยันว่าการจราจรการโจมตีถูกบล็อก
+sidebar:
+  order: 4
+  label: Phase 3 — Mitigate
+i18n:
+  sourceHash: 5d336f6c3bde
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Phase 3 สร้างการพิสูจน์ **ก่อน/หลัง** ของการบรรเทา CSD คุณเรียกใช้การโจมตีอีกครั้งโดยไม่มีการบรรเทา เพื่อสร้างเบสไลน์ จากนั้นใช้การบรรเทา จากนั้นเรียกใช้การโจมตีเดียวกันอีกครั้งเพื่อพิสูจน์ว่า CSD บล็อกการเรียกเครือข่าย Phase 2 ต้องเสร็จสมบูรณ์ — การตรวจสอบ DET ทั้งหมดต้อง PASS — ก่อนดำเนินการต่อ
+
+<Aside type="note">
+**การบรรเทา CSD บล็อกการโหลดสคริปต์จากโดเมนที่ได้รับการบรรเทา** เมื่อโดเมนอยู่ในรายการบรรเทา CSD JavaScript จะสกัดกั้นURLs แหล่งที่มา `&lt;script&gt;` และป้องกันไม่ให้สคริปต์โหลด — หยุดการโจมตีห่วงโซ่อุปทานที่แหล่งที่มา CSD ไม่สกัดกั้นการเรียก `fetch()` หรือ `XMLHttpRequest` Phase นี้จับภาพพิสูจน์การบล็อกสคริปต์โดยเรียกใช้การโจมตีเดียวกันก่อนและหลังการบรรเทา
+</Aside>
+
+<Aside type="caution">
+**หมายเหตุการทดสอบแบบสด:** จุดสิ้นสุด POST/DELETE ของการบรรเทาได้รับการตรวจสอบความถูกต้องในสภาพแวดล้อมการพัฒนา แต่รายละเอียดของพฤติกรรม (เวลาตอบสนอง ผลกระทบต่อสถานะการตรวจหาสคริปต์) อาจแตกต่างกันไปตามการกำหนดค่า tenant หากคุณสังเกตเห็นการตอบสนองที่ไม่คาดคิด ให้ตรวจสอบ [API Reference](/csd/api-reference/#mitigated-domains) สำหรับคำจำกัดความจุดสิ้นสุดที่ยอมรับได้
+</Aside>
+
+## Step 1: ยืนยันว่าไม่มีการบรรเทาที่ใช้งานอยู่ (Baseline)
+
+ก่อนจับภาพสนาปชอต "ก่อน" ให้ยืนยันว่าสภาพแวดล้อมสะอาด — ไม่ควรมีการบรรเทาที่ใช้งานอยู่ สิ่งนี้ช่วยให้แน่ใจว่าการโจมตีเบสไลน์ทำงานโดยไม่มีการบล็อก CSD
+
+### ตรวจสอบจำนวนโดเมนที่ได้รับการบรรเทา
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '{count: (.items | length)}'
+```
+
+หากจำนวนไม่ใช่ `0` การบรรเทาจะยังคงอยู่จากการรันก่อนหน้า ลบแต่ละรายการก่อนดำเนินการต่อ:
+
+```bash
+# ลบโดเมนที่ได้รับการบรรเทา (ทำซ้ำสำหรับแต่ละชื่อโดเมน)
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/<domain-name>" \
+  | jq .
+```
+
+แทนที่ `<domain-name>` ด้วย `metadata.name` ที่ใช้เมื่อโดเมนได้รับการบรรเทา (เช่น `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io`, `httpbin.org`, `jsonplaceholder.typicode.com`) หากการทำความสะอาด `httpbin.org` ปล่อยให้รายการที่เหลืออยู่ ให้ลองลบ `www.httpbin.org` ด้วย — การรันก่อนหน้าบางรายการอาจใช้สิ่งนั้นเป็นชื่อเมตาดาต้า
+
+### ยืนยันว่าการตรวจหา Phase 2 มีอยู่
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
+```
+
+### หลักฐาน
+
+| การตรวจสอบ | ที่คาดไว้ | สถานะ |
+| --- | --- | --- |
+| จำนวนโดเมนที่ได้รับการบรรเทา | `0` (เบสไลน์สะอาด) | PASS ถ้า 0, ต้องการการทำความสะอาดถ้า &gt; 0 |
+| จำนวนโดเมนที่ตรวจพบ | &gt; 0 (การตรวจหา Phase 2 มีอยู่) | PASS ถ้า &gt; 0 |
+| โดเมนการสูญเสียข้อมูลที่มีอยู่ | `www.httpbin.org`, `jsonplaceholder.typicode.com` | PASS ถ้าอย่างน้อยหนึ่งรายการปรากฏ |
+
+## Step 2: เรียกใช้การโจมตี — ก่อนการบรรเทา
+
+เรียกใช้การจำลองแบบรวมอีกครั้งโดยไม่มีการบรรเทาที่ใช้งานอยู่เพื่อจับภาพเบสไลน์ใหม่ นี่คือสนาปชอต **"ก่อน"** — หลักฐานว่าการโจมตีสำเร็จเมื่อไม่มีการบรรเทา CSD
+
+<Aside type="note">
+ขั้นตอนนี้ต้องการการเรียกใช้ JavaScript ที่ฝั่งเบราว์เซอร์ — `curl` ไม่สามารถเรียกใช้การตรวจหา CSD ได้ ผู้ช่วย AI ที่มีเครื่องมือระบบอัตโนมัติของเบราว์เซอร์ (MCP Chrome DevTools, Playwright, Puppeteer) เรียกใช้ขั้นตอนเหล่านี้โดยตรงโดยใช้ลำดับ **AI-Automated Execution** ด้านล่าง ผู้ดำเนินการที่ไม่มีระบบอัตโนมัติของเบราว์เซอร์จะดำเนินการตามขั้นตอนด้วยตนเอง
+</Aside>
+
+### การเรียกใช้อัตโนมัติของ AI
+
+ผู้ช่วย AI ที่มีเครื่องมือระบบอัตโนมัติของเบราว์เซอร์เรียกใช้การจำลองการโจมตีโดยทางโปรแกรมโดยใช้ Phase 2 initScript เดียวกัน (ซึ่งบันทึก `fetch` ดั้งเดิม):
+
+1. **นำทางด้วย initScript** — นำทางไปยัง `about:blank` ก่อนเพื่อให้แน่ใจว่าบริบทเอกสารสะอาด (หลีกเลี่ยง initScripts ที่หลอมตัวจากการนำทางก่อนหน้า) จากนั้น `navigate_page` ไปยัง `http://$F5XC_DOMAINNAME/#/login` ด้วย **Phase 2 initScript** (โค้ดคำวิ่งสอบในเท่าของ [Phase 2 — AI-Automated Execution](/csd/demo/phase-2-attack/#ai-automated-execution)) initScript นี้บันทึก `setInterval`, `clearInterval`, `fetch` และ `console.log` ดั้งเดิม — การอ้างอิง `fetch` ดั้งเดิมนี้ถูกต้องที่นี่เพราะไม่มีการบรรเทาที่ใช้งานอยู่
+2. **ยกเลิกแบนเนอร์ต้อนรับ** — `press_key` ด้วย `Escape` เพื่อปิดแบนเนอร์ต้อนรับ ในการเยี่ยมชมครั้งต่อๆ ไป แบนเนอร์อาจไม่ปรากฏ (คุกกี้ยังคงอยู่) การโต้ตอบยินยอมคุกกี้จะถูกปิดโดยอัตโนมัติด้วยคีย์ Escape
+3. **รอให้เสร็จสิ้น** — รอ 10 วินาทีสำหรับการเรียกกลับการโหลด/ข้อผิดพลาด CDN ทั้งหมดและการแก้ไขสัญญา fetch ให้เสร็จสิ้น
+4. **จับภาพหลักฐาน** — `list_console_messages` เพื่อตรวจสอบ `[CSD Demo] Simulation complete` และผลการโหลด CDN; `list_network_requests` ที่ผ่านตัวกรองประเภท `script` และ `fetch` เพื่อยืนยันรหัสสถานะ HTTP (`200`/`201` สำหรับความสำเร็จ)
+
+<Aside type="caution">
+**ความเข้ากันได้กับ zone.js** — Juice Shop ใช้ zone.js ของ Angular ซึ่งแพตช์ `setTimeout`, `setInterval`, `fetch`, `XMLHttpRequest` และ API เบราว์เซอร์อื่นๆ สิ่งนี้แบ่ง MCP `evaluate_script`, `fill` และเครื่องมือ `click` ด้วย `Cannot read properties of undefined (reading 'call')` ใช้ `navigate_page` ด้วย `initScript` แทน — `initScript` ทำงานก่อนที่ zone.js โหลด ดังนั้นคุณสามารถบันทึกการอ้างอิง API ดั้งเดิมและใช้ในการเรียกกลับการสอบถาม metadata.name ต้องเป็น `metadata.name` ที่ดั้งเดิมของ `HTMLInputElement.prototype.value` (ไม่ใช่ `fill`) และเรียกใช้สคริปต์การตรวจหาแบบอินไลน์ (ไม่ใช่ผ่าน `setTimeout` ซึ่ง zone.js อาจสกัดกั้นหลังจากการโหลดหน้า) ดู [Trigger Detection — AI-Automated Execution](/csd/trigger-detection/#ai-automated-execution) สำหรับรายละเอียด
+</Aside>
+
+<Aside type="note">
+**สะสม initScript** — การเรียก `navigate_page` แต่ละครั้งด้วยพารามิเตอร์ `initScript` จะเพิ่มสคริปต์ลงในรายการที่ยังคงอยู่ซึ่งทำงานในการโหลดเอกสารครั้งต่อไปทั้งหมด เพื่อหลีกเลี่ยงสคริปต์ที่ล้าสมัยรบกวนการแทรก `navigate_page` ไปยัง `about:blank` ระหว่างการรันหรือใช้ `new_page` ด้วย `isolatedContext` สำหรับบริบทเบราว์เซอร์สะอาด
+</Aside>
+
+### การเรียกใช้ด้วยตนเอง
+
+ผู้ดำเนินการที่ไม่มีเครื่องมือระบบอัตโนมัติของเบราว์เซอร์เรียกใช้การจำลองด้วยตนเองโดยใช้ขั้นตอนเดียวกับ [Phase 2 — Step 8: Attack Simulation](/csd/demo/phase-2-attack/#step-8-attack-simulation):
+
+1. นำทางไปยัง `http://xF5XC_DOMAINNAMEx/#/login`
+2. ป้อนข้อมูลรับรองเสมือนในฟิลด์อีเมลและรหัสผ่าน (ไม่ส่ง)
+3. เปิด DevTools — กด **F12** และสลับไปที่แท็บ **Console**
+4. วางและเรียกใช้ Combined Detection Script จาก [Trigger Detection](/csd/trigger-detection/#run-the-combined-simulation-script)
+5. สังเกตผลลัพธ์คอนโซล — สคริปต์ CDN ทั้งหมดควรโหลดและการเรียก exfil ควรสำเร็จด้วยการตอบสนอง `200`/`201`
+
+### หลักฐาน — ก่อนการบรรเทา
+
+| การตรวจสอบ | ที่คาดไว้ (ก่อนการบรรเทา) | สถานะ |
+| --- | --- | --- |
+| สคริปต์ CDN ที่ฉีด | สคริปต์แท็ก 4 รายการทั้งหมดโหลด — ข้อความ `[Supply Chain] Loaded from` ปรากฏ เครือข่ายแสดงแท็บ `200` | PASS |
+| Exfil fetch ไปยัง `www.httpbin.org` | เครือข่ายแสดงแท็บ `200` — ข้อมูลส่ง | PASS |
+| Exfil fetch ไปยัง jsonplaceholder.typicode.com | เครือข่ายแสดงแท็บ `201` — ข้อมูลส่ง | PASS |
+| ผลลัพธ์คอนโซล | `[CSD Demo] Simulation complete` | PASS |
+
+<Aside type="note">
+**การตรวจสอบด้วยคำขอเครือข่าย:** หลักฐานที่เชื่อถือได้มากที่สุดคือแท็บ **Network** (หรือ `list_network_requests` สำหรับผู้ช่วย AI) ไม่ใช่การเรียกกลับคอนโซล Zone.js ใน Juice Shop สามารถแบ่งการเรียกกลับสัญญา `.then()` และตัวจัดการ `onload` สคริปต์ ทำให้ข้อความคอนโซลไม่สมบูรณ์แม้ว่าคำขอเครือข่ายจะสำเร็จ เสมอให้ตรวจสอบข้อความคอนโซลข้ามไปยังรหัสสถานะคำขอเครือข่าย
+</Aside>
+
+<Aside type="tip">
+นี่คือหลักฐานเบสไลน์: หากไม่มีการบรรเทาที่ใช้งานอยู่ สคริปต์ของผู้โจมตีจะโหลดได้อย่างอิสระและการสูญเสียข้อมูลจะสำเร็จ บันทึกหรือจับภาพหลักฐานนี้ — คุณจะเปรียบเทียบโดยตรงกับผลลัพธ์ "หลัง" ใน Step 5
+</Aside>
+
+## Step 3: ใช้การบรรเทา
+
+สำหรับแต่ละโดเมนที่ตรวจพบ POST ไปยังจุดสิ้นสุดโดเมนที่ได้รับการบรรเทา เป้าหมายหลักจากการจำลอง Phase 2 คือ CDN injection domains 4 รายการและโดเมนการสูญเสียข้อมูลที่ตรวจพบใดๆ
+
+**เป้าหมายการบรรเทาหลัก** (จากสคริปต์การจำลองแบบรวม):
+
+| โดเมน | บทบาท |
+| --- | --- |
+| `cdn.jsdelivr.net` | CDN script injection |
+| `esm.sh` | CDN script injection |
+| `unpkg.com` | CDN script injection |
+| `ga.jspm.io` | CDN script injection |
+| `www.httpbin.org` | Data exfiltration endpoint |
+| `jsonplaceholder.typicode.com` | Data exfiltration endpoint |
+
+<Aside type="note">
+เนื้อหา POST ต้องการ **ทั้ง** `metadata.name` (ตัวระบุสำหรับวัตถุ) และ `spec.mitigated_domain` (สตริงโดเมน CSD จะจำแนก) ต้องตั้งค่าทั้งคู่ — `spec: {}` ทำให้เกิดข้อผิดพลาด `400` สำหรับโดเมนส่วนใหญ่ ฟิลด์ทั้งสองใช้ค่าเดียวกัน (เช่น `cdn.jsdelivr.net`) ดู `httpbin.org` ข้อยกเว้นด้านล่าง
+</Aside>
+
+**บรรเทาโดเมน** (เรียกใช้ครั้งละหนึ่งต่อโดเมน):
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "cdn.jsdelivr.net",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "mitigated_domain": "cdn.jsdelivr.net"
+    }
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+```
+
+ทำซ้ำสำหรับแต่ละโดเมน:
+
+```bash
+# esm.sh
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"esm.sh","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"esm.sh"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# unpkg.com
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"unpkg.com","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"unpkg.com"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# ga.jspm.io
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"ga.jspm.io","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"ga.jspm.io"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# httpbin.org — ใช้ www.httpbin.org เป็น mitigated_domain (ดูหมายเหตุด้านล่าง)
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"httpbin.org","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"www.httpbin.org"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# jsonplaceholder.typicode.com
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"jsonplaceholder.typicode.com","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"jsonplaceholder.typicode.com"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+```
+
+<Aside type="note">
+**ข้อจำกัด eTLD+1 ของ `httpbin.org`:** API ปฏิเสธโดเมน eTLD+1 เบาๆ เป็นค่า `mitigated_domain` ด้วย `"Invalid root domain: cannot derive eTLD+1"` ใช้ `www.httpbin.org` เป็นค่า `spec.mitigated_domain` ในขณะที่เก็บ `httpbin.org` เป็น `metadata.name` การบรรเทาจะใช้อย่างถูกต้อง — ตัวระบุ `name` คือสิ่งที่ปรากฏในรายการโดเมนที่ได้รับการบรรเทา โดเมนเบาใดๆ (ไม่มี subdomain) ที่ใช้เป็นเป้าหมาย exfil ในสคริปต์การจำลองแบบกำหนดเองจะมีข้อจำกัดเดียวกัน
+</Aside>
+
+การตอบสนอง `200` ส่งคืนวัตถุโดเมนที่ได้รับการบรรเทาที่สร้างขึ้น การตอบสนอง `409` หมายความว่าโดเมนอยู่ในรายการบรรเทาแล้ว — นี่คือเงื่อนไขความสำเร็จ
+
+## Step 4: ยืนยันการบรรเทาที่ใช้
+
+แสดงรายการโดเมนที่ได้รับการบรรเทาทั้งหมดและยืนยันว่าจำนวนตรงกับจำนวนโดเมนที่เพิ่งส่ง:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '{count: (.items | length)}'
+```
+
+<Aside type="note">
+จุดสิ้นสุดรายการโดเมนที่ได้รับการบรรเทาส่งคืนรายการที่มี null `metadata.name` สำหรับรายการ ALL — ชื่อโดเมนแต่ละรายการไม่มองเห็นในการตอบสนองรายการ ยืนยันโดยตรวจสอบว่าจำนวนรายการเท่ากับจำนวนคำขอ POST ที่ทำ (6 สำหรับการจำลองมาตรฐาน) การตอบสนอง `200` จากแต่ละ POST ใน Step 3 เป็นหลักฐานที่ได้รับอนุญาต (authoritative) ว่าสร้างการบรรเทาแต่ละรายการ หากจำนวนเป็น 1 พร้อมรายการชื่อ null และไม่มีการบรรเทา ให้ถือว่าจำนวนเป็น 0 — นี่คือสิ่งประดิษฐ์ backend (ดู [Pre-flight Check](/csd/demo/#pre-flight-check) สำหรับกฎการตัดสินใจ)
+</Aside>
+
+### หลักฐาน
+
+| การตรวจสอบ | ที่คาดไว้ | สถานะ |
+| --- | --- | --- |
+| จำนวนโดเมนที่ได้รับการบรรเทา | 6 (ตรงกับจำนวน POST) | PASS ถ้าจำนวนตรงกัน |
+| POST ขั้นตอน 3 ทั้งหมดส่งกลับ `200` หรือ `409` | แต่ละโดเมนยอมรับ | PASS |
+
+หากจำนวนต่ำกว่าที่คาดไว้ ให้เรียกใช้คำสั่ง POST สำหรับโดเมนที่ขาดหายไปจาก Step 3 อีกครั้ง
+
+## Step 5: เรียกใช้การโจมตี — หลังการบรรเทา
+
+เรียกใช้การจำลองแบบรวมเดียวกัน **ทั้งหมด** เพื่อจับภาพสนาปชอต **"หลัง"** สคริปต์การจำลองนี้เหมือนกัน — เพียงสถานะการบรรเทา CSD ที่เปลี่ยนแปลง การโหลดสคริปต์จากโดเมนที่ได้รับการบรรเทาจะถูกบล็อกโดย CSD JavaScript (แท็ก `&lt;script&gt;` `src` จะล้างเป็นสตริงว่าง)
+
+<Aside type="note">
+ขั้นตอนนี้ใช้ลำดับระบบอัตโนมัติของเบราว์เซอร์เดียวกับ Step 2 ความแตกต่างไม่ได้อยู่ในสิ่งที่คุณเรียกใช้ — อยู่ในสิ่งที่คุณสังเกต เมื่อเปิดใช้งานการบรรเทา CSD จะบล็อกการโหลด `&lt;script&gt;` tag จากโดเมนที่ได้รับการบรรเทา การเรียก Fetch API ไปยังโดเมนที่ได้รับการบรรเทายังคงเสร็จสิ้น — การบรรเทา CSD กำหนดเป้าหมายการโหลดสคริปต์ ไม่ใช่ fetch/XHR
+</Aside>
+
+### การเรียกใช้อัตโนมัติของ AI
+
+ผู้ช่วย AI ที่มีเครื่องมือระบบอัตโนมัติของเบราว์เซอร์เรียกใช้การจำลองการโจมตีอีกครั้งโดยทางโปรแกรมโดยใช้ **Phase 2 initScript เดียวกัน** (โค้ดคำวิ่งสอบในเท่าของ [Phase 2 — AI-Automated Execution](/csd/demo/phase-2-attack/#ai-automated-execution)) initScript บันทึก `fetch` ดั้งเดิมเพื่อหลีกเลี่ยงข้อผิดพลาด zone.js — สิ่งนี้ไม่ส่งผลต่อการบรรเทา CSD เพราะ CSD ไม่สกัดกั้นการเรียก `fetch()`
+
+1. **นำทางด้วย initScript** — ใช้ `new_page` ด้วย `isolatedContext` สำหรับบริบทเบราว์เซอร์สะอาด (หลีกเลี่ยง initScripts ที่ล้าสมัยจาก Step 2) จากนั้นนำทางไปยัง `about:blank` จากนั้นไปยังหน้า login ด้วย **Phase 2 initScript**
+2. **ยกเลิกแบนเนอร์ต้อนรับ** — `press_key` ด้วย `Escape`
+3. **รอให้เสร็จสิ้น** — รอ 10 วินาทีสำหรับการเรียกกลับแบบอะซิงโครนัสทั้งหมด
+4. **จับภาพหลักฐาน** — `list_console_messages` เพื่อตรวจสอบ `[CSD Demo] Simulation complete`; `list_network_requests` ที่ผ่านตัวกรองประเภท `script` และ `fetch` เพื่อสังเกตว่าการโหลดสคริปต์ CDN **ขาดหายไป** (CSD ล้าง script src) ในขณะที่เรียก fetch ไปยังโดเมน exfil ยังคงเสร็จสิ้นตามปกติ
+
+### การเรียกใช้ด้วยตนเอง
+
+ผู้ดำเนินการที่ไม่มีเครื่องมือระบบอัตโนมัติของเบราว์เซอร์เรียกใช้การจำลองด้วยตนเองโดยใช้ขั้นตอนเดียวกับ [Phase 2 — Step 8: Attack Simulation](/csd/demo/phase-2-attack/#step-8-attack-simulation):
+
+1. นำทางไปยัง `http://xF5XC_DOMAINNAMEx/#/login`
+2. ป้อนข้อมูลรับรองเสมือนในฟิลด์อีเมลและรหัสผ่าน (ไม่ส่ง)
+3. เปิด DevTools — กด **F12** และสลับไปที่แท็บ **Console**
+4. วางและเรียกใช้ Combined Detection Script จาก [Trigger Detection](/csd/trigger-detection/#run-the-combined-simulation-script)
+5. สังเกตผลลัพธ์คอนโซลและเครือข่าย — สคริปต์ `onload` และ `onerror` callback ของ CDN จะไม่ทำให้เกิดสคริปต์จากโดเมนที่ได้รับการบรรเทา (CSD ล้างโดเมนสคริปต์ `src` เป็นสตริงว่าง ป้องกันคำขอเครือข่ายทั้งหมด) การเรียก Fetch ไปยังโดเมน exfil (www.httpbin.org, jsonplaceholder.typicode.com) **ยังคงเสร็จสิ้น** ด้วย `200`/`201` — การบรรเทา CSD บล็อกการโหลดสคริปต์ ไม่ใช่การเรียก fetch/XHR
+
+<Aside type="caution" title="เวลาการแพร่กระจายการบรรเทา">
+CSD JavaScript คาดว่าจะบล็อกการโหลดสคริปต์จากโดเมนที่ได้รับการบรรเทาโดยสกัดกั้น setter `&lt;script&gt;` tag `src` อย่างไรก็ตาม ในการทดสอบผ่าน HTTP (พอร์ต 80) การล้าง script `src` ไม่ได้รับการสังเกตภายใน 5 นาทีหลังจากการบรรเทา — สคริปต์ CDN ทั้งหมดยังคงโหลดตามปกติ สิ่งนี้อาจบ่งชี้ว่าการแพร่กระจายการบรรเทาต้องการมากกว่า 5 นาที หรือว่ากลไกนี้ทำงานแตกต่างกันผ่าน HTTP เทียบกับ HTTPS หากการบล็อกการบรรเทาไม่ได้รับการสังเกต ให้อนุญาตเวลาการแพร่กระจายเพิ่มเติมและยืนยันว่าสคริปต์ telemetry CSD ได้รีเฟรชการกำหนดค่า
+
+**การเรียก Fetch ไม่ได้ถูกสกัดกั้นโดยการบรรเทา CSD** (ยืนยันแล้ว) การเรียก fetch exfil ไปยังโดเมนที่ได้รับการบรรเทา (www.httpbin.org, jsonplaceholder.typicode.com) ยังคงเสร็จสิ้นตามปกติด้วยการตอบสนอง `200`/`201` ทั้งก่อนและหลังการบรรเทา การบรรเทา CSD กำหนดเป้าหมายเวกเตอร์ห่วงโซ่อุปทาน (การโหลดสคริปต์ที่เป็นอันตราย) ไม่ใช่การสูญเสียข้อมูลผ่าน fetch/XHR ใช้ Phase 2 initScript เดียวกัน (ด้วย `fetch` ดั้งเดิมบันทึก) สำหรับทั้ง Step 2 และ Step 5
+</Aside>
+
+### หลักฐาน — หลังการบรรเทา
+
+| การตรวจสอบ | ที่คาดไว้ (หลังการบรรเทา) | สถานะ |
+| --- | --- | --- |
+| การโหลดสคริปต์ CDN | **ถูกบล็อก** — สคริปต์ไม่ปรากฏในแท็บเครือข่าย (CSD ล้าง `src` เป็นสตริงว่าง) | PASS |
+| Callback สคริปต์ CDN | ไม่ `onload` และไม่ `onerror` ทำให้เกิดโดเมนที่ได้รับการบรรเทา | PASS |
+| Exfil fetch ไปยัง `www.httpbin.org` | `200` — fetch ยังคงเสร็จสิ้น (CSD ไม่สกัดกั้น fetch) | INFO |
+| Exfil fetch ไปยัง jsonplaceholder.typicode.com | `201` — fetch ยังคงเสร็จสิ้น (CSD ไม่สกัดกั้น fetch) | INFO |
+| ผลลัพธ์คอนโซล | `[CSD Demo] Simulation complete` | PASS |
+
+<Aside type="tip">
+**การตรวจสอบ Backend เป็นหลักฐานที่เชื่อถือได้มากที่สุด** หากไม่สังเกตการบล็อกสคริปต์ที่มองเห็นจากเบราว์เซอร์ภายในกำหนดเวลาการสาธารณปูม ให้ใช้การตอบสนอง `/detected_domains` API เป็นหลักฐานหลัก จำนวน `mitigatedDomains` และลดลง `actionNeededCount` ในสรุปโดเมนยืนยันว่าการบรรเทาใช้งานอยู่ใน backend — แม้ว่า CSD JavaScript ในเบราว์เซอร์ยังไม่ได้รีเฟรชการกำหนดค่าเพื่อบังคับการบล็อก
+</Aside>
+
+## Step 6: เปรียบเทียบก่อน vs หลัง
+
+นี่คือการจ่ายสำหรับการสาธารณปูม — หลักฐานแบบควบคู่พิสูจน์ว่าการโจมตีเดียวกัน บนหน้าเดียวกัน ด้วยสคริปต์เดียวกัน ตอนนี้ให้ผลลัพธ์ที่ต่างกันโดยสิ้นเชิง
+
+### ตารางเปรียบเทียบ
+
+| สัญญาณ | ก่อนการบรรเทา (Step 2) | หลังการบรรเทา (Step 5) |
+| --- | --- | --- |
+| การโหลดสคริปต์ CDN | `200` — สคริปต์ CDN 4 รายการทั้งหมดโหลดตามปกติ | **ถูกบล็อก** — สคริปต์ขาดหายไปจากแท็บเครือข่าย (CSD ล้าง `src` เป็นสตริงว่าง) |
+| Callback `onload` CDN | ข้อความ `[Supply Chain] Loaded from` ปรากฏ | ไม่มี callback ทำให้เกิด (ไม่มีคำขอเครือข่าย) |
+| Exfil ไปยัง `www.httpbin.org` | `200` — ข้อมูล exfiltrated | `200` — fetch ยังคงเสร็จสิ้น (CSD ไม่สกัดกั้น fetch) |
+| Exfil ไปยัง jsonplaceholder.typicode.com | `201` — ข้อมูล exfiltrated | `201` — fetch ยังคงเสร็จสิ้น (CSD ไม่สกัดกั้น fetch) |
+| CSD mitigated domains API | 0 mitigated | 6 mitigated |
+
+### ตรวจสอบการบรรเทาใน Backend Data
+
+สอบถาม `/detected_domains` ทุก 60 วินาทีเป็นเวลา 10 ครั้ง (10 นาที) สูงสุด ดำเนินการไปยังตารางเปรียบเทียบเมื่อการสอบถามส่งกลับ หรือหลังจากสูงสุด 10 นาที — การตรวจสอบเหล่านี้เป็นข้อมูล และไม่ได้ประตูเขา Phase 4
+
+**ตรวจสอบโดเมนที่ตรวจพบหลังการบรรเทา:**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
+```
+
+**ตรวจสอบสคริปต์สำหรับสถานะที่ได้รับการบรรเทา:**
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 86400 ))
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq '{total: (.scripts | length), scripts: [.scripts[]? | {script_name: .script_name, risk_level: .risk_level}]}'
+```
+
+### สรุปหลักฐาน Phase 3
+
+| การตรวจสอบ | ที่คาดไว้ | สถานะ |
+| --- | --- | --- |
+| เบสไลน์สะอาด (Step 1) | 0 mitigated domains ที่จุดเริ่มต้น | PASS / FAIL |
+| ก่อน — การโจมตีสำเร็จ (Step 2) | สคริปต์โหลด exfil ส่งกลับ 200/201 | PASS / FAIL |
+| ใช้การบรรเทา (Step 3) | โดเมนทั้งหมด 6 รายการยอมรับผ่าน POST (200 หรือ 409) | PASS / FAIL |
+| จำนวน Mitigated ยืนยัน (Step 4) | 6 รายการในรายการ | PASS / FAIL |
+| หลัง — บล็อกการโหลดสคริปต์ (Step 5) | สคริปต์ CDN ขาดหายไปจากแท็บเครือข่าย เรียก fetch ยังคงเสร็จสิ้น | PASS / FAIL |
+| เปรียบเทียบก่อน vs หลัง (Step 6) | ความแตกต่างที่ชัดเจนระหว่างหลักฐาน Step 2 และ Step 5 | PASS / FAIL |
+
+<Aside type="note">
+สถานะการตรวจหาการอัปเดตหลังการบรรเทาอาจใช้เวลาปรากฏใน API response หากโดเมนยังคงแสดง "Action Needed" ทันทีหลังการบรรเทา ให้สอบถาม `/detected_domains` ทุก 60 วินาทีเป็นเวลา 10 ครั้ง (10 นาที) หากยังไม่ได้รับการอัปเดตหลังจาก 10 iterations บันทึกสถานะปัจจุบันเป็น INFO — สิ่งนี้ไม่ได้ประตูเขา Phase 4
+</Aside>
+
+---
+
+**Phase 3 เสร็จสมบูรณ์** ดำเนินการไปยัง [Phase 4 — Teardown](/csd/demo/phase-4-teardown/) เมื่อคุณพร้อมที่จะลบวัตถุการปรับใช้ทั้งหมด

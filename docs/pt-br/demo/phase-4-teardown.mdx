@@ -1,0 +1,236 @@
+---
+title: Fase 4 — Desmontagem
+description: >-
+  Limpar objetos de demonstração do locatário F5 XC após a conclusão da
+  demonstração
+sidebar:
+  order: 5
+  label: Fase 4 — Desmontagem
+i18n:
+  sourceHash: 95b0184f156c
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+A Fase 4 remove todos os objetos criados durante o exercício em ordem de dependência inversa. Esta fase requer confirmação humana explícita antes de qualquer operação destrutiva.
+
+<Aside type="caution">
+**Confirme antes de prosseguir.** Se você é um assistente de IA, DEVE perguntar ao operador humano: "A Fase 4 excluirá permanentemente todos os objetos de implantação. Você está pronto para desmontar? Responda 'sim' para continuar." Não execute nenhum comando DELETE até que o operador confirme.
+
+**Exceção:** Quando a desmontagem é executada como parte do Estágio 1 Preparar (limpeza pré-reunião), a frase de acionamento "preparar a demonstração" do operador serve como autorização implícita. Nenhuma confirmação adicional é necessária. O portão de confirmação acima se aplica apenas durante a desmontagem autônoma ou Estágio 4 pós-reunião.
+</Aside>
+
+## Ordem de Desmontagem
+
+Remova os objetos em **ordem de criação inversa** — delete primeiro os objetos que dependem de outros objetos:
+
+1. **Domínios Mitigados** — delete todos os domínios mitigados de CSD criados na Fase 3
+2. **HTTPS Load Balancer** (`${F5XC_LB_NAME}-https`) — reduzir ao esqueleto (preservar certificado Let's Encrypt); DELETE completo se `NAMESPACE_CREATED=true` ou por solicitação explícita
+3. **HTTP Load Balancer** (`${F5XC_LB_NAME}-http`) — depende do Origin Pool
+4. **Origin Pool** — depende do Healthcheck (se criado)
+5. **Limpeza da zona DNS** — o HTTPS LB esqueleto retém seus registros A gerenciados e ACME (isso é desejado — mantém o certificado válido). Os registros gerenciados do HTTP LB se limpam automaticamente na exclusão. Os registros manuais em `default_rr_set_group` precisam de limpeza manual via `PUT`
+6. **Healthcheck** — apenas se criado na Fase 1 Passo 1
+7. **Domínio Protegido** — delete o registro de domínio protegido de CSD
+8. **Namespace** — apenas se criado durante a Fase 1 Passo 0 (`NAMESPACE_CREATED=true`)
+
+<Aside type="caution">
+**Não delete a zona DNS.** A zona DNS é infraestrutura compartilhada que suporta muitos outros registros DNS na plataforma e nunca deve ser excluída. Apenas limpe os registros que você adicionou manualmente ao `default_rr_set_group`. O domínio protegido, porém, é um objeto de configuração de CSD vinculado a esta implantação e **deve** ser deletado quando totalmente desmontar.
+</Aside>
+
+## Deletar Domínios Mitigados
+
+Se a Fase 3 foi executada, delete todos os domínios mitigados antes de remover objetos de infraestrutura. A simulação padrão cria 6 domínios mitigados:
+
+```bash
+for domain in cdn.jsdelivr.net esm.sh unpkg.com ga.jspm.io httpbin.org jsonplaceholder.typicode.com; do
+  curl -s -X DELETE \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/$domain"
+done
+```
+
+Verificar: Liste os domínios mitigados para confirmar que a contagem é 0 (ou 1 — veja a nota abaixo):
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '{count: (.items | length)}'
+```
+
+<Aside type="note">
+A lista de domínios mitigados pode retornar uma entrada fantasma (contagem = 1) com metadados nulos após a exclusão de todos os domínios mitigados. Este é um artefato de backend que aparece quando o estado do serviço de CSD está entre configurações — não representa uma mitigação real e pode ser ignorado. Tentar deletar essa entrada fantasmagórica retorna `"Delete list when service not configured"`.
+</Aside>
+
+## HTTPS Load Balancer
+
+O comportamento da desmontagem do HTTPS LB depende se o namespace foi criado durante esta sessão de demonstração (variável `NAMESPACE_CREATED` da Fase 1 Passo 0):
+
+- **`NAMESPACE_CREATED=false`** (namespace pré-existente) — reduzir ao estado **esqueleto**, preservando o certificado Let's Encrypt para reutilização
+- **`NAMESPACE_CREATED=true`** (namespace criado durante demonstração) — **DELETE completo**, já que o próprio namespace será deletado e o certificado não pode ser preservado
+
+### Caminho A: Reduzir ao Esqueleto (Namespace Pré-existente)
+
+Quando o namespace é pré-existente, reduzir o HTTPS LB a um estado **esqueleto** — remova a referência de pool de origem e a configuração de CSD enquanto preserva a ligação de domínio, configurações de `https_auto_cert` e o certificado Let's Encrypt. Isso evita disparar uma nova solicitação de certificado na próxima execução de demonstração (Let's Encrypt aplica um limite de 5 certificados duplicados por conjunto de identificadores exato a cada 7 dias).
+
+**Passo 1 — GET a configuração atual do HTTPS LB:**
+
+```bash
+HTTPS_LB_JSON=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+```
+
+**Passo 2 — Reduzir ao esqueleto via jq e PUT novamente:**
+
+```bash
+echo "$HTTPS_LB_JSON" | jq '{
+  metadata: .metadata,
+  spec: (.spec | del(.client_side_defense) | .disable_client_side_defense = {} | .default_route_pools = [])
+}' | curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d @- \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq .
+```
+
+O filtro jq preserva a especificação inteira (domínios, `https_auto_cert`, `advertise_on_public_default_vip` e todos os sinalizadores de recursos desabilitados) enquanto remove `client_side_defense` (substituído por `disable_client_side_defense: {}`) e limpa `default_route_pools` para um array vazio. O certificado e as ligações DNS permanecem intactos.
+
+**Verifique** se o HTTPS LB agora é um esqueleto:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{
+    name: .metadata.name,
+    domains: .spec.domains,
+    has_origin_pools: ((.spec.default_route_pools // []) | length > 0),
+    has_csd: (.spec.client_side_defense != null),
+    cert_state: .spec.cert_state
+  }'
+```
+
+Esperado: `has_origin_pools: false`, `has_csd: false`, `domains` ainda preenchido, `cert_state` inalterado (p. ex., `CertificateValid`).
+
+### Caminho B: Delete Completo (Namespace Criado Durante Demonstração)
+
+Quando o namespace foi criado durante esta sessão de demonstração, o HTTPS LB deve ser totalmente deletado — a preservação do esqueleto é desnecessária porque o próprio namespace será removido no final da desmontagem.
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https"
+```
+
+Verificar: `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` não deve conter `${F5XC_LB_NAME}-https`.
+
+<Aside type="tip">
+**Opção de desmontagem completa (namespace pré-existente).** Mesmo quando o namespace é pré-existente, você pode deletar completamente o HTTPS LB se descomissionar permanentemente o domínio de demonstração ou se o operador solicitar explicitamente "desmontagem completa" ou "forçar exclusão". Use DELETE completo apenas quando o domínio não será reutilizado dentro de 7 dias. Deletar o HTTPS LB dispara uma nova solicitação de certificado Let's Encrypt na próxima execução de demonstração.
+</Aside>
+
+## Deletar HTTP Load Balancer
+
+Delete o HTTP LB primário:
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http"
+```
+
+Verificar: `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` não deve conter `${F5XC_LB_NAME}-http`. Se o objeto ainda aparecer na lista depois que DELETE retornou `200`, aguarde 30 segundos e verifique novamente uma vez. Se ainda estiver presente após a segunda verificação, reporte ao operador — não prossiga.
+
+## Deletar Origin Pool
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx"
+```
+
+Verificar: `GET /api/config/namespaces/\{namespace\}/origin_pools` não deve conter o nome do pool. Se o objeto ainda aparecer na lista depois que DELETE retornou `200`, aguarde 30 segundos e verifique novamente uma vez. Se ainda estiver presente após a segunda verificação, reporte ao operador.
+
+## Deletar Healthcheck
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx"
+```
+
+Verificar: `GET /api/config/namespaces/\{namespace\}/healthchecks` não deve conter o nome do healthcheck. Se o objeto ainda aparecer na lista depois que DELETE retornou `200`, aguarde 30 segundos e verifique novamente uma vez. Se ainda estiver presente após a segunda verificação, reporte ao operador.
+
+## Deletar Domínio Protegido
+
+Delete o registro de domínio protegido de CSD. O domínio protegido está no escopo do locatário (não no escopo do namespace), mas é um objeto de configuração de CSD vinculado a esta implantação — não é infraestrutura compartilhada como a zona DNS.
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/xF5XC_ROOT_DOMAINx"
+```
+
+Verificar: Liste os domínios protegidos para confirmar que o domínio não está mais registrado:
+
+```bash
+curl -s -X GET \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '.items // [] | map(.metadata.name)'
+```
+
+<Aside type="note">
+O endpoint GET individual (`/protected_domains/\{name\}`) pode retornar "API Group could not be determined." Se o endpoint DELETE retornar o mesmo erro, use o endpoint de lista para verificar se o domínio não aparece mais, ou delete o domínio protegido através da UI do F5 Distributed Cloud (F5 XC) Console em vez disso.
+</Aside>
+
+## Deletar Namespace (Condicional)
+
+Esta etapa é executada **apenas** se o namespace foi criado durante a Fase 1 Passo 0 (`NAMESPACE_CREATED=true`). Se o namespace era pré-existente (`NAMESPACE_CREATED=false`), pule completamente esta etapa — o namespace é infraestrutura compartilhada que não deve ser deletada.
+
+<Aside type="caution">
+**A exclusão em cascata remove todos os objetos do escopo do namespace.** O endpoint de exclusão em cascata remove o namespace e cada objeto dentro dele. Todos os objetos de infraestrutura (load balancers, origin pools, healthchecks) já devem ter sido deletados pelas etapas de desmontagem anteriores. A exclusão em cascata atua como uma limpeza final para capturar qualquer objeto restante e remover o próprio namespace.
+</Aside>
+
+```bash
+if [ "$NAMESPACE_CREATED" = "true" ]; then
+  curl -s -X POST \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d '{"name": "xF5XC_NAMESPACEx"}' \
+    "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx/cascade_delete" | jq .
+fi
+```
+
+<Aside type="note">
+O endpoint padrão `DELETE /api/web/namespaces/{name}` retorna `"Not Implemented"` (código de erro `12`). Você **deve** usar o endpoint de exclusão em cascata (`POST .../cascade_delete`) para deletar um namespace.
+</Aside>
+
+Verificar: Confirme que o namespace não existe mais:
+
+```bash
+curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx"
+```
+
+Esperado: `404` se `NAMESPACE_CREATED=true`, `200` se `NAMESPACE_CREATED=false`.
+
+## Resumo de Evidências da Fase 4
+
+| Objeto | Status Delete | Status Verificar |
+| --- | --- | --- |
+| Domínios Mitigados (6) | Todos `200` (`\{\}` vazio) ou pulado se Fase 3 não executada | Contagem 0 (ou 1 fantasmagórico) — APROVADO |
+| HTTPS Load Balancer (`-https`) | `200` (PUT de esqueleto) ou `200` (DELETE completo se `NAMESPACE_CREATED=true`) | Esqueleto verificado ou não na lista — APROVADO |
+| HTTP Load Balancer (`-http`) | `200` (`\{\}` vazio) | Não na lista — APROVADO |
+| Origin Pool | `200` (`\{\}` vazio) | Não na lista — APROVADO |
+| Healthcheck | `200` (`\{\}` vazio) ou pulado | Não na lista — APROVADO |
+| Domínio Protegido | `200` (`\{\}` vazio) | Não na lista — APROVADO |
+| Zona DNS | NÃO deletada (infra compartilhada) | Zona ainda existe — APROVADO |
+| Namespace | `200` (exclusão em cascata) se `NAMESPACE_CREATED=true`, pulado caso contrário | `404` se deletado, `200` se preservado — APROVADO |
+
+---
+
+**Desmontagem concluída.** Quando o namespace era pré-existente (`NAMESPACE_CREATED=false`), todos os objetos de implantação foram removidos, exceto o esqueleto do HTTPS LB, que preserva o certificado Let's Encrypt e a ligação de domínio para a próxima execução de demonstração. Quando o namespace foi criado durante a demonstração (`NAMESPACE_CREATED=true`), todos os objetos, incluindo o HTTPS LB e o namespace, foram totalmente deletados. A zona DNS e seus registros não gerenciados permanecem intactos em ambos os casos.

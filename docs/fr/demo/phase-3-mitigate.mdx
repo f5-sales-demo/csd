@@ -1,0 +1,336 @@
+---
+title: Phase 3 — Atténuer
+description: >-
+  Appliquer la politique d'atténuation CSD et vérifier que le trafic d'attaque
+  est bloqué
+sidebar:
+  order: 4
+  label: Phase 3 — Atténuer
+i18n:
+  sourceHash: 5d336f6c3bde
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+La Phase 3 crée une **preuve avant/après** de l'atténuation CSD. Vous relancez l'attaque sans atténuations pour établir une ligne de base, appliquez les atténuations, puis relancez la même attaque pour prouver que CSD bloque les appels réseau. La Phase 2 doit être complète — tous les contrôles DET doivent PASSER — avant de continuer.
+
+<Aside type="note">
+**L'atténuation CSD bloque le chargement des scripts à partir des domaines atténués.** Lorsqu'un domaine se trouve sur la liste d'atténuation, le JavaScript CSD intercepte les URL sources des balises `&lt;script&gt;` et empêche le chargement des scripts — arrêtant les attaques de la chaîne d'approvisionnement à la source. CSD n'intercepte pas les appels `fetch()` ou `XMLHttpRequest`. Cette phase capture la preuve du blocage des scripts en exécutant la même attaque avant et après l'atténuation.
+</Aside>
+
+<Aside type="caution">
+**Note de test en direct :** Les points de terminaison POST/DELETE d'atténuation ont été validés dans les environnements de développement, mais les détails du comportement (timing de réponse, effet sur le statut de détection des scripts) peuvent varier selon les configurations des locataires. Si vous observez des réponses inattendues, consultez la [Référence API](/csd/api-reference/#mitigated-domains) pour les définitions de points de terminaison canoniques.
+</Aside>
+
+## Étape 1 : Confirmer l'absence d'atténuations actives (ligne de base)
+
+Avant de capturer la photo « avant », vérifiez que l'environnement est propre — aucune atténuation ne doit être active. Cela garantit que l'attaque de ligne de base s'exécute sans aucun blocage CSD.
+
+### Vérifier le nombre de domaines atténués
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '{count: (.items | length)}'
+```
+
+Si le nombre n'est pas `0`, des atténuations restent d'une exécution antérieure. Supprimez-les toutes avant de continuer :
+
+```bash
+# Supprimer un domaine atténué (répétez pour chaque nom de domaine)
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/<domain-name>" \
+  | jq .
+```
+
+Remplacez `<domain-name>` par le `metadata.name` utilisé quand le domaine a été atténué (par exemple, `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io`, `httpbin.org`, `jsonplaceholder.typicode.com`). Si le nettoyage de `httpbin.org` laisse un élément restant, essayez aussi de supprimer `www.httpbin.org` — certaines exécutions antérieures ont pu utiliser ce nom comme identifiant de métadonnées.
+
+### Confirmer la présence des détections de Phase 2
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
+```
+
+### Preuve
+
+| Vérification | Attendu | Statut |
+| --- | --- | --- |
+| Nombre de domaines atténués | `0` (ligne de base propre) | PASSER si 0, nettoyage requis si > 0 |
+| Nombre de domaines détectés | > 0 (détections de Phase 2 présentes) | PASSER si > 0 |
+| Domaines d'exfiltration présents | `www.httpbin.org`, `jsonplaceholder.typicode.com` | PASSER si au moins un apparaît |
+
+## Étape 2 : Exécuter l'attaque — Avant atténuation
+
+Relancez la simulation combinée avec **aucune atténuation active** pour capturer une nouvelle ligne de base. C'est la photo **« avant »** — preuve que les attaques réussissent quand l'atténuation CSD n'est pas appliquée.
+
+<Aside type="note">
+Cette étape nécessite une exécution JavaScript côté navigateur — `curl` ne peut pas déclencher la détection CSD. Les assistants IA avec des outils d'automatisation de navigateur (MCP Chrome DevTools, Playwright, Puppeteer) exécutent ces étapes directement à l'aide de la séquence **Exécution automatisée par IA** ci-dessous. Les opérateurs sans automatisation de navigateur exécutent les étapes manuelles.
+</Aside>
+
+### Exécution automatisée par IA
+
+Les assistants IA avec des outils d'automatisation de navigateur exécutent la simulation d'attaque par programmation en utilisant le même initScript de Phase 2 (qui sauvegarde `fetch` natif) :
+
+1. **Naviguer avec initScript** — d'abord naviguer vers `about:blank` pour garantir un contexte de document propre (évite les initScripts obsolètes des navigations précédentes), puis `navigate_page` vers `http://$F5XC_DOMAINNAME/#/login` avec le **initScript de Phase 2** (code verbatim dans [Phase 2 — Exécution automatisée par IA](/csd/demo/phase-2-attack/#ai-automated-execution)). Cet initScript sauvegarde `setInterval`, `clearInterval`, `fetch` et `console.log` natifs — la référence `fetch` native est correcte ici car aucune atténuation n'est active
+2. **Fermer la bannière de bienvenue** — `press_key` avec `Escape` pour fermer la bannière de bienvenue. Lors des visites ultérieures, la bannière peut ne pas apparaître (cookies persistants). Le dialogue de consentement aux cookies est automatiquement fermé par la touche Échap
+3. **Attendre l'achèvement** — attendre 10 secondes pour que tous les rappels de chargement/erreur de script CDN et les résolutions de promesse fetch se terminent
+4. **Capturer la preuve** — `list_console_messages` pour vérifier `[CSD Demo] Simulation complete` et les résultats de chargement CDN ; `list_network_requests` filtrés par les types `script` et `fetch` pour vérifier les codes d'état HTTP (`200`/`201` pour le succès)
+
+<Aside type="caution">
+**Incompatibilité de zone.js** — Juice Shop utilise zone.js d'Angular, qui corrige `setTimeout`, `setInterval`, `fetch`, `XMLHttpRequest` et d'autres API du navigateur. Cela casse les outils MCP `evaluate_script`, `fill` et `click` avec `Cannot read properties of undefined (reading 'call')`. Utilisez `navigate_page` avec `initScript` à la place — `initScript` s'exécute avant que zone.js ne se charge, vous pouvez donc sauvegarder les références d'API natives et les utiliser dans les rappels de polling. L'initScript doit remplir les champs du formulaire à l'aide du setter natif `HTMLInputElement.prototype.value` (pas `fill`) et exécuter le script de détection en ligne (pas via `setTimeout`, que zone.js peut intercepter après le chargement de la page). Voir [Déclencher la détection — Exécution automatisée par IA](/csd/trigger-detection/#ai-automated-execution) pour les détails.
+</Aside>
+
+<Aside type="note">
+**Accumulation d'initScript** — chaque appel `navigate_page` avec un paramètre `initScript` ajoute le script à une liste persistante qui s'exécute à chaque chargement de document ultérieur. Pour éviter que les scripts obsolètes n'interfèrent, naviguez vers `about:blank` entre les exécutions ou utilisez `new_page` avec `isolatedContext` pour un contexte de navigateur propre.
+</Aside>
+
+### Exécution manuelle
+
+Les opérateurs sans outils d'automatisation de navigateur exécutent la simulation manuellement en utilisant la même procédure que [Phase 2 — Étape 8 : Simulation d'attaque](/csd/demo/phase-2-attack/#step-8-attack-simulation) :
+
+1. Naviguer vers `http://xF5XC_DOMAINNAMEx/#/login`
+2. Entrer des identifiants factices dans les champs E-mail et Mot de passe (ne pas soumettre)
+3. Ouvrir DevTools — appuyer sur **F12** et basculer vers l'onglet **Console**
+4. Coller et exécuter le script de détection combiné depuis [Déclencher la détection](/csd/trigger-detection/#run-the-combined-simulation-script)
+5. Observer la sortie de la console — tous les scripts CDN doivent se charger et les appels d'exfiltration doivent réussir avec les réponses `200`/`201`
+
+### Preuve — Avant atténuation
+
+| Vérification | Attendu (avant atténuation) | Statut |
+| --- | --- | --- |
+| Scripts CDN injectés | Les 4 balises de script se chargent — les messages `[Supply Chain] Loaded from` apparaissent, l'onglet réseau affiche `200` | PASSER |
+| Exfiltration fetch vers `www.httpbin.org` | L'onglet réseau affiche `200` — données envoyées | PASSER |
+| Exfiltration fetch vers jsonplaceholder.typicode.com | L'onglet réseau affiche `201` — données envoyées | PASSER |
+| Sortie de console | `[CSD Demo] Simulation complete` | PASSER |
+
+<Aside type="note">
+**Vérifier avec les requêtes réseau :** La preuve la plus fiable est l'onglet **Réseau** (ou `list_network_requests` pour les assistants IA), pas les rappels de console. Zone.js dans Juice Shop peut casser les rappels `.then()` de promesse et les gestionnaires `onload` de script, causant que les messages de console soient incomplets même quand les requêtes réseau réussissent. Toujours faire une référence croisée de la sortie de console avec les codes d'état des requêtes réseau.
+</Aside>
+
+<Aside type="tip">
+C'est la preuve de ligne de base : sans atténuations actives, les scripts de l'attaquant se chargent librement et l'exfiltration de données réussit. Sauvegardez ou prenez une capture d'écran de cette preuve — vous la comparerez directement aux résultats « après » à l'Étape 5.
+</Aside>
+
+## Étape 3 : Appliquer les atténuations
+
+Pour chaque domaine détecté, POSTEZ vers le point de terminaison des domaines atténués. Les cibles principales de la simulation de Phase 2 sont les 4 domaines d'injection CDN et tous les domaines d'exfiltration de données détectés.
+
+**Cibles d'atténuation principales** (du script de simulation combiné) :
+
+| Domaine | Rôle |
+| --- | --- |
+| `cdn.jsdelivr.net` | Injection de script CDN |
+| `esm.sh` | Injection de script CDN |
+| `unpkg.com` | Injection de script CDN |
+| `ga.jspm.io` | Injection de script CDN |
+| `www.httpbin.org` | Point de terminaison d'exfiltration de données |
+| `jsonplaceholder.typicode.com` | Point de terminaison d'exfiltration de données |
+
+<Aside type="note">
+Le corps POST nécessite **à la fois** `metadata.name` (l'identifiant de l'objet) et `spec.mitigated_domain` (la chaîne de domaine que CSD classera). Les deux doivent être définis — `spec: {}` provoque une erreur `400`. Pour la plupart des domaines, les deux champs utilisent la même valeur (par exemple, `cdn.jsdelivr.net`). Voir l'exception `httpbin.org` ci-dessous.
+</Aside>
+
+**Atténuer un domaine** (exécuter une fois par domaine) :
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "cdn.jsdelivr.net",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "mitigated_domain": "cdn.jsdelivr.net"
+    }
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+```
+
+Répétez pour chaque domaine :
+
+```bash
+# esm.sh
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"esm.sh","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"esm.sh"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# unpkg.com
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"unpkg.com","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"unpkg.com"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# ga.jspm.io
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"ga.jspm.io","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"ga.jspm.io"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# httpbin.org — utiliser www.httpbin.org comme mitigated_domain (voir note ci-dessous)
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"httpbin.org","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"www.httpbin.org"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+
+# jsonplaceholder.typicode.com
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":{"name":"jsonplaceholder.typicode.com","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"jsonplaceholder.typicode.com"}}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+```
+
+<Aside type="note">
+**Contrainte eTLD+1 `httpbin.org` :** L'API rejette les domaines eTLD+1 nus comme valeurs `mitigated_domain` avec `"Invalid root domain: cannot derive eTLD+1"`. Utilisez `www.httpbin.org` comme valeur `spec.mitigated_domain` tout en conservant `httpbin.org` comme `metadata.name`. L'atténuation est appliquée correctement — l'identifiant `name` est ce qui apparaît dans la liste des domaines atténués. Tout domaine nu (pas de sous-domaine) utilisé comme cible d'exfiltration dans un script de simulation personnalisé aura la même contrainte.
+</Aside>
+
+Une réponse `200` retourne l'objet de domaine atténué créé. Une réponse `409` signifie que le domaine est déjà dans la liste d'atténuation — c'est une condition de succès.
+
+## Étape 4 : Vérifier que les atténuations ont été appliquées
+
+Énumérez tous les domaines atténués et confirmez que le nombre correspond au nombre de domaines que vous venez de soumettre :
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '{count: (.items | length)}'
+```
+
+<Aside type="note">
+Le point de terminaison de la liste des domaines atténués retourne des éléments avec `metadata.name` null pour TOUS les éléments — les noms de domaines individuels ne sont pas visibles dans la réponse de la liste. Vérifiez en vérifiant que le nombre d'éléments est égal au nombre de requêtes POST effectuées (6 pour la simulation standard). La réponse `200` de chaque POST individuel à l'Étape 3 est la preuve autoritative que chaque atténuation a été créée. Si le nombre est 1 avec un élément de nom nul et qu'aucune atténuation n'a été appliquée, traitez le nombre comme 0 — c'est un artefact backend (voir [Vérification préalable](/csd/demo/#pre-flight-check) pour la règle de décision).
+</Aside>
+
+### Preuve
+
+| Vérification | Attendu | Statut |
+| --- | --- | --- |
+| Nombre de domaines atténués | 6 (correspond au nombre POST) | PASSER si le nombre correspond |
+| Tous les POST de l'Étape 3 ont retourné `200` ou `409` | Chaque domaine accepté | PASSER |
+
+Si le nombre est inférieur à celui attendu, relancez la commande POST pour le domaine manquant à l'Étape 3.
+
+## Étape 5 : Exécuter l'attaque — Après atténuation
+
+Relancez la **même** simulation combinée pour capturer la photo **« après »**. Le script de simulation est identique — seul l'état d'atténuation de CSD a changé. Les chargements de scripts à partir de domaines atténués sont maintenant bloqués par le JavaScript CSD (la balise `&lt;script&gt;` `src` est effacée à une chaîne vide).
+
+<Aside type="note">
+Cette étape utilise la même séquence d'automatisation de navigateur que l'Étape 2. La différence ne se situe pas dans ce que vous exécutez — elle se situe dans ce que vous observez. Avec les atténuations actives, CSD bloque les chargements de balises `&lt;script&gt;` à partir de domaines atténués. Les appels de l'API Fetch vers les domaines d'atténuation d'exfiltration se complètent toujours — l'atténuation CSD cible le chargement de scripts, pas fetch/XHR.
+</Aside>
+
+### Exécution automatisée par IA
+
+Les assistants IA avec des outils d'automatisation de navigateur relancent la simulation d'attaque par programmation en utilisant le **même initScript de Phase 2** (code verbatim dans [Phase 2 — Exécution automatisée par IA](/csd/demo/phase-2-attack/#ai-automated-execution)). L'initScript sauvegarde `fetch` natif pour éviter les erreurs zone.js — cela n'affecte pas l'atténuation CSD car CSD n'intercepte pas les appels `fetch()`.
+
+1. **Naviguer avec initScript** — utiliser `new_page` avec `isolatedContext` pour un contexte de navigateur propre (évite les initScripts obsolètes de l'Étape 2), puis naviguer vers `about:blank`, puis vers la page de connexion avec le **initScript de Phase 2**
+2. **Fermer la bannière de bienvenue** — `press_key` avec `Escape`
+3. **Attendre l'achèvement** — attendre 10 secondes pour que tous les rappels asynchrones se terminent
+4. **Capturer la preuve** — `list_console_messages` pour vérifier `[CSD Demo] Simulation complete` ; `list_network_requests` filtrés par les types `script` et `fetch` pour observer que les chargements de scripts CDN sont **absents** (CSD a effacé la src du script) tandis que les appels fetch vers les domaines d'exfiltration se complètent toujours normalement
+
+### Exécution manuelle
+
+Les opérateurs sans outils d'automatisation de navigateur relancent la simulation manuellement en utilisant la même procédure que [Phase 2 — Étape 8 : Simulation d'attaque](/csd/demo/phase-2-attack/#step-8-attack-simulation) :
+
+1. Naviguer vers `http://xF5XC_DOMAINNAMEx/#/login`
+2. Entrer des identifiants factices dans les champs E-mail et Mot de passe (ne pas soumettre)
+3. Ouvrir DevTools — appuyer sur **F12** et basculer vers l'onglet **Console**
+4. Coller et exécuter le script de détection combiné depuis [Déclencher la détection](/csd/trigger-detection/#run-the-combined-simulation-script)
+5. Observer la sortie de console et de réseau — les rappels `onload` et `onerror` du script CDN ne se déclenchent pas pour les domaines atténués (CSD a effacé la `src` du script à une chaîne vide, empêchant la requête réseau entièrement). Les appels fetch vers les domaines d'exfiltration (www.httpbin.org, jsonplaceholder.typicode.com) se **complètent toujours** avec `200`/`201` — l'atténuation CSD bloque le chargement des scripts, pas les appels fetch/XHR
+
+<Aside type="caution" title="Timing de propagation de l'atténuation">
+Le JavaScript CSD est supposé bloquer le chargement de scripts à partir de domaines atténués en interceptant le setter de `src` de la balise `&lt;script&gt;`. Cependant, en test sur HTTP (port 80), l'effacement de la `src` du script n'a pas été observé dans les 5 minutes suivant l'application des atténuations — tous les scripts CDN ont continué à se charger normalement. Cela peut indiquer que la propagation de l'atténuation nécessite plus de 5 minutes, ou que le mécanisme se comporte différemment sur HTTP par rapport à HTTPS. Si le blocage de l'atténuation n'est pas observé, attendez un délai de propagation supplémentaire et vérifiez que le script de télémétrie CSD a actualisé sa configuration.
+
+**Les appels fetch ne sont pas interceptés par l'atténuation CSD** (vérifiés). Les appels fetch d'exfiltration vers les domaines atténués (www.httpbin.org, jsonplaceholder.typicode.com) se complètent toujours normalement avec les réponses `200`/`201`, avant et après l'atténuation. L'atténuation CSD cible le vecteur de la chaîne d'approvisionnement (chargement de scripts malveillants), pas l'exfiltration de données via fetch/XHR. Utilisez le même initScript de Phase 2 (avec `fetch` natif sauvegardé) pour les Étapes 2 et 5.
+</Aside>
+
+### Preuve — Après atténuation
+
+| Vérification | Attendu (après atténuation) | Statut |
+| --- | --- | --- |
+| Chargements de scripts CDN | **Bloqués** — les scripts n'apparaissent pas dans l'onglet réseau (CSD a effacé `src` à une chaîne vide) | PASSER |
+| Rappels de scripts CDN | Ni `onload` ni `onerror` ne se déclenche pour les domaines atténués | PASSER |
+| Exfiltration fetch vers `www.httpbin.org` | `200` — fetch se complète toujours (CSD n'intercepte pas fetch) | INFO |
+| Exfiltration fetch vers jsonplaceholder.typicode.com | `201` — fetch se complète toujours (CSD n'intercepte pas fetch) | INFO |
+| Sortie de console | `[CSD Demo] Simulation complete` | PASSER |
+
+<Aside type="tip">
+**La vérification backend est la preuve la plus fiable.** Si le blocage visible des scripts du navigateur n'est pas observé dans le délai de démo, utilisez la réponse de l'API `/detected_domains` comme preuve principale. Le nombre `mitigatedDomains` et le `actionNeededCount` réduit dans le résumé du domaine confirment que les atténuations sont actives dans le backend — même si le JavaScript CSD dans le navigateur n'a pas encore actualisé sa configuration pour appliquer le blocage.
+</Aside>
+
+## Étape 6 : Comparaison avant vs après
+
+C'est la récompense de la démo — preuve côte à côte prouvant que la même attaque, sur la même page, avec le même script, produit maintenant un résultat complètement différent.
+
+### Tableau de comparaison
+
+| Signal | Avant atténuation (Étape 2) | Après atténuation (Étape 5) |
+| --- | --- | --- |
+| Chargements de scripts CDN | `200` — les 4 scripts CDN se chargent normalement | **Bloqués** — scripts absents de l'onglet réseau (CSD a effacé `src` à une chaîne vide) |
+| Rappels CDN `onload` | Les messages `[Supply Chain] Loaded from` apparaissent | Aucun rappel ne se déclenche (aucune requête réseau n'a été effectuée) |
+| Exfiltration vers `www.httpbin.org` | `200` — données exfiltrées | `200` — fetch se complète toujours (CSD n'intercepte pas fetch) |
+| Exfiltration vers jsonplaceholder.typicode.com | `201` — données exfiltrées | `201` — fetch se complète toujours (CSD n'intercepte pas fetch) |
+| API des domaines atténués CSD | 0 atténués | 6 atténués |
+
+### Vérifier l'atténuation dans les données backend
+
+Interrogez `/detected_domains` tous les 60 secondes pour jusqu'à 10 itérations (10 minutes). Procédez au tableau de comparaison une fois que la requête retourne, ou après le maximum de 10 minutes — ces vérifications sont informatives et n'entravent pas la Phase 4.
+
+**Vérifier les domaines détectés après atténuation :**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
+```
+
+**Vérifier les scripts pour le statut atténué :**
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 86400 ))
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq '{total: (.scripts | length), scripts: [.scripts[]? | {script_name: .script_name, risk_level: .risk_level}]}'
+```
+
+### Résumé des preuves de Phase 3
+
+| Vérification | Attendu | Statut |
+| --- | --- | --- |
+| Ligne de base propre (Étape 1) | 0 domaines atténués au départ | PASSER / ÉCHOUER |
+| Avant — l'attaque réussit (Étape 2) | Les scripts se chargent, l'exfil retourne 200/201 | PASSER / ÉCHOUER |
+| Atténuations appliquées (Étape 3) | Les 6 domaines acceptés via POST (200 ou 409) | PASSER / ÉCHOUER |
+| Nombre d'atténuations confirmé (Étape 4) | 6 éléments dans la liste | PASSER / ÉCHOUER |
+| Après — chargements de scripts bloqués (Étape 5) | Scripts CDN absents de l'onglet réseau, les appels fetch se complètent toujours | PASSER / ÉCHOUER |
+| Comparaison avant vs après (Étape 6) | Différence claire entre les preuves de l'Étape 2 et de l'Étape 5 | PASSER / ÉCHOUER |
+
+<Aside type="note">
+Les mises à jour du statut de détection après atténuation peuvent prendre du temps à apparaître dans la réponse de l'API. Si les domaines affichent toujours « Action Needed » immédiatement après l'atténuation, interrogez `/detected_domains` tous les 60 secondes pour jusqu'à 10 itérations (10 minutes). Si toujours pas mis à jour après 10 itérations, enregistrez l'état actuel comme INFO — cela n'entrave pas la Phase 4.
+</Aside>
+
+---
+
+**Phase 3 complète.** Procédez à [Phase 4 — Démantèlement](/csd/demo/phase-4-teardown/) quand vous êtes prêt à supprimer tous les objets de déploiement.

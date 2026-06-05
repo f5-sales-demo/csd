@@ -1,0 +1,430 @@
+---
+title: API リファレンス
+description: CSD ドメイン管理、攻撃スクリプト、緩和ルールの REST API エンドポイント
+sidebar:
+  order: 10
+  label: API リファレンス
+i18n:
+  sourceHash: 6564ced2653f
+  translator: machine
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+CSD は `/api/shape/csd/` の専用 API を備えており、ドメイン、スクリプト、緩和、監視の管理に使用できます。CSD はロードバランサー設定 API を介して HTTP ロードバランサーで有効にすることもできます。
+
+## 認証
+
+すべての API 呼び出しには API トークンが必要です。XC コンソールの **Administration** &rarr; **Credentials** &rarr; **API Credentials** で生成します。
+
+[API オートメーション — 環境セットアップ](/csd/demo/#environment-setup) で説明されているように環境変数を設定します。
+
+```bash
+set -a && source .env && set +a
+```
+
+すべての curl の例では `xTOKENx` プレースホルダー形式を使用しています。環境変数で置換するか、ページ上部のインタラクティブフォームを使用してください。例えば、`xF5XC_API_TOKENx` は `$F5XC_API_TOKEN` に対応しています。
+
+```bash
+-H "Authorization: APIToken xF5XC_API_TOKENx"
+```
+
+## API の規約
+
+<Aside type="note">
+これらの規約は、すべての F5 Distributed Cloud (F5 XC) 設定および CSD API エンドポイントに適用されます。これらを理解することで、一般的なオートメーションの誤りを防ぐことができます。
+</Aside>
+
+### レスポンス本文
+
+- **POST** は作成されたオブジェクトを JSON として返します。
+- **PUT** と **DELETE** は HTTP 200 で空の `\{\}` を返します。これは正常なことで、エラーではありません。空のレスポンス本文を失敗として扱わないでください。
+
+### リストと GET エンドポイント
+
+リストエンドポイント（例：`/healthchecks`、`/origin_pools`、`/protected_domains`）と個別の GET エンドポイント（例：`/healthchecks/\{name\}`）は、**異なるレスポンス構造を返します**。
+
+| エンドポイントタイプ | パス例 | レスポンス構造 |
+| --- | --- | --- |
+| **リスト** | `/origin_pools` | アイテムは最上位の `.name`、`.namespace`、`.tenant` を持ち、`metadata: null` と `get_spec: null` を含む |
+| **個別 GET** | `/origin_pools/\{name\}` | オブジェクトは `.metadata.name`、`.spec.*` を持ち、完全な設定を含む |
+
+各エンドポイントに対して正しい `jq` パスを使用してください。例えば、リストエンドポイントから名前を抽出するには `.items[].metadata.name` ではなく `.items[].name` を使用します。
+
+### 保護ドメイン識別子
+
+保護ドメインの GET と DELETE 操作の場合、`\{name\}` パス パラメーターはオブジェクト名（ユーザーが選択した識別子）ではなく、**ドメイン値そのもの**（例：`bankexample.com`）です。これは、他の F5 XC オブジェクトとは異なります。
+
+## CSD API エンドポイント
+
+ベースパス: `/api/shape/csd/namespaces/\{namespace\}/`
+
+### ステータスと初期化
+
+| 操作 | メソッド | パス |
+| --- | --- | --- |
+| CSD を有効にする | `POST` | `/api/shape/csd/namespaces/system/init` |
+| ステータスを取得 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/status` |
+| JS 設定を取得 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/js_configuration` |
+| JS をテスト | `POST` | `/api/shape/csd/namespaces/\{namespace\}/testjs` |
+| ドメインを更新 | `POST` | `/api/shape/csd/namespaces/\{namespace\}/update_domains` |
+
+### 保護ドメイン
+
+| 操作 | メソッド | パス |
+| --- | --- | --- |
+| リスト | `GET` | `/api/shape/csd/namespaces/\{namespace\}/protected_domains` |
+| 取得 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/protected_domains/\{name\}` |
+| 作成 | `POST` | `/api/shape/csd/namespaces/\{namespace\}/protected_domains` |
+| 削除 | `DELETE` | `/api/shape/csd/namespaces/\{namespace\}/protected_domains/\{name\}` |
+
+### 検出ドメイン
+
+| 操作 | メソッド | パス |
+| --- | --- | --- |
+| 検出済みドメインをリスト | `GET` | `/api/shape/csd/namespaces/\{namespace\}/detected_domains` |
+| 詳細を取得 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/domain_details` |
+
+### 許可ドメイン
+
+| 操作 | メソッド | パス |
+| --- | --- | --- |
+| リスト | `GET` | `/api/shape/csd/namespaces/\{namespace\}/allowed_domains` |
+| 取得 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/allowed_domains/\{name\}` |
+| 作成 | `POST` | `/api/shape/csd/namespaces/\{namespace\}/allowed_domains` |
+| 削除 | `DELETE` | `/api/shape/csd/namespaces/\{namespace\}/allowed_domains/\{name\}` |
+
+### 緩和ドメイン
+
+| 操作 | メソッド | パス |
+| --- | --- | --- |
+| リスト | `GET` | `/api/shape/csd/namespaces/\{namespace\}/mitigated_domains` |
+| 取得 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/mitigated_domains/\{name\}` |
+| 作成 | `POST` | `/api/shape/csd/namespaces/\{namespace\}/mitigated_domains` |
+| 削除 | `DELETE` | `/api/shape/csd/namespaces/\{namespace\}/mitigated_domains/\{name\}` |
+
+### スクリプト
+
+| 操作 | メソッド | パス |
+| --- | --- | --- |
+| スクリプトをリスト | `POST` | `/api/shape/csd/namespaces/\{namespace\}/scripts` |
+| スクリプトをリスト（レガシー） | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts` |
+| スクリプト概要を取得 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/dashboard` |
+| 動作をリスト | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/behaviors` |
+| ネットワーク相互作用をリスト | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/networkInteractions` |
+| 根拠を更新 | `POST` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{script_id\}/justification` |
+| 根拠を削除 | `DELETE` | `/api/shape/csd/namespaces/\{namespace\}/script/justification/\{justification_id\}` |
+| 読了ステータスを更新 | `POST` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/readStatus` |
+| 影響を受けるユーザーをリスト | `POST` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{script_id\}/affectedUsers` |
+
+### フォームフィールド
+
+| 操作 | メソッド | パス |
+| --- | --- | --- |
+| フォームフィールドをリスト | `GET` | `/api/shape/csd/namespaces/\{namespace\}/formFields` |
+| フォームフィールドをリスト（POST） | `POST` | `/api/shape/csd/namespaces/\{namespace\}/formFields` |
+| フォームフィールドを取得 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/formFields/\{id\}` |
+| スクリプト別にリスト | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/formFields` |
+| フィールド分析を更新 | `POST` | `/api/shape/csd/namespaces/\{namespace\}/formFields/analysis` |
+
+## CSD を有効にする
+
+テナントの CSD を初期化します。
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/system/init"
+```
+
+## CSD ステータスを取得
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq .
+```
+
+## 保護ドメイン
+
+### 保護ドメインをリスト
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq .
+```
+
+### 保護ドメインを追加
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "my-app",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {}
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq .
+```
+
+### 保護ドメインを削除
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/my-app"
+```
+
+## 検出ドメイン
+
+### 検出ドメインをリスト
+
+クエリパラメーター: `locations`（場所でフィルター）、`risk`（リスク レベルでフィルター）。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq .
+```
+
+高リスクでフィルター:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains?risk=high" \
+  | jq .
+```
+
+### ドメイン詳細を取得
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/domain_details?name=suspicious.example.com" \
+  | jq .
+```
+
+## スクリプト
+
+### すべてのスクリプトをリスト
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq .
+```
+
+### スクリプト概要を取得
+
+```bash
+SCRIPT_ID="your-script-id"
+
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/dashboard" \
+  | jq .
+```
+
+### スクリプト動作をリスト
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/behaviors" \
+  | jq .
+```
+
+### ネットワーク相互作用をリスト
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/networkInteractions" \
+  | jq .
+```
+
+## 緩和
+
+### 緩和ドメインを追加
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "blocked-domain",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {}
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+```
+
+### 緩和ドメインをリスト
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+```
+
+### 緩和を削除
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/blocked-domain"
+```
+
+## 許可ドメイン
+
+### 許可ドメインを追加
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "trusted-cdn",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {}
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/allowed_domains" \
+  | jq .
+```
+
+### 許可ドメインをリスト
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/allowed_domains" \
+  | jq .
+```
+
+### 許可ドメインを削除
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/allowed_domains/trusted-cdn"
+```
+
+## JS インジェクション設定
+
+### 現在の設定を取得
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq .
+```
+
+## HTTP ロードバランサー CSD 設定
+
+CSD JavaScript インジェクションは、設定 API の `/api/config/namespaces/\{namespace\}/http_loadbalancers/\{name\}` を介して HTTP ロードバランサーで直接有効にすることもできます。
+
+ロードバランサー仕様内の `client_side_defense` フィールドはインジェクションを制御します。
+
+```json
+{
+  "client_side_defense": {
+    "policy": {
+      "js_insert_all_pages": {}
+    }
+  }
+}
+```
+
+`policy` は以下のいずれかを受け入れます:
+
+| フィールド | 説明 |
+| --- | --- |
+| `js_insert_all_pages` | すべてのページにインジェクト |
+| `js_insert_all_pages_except` | 除外ルールを除くすべてのページにインジェクト |
+| `js_insertion_rules` | ルールに一致するページにのみインジェクト |
+| `disable_js_insert` | インジェクトしない |
+
+ロードバランサーで CSD を無効にするには、`client_side_defense` を `disable_client_side_defense: \{\}` に置き換えます。
+
+### ロードバランサーから CSD 設定を読み取る
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  | jq '.spec.client_side_defense'
+```
+
+### ロードバランサーで CSD を有効にする
+
+取得、変更、適用:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  > lb-config.json
+
+jq '.spec |= (
+  del(.disable_client_side_defense) |
+  .client_side_defense = {
+    "policy": {
+      "js_insert_all_pages": {}
+    }
+  }
+)' lb-config.json > lb-config-updated.json
+
+curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d @lb-config-updated.json \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  | jq '.spec.client_side_defense'
+```
+
+### 除外ルールのドメインとパス マッチング
+
+`js_insert_all_pages_except` または `js_insertion_rules` を使用する場合、各ルールはドメインとパスの組み合わせに一致します。
+
+**ドメイン**（いずれかを選択）:
+
+| フィールド | 例 |
+| --- | --- |
+| `any_domain: \{\}` | すべてのドメイン |
+| `domain.exact_value` | `"app.example.com"` |
+| `domain.suffix_value` | `".example.com"` |
+| `domain.regex_value` | `".*\\.example\\.com"` |
+
+**パス**（いずれかを選択）:
+
+| フィールド | 例 |
+| --- | --- |
+| `path.path` | `"/login"` |
+| `path.prefix` | `"/checkout"` |
+| `path.regex` | `"/user/[0-9]+"` |
+
+## API リファレンス
+
+- [CSD API リファレンス](https://docs.cloud.f5.com/docs-v2/api/shape-client-side-defense) — 完全なエンドポイント ドキュメント
+- [CSD を設定](https://docs.cloud.f5.com/docs-v2/client-side-defense/how-tos/configure-csd) — コンソール設定ガイド
+- [API 認証情報](https://docs.cloud.f5.com/docs-v2/administration/how-tos/user-mgmt/credentials) — API トークンを生成

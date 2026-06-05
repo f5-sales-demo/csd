@@ -1,0 +1,430 @@
+---
+title: API 參考
+description: 用於 CSD 域名管理、攻擊腳本和緩解規則的 REST API 端點
+sidebar:
+  order: 10
+  label: API 參考
+i18n:
+  sourceHash: 6564ced2653f
+  translator: machine
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+CSD 在 `/api/shape/csd/` 提供專用 API，用於管理域名、腳本、緩解和監控。CSD 也可以通過負載平衡器配置 API 在 HTTP 負載平衡器上啟用。
+
+## 驗證
+
+所有 API 呼叫都需要 API 令牌。在 XC Console 中的 **Administration** &rarr; **Credentials** &rarr; **API Credentials** 下生成令牌。
+
+按照 [API 自動化 &mdash; 環境設置](/csd/demo/#environment-setup) 中的說明設置環境變量：
+
+```bash
+set -a && source .env && set +a
+```
+
+所有 curl 範例都使用 `xTOKENx` 佔位符格式。用您的環境變量替換或使用頁面頂部的互動式表單。例如，`xF5XC_API_TOKENx` 對應於 `$F5XC_API_TOKEN`。
+
+```bash
+-H "Authorization: APIToken xF5XC_API_TOKENx"
+```
+
+## API 慣例
+
+<Aside type="note">
+這些慣例適用於所有 F5 Distributed Cloud (F5 XC) 配置和 CSD API 端點。理解它們可以防止常見的自動化錯誤。
+</Aside>
+
+### 回應正文
+
+- **POST** 以 JSON 形式返回建立的物件。
+- **PUT** 和 **DELETE** 在 HTTP 200 上返回空的 `\{\}` — 這是正常的，不是錯誤。不要將空回應正文視為失敗。
+
+### 列表端點與 GET 端點
+
+列表端點（例如 `/healthchecks`、`/origin_pools`、`/protected_domains`）和個別 GET 端點（例如 `/healthchecks/\{name\}`）返回**不同的回應結構**：
+
+| 端點類型 | 範例路徑 | 回應結構 |
+| --- | --- | --- |
+| **列表** | `/origin_pools` | 項目有頂層 `.name`、`.namespace`、`.tenant`，其中 `metadata: null` 和 `get_spec: null` |
+| **個別 GET** | `/origin_pools/\{name\}` | 物件有 `.metadata.name`、`.spec.*` 及完整配置 |
+
+為每種情況使用正確的 `jq` 路徑。例如，若要從列表端點提取名稱，請使用 `.items[].name`，而不是 `.items[].metadata.name`。
+
+### 受保護域名識別符
+
+對於受保護域名 GET 和 DELETE 操作，`\{name\}` 路徑參數是**域名值本身**（例如 `bankexample.com`），而不是任意物件名稱。這與其他 F5 XC 物件不同，其中名稱是用戶選擇的識別符。
+
+## CSD API 端點
+
+基礎路徑：`/api/shape/csd/namespaces/\{namespace\}/`
+
+### 狀態和初始化
+
+| 操作 | 方法 | 路徑 |
+| --- | --- | --- |
+| 啟用 CSD | `POST` | `/api/shape/csd/namespaces/system/init` |
+| 獲取狀態 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/status` |
+| 獲取 JS 配置 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/js_configuration` |
+| 測試 JS | `POST` | `/api/shape/csd/namespaces/\{namespace\}/testjs` |
+| 更新域名 | `POST` | `/api/shape/csd/namespaces/\{namespace\}/update_domains` |
+
+### 受保護域名
+
+| 操作 | 方法 | 路徑 |
+| --- | --- | --- |
+| 列表 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/protected_domains` |
+| 獲取 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/protected_domains/\{name\}` |
+| 建立 | `POST` | `/api/shape/csd/namespaces/\{namespace\}/protected_domains` |
+| 刪除 | `DELETE` | `/api/shape/csd/namespaces/\{namespace\}/protected_domains/\{name\}` |
+
+### 偵測域名
+
+| 操作 | 方法 | 路徑 |
+| --- | --- | --- |
+| 列表偵測域名 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/detected_domains` |
+| 獲取詳細資訊 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/domain_details` |
+
+### 允許域名
+
+| 操作 | 方法 | 路徑 |
+| --- | --- | --- |
+| 列表 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/allowed_domains` |
+| 獲取 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/allowed_domains/\{name\}` |
+| 建立 | `POST` | `/api/shape/csd/namespaces/\{namespace\}/allowed_domains` |
+| 刪除 | `DELETE` | `/api/shape/csd/namespaces/\{namespace\}/allowed_domains/\{name\}` |
+
+### 緩解域名
+
+| 操作 | 方法 | 路徑 |
+| --- | --- | --- |
+| 列表 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/mitigated_domains` |
+| 獲取 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/mitigated_domains/\{name\}` |
+| 建立 | `POST` | `/api/shape/csd/namespaces/\{namespace\}/mitigated_domains` |
+| 刪除 | `DELETE` | `/api/shape/csd/namespaces/\{namespace\}/mitigated_domains/\{name\}` |
+
+### 腳本
+
+| 操作 | 方法 | 路徑 |
+| --- | --- | --- |
+| 列表腳本 | `POST` | `/api/shape/csd/namespaces/\{namespace\}/scripts` |
+| 列表腳本（舊版） | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts` |
+| 獲取腳本概覽 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/dashboard` |
+| 列表行為 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/behaviors` |
+| 列表網路互動 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/networkInteractions` |
+| 更新理由 | `POST` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{script_id\}/justification` |
+| 刪除理由 | `DELETE` | `/api/shape/csd/namespaces/\{namespace\}/script/justification/\{justification_id\}` |
+| 更新讀取狀態 | `POST` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/readStatus` |
+| 列表受影響的用戶 | `POST` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{script_id\}/affectedUsers` |
+
+### 表單字段
+
+| 操作 | 方法 | 路徑 |
+| --- | --- | --- |
+| 列表表單字段 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/formFields` |
+| 列表表單字段（POST） | `POST` | `/api/shape/csd/namespaces/\{namespace\}/formFields` |
+| 獲取表單字段 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/formFields/\{id\}` |
+| 按腳本列表 | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/formFields` |
+| 更新字段分析 | `POST` | `/api/shape/csd/namespaces/\{namespace\}/formFields/analysis` |
+
+## 啟用 CSD
+
+為租戶初始化 CSD：
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/system/init"
+```
+
+## 獲取 CSD 狀態
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq .
+```
+
+## 受保護域名
+
+### 列出受保護域名
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq .
+```
+
+### 新增受保護域名
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "my-app",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {}
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq .
+```
+
+### 刪除受保護域名
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/my-app"
+```
+
+## 偵測域名
+
+### 列出偵測域名
+
+查詢參數：`locations`（按位置篩選）、`risk`（按風險等級篩選）。
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq .
+```
+
+按高風險篩選：
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains?risk=high" \
+  | jq .
+```
+
+### 獲取域名詳細資訊
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/domain_details?name=suspicious.example.com" \
+  | jq .
+```
+
+## 腳本
+
+### 列出所有腳本
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq .
+```
+
+### 獲取腳本概覽
+
+```bash
+SCRIPT_ID="your-script-id"
+
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/dashboard" \
+  | jq .
+```
+
+### 列出腳本行為
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/behaviors" \
+  | jq .
+```
+
+### 列出網路互動
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/networkInteractions" \
+  | jq .
+```
+
+## 緩解
+
+### 新增緩解域名
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "blocked-domain",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {}
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+```
+
+### 列出緩解域名
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+```
+
+### 移除緩解
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/blocked-domain"
+```
+
+## 允許域名
+
+### 新增允許域名
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "trusted-cdn",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {}
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/allowed_domains" \
+  | jq .
+```
+
+### 列出允許域名
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/allowed_domains" \
+  | jq .
+```
+
+### 移除允許域名
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/allowed_domains/trusted-cdn"
+```
+
+## JS 注入配置
+
+### 獲取當前配置
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq .
+```
+
+## HTTP 負載平衡器 CSD 配置
+
+CSD JavaScript 注入也可以通過位於 `/api/config/namespaces/\{namespace\}/http_loadbalancers/\{name\}` 的配置 API 直接在 HTTP 負載平衡器上啟用。
+
+負載平衡器規格中的 `client_side_defense` 字段控制注入：
+
+```json
+{
+  "client_side_defense": {
+    "policy": {
+      "js_insert_all_pages": {}
+    }
+  }
+}
+```
+
+`policy` 接受以下其中之一：
+
+| 字段 | 說明 |
+| --- | --- |
+| `js_insert_all_pages` | 在所有頁面上注入 |
+| `js_insert_all_pages_except` | 在所有頁面上注入，除了排除規則 |
+| `js_insertion_rules` | 僅在符合規則的頁面上注入 |
+| `disable_js_insert` | 不注入 |
+
+若要在負載平衡器上禁用 CSD，請將 `client_side_defense` 替換為 `disable_client_side_defense: \{\}`。
+
+### 從負載平衡器讀取 CSD 配置
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  | jq '.spec.client_side_defense'
+```
+
+### 在負載平衡器上啟用 CSD
+
+檢索、修改和應用：
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  > lb-config.json
+
+jq '.spec |= (
+  del(.disable_client_side_defense) |
+  .client_side_defense = {
+    "policy": {
+      "js_insert_all_pages": {}
+    }
+  }
+)' lb-config.json > lb-config-updated.json
+
+curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d @lb-config-updated.json \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  | jq '.spec.client_side_defense'
+```
+
+### 排除規則的域名和路徑匹配
+
+使用 `js_insert_all_pages_except` 或 `js_insertion_rules` 時，每個規則都會匹配域名和路徑組合。
+
+**域名**（選擇其中之一）：
+
+| 字段 | 範例 |
+| --- | --- |
+| `any_domain: \{\}` | 所有域名 |
+| `domain.exact_value` | `"app.example.com"` |
+| `domain.suffix_value` | `".example.com"` |
+| `domain.regex_value` | `".*\\.example\\.com"` |
+
+**路徑**（選擇其中之一）：
+
+| 字段 | 範例 |
+| --- | --- |
+| `path.path` | `"/login"` |
+| `path.prefix` | `"/checkout"` |
+| `path.regex` | `"/user/[0-9]+"` |
+
+## API 參考
+
+- [CSD API 參考](https://docs.cloud.f5.com/docs-v2/api/shape-client-side-defense) — 完整端點文件
+- [配置 CSD](https://docs.cloud.f5.com/docs-v2/client-side-defense/how-tos/configure-csd) — Console 配置指南
+- [API 認證](https://docs.cloud.f5.com/docs-v2/administration/how-tos/user-mgmt/credentials) — 生成 API 令牌

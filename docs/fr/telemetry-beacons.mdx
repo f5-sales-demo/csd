@@ -1,0 +1,52 @@
+---
+title: Balises de télémétrie
+description: >-
+  Configuration des balises de télémétrie, vérification de l'injection et
+  surveillance
+sidebar:
+  order: 5
+  label: Balises de télémétrie
+i18n:
+  sourceHash: 6c0c3461342a
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+import Screenshot from "@f5xc-salesdemos/docs-theme/components/Screenshot.astro";
+
+La télémétrie CSD fonctionne en deux phases. Tout d'abord, les scripts d'instrumentation se chargent à partir de l'origine de l'application via des requêtes **GET** standard — ces derniers injectent le code de surveillance de CSD dans la page. Le modèle d'URL du script suit le format `https://<collection-domain>/__imp_apg__/js/<tenant-script>.js`, bien que le chemin exact varie selon le déploiement. Une fois initialisés, les scripts envoient périodiquement la télémétrie vers F5 via des requêtes **POST** appelées **balises**. Ces balises sont envoyées aux domaines de collecte de signaux exploités par F5 (`*.zeronaught.com`), et non à l'origine de l'application.
+
+| Propriété | Valeur |
+| --- | --- |
+| Chargements de scripts | Scripts d'instrumentation CSD chargés via des requêtes `GET` sur l'origine de l'application — filtrez `__imp_apg__` ou `zeronaught` dans DevTools pour les identifier |
+| Destinations des balises | `POST` vers l'infrastructure de collecte de signaux F5 (par ex. `us.gimp.zeronaught.com`, `csd.zeronaught.com`) |
+| Format de charge utile | Binaire encodé — pas JSON lisible par l'homme |
+| Fréquence | Périodique pendant la durée de vie de la page ; des balises supplémentaires se déclenchent sur des événements spécifiques (accès aux champs de formulaire, nouveau chargement de script) |
+
+## Ce que les balises rapportent
+
+Les balises CSD transportent des **métadonnées de comportement de script**, pas des entrées utilisateur :
+
+- **Inventaire des scripts** — quels scripts se sont chargés sur la page et à partir de quels domaines sources
+- **Événements d'accès aux champs de formulaire** — quels scripts ont lu ou interagi avec quels champs d'entrée (noms et types de champs)
+- **Métadonnées de page** — URL actuelle, horodatages, événements du cycle de vie de la page
+
+CSD est conçu pour signaler les métadonnées de comportement des scripts — noms de champs, types d'entrée et modèles d'accès — plutôt que les données de formulaire saisies par l'utilisateur. La [Déclaration de confidentialité F5 CSD](https://www.f5.com/company/policies/f5-distributed-cloud-client-side-defense-privacy-statement) décrit CSD comme collectant « des informations sur les actifs qui accèdent à différents éléments de page ou structures de données », en mettant l'accent sur le comportement des scripts plutôt que sur le contenu des entrées utilisateur.
+
+## Observer les balises dans DevTools
+
+<Steps>
+1. Ouvrez Chrome DevTools (**F12**) et basculez vers l'onglet **Network**
+2. Parcourez l'application ou interagissez avec les champs de formulaire pour générer du trafic
+3. Tapez `zeronaught` dans la barre de filtre pour isoler le trafic CSD — vous verrez le chargement du script (`GET`) et les balises de télémétrie (`POST`) vers `us.gimp.zeronaught.com`
+4. Regardez la colonne **Method** : les entrées `GET` sont le code d'instrumentation CSD qui se charge ; les entrées `POST` nommées `dip` sont les balises de télémétrie transportant les données de signal vers F5
+5. Cliquez sur une balise `dip` pour inspecter ses en-têtes et sa charge utile ; notez que le corps de la requête est en binaire encodé, pas en JSON lisible par l'homme
+</Steps>
+
+<Screenshot light="/images/devtools-beacons-light.png" dark="/images/devtools-beacons-dark.png" alt="Onglet Network DevTools filtré pour zeronaught montrant le chargement du script GET et les balises de télémétrie POST" />
+
+<Aside type="tip" title="Balises CSD vs exfiltration d'attaque">
+Les balises de télémétrie CSD sont des requêtes POST envoyées vers **l'infrastructure exploitée par F5** (domaines `*.zeronaught.com`). Un script malveillant de formjacking, en revanche, exfiltre les données volées vers un **domaine contrôlé par un attaquant** — généralement via `fetch()`, `XMLHttpRequest` ou une balise image (`new Image().src`).
+
+Les balises CSD et l'exfiltration d'attaque sont des requêtes cross-origin, mais les différences clés sont la **destination** et le **contenu** : CSD envoie des **métadonnées de comportement de script** vers une infrastructure F5 connue, tandis que l'exfiltration envoie des **données saisies par l'utilisateur** (mots de passe, numéros de carte) vers un serveur d'attaquant. Cette distinction est centrale à la façon dont CSD détecte les attaques — voir [Capacités CSD — Limites de détection](/csd/overview/#detection-boundaries) pour savoir ce que CSD peut et ne peut pas observer.
+</Aside>

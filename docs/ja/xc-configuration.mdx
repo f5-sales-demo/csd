@@ -1,0 +1,80 @@
+---
+title: XC Configuration
+description: Client-Side Defense を有効化・運用するために必要な F5 XC プラットフォーム構成
+sidebar:
+  order: 2
+  label: XC Configuration
+i18n:
+  sourceHash: 1ca5f1c4ac1c
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+import Screenshot from "@f5xc-salesdemos/docs-theme/components/Screenshot.astro";
+
+CSD はデモアプリケーションで既に有効化されています。このセクションでは構成画面を示します。
+
+## Client-Side Defense へのナビゲーション
+
+<Steps>
+1. **F5 Distributed Cloud Console** にログインします
+2. **Client-Side Defense** ワークスペースを選択します
+3. 名前空間を **bot-defense** に設定します
+4. **Manage** &rarr; **Configuration** に移動します
+</Steps>
+
+<Screenshot light="/images/csd-config.png" alt="ドメインリストを表示する CSD Configuration ページ" />
+
+## ドメイン構成
+
+CSD Configuration ページでドメインを追加すると、CSD レポートエンジンに登録されます。これは CSD がテレメトリ、スクリプト検出、アラート通知、および軽減アクションを収集およびレポートする名前空間スコープを定義します。
+
+デモドメイン (`botdemo.sales-demo.f5demos.com`) はここに登録されています。
+
+<Aside type="note">
+CSD Configuration ページは JavaScript インジェクションを制御し**ません**。インジェクションスコープは HTTP Load Balancer で設定されます(以下を参照)。デモドメイン構成は変更しないでください。読み取り専用モードで設定を確認してください。
+</Aside>
+
+## HTTP Load Balancer メソッド
+
+HTTP Load Balancer は JavaScript インジェクションが設定される場所です。これは CSD スクリプトがロードバランサーを通じて提供されるアプリケーションページに挿入されるかどうかと場所を制御します。
+
+<Steps>
+1. **Multi-Cloud App Connect** &rarr; **HTTP Load Balancers** に移動します
+2. アプリケーションを提供するロードバランサーの **&hellip;** (アクション) メニューをクリックして、**Manage Configuration** を選択します
+
+   <Screenshot light="/images/csd-lb-config.png" alt="デモロードバランサーを表示する HTTP Load Balancers リスト" />
+3. 左サイドバーの **Client-Side Defense** セクションまでスクロールします
+
+   **Client-Side Defense** フィールドは **Enable** に設定され、**Client-Side Defense Policy** は **Configured** と表示されます。
+
+   <Screenshot light="/images/csd-lb-csd-settings.png" alt="HTTP Load Balancer 構成内の CSD トグルと設定" />
+4. **View Configuration** をクリックして CSD ポリシー詳細を開きます
+
+   **JavaScript Insertion Settings** フィールドはインジェクションスコープを表示します。デモロードバランサーは **Insert JavaScript in All Pages** に設定されています。
+
+   <Screenshot light="/images/csd-lb-injection-scope.png" alt="CSD サブ構成内の JavaScript インジェクションスコープ" />
+</Steps>
+
+<Aside type="tip">
+CSD Configuration ページ(上記)はドメインをレポートエンジンに登録します。HTTP Load Balancer はスクリプトインジェクションを制御します。CSD が end-to-end で機能するには両方を構成する必要があります。
+</Aside>
+
+## スクリプトインジェクションの確認
+
+<Steps>
+1. Chrome で [デモアプリケーション](https://botdemo.sales-demo.f5demos.com) を開きます
+2. **F12** を押して DevTools を開きます
+3. **Elements** タブに移動します
+4. HTML で `__imp_apg__` または `zeronaught` を検索して CSD インストルメンテーションスクリプトを探します
+5. 1 つ以上の CSD `<script>` タグが `<head>` に存在することを確認します。正確なスクリプトパスはデプロイによって異なります
+6. スクリプトがロードバランサーによってインジェクションされたことを確認します(アプリケーションソースの一部ではありません)
+</Steps>
+
+<Screenshot light="/images/csd-injected-scripts-light.png" dark="/images/csd-injected-scripts-dark.png" alt="DevTools Elements タブのインジェクションされたスクリプト" />
+
+CSD インストルメンテーションスクリプトは F5 XC ロードバランサーによってインジェクションされます。アプリケーションソースの一部ではありません。
+
+<Aside type="caution">
+スクリプトが存在しない場合は、ドメインが構成されていることを確認し、F5 XC ロードバランサーを通じてアプリケーションにアクセスしていること(オリジンへの直接アクセスではないこと)を確認してください。
+</Aside>

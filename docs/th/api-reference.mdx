@@ -1,0 +1,430 @@
+---
+title: API Reference
+description: 'จุดสิ้นสุด REST API สำหรับการจัดการโดเมน CSD, สคริปต์โจมตี, และกฎการบรรเทา'
+sidebar:
+  order: 10
+  label: API Reference
+i18n:
+  sourceHash: 6564ced2653f
+  translator: machine
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+CSD มี API ที่อยู่ที่ `/api/shape/csd/` สำหรับการจัดการโดเมน, สคริปต์, การบรรเทา, และการตรวจสอบ CSD สามารถเปิดใช้งานบน HTTP Load Balancers ผ่าน load balancer configuration API ได้เช่นกัน
+
+## Authentication
+
+API calls ทั้งหมดต้องการ API token ให้สร้าง token ใน XC Console ภายใต้ **Administration** &rarr; **Credentials** &rarr; **API Credentials**
+
+ตั้งค่าตัวแปรสภาพแวดล้อมตามที่อธิบายไว้ใน [API Automation &mdash; Environment Setup](/csd/demo/#environment-setup):
+
+```bash
+set -a && source .env && set +a
+```
+
+ตัวอย่าง curl ทั้งหมดใช้รูปแบบตัวยึด `xTOKENx` ให้แทนที่ด้วยตัวแปรสภาพแวดล้อมของคุณหรือใช้แบบฟอร์มแบบโต้ตอบที่ด้านบนของหน้า ตัวอย่างเช่น `xF5XC_API_TOKENx` สอดคล้องกับ `$F5XC_API_TOKEN`
+
+```bash
+-H "Authorization: APIToken xF5XC_API_TOKENx"
+```
+
+## API Conventions
+
+<Aside type="note">
+ข้อตกลงเหล่านี้ใช้กับ F5 Distributed Cloud (F5 XC) configuration และ CSD API endpoints ทั้งหมด การทำความเข้าใจข้อตกลงเหล่านี้จะป้องกันข้อผิดพลาดในการทำให้เป็นอัตโนมัติที่พบบ่อย
+</Aside>
+
+### Response Bodies
+
+- **POST** ส่งคืนวัตถุที่สร้างขึ้นเป็น JSON
+- **PUT** และ **DELETE** ส่งคืน `\{\}` ว่างเปล่า บน HTTP 200 — นี่เป็นเรื่องปกติ ไม่ใช่ข้อผิดพลาด ไม่ต้องถือว่าเนื้อความตอบกลับว่างเปล่าเป็นความล้มเหลว
+
+### List vs GET Endpoints
+
+List endpoints (เช่น `/healthchecks`, `/origin_pools`, `/protected_domains`) และ individual GET endpoints (เช่น `/healthchecks/\{name\}`) ส่งคืน **โครงสร้าง response ที่แตกต่างกัน**:
+
+| ประเภท Endpoint | เส้นทางตัวอย่าง | โครงสร้าง response |
+| --- | --- | --- |
+| **List** | `/origin_pools` | Items มี top-level `.name`, `.namespace`, `.tenant` พร้อม `metadata: null` และ `get_spec: null` |
+| **Individual GET** | `/origin_pools/\{name\}` | Object มี `.metadata.name`, `.spec.*` พร้อมการตั้งค่าแบบเต็ม |
+
+ใช้เส้นทาง `jq` ที่ถูกต้องสำหรับแต่ละรายการ ตัวอย่างเช่น เพื่อแยกชื่อจาก list endpoint ให้ใช้ `.items[].name` ไม่ใช่ `.items[].metadata.name`
+
+### Protected Domain Identifier
+
+สำหรับการดำเนินการ GET และ DELETE ของโดเมนที่ได้รับการป้องกัน พารามิเตอร์เส้นทาง `\{name\}` คือ **ค่าโดเมนตัวเอง** (เช่น `bankexample.com`) ไม่ใช่ชื่อวัตถุโดยพลการ นี่แตกต่างจากวัตถุ F5 XC อื่นๆ ที่ชื่อเป็นตัวระบุที่ผู้ใช้เลือก
+
+## CSD API Endpoints
+
+เส้นทาง Base: `/api/shape/csd/namespaces/\{namespace\}/`
+
+### Status and Initialization
+
+| Operation | Method | Path |
+| --- | --- | --- |
+| Enable CSD | `POST` | `/api/shape/csd/namespaces/system/init` |
+| Get Status | `GET` | `/api/shape/csd/namespaces/\{namespace\}/status` |
+| Get JS Configuration | `GET` | `/api/shape/csd/namespaces/\{namespace\}/js_configuration` |
+| Test JS | `POST` | `/api/shape/csd/namespaces/\{namespace\}/testjs` |
+| Update Domains | `POST` | `/api/shape/csd/namespaces/\{namespace\}/update_domains` |
+
+### Protected Domains
+
+| Operation | Method | Path |
+| --- | --- | --- |
+| List | `GET` | `/api/shape/csd/namespaces/\{namespace\}/protected_domains` |
+| Get | `GET` | `/api/shape/csd/namespaces/\{namespace\}/protected_domains/\{name\}` |
+| Create | `POST` | `/api/shape/csd/namespaces/\{namespace\}/protected_domains` |
+| Delete | `DELETE` | `/api/shape/csd/namespaces/\{namespace\}/protected_domains/\{name\}` |
+
+### Detected Domains
+
+| Operation | Method | Path |
+| --- | --- | --- |
+| List Detected | `GET` | `/api/shape/csd/namespaces/\{namespace\}/detected_domains` |
+| Get Details | `GET` | `/api/shape/csd/namespaces/\{namespace\}/domain_details` |
+
+### Allowed Domains
+
+| Operation | Method | Path |
+| --- | --- | --- |
+| List | `GET` | `/api/shape/csd/namespaces/\{namespace\}/allowed_domains` |
+| Get | `GET` | `/api/shape/csd/namespaces/\{namespace\}/allowed_domains/\{name\}` |
+| Create | `POST` | `/api/shape/csd/namespaces/\{namespace\}/allowed_domains` |
+| Delete | `DELETE` | `/api/shape/csd/namespaces/\{namespace\}/allowed_domains/\{name\}` |
+
+### Mitigated Domains
+
+| Operation | Method | Path |
+| --- | --- | --- |
+| List | `GET` | `/api/shape/csd/namespaces/\{namespace\}/mitigated_domains` |
+| Get | `GET` | `/api/shape/csd/namespaces/\{namespace\}/mitigated_domains/\{name\}` |
+| Create | `POST` | `/api/shape/csd/namespaces/\{namespace\}/mitigated_domains` |
+| Delete | `DELETE` | `/api/shape/csd/namespaces/\{namespace\}/mitigated_domains/\{name\}` |
+
+### Scripts
+
+| Operation | Method | Path |
+| --- | --- | --- |
+| List Scripts | `POST` | `/api/shape/csd/namespaces/\{namespace\}/scripts` |
+| List Scripts (legacy) | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts` |
+| Get Script Overview | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/dashboard` |
+| List Behaviors | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/behaviors` |
+| List Network Interactions | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/networkInteractions` |
+| Update Justification | `POST` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{script_id\}/justification` |
+| Delete Justification | `DELETE` | `/api/shape/csd/namespaces/\{namespace\}/script/justification/\{justification_id\}` |
+| Update Read Status | `POST` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/readStatus` |
+| List Affected Users | `POST` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{script_id\}/affectedUsers` |
+
+### Form Fields
+
+| Operation | Method | Path |
+| --- | --- | --- |
+| List Form Fields | `GET` | `/api/shape/csd/namespaces/\{namespace\}/formFields` |
+| List Form Fields (POST) | `POST` | `/api/shape/csd/namespaces/\{namespace\}/formFields` |
+| Get Form Field | `GET` | `/api/shape/csd/namespaces/\{namespace\}/formFields/\{id\}` |
+| List by Script | `GET` | `/api/shape/csd/namespaces/\{namespace\}/scripts/\{id\}/formFields` |
+| Update Field Analysis | `POST` | `/api/shape/csd/namespaces/\{namespace\}/formFields/analysis` |
+
+## Enable CSD
+
+เริ่มต้น CSD สำหรับผู้เช่า:
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/system/init"
+```
+
+## Get CSD Status
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq .
+```
+
+## Protected Domains
+
+### List Protected Domains
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq .
+```
+
+### Add a Protected Domain
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "my-app",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {}
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq .
+```
+
+### Delete a Protected Domain
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/my-app"
+```
+
+## Detected Domains
+
+### List Detected Domains
+
+Query parameters: `locations` (ตัวกรองตามตำแหน่ง), `risk` (ตัวกรองตามระดับความเสี่ยง)
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq .
+```
+
+ตัวกรองตามความเสี่ยงสูง:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains?risk=high" \
+  | jq .
+```
+
+### Get Domain Details
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/domain_details?name=suspicious.example.com" \
+  | jq .
+```
+
+## Scripts
+
+### List All Scripts
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{}' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq .
+```
+
+### Get Script Overview
+
+```bash
+SCRIPT_ID="your-script-id"
+
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/dashboard" \
+  | jq .
+```
+
+### List Script Behaviors
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/behaviors" \
+  | jq .
+```
+
+### List Network Interactions
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/networkInteractions" \
+  | jq .
+```
+
+## Mitigation
+
+### Add a Mitigated Domain
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "blocked-domain",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {}
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+```
+
+### List Mitigated Domains
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq .
+```
+
+### Remove Mitigation
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/blocked-domain"
+```
+
+## Allowed Domains
+
+### Add an Allowed Domain
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "trusted-cdn",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {}
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/allowed_domains" \
+  | jq .
+```
+
+### List Allowed Domains
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/allowed_domains" \
+  | jq .
+```
+
+### Remove an Allowed Domain
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/allowed_domains/trusted-cdn"
+```
+
+## JS Injection Configuration
+
+### Get Current Configuration
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq .
+```
+
+## HTTP Load Balancer CSD Configuration
+
+การฉีด JavaScript ของ CSD สามารถเปิดใช้งานได้โดยตรงบน HTTP Load Balancer ผ่าน configuration API ที่ `/api/config/namespaces/\{namespace\}/http_loadbalancers/\{name\}`
+
+ฟิลด์ `client_side_defense` ภายในสเปค load balancer ควบคุมการฉีด:
+
+```json
+{
+  "client_side_defense": {
+    "policy": {
+      "js_insert_all_pages": {}
+    }
+  }
+}
+```
+
+`policy` ยอมรับหนึ่งใน:
+
+| Field | Description |
+| --- | --- |
+| `js_insert_all_pages` | ฉีดบนหน้าทั้งหมด |
+| `js_insert_all_pages_except` | ฉีดบนหน้าทั้งหมด ยกเว้นกฎการยกเว้น |
+| `js_insertion_rules` | ฉีดเฉพาะหน้าที่ตรงกับกฎ |
+| `disable_js_insert` | ไม่ฉีด |
+
+เพื่อปิดใช้งาน CSD บน load balancer ให้แทนที่ `client_side_defense` ด้วย `disable_client_side_defense: \{\}`
+
+### Read CSD Configuration from Load Balancer
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  | jq '.spec.client_side_defense'
+```
+
+### Enable CSD on a Load Balancer
+
+ดึงข้อมูล แก้ไข และใช้:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  > lb-config.json
+
+jq '.spec |= (
+  del(.disable_client_side_defense) |
+  .client_side_defense = {
+    "policy": {
+      "js_insert_all_pages": {}
+    }
+  }
+)' lb-config.json > lb-config-updated.json
+
+curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d @lb-config-updated.json \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx" \
+  | jq '.spec.client_side_defense'
+```
+
+### Domain and Path Matching for Exclusion Rules
+
+เมื่อใช้ `js_insert_all_pages_except` หรือ `js_insertion_rules` กฎแต่ละข้อจะตรงกับชุดโดเมนและเส้นทาง
+
+**Domain** (เลือกหนึ่ง):
+
+| Field | Example |
+| --- | --- |
+| `any_domain: \{\}` | โดเมนทั้งหมด |
+| `domain.exact_value` | `"app.example.com"` |
+| `domain.suffix_value` | `".example.com"` |
+| `domain.regex_value` | `".*\\.example\\.com"` |
+
+**Path** (เลือกหนึ่ง):
+
+| Field | Example |
+| --- | --- |
+| `path.path` | `"/login"` |
+| `path.prefix` | `"/checkout"` |
+| `path.regex` | `"/user/[0-9]+"` |
+
+## API Reference
+
+- [CSD API Reference](https://docs.cloud.f5.com/docs-v2/api/shape-client-side-defense) — เอกสารจุดสิ้นสุดแบบเต็ม
+- [Configure CSD](https://docs.cloud.f5.com/docs-v2/client-side-defense/how-tos/configure-csd) — คู่มือการตั้งค่า Console
+- [API Credentials](https://docs.cloud.f5.com/docs-v2/administration/how-tos/user-mgmt/credentials) — สร้าง API tokens

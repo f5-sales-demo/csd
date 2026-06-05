@@ -1,0 +1,85 @@
+---
+title: FAQ
+description: 关于 Client-Side Defense 部署和运维的常见问题
+sidebar:
+  order: 12
+  label: FAQ
+i18n:
+  sourceHash: af7af812001b
+  translator: machine
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+关于 F5 Distributed Cloud Client-Side Defense 的常见问题，编译自演示会议和客户对话。
+
+## CSD 在检测到违规时是否会生成警报？
+
+是的，但必须明确配置 CSD 特定的警报规则。CSD 会使用设置期间提供的账户电子邮件地址自动创建一个警报接收器。您可以配置以下警报触发器：
+
+- 检测到新的可疑域名
+- 风险评分阈值超出
+- 受保护页面上检测到新脚本
+- 之前看到的脚本发生行为变化
+
+警报可以按域名范围限定，或全局应用于所有受保护的域名。有关设置详情，请参阅 [CSD 控制台 — 警报配置](/csd/csd-console/#alert-configuration) 部分。
+
+<Aside type="note">
+警报规则在 CSD 仪表板中配置，而不是通过自动化 API。API 端点（`/scripts`、`/detected_domains`）提供检测数据，但不会自行触发警报。
+</Aside>
+
+## 我能否查看 CSD 事件的 HTTP 请求日志？
+
+CSD 通过 **客户端 JavaScript 遥测** 运行 — 没有脚本检测或缓解执行的服务器端 HTTP 日志。检测管道的工作方式如下：
+
+1. CSD JavaScript 标签（由负载均衡器注入）在访问者的浏览器中运行
+2. 它监控脚本加载、DOM 变化和表单字段访问
+3. 遥测信标被发送到 F5 后端进行分析
+4. 检测结果显示在 CSD API 和仪表板中
+
+**负载均衡器访问日志**（`/api/data/namespaces/\{ns\}/access_logs`）包含一个 `csd_js_injection` 字段，用于确认 CSD 脚本标签是否被注入到响应中。对于 CSD 检测数据，请使用 API 端点：[`/scripts`](/csd/api-reference/#detected-scripts)、[`/detected_domains`](/csd/api-reference/#detected-domains) 和 [`/formFields`](/csd/api-reference/#form-fields)。
+
+请参阅 [诊断](/csd/diagnostics/) 指南了解完整的第 7 层 (HTTP) 和第 8 层 (CSD 遥测) 验证测试。
+
+## CSD 是否与 SIEM 工具（Splunk、Datadog 等）集成？
+
+目前未记录 CSD 特定的原生 SIEM Webhook 或 syslog 集成。CSD 检测数据通过 REST API 端点提供：
+
+- `/scripts` — 具有风险级别的检测到的脚本
+- `/detected_domains` — 分类的域名（CDN、数据泄露等）
+- `/formFields` — 脚本访问的表单字段，具有敏感性分类
+
+客户可以按计划轮询这些 API 端点，并将检测数据转发到其 SIEM。有关端点详情和身份验证，请参阅 [API 参考](/csd/api-reference/)。
+
+<Aside type="tip">
+F5 Distributed Cloud 平台支持 **全局日志接收器** 配置，用于将 HTTP 访问日志流式传输到外部系统（Splunk、Datadog、S3 等）。虽然这涵盖了负载均衡器访问日志（包括 `csd_js_injection` 字段），但不包括 CSD 检测事件。对于检测数据，请使用上面描述的 API 轮询方法。
+</Aside>
+
+## CSD 缓解实际上会阻止什么？
+
+CSD 缓解通过拦截 `src` 属性来阻止来自缓解域名的 `<script>` 标签加载 — CSD JavaScript 将 `src` 清空为空字符串，完全防止网络请求。这针对 **供应链向量**：通过 `<script>` 标签注入到页面中的恶意第三方脚本。
+
+CSD 缓解 **不会** 拦截：
+
+- `fetch()` 调用
+- `XMLHttpRequest` 调用
+- `<img>` 或 `<link>` 标签加载
+- WebSocket 连接
+
+这种设计是故意的 — CSD 专注于供应链攻击（Magecart、表单劫持、信息窃取）用来注入恶意代码的脚本加载机制。通过 `fetch()` 或 `XMLHttpRequest` 进行的应用程序级 API 调用超出了 CSD 的范围，由其他 F5 XC 安全功能（WAF、机器人防御、API 保护）处理。
+
+有关脚本阻止行为的演示前后对比，请参阅 [第 3 阶段 — 缓解](/csd/demo/phase-3-mitigate/)。
+
+## 运行攻击后，检测需要多长时间才能显示？
+
+检测时间因端点而异：
+
+| 端点 | 典型耗时 | 备注 |
+| --- | --- | --- |
+| `/detected_domains` | 分钟级 | 首先填充 — 这是 CSD 管道正在处理的主要指标 |
+| `/scripts` | 10–30 分钟 | 使用更慢的后端处理计划 |
+| `/formFields` | 20–30 分钟 | ML 敏感性分类（`Sensitive` 与 `Not Sensitive`）需要额外处理 |
+
+当在同一租户上重新注册同一受保护域名时，检测 **在基础设施拆除/重建过程中持久保存**。拆除和重建后，查询一次 `/detected_domains` — 如果响应包含项目，之前的检测仍然可用，无需等待。
+
+有关推荐的轮询协议，请参阅 [第 2 阶段 — 检测验证](/csd/demo/phase-2-attack/#step-9-detection-verification-via-api) 部分。

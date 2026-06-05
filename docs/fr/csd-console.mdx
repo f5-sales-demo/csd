@@ -1,0 +1,176 @@
+---
+title: Procédure pas à pas de la console CSD
+description: >-
+  Procédure pas à pas de l'interface utilisateur Console — activer CSD, afficher
+  la télémétrie, gérer les politiques
+sidebar:
+  order: 7
+  label: Console CSD
+i18n:
+  sourceHash: c0bcdde5efcc
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+import Screenshot from "@f5xc-salesdemos/docs-theme/components/Screenshot.astro";
+
+## Tableau de bord
+
+Accédez au tableau de bord **Client-Side Defense** dans la XC Console.
+
+<Screenshot light="/images/csd-dashboard.png" alt="CSD Dashboard showing summary cards and domain table" />
+
+Les cartes récapitulatives affichent les domaines de scripts **traités** :
+
+- **Action Needed** — domaines de scripts (first-party et third-party) signalés pour examen mais pas encore traités
+- **Found &amp; Mitigated** — domaines où des scripts ont été ajoutés à la liste de mitigation (modifications uniquement après action administrateur)
+- **Found &amp; Allowed** — domaines explicitement ajoutés à la liste d'autorisation (modifications uniquement après action administrateur)
+- **Total Found** — tous les domaines de scripts détectés dans la période actuelle (mises à jour automatiquement avec les nouvelles détections)
+- **Transactions Consumed** — événements de télémétrie CSD traités ce mois-ci (confirme que CSD est actif)
+
+Le tableau de domaines répertorie **tous les domaines** détectés par CSD — y compris les domaines source de scripts first-party et third-party, ainsi que les domaines de destination fetch/XHR. Chaque ligne affiche le statut du domaine, le timestamp de la dernière observation, la catégorie du domaine et les emplacements (URL) où l'activité en provenance de ce domaine a été observée.
+
+La capture d'écran ci-dessus montre les domaines détectés sur le tenant de démonstration, tous en statut **Action Needed**. Les domaines spécifiques visibles dépendent des simulations qui ont été exécutées :
+
+| Domaine | Catégorie | Origine |
+| --- | --- | --- |
+| `botdemo.sales-demo.f5demos.com` | Computer and Internet Info | Domaine d'application protégé |
+| `dnslog.cn` | Malware Sites | Script de simulation d'exfiltration de données |
+| `canarytokens.com` | Computer and Internet Security | Script de simulation d'exfiltration de données |
+
+Après avoir exécuté la [simulation combinée](/csd/trigger-detection/) et traité les domaines CDN injectés (`cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io`) via le menu d'actions, ces domaines apparaîtront également dans le tableau avec un statut **Found &amp; Allowed** ou **Found &amp; Mitigated**.
+
+<Aside type="note">
+Les domaines n'apparaissent sur le tableau de bord qu'après que CSD détecte les scripts qui se chargent à partir d'eux. Le compteur **Action Needed** reflète les domaines signalés pour examen administrateur. Les nouvelles détections de la simulation combinée peuvent prendre 5 à 10 minutes pour apparaître dans la **Script List** avant de s'afficher ici.
+</Aside>
+
+Cliquez sur le menu d'actions **...** sur une ligne de domaine pour voir les actions disponibles : **Add To Allow List** et **Add To Mitigate List**.
+
+<Screenshot light="/images/csd-dashboard-actions.png" alt="Dashboard actions menu showing Allow and Mitigate options" />
+
+## Inventaire des scripts
+
+Ouvrez la **Script List** depuis la navigation de gauche pour afficher tous les scripts détectés.
+
+<Screenshot light="/images/csd-script-list.png" alt="Script List showing detected scripts" />
+
+| Champ | Description |
+| --- | --- |
+| **Script Name** | URL complète du fichier JavaScript |
+| **Status** | AN (Action Needed) ou NA (No Action Needed) |
+| **Risk Level** | No Risk, Low Risk, ou High Risk |
+| **Justification** | Raison pour laquelle CSD a signalé le script |
+| **Last Seen** | Timestamp de la détection la plus récente |
+| **Locations Found** | Nombre de pages où le script a été observé |
+| **Network Interactions** | Nombre d'appels réseau effectués par le script |
+| **Form Fields** | Nombre de champs de formulaire que le script lit |
+| **Affected Clients** | Nombre d'utilisateurs/sessions uniques affectés par le script |
+
+Après l'exécution de la simulation combinée, vous devriez voir :
+
+- Les **scripts d'application** (p. ex. `main.js`, `vendor.js`) signalés comme **High Risk / Action Needed** car ils lisent des champs de formulaire sensibles (email, mot de passe)
+- **4 nouveaux scripts third-party** provenant de `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com` et `ga.jspm.io` apparaissant comme nouvelles entrées dans la liste
+
+<Steps>
+1. Triez par **Risk Level** (High Risk en premier)
+
+2. Cliquez sur un script à risque élevé (p. ex. `main.js`) pour afficher sa page de détails
+
+3. L'onglet **Overview** affiche un graphique **Behaviors Over Time** qui suit le niveau de risque du script, le domaine source et le type au fil du temps
+
+   <Screenshot light="/images/csd-script-detail.png" alt="Script detail page showing Behaviors Over Time chart" />
+
+4. Cliquez sur l'onglet **Form Fields** pour voir les champs spécifiques que le script lit
+
+5. Cliquez sur l'onglet **Affected Users** pour voir quels utilisateurs ont été impactés (voir la section Affected Users ci-dessous)
+</Steps>
+
+## Champs de formulaire
+
+La vue **Form Fields** affiche tous les champs de formulaire que CSD a détectés et que les scripts lisent sur le site surveillé.
+
+<Screenshot light="/images/csd-form-fields.png" alt="Form Fields view with sensitivity classification" />
+
+CSD classifie automatiquement les champs par sensibilité :
+
+| Champ de formulaire | Analyse | Description |
+| --- | --- | --- |
+| **email** | Sensitive (by system) | Champ d'email de connexion — risque élevé s'il est lu par des scripts non autorisés |
+| **password** | Sensitive (by system) | Champ de mot de passe de connexion — risque élevé s'il est lu par des scripts non autorisés |
+
+<Aside type="note">
+Seuls les champs présents dans le DOM de la page d'origine sont suivis. Les noms de champs exacts dépendent de l'implémentation du formulaire Angular Juice Shop — vérifiez la capture d'écran ci-dessus pour les identificateurs de champs actuels.
+</Aside>
+
+Chaque champ affiche le nombre de scripts associés qui le lisent, les emplacements où les lectures ont été observées et le timestamp de la dernière lecture. Explorez un champ pour voir exactement quels scripts y accèdent.
+
+## Réseau
+
+Ouvrez la vue **Network** pour voir tous les domaines à partir desquels les scripts se **chargent** (pas les destinations fetch/XHR).
+
+<Screenshot light="/images/csd-network-view.png" alt="Network All Domains view" />
+
+L'onglet **All Domains** répertorie chaque domaine avec :
+
+- Timestamp **Last Seen**
+- **Domain Category** (p. ex. Computer and Internet Info)
+- Statut **Added to Allow/Mitigate List** (Unlisted, Allowed, ou Mitigated)
+
+Après l'exécution de la simulation combinée, les mêmes quatre domaines CDN répertoriés dans la [section Dashboard](#dashboard) devraient apparaître comme nouvelles entrées car les balises `<script>` injectées ont chargé JavaScript à partir de ces CDN.
+
+Utilisez les onglets **Mitigate List** et **Allow List** pour examiner les domaines qui ont déjà été traités.
+
+## Utilisateurs affectés
+
+L'onglet **Affected Users** (accessible depuis la page de détails d'un script) affiche les utilisateurs impactés par le script sélectionné.
+
+<Screenshot light="/images/csd-affected-users.png" alt="Affected Users tab showing impacted users" />
+
+Chaque entrée inclut :
+
+| Champ | Description |
+| --- | --- |
+| **IP Address** | Adresse IP source de l'utilisateur affecté |
+| **Device ID** | Hash d'identificateur de périphérique unique |
+| **Geolocation** | Pays dérivé de l'adresse IP (affiché avec icône de drapeau) |
+| **Channel** | Canal d'accès (p. ex. Web) |
+| **User Agent** | Nom du navigateur, version et système d'exploitation |
+| **Last Seen** | Timestamp de détection le plus récent pour cet utilisateur |
+
+Cette vue démontre la portée d'une attaque détectée — combien d'utilisateurs ont été exposés, à partir de quels emplacements et sur quelles plates-formes. Utilisez ces données pour évaluer l'impact d'un incident de formjacking et prioriser la mitigation.
+
+## Configuration des alertes
+
+Ouvrez la section **Notifications** depuis la navigation de gauche pour afficher la page **Alerts**.
+
+<Screenshot light="/images/csd-notifications.png" alt="CSD Notifications UI showing the Alerts page on the f5-sales-demo tenant" />
+
+La page Alerts affiche les alertes de plateforme et CSD pour l'espace de noms. Les alertes d'infrastructure (telles que les défaillances de vérification d'intégrité des points de terminaison) apparaissent automatiquement, mais les règles d'alerte spécifiques à CSD doivent être explicitement configurées par un administrateur avant que les notifications de détection de scripts ne se déclenchent. Les conditions de déclenchement configurables incluent :
+
+- Nouveau domaine de script suspect détecté
+- Le score de risque du script dépasse le seuil
+- Nouveau script détecté sur une page surveillée
+- Changement de comportement du script (p. ex. nouvelles lectures de champs de formulaire)
+
+Les alertes peuvent être limitées par domaine ou globales, et les notifications par email sont envoyées au récepteur d'alertes configuré.
+
+<Aside type="caution">
+Si aucune règle d'alerte spécifique à CSD n'est configurée sur le tenant de démonstration, seules les alertes d'infrastructure (le cas échéant) apparaîtront ici. C'est normal — la détection CSD (Script List, Dashboard, Form Fields) fonctionne indépendamment de la configuration des alertes. Les présentateurs doivent expliquer que les alertes constituent une couche de notification optionnelle au-dessus du monitoring toujours actif de CSD.
+</Aside>
+
+## Mitigation
+
+À partir du **Dashboard**, cliquez sur le menu d'actions **...** sur un domaine signalé et sélectionnez **Add To Mitigate List**. Vous pouvez aussi, à partir de la **Script List**, utiliser les actions sur les scripts individuels.
+
+<Steps>
+1. Sélectionnez un domaine ou un script suspect
+2. Cliquez sur **Add To Mitigate List**
+3. Confirmez l'action — le statut du domaine se met à jour dans la colonne Actions
+4. Le domaine passe de **Action Needed** à **Found &amp; Mitigated**
+</Steps>
+
+Le menu d'actions est le même que celui affiché dans la [section Dashboard ci-dessus](#dashboard).
+
+Les scripts mitigés sont bloqués lors du prochain chargement de page. La mitigation est réversible — la suppression du domaine de la liste Mitigate restaure l'exécution du script.
+
+Pour la mitigation programmatique via l'API, consultez [API Reference — Mitigation](/csd/api-reference/#mitigation).

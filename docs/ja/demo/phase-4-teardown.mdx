@@ -1,0 +1,234 @@
+---
+title: Phase 4 — Teardown
+description: F5 XC テナントからデモ完了後のデモオブジェクトをクリーンアップ
+sidebar:
+  order: 5
+  label: Phase 4 — Teardown
+i18n:
+  sourceHash: 95b0184f156c
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Phase 4 では、逆依存関係の順序で演習中に作成されたすべてのオブジェクトを削除します。このフェーズでは、破壊的な操作を実行する前に明示的な人間による確認が必要です。
+
+<Aside type="caution">
+**実行前に確認してください。** AI アシスタントの場合は、オペレーターに必ず確認してください：「Phase 4 はすべてのデプロイメントオブジェクトを永久に削除します。Teardown の準備ができていますか？続行するには 'yes' で返答してください。」DELETE コマンドをオペレーターが確認するまで実行しないでください。
+
+**例外：** Teardown が Stage 1 Prepare（ミーティング前のクリーンアップ）の一部として実行される場合、オペレーターの「デモを準備する」トリガーフレーズは暗黙的な承認として機能します。追加の確認は不要です。上記の確認ゲートは、スタンドアロン Teardown またはミーティング後の Stage 4 中にのみ適用されます。
+</Aside>
+
+## Teardown の順序
+
+**逆作成順序**でオブジェクトを削除します。他のオブジェクトに依存するオブジェクトを最初に削除します：
+
+1. **Mitigated Domains** — Phase 3 で作成されたすべての CSD mitigated domain を削除
+2. **HTTPS Load Balancer** (`${F5XC_LB_NAME}-https`) — スケルトン状態に削除（Let's Encrypt 証明書を保持）；`NAMESPACE_CREATED=true` の場合または明示的なリクエストで完全削除
+3. **HTTP Load Balancer** (`${F5XC_LB_NAME}-http`) — Origin Pool に依存
+4. **Origin Pool** — Healthcheck に依存（作成された場合）
+5. **DNS ゾーンのクリーンアップ** — HTTPS LB スケルトンは管理対象の A と ACME レコードを保持します（これが望まれる状態です。証明書を有効に保ちます）。HTTP LB の管理対象レコードは削除時に自動的にクリーンアップされます。`default_rr_set_group` の手動レコードは `PUT` を使用して手動でクリーンアップする必要があります
+6. **Healthcheck** — Phase 1 Step 1 で作成された場合のみ
+7. **Protected Domain** — CSD protected domain 登録を削除
+8. **Namespace** — Phase 1 Step 0 で作成された場合のみ（`NAMESPACE_CREATED=true`）
+
+<Aside type="caution">
+**DNS ゾーンを削除しないでください。** DNS ゾーンはプラットフォーム全体の多くの他の DNS レコードをサポートする共有インフラストラクチャであり、決して削除すべきではありません。`default_rr_set_group` に手動で追加したレコードのみをクリーンアップしてください。ただし、protected domain は、このデプロイメントに関連付けられた CSD 設定オブジェクトであり、完全に Teardown する場合は**削除すべき**です。
+</Aside>
+
+## Mitigated Domains を削除
+
+Phase 3 が実行された場合、インフラストラクチャオブジェクトを削除する前にすべての mitigated domain を削除します。標準シミュレーションは 6 つの mitigated domain を作成します：
+
+```bash
+for domain in cdn.jsdelivr.net esm.sh unpkg.com ga.jspm.io httpbin.org jsonplaceholder.typicode.com; do
+  curl -s -X DELETE \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/$domain"
+done
+```
+
+確認: mitigated domain をリストして、カウントが 0（または 1 - 以下の注記を参照）であることを確認します：
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '{count: (.items | length)}'
+```
+
+<Aside type="note">
+mitigated domain リストは、すべての mitigated domain が削除された後、ファントムエントリ（count = 1）を null メタデータで返す場合があります。これは、CSD サービスの状態が設定間にある場合に表示されるバックエンド成果物です。実際の軽減を表すものではなく、無視できます。このファントムエントリを削除しようとすると、`"Delete list when service not configured"` が返されます。
+</Aside>
+
+## HTTPS Load Balancer
+
+HTTPS LB の Teardown 動作は、このデモセッション中にネームスペースが作成されたかどうか（Phase 1 Step 0 の `NAMESPACE_CREATED` 変数）に依存します：
+
+- **`NAMESPACE_CREATED=false`**（既存のネームスペース） — Let's Encrypt 証明書を再利用するために保持し、**スケルトン**状態に削除
+- **`NAMESPACE_CREATED=true`**（デモ中に作成されたネームスペース） — **完全削除**。ネームスペース自体が削除されるため、証明書を保持できません
+
+### パス A：スケルトン状態に削除（既存のネームスペース）
+
+ネームスペースが既存の場合、HTTPS LB を**スケルトン**状態に削除します。origin pool 参照と CSD 設定を削除しながら、ドメインバインディング、`https_auto_cert` 設定、および Let's Encrypt 証明書を保持します。これにより、次のデモ実行時の新しい証明書リクエスト（Let's Encrypt は正確な識別子セットあたり 7 日間に 5 つの重複証明書の制限を適用）をトリガーすることを避けます。
+
+**ステップ 1 — 現在の HTTPS LB 設定を取得します：**
+
+```bash
+HTTPS_LB_JSON=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+```
+
+**ステップ 2 — jq を使用してスケルトン状態に削除して PUT で戻します：**
+
+```bash
+echo "$HTTPS_LB_JSON" | jq '{
+  metadata: .metadata,
+  spec: (.spec | del(.client_side_defense) | .disable_client_side_defense = {} | .default_route_pools = [])
+}' | curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d @- \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq .
+```
+
+jq フィルタは、`client_side_defense` を削除し（`disable_client_side_defense: {}` で置換）、`default_route_pools` を空の配列にクリアしながら、`https_auto_cert`、`advertise_on_public_default_vip`、および無効にされたすべての機能フラグを含むスペック全体を保持します。証明書と DNS バインディングはそのままです。
+
+**HTTPS LB がスケルトンであることを確認します：**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{
+    name: .metadata.name,
+    domains: .spec.domains,
+    has_origin_pools: ((.spec.default_route_pools // []) | length > 0),
+    has_csd: (.spec.client_side_defense != null),
+    cert_state: .spec.cert_state
+  }'
+```
+
+予想：`has_origin_pools: false`、`has_csd: false`、`domains` は引き続き入力、`cert_state` は変更なし（例：`CertificateValid`）。
+
+### パス B：完全削除（デモ中に作成されたネームスペース）
+
+ネームスペースがこのデモセッション中に作成された場合、HTTPS LB を完全に削除する必要があります。ネームスペース自体が teardown の最後に削除されるため、スケルトン保持は不要です。
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https"
+```
+
+確認：`GET /api/config/namespaces/\{namespace\}/http_loadbalancers` は `${F5XC_LB_NAME}-https` を含まないはずです。
+
+<Aside type="tip">
+**完全 teardown オプション（既存のネームスペース）。** ネームスペースが既存の場合でも、デモドメインを永久にデコミッションする場合、またはオペレーターが明示的に「完全 teardown」または「強制削除」をリクエストする場合は、HTTPS LB を完全に削除できます。完全 DELETE は、ドメインが 7 日以内に再利用されない場合にのみ使用してください。HTTPS LB を削除すると、次のデモ実行時に新しい Let's Encrypt 証明書リクエストがトリガーされます。
+</Aside>
+
+## HTTP Load Balancer を削除
+
+プライマリ HTTP LB を削除します：
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http"
+```
+
+確認：`GET /api/config/namespaces/\{namespace\}/http_loadbalancers` は `${F5XC_LB_NAME}-http` を含まないはずです。DELETE が `200` を返した後もオブジェクトがリストに表示される場合は、30 秒待機して再度確認します。2 回目の確認後もまだ存在する場合は、オペレーターに報告します。続行しないでください。
+
+## Origin Pool を削除
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx"
+```
+
+確認：`GET /api/config/namespaces/\{namespace\}/origin_pools` はプール名を含まないはずです。DELETE が `200` を返した後もオブジェクトがリストに表示される場合は、30 秒待機して再度確認します。2 回目の確認後もまだ存在する場合は、オペレーターに報告します。
+
+## Healthcheck を削除
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx"
+```
+
+確認：`GET /api/config/namespaces/\{namespace\}/healthchecks` は healthcheck 名を含まないはずです。DELETE が `200` を返した後もオブジェクトがリストに表示される場合は、30 秒待機して再度確認します。2 回目の確認後もまだ存在する場合は、オペレーターに報告します。
+
+## Protected Domain を削除
+
+CSD protected domain 登録を削除します。protected domain はテナントスコープ（ネームスペーススコープではない）ですが、このデプロイメントに関連付けられた CSD 設定オブジェクトであり、DNS ゾーンのような共有インフラストラクチャではありません。
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/xF5XC_ROOT_DOMAINx"
+```
+
+確認：protected domain をリストして、ドメインがもう登録されていないことを確認します：
+
+```bash
+curl -s -X GET \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '.items // [] | map(.metadata.name)'
+```
+
+<Aside type="note">
+個別の GET エンドポイント（`/protected_domains/\{name\}`）は「API Group could not be determined」を返す場合があります。DELETE エンドポイントが同じエラーを返す場合は、リストエンドポイントを使用してドメインがもう表示されていないことを確認するか、F5 Distributed Cloud（F5 XC）Console UI を使用して protected domain を削除してください。
+</Aside>
+
+## Namespace を削除（条件付き）
+
+このステップは、Phase 1 Step 0 でネームスペースが作成された場合（`NAMESPACE_CREATED=true`）**のみ**実行されます。ネームスペースが既存の場合（`NAMESPACE_CREATED=false`）は、このステップを完全にスキップします。ネームスペースは共有インフラストラクチャであり、削除してはいけません。
+
+<Aside type="caution">
+**カスケード削除はネームスペーススコープのすべてのオブジェクトを削除します。** カスケード削除エンドポイントはネームスペースと、その中のすべてのオブジェクトを削除します。すべてのインフラストラクチャオブジェクト（ロードバランサー、origin pool、healthcheck）は、前の teardown ステップで既に削除されているはずです。カスケード削除は、残りのオブジェクトをキャッチしてネームスペース自体を削除するための最終クリーンアップとして機能します。
+</Aside>
+
+```bash
+if [ "$NAMESPACE_CREATED" = "true" ]; then
+  curl -s -X POST \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d '{"name": "xF5XC_NAMESPACEx"}' \
+    "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx/cascade_delete" | jq .
+fi
+```
+
+<Aside type="note">
+標準の `DELETE /api/web/namespaces/{name}` エンドポイントは `"Not Implemented"`（エラーコード `12`）を返します。ネームスペースを削除するには、カスケード削除エンドポイント（`POST .../cascade_delete`）を**使用する必要があります**。
+</Aside>
+
+確認：ネームスペースがもう存在しないことを確認します：
+
+```bash
+curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx"
+```
+
+予想：`NAMESPACE_CREATED=true` の場合は `404`、`NAMESPACE_CREATED=false` の場合は `200`。
+
+## Phase 4 証拠の概要
+
+| オブジェクト | 削除状態 | 確認状態 |
+| --- | --- | --- |
+| Mitigated Domains（6） | すべて `200`（空の `\{\}`）または Phase 3 が実行されていない場合はスキップ | カウント 0（またはファントム 1） — PASS |
+| HTTPS Load Balancer（`-https`） | `200`（スケルトン PUT）または `200`（`NAMESPACE_CREATED=true` の場合は完全削除） | スケルトンが確認されるか、リストに含まれない — PASS |
+| HTTP Load Balancer（`-http`） | `200`（空の `\{\}`） | リストに含まれない — PASS |
+| Origin Pool | `200`（空の `\{\}`） | リストに含まれない — PASS |
+| Healthcheck | `200`（空の `\{\}`）またはスキップ | リストに含まれない — PASS |
+| Protected Domain | `200`（空の `\{\}`） | リストに含まれない — PASS |
+| DNS ゾーン | 削除されない（共有インフラ） | ゾーンが存在する — PASS |
+| Namespace | `NAMESPACE_CREATED=true` の場合は `200`（カスケード削除）、その他はスキップ | 削除されている場合は `404`、保存されている場合は `200` — PASS |
+
+---
+
+**Teardown 完了。** ネームスペースが既存の場合（`NAMESPACE_CREATED=false`）、HTTPS LB スケルトンを除くすべてのデプロイメントオブジェクトが削除されます。HTTPS LB スケルトンは Let's Encrypt 証明書とドメインバインディングを次のデモ実行用に保持します。ネームスペースがデモ中に作成された場合（`NAMESPACE_CREATED=true`）、HTTPS LB とネームスペースを含むすべてのオブジェクトが完全に削除されます。DNS ゾーンと非管理対象レコードはどちらの場合でもそのまま残ります。

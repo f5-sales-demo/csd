@@ -1,0 +1,234 @@
+---
+title: المرحلة 4 — الإزالة
+description: تنظيف كائنات العرض التوضيحي من مستأجر F5 XC بعد انتهاء العرض التوضيحي
+sidebar:
+  order: 5
+  label: المرحلة 4 — الإزالة
+i18n:
+  sourceHash: 95b0184f156c
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+تزيل المرحلة 4 جميع الكائنات التي تم إنشاؤها أثناء التمرين بترتيب الاعتماديات العكسي. تتطلب هذه المرحلة تأكيد صريح من الإنسان قبل إجراء أي عمليات حذف.
+
+<Aside type="caution">
+**تأكد قبل المتابعة.** إذا كنت مساعد ذكاء اصطناعي، يجب عليك سؤال مشغل النظام: "ستؤدي المرحلة 4 إلى حذف دائم لجميع كائنات النشر. هل أنت مستعد للإزالة؟ رد بـ 'نعم' للمتابعة." لا تقم بتنفيذ أي أوامر DELETE حتى يؤكد المشغل.
+
+**استثناء:** عند تشغيل الإزالة كجزء من المرحلة 1 التحضير (تنظيف ما قبل الاجتماع)، تخدم عبارة تشغيل "تحضير العرض التوضيحي" الخاص بالمشغل كتفويض ضمني. لا يلزم تأكيد إضافي. ينطبق بوابة التأكيد أعلاه فقط أثناء الإزالة المستقلة أو المرحلة 4 بعد الاجتماع.
+</Aside>
+
+## ترتيب الإزالة
+
+أزل الكائنات بالترتيب العكسي للإنشاء — احذف الكائنات التي تعتمد على كائنات أخرى أولاً:
+
+1. **النطاقات المخففة** — احذف جميع نطاقات CSD المخففة التي تم إنشاؤها في المرحلة 3
+2. **موازن تحميل HTTPS** (`${F5XC_LB_NAME}-https`) — اختزل إلى هيكل عظمي (احفظ شهادة Let's Encrypt)؛ احذف بالكامل إذا كان `NAMESPACE_CREATED=true` أو عند الطلب الصريح
+3. **موازن تحميل HTTP** (`${F5XC_LB_NAME}-http`) — يعتمد على مجموعة الأصل
+4. **مجموعة الأصل** — تعتمد على فحص الصحة (إن وجد)
+5. **تنظيف منطقة DNS** — يحتفظ موازن تحميل HTTPS الهيكلي بسجلات A و ACME المدارة (هذا مطلوب — فهو يحافظ على صحة الشهادة). سجلات موازن تحميل HTTP المدارة تنظف تلقائياً عند الحذف. السجلات اليدوية في `default_rr_set_group` تحتاج إلى تنظيف يدوي عبر `PUT`
+6. **فحص الصحة** — فقط إذا تم الإنشاء في المرحلة 1 الخطوة 1
+7. **النطاق المحمي** — احذف تسجيل النطاق المحمي CSD
+8. **مساحة الاسم** — فقط إذا تم الإنشاء أثناء المرحلة 1 الخطوة 0 (`NAMESPACE_CREATED=true`)
+
+<Aside type="caution">
+**لا تحذف منطقة DNS.** منطقة DNS هي بنية تحتية مشتركة تدعم العديد من سجلات DNS الأخرى عبر المنصة ولا يجب حذفها أبداً. قم فقط بتنظيف السجلات التي أضفتها يدوياً إلى `default_rr_set_group`. النطاق المحمي، مع ذلك، هو كائن تكوين CSD مرتبط بهذا النشر و**يجب** حذفه عند الإزالة الكاملة.
+</Aside>
+
+## حذف النطاقات المخففة
+
+إذا تم تنفيذ المرحلة 3، احذف جميع النطاقات المخففة قبل إزالة كائنات البنية التحتية. يقوم المحاكاة القياسية بإنشاء 6 نطاقات مخففة:
+
+```bash
+for domain in cdn.jsdelivr.net esm.sh unpkg.com ga.jspm.io httpbin.org jsonplaceholder.typicode.com; do
+  curl -s -X DELETE \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/$domain"
+done
+```
+
+تحقق: اسرد النطاقات المخففة للتأكد من أن العد هو 0 (أو 1 — انظر الملاحظة أدناه):
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  | jq '{count: (.items | length)}'
+```
+
+<Aside type="note">
+قد تعيد قائمة النطاقات المخففة إدخال وهمي (العد = 1) مع بيانات وصفية فارغة بعد حذف جميع النطاقات المخففة. هذا هو شيء من الخلفية يظهر عندما تكون حالة خدمة CSD بين التكوينات — لا يمثل تخفيفاً حقيقياً ويمكن تجاهله. محاولة حذف هذا الإدخال الوهمي تعيد `"Delete list when service not configured"`.
+</Aside>
+
+## موازن تحميل HTTPS
+
+يعتمد سلوك إزالة موازن تحميل HTTPS على ما إذا كانت مساحة الاسم قد تم إنشاؤها أثناء جلسة العرض التوضيحي هذه (متغير `NAMESPACE_CREATED` من المرحلة 1 الخطوة 0):
+
+- **`NAMESPACE_CREATED=false`** (مساحة اسم موجودة مسبقاً) — اختزل إلى حالة **هيكل عظمي**، مع الحفاظ على شهادة Let's Encrypt لإعادة الاستخدام
+- **`NAMESPACE_CREATED=true`** (مساحة الاسم التي تم إنشاؤها أثناء العرض التوضيحي) — **حذف كامل**، لأن مساحة الاسم نفسها سيتم حذفها ولا يمكن الحفاظ على الشهادة
+
+### المسار أ: اختزل إلى هيكل عظمي (مساحة اسم موجودة مسبقاً)
+
+عندما تكون مساحة الاسم موجودة مسبقاً، اختزل موازن تحميل HTTPS إلى حالة **هيكل عظمي** — أزل مرجع مجموعة الأصل وتكوين CSD مع الحفاظ على ربط النطاق وإعدادات `https_auto_cert` والشهادة الصادرة عن Let's Encrypt. هذا يتجنب تشغيل طلب شهادة جديد في العرض التوضيحي التالي (Let's Encrypt تفرض حداً أقصى من 5 شهادات مكررة لكل مجموعة معرفات دقيقة في 7 أيام).
+
+**الخطوة 1 — احصل على تكوين موازن تحميل HTTPS الحالي:**
+
+```bash
+HTTPS_LB_JSON=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+```
+
+**الخطوة 2 — اختزل إلى هيكل عظمي عبر jq و PUT العودة:**
+
+```bash
+echo "$HTTPS_LB_JSON" | jq '{
+  metadata: .metadata,
+  spec: (.spec | del(.client_side_defense) | .disable_client_side_defense = {} | .default_route_pools = [])
+}' | curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d @- \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq .
+```
+
+يحتفظ مرشح jq بالمواصفات الكاملة (النطاقات و `https_auto_cert` و `advertise_on_public_default_vip` وجميع أعلام الميزات المعطلة) بينما يزيل `client_side_defense` (تم استبداله بـ `disable_client_side_defense: {}`) ويمسح `default_route_pools` إلى مصفوفة فارغة. تبقى الشهادة والروابط DNS سليمة.
+
+**تحقق** من أن موازن تحميل HTTPS الآن هيكل عظمي:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{
+    name: .metadata.name,
+    domains: .spec.domains,
+    has_origin_pools: ((.spec.default_route_pools // []) | length > 0),
+    has_csd: (.spec.client_side_defense != null),
+    cert_state: .spec.cert_state
+  }'
+```
+
+المتوقع: `has_origin_pools: false` و `has_csd: false` و `domains` لا تزال مأهولة و `cert_state` دون تغيير (على سبيل المثال، `CertificateValid`).
+
+### المسار ب: حذف كامل (مساحة الاسم التي تم إنشاؤها أثناء العرض التوضيحي)
+
+عندما تم إنشاء مساحة الاسم أثناء جلسة العرض التوضيحي هذه، يجب حذف موازن تحميل HTTPS بالكامل — الحفاظ على الهيكل العظمي غير ضروري لأن مساحة الاسم نفسها سيتم إزالتها في نهاية الإزالة.
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https"
+```
+
+تحقق: `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` لا ينبغي أن يحتوي على `${F5XC_LB_NAME}-https`.
+
+<Aside type="tip">
+**خيار الإزالة الكاملة (مساحة الاسم الموجودة مسبقاً).** حتى عندما تكون مساحة الاسم موجودة مسبقاً، يمكنك حذف موازن تحميل HTTPS بالكامل إذا كنت تقوم بإيقاف تشغيل نطاق العرض التوضيحي بشكل دائم أو إذا طلب المشغل صراحة "الإزالة الكاملة" أو "فرض الحذف". استخدم حذف كامل فقط عندما لن يتم إعادة استخدام النطاق خلال 7 أيام. يؤدي حذف موازن تحميل HTTPS إلى تشغيل طلب شهادة Let's Encrypt جديد في العرض التوضيحي التالي.
+</Aside>
+
+## حذف موازن تحميل HTTP
+
+احذف موازن تحميل HTTP الأساسي:
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http"
+```
+
+تحقق: `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` لا ينبغي أن يحتوي على `${F5XC_LB_NAME}-http`. إذا كان الكائن لا يزال يظهر في القائمة بعد عودة DELETE `200`، انتظر 30 ثانية وتحقق مرة أخرى. إذا كان لا يزال موجوداً بعد الفحص الثاني، أبلغ المشغل — لا تتابع.
+
+## حذف مجموعة الأصل
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx"
+```
+
+تحقق: `GET /api/config/namespaces/\{namespace\}/origin_pools` لا ينبغي أن يحتوي على اسم المجموعة. إذا كان الكائن لا يزال يظهر في القائمة بعد عودة DELETE `200`، انتظر 30 ثانية وتحقق مرة أخرى. إذا كان لا يزال موجوداً بعد الفحص الثاني، أبلغ المشغل.
+
+## حذف فحص الصحة
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx"
+```
+
+تحقق: `GET /api/config/namespaces/\{namespace\}/healthchecks` لا ينبغي أن يحتوي على اسم فحص الصحة. إذا كان الكائن لا يزال يظهر في القائمة بعد عودة DELETE `200`، انتظر 30 ثانية وتحقق مرة أخرى. إذا كان لا يزال موجوداً بعد الفحص الثاني، أبلغ المشغل.
+
+## حذف النطاق المحمي
+
+احذف تسجيل النطاق المحمي CSD. النطاق المحمي محدود بالمستأجر (وليس محدود بمساحة الاسم)، لكنه كائن تكوين CSD مرتبط بهذا النشر — وليس بنية تحتية مشتركة مثل منطقة DNS.
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/xF5XC_ROOT_DOMAINx"
+```
+
+تحقق: اسرد النطاقات المحمية للتأكد من عدم تسجيل النطاق:
+
+```bash
+curl -s -X GET \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '.items // [] | map(.metadata.name)'
+```
+
+<Aside type="note">
+قد تعيد نقطة نهاية GET الفردية (`/protected_domains/\{name\}`) "API Group could not be determined." إذا أعادت نقطة نهاية DELETE نفس الخطأ، استخدم نقطة نهاية القائمة للتحقق من عدم ظهور النطاق، أو احذف النطاق المحمي عبر واجهة المستخدم لـ F5 Distributed Cloud (F5 XC).
+</Aside>
+
+## حذف مساحة الاسم (شرط)
+
+تعمل هذه الخطوة **فقط** إذا تم إنشاء مساحة الاسم أثناء المرحلة 1 الخطوة 0 (`NAMESPACE_CREATED=true`). إذا كانت مساحة الاسم موجودة مسبقاً (`NAMESPACE_CREATED=false`)، تخطَّ هذه الخطوة بالكامل — مساحة الاسم هي بنية تحتية مشتركة يجب عدم حذفها.
+
+<Aside type="caution">
+**يزيل حذف الانتشار جميع كائنات المحدود بمساحة الاسم.** تزيل نقطة نهاية حذف الانتشار مساحة الاسم وكل كائن بداخلها. يجب أن تكون جميع كائنات البنية التحتية (موازنات التحميل ومجموعات الأصل وفحوصات الصحة) قد تم حذفها بالفعل بواسطة خطوات الإزالة السابقة. حذف الانتشار يعمل كتنظيف نهائي لالتقاط أي كائنات متبقية وإزالة مساحة الاسم نفسها.
+</Aside>
+
+```bash
+if [ "$NAMESPACE_CREATED" = "true" ]; then
+  curl -s -X POST \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d '{"name": "xF5XC_NAMESPACEx"}' \
+    "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx/cascade_delete" | jq .
+fi
+```
+
+<Aside type="note">
+تعيد نقطة نهاية `DELETE /api/web/namespaces/{name}` القياسية `"Not Implemented"` (رمز الخطأ `12`). يجب عليك **استخدام نقطة نهاية حذف الانتشار** (`POST .../cascade_delete`) لحذف مساحة اسم.
+</Aside>
+
+تحقق: أكد أن مساحة الاسم لم تعد موجودة:
+
+```bash
+curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx"
+```
+
+المتوقع: `404` إذا كان `NAMESPACE_CREATED=true` و `200` إذا كان `NAMESPACE_CREATED=false`.
+
+## ملخص أدلة المرحلة 4
+
+| الكائن | حالة الحذف | حالة التحقق |
+| --- | --- | --- |
+| النطاقات المخففة (6) | جميع `200` (فارغة `\{\}`) أو تم تخطيها إذا لم يتم تشغيل المرحلة 3 | العد 0 (أو 1 وهمي) — نجح |
+| موازن تحميل HTTPS (`-https`) | `200` (PUT هيكل عظمي) أو `200` (حذف كامل إذا كان `NAMESPACE_CREATED=true`) | تم التحقق من الهيكل العظمي أو غير موجود في القائمة — نجح |
+| موازن تحميل HTTP (`-http`) | `200` (فارغة `\{\}`) | غير موجود في القائمة — نجح |
+| مجموعة الأصل | `200` (فارغة `\{\}`) | غير موجود في القائمة — نجح |
+| فحص الصحة | `200` (فارغة `\{\}`) أو تم تخطيه | غير موجود في القائمة — نجح |
+| النطاق المحمي | `200` (فارغة `\{\}`) | غير موجود في القائمة — نجح |
+| منطقة DNS | لم يتم الحذف (بنية تحتية مشتركة) | لا تزال المنطقة موجودة — نجح |
+| مساحة الاسم | `200` (حذف الانتشار) إذا كان `NAMESPACE_CREATED=true` و تم تخطيه بخلاف ذلك | `404` إذا تم الحذف و `200` إذا تم الحفاظ — نجح |
+
+---
+
+**اكتملت الإزالة.** عندما كانت مساحة الاسم موجودة مسبقاً (`NAMESPACE_CREATED=false`)، تم إزالة جميع كائنات النشر باستثناء هيكل موازن تحميل HTTPS الذي يحافظ على شهادة Let's Encrypt وربط النطاق للعرض التوضيحي التالي. عندما تم إنشاء مساحة الاسم أثناء العرض التوضيحي (`NAMESPACE_CREATED=true`)، تم حذف جميع الكائنات بما في ذلك موازن تحميل HTTPS ومساحة الاسم بالكامل. تبقى منطقة DNS والسجلات غير المدارة سليمة في كلا الحالتين.

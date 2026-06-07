@@ -1,9 +1,9 @@
 ---
-title: 第一階段 — 構建
-description: 透過 F5 XC API 部署 CSD 基礎設施 — 健康檢查、源伺服器池、負載平衡器、受保護的域名
+title: Phase 1 — 建置
+description: 透過 F5 XC API 部署 CSD 基礎架構 — 健康檢查、來源池、負載平衡器、受保護網域
 sidebar:
   order: 2
-  label: 第一階段 — 構建
+  label: Phase 1 — 建置
 i18n:
   sourceHash: 6ecd8b98f257
   translator: machine
@@ -11,11 +11,11 @@ i18n:
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-第一階段部署並驗證完整的 CSD 基礎設施。依序完成所有步驟 — 每個步驟必須通過後才能進行下一步。在執行這些命令之前，請返回[索引](/csd/demo/)完成環境設置和變數解析。
+Phase 1 部署並驗證完整的 CSD 基礎架構。請依序完成所有步驟 — 每個步驟必須通過（PASS）後才能繼續。在執行這些命令之前，請返回[索引頁](/csd/demo/)完成環境設定和變數解析。
 
 ## 步驟 0：檢查並建立命名空間（條件式）
 
-檢查目標命名空間是否已存在於租戶上。如果不存在，請建立它。將結果追蹤在 `NAMESPACE_CREATED` shell 變數中 — 第四階段清除時使用此變數來決定是否刪除命名空間。
+檢查目標命名空間是否已存在於租戶上。如果不存在，則建立它。將結果追蹤在 `NAMESPACE_CREATED` shell 變數中 — Phase 4 清除階段會使用此變數來決定是否刪除命名空間。
 
 ```bash
 NS_CHECK=$(curl -s -o /dev/null -w '%\{http_code\}' \
@@ -34,12 +34,12 @@ fi
 ```
 
 <Aside type="note">
-**`spec` 欄位是必需的。** F5 XC 命名空間 API 在請求本體中需要 `spec` 欄位，即使不需要任何配置時也是如此 — 傳遞空物件 `{}`。省略 `spec` 會返回錯誤代碼 `3`（「spec should not be empty in request」）。
+**`spec` 欄位為必填。** F5 XC 命名空間 API 要求請求主體中必須包含 `spec` 欄位，即使不需要任何設定 — 請傳入空物件 `{}`。省略 `spec` 會回傳錯誤代碼 `3`（「spec should not be empty in request」）。
 </Aside>
 
-### 證據
+### 驗證證據
 
-確認命名空間存在並記錄它是否被建立：
+確認命名空間存在並記錄是否為新建立的：
 
 ```bash
 curl -s -o /dev/null -w '%\{http_code\}' \
@@ -48,19 +48,19 @@ curl -s -o /dev/null -w '%\{http_code\}' \
 echo "NAMESPACE_CREATED=$NAMESPACE_CREATED"
 ```
 
-| 欄位 | 預期 | 狀態 |
+| 欄位 | 預期值 | 狀態 |
 | --- | --- | --- |
-| HTTP 狀態 | `200` | 如果返回則通過，如果為 `404` 或其他則失敗 |
-| `NAMESPACE_CREATED` | `true`（已建立）或 `false`（預先存在） | 信息性 — 由第四階段清除使用 |
+| HTTP 狀態碼 | `200` | 回傳則 PASS，`404` 或其他則 FAIL |
+| `NAMESPACE_CREATED` | `true`（新建立）或 `false`（已存在） | 資訊性 — 供 Phase 4 清除階段使用 |
 
-## 步驟 1：建立健康檢查（可選）
+## 步驟 1：建立健康檢查（選擇性）
 
-建立一個 HTTP 健康檢查，源伺服器池可用它來監控後端健康狀況。
+建立 HTTP 健康檢查，供來源池用於監控後端健康狀態。
 
 <Aside type="note">
-**健康檢查對 CSD 是可選的。** 客戶端防禦功能不依賴源伺服器健康監控。如果您的租戶已耗盡健康檢查物件限制（錯誤代碼 `8` — 請參閱錯誤處理），請跳過此步驟並建立不包含健康檢查引用的源伺服器池。CSD 將正常運作。
+**健康檢查對 CSD 而言為選擇性。** 用戶端防禦功能不依賴來源健康監控。如果您的租戶已耗盡健康檢查物件限制（錯誤代碼 `8` — 請參閱錯誤處理），請跳過此步驟並在不引用健康檢查的情況下建立來源池。CSD 將正常運作。
 
-如果您確實建立了健康檢查，請在源伺服器池之前建立它。源伺服器池必須引用現有的健康檢查 — 如果建立源伺服器池時健康檢查不存在，引用將被靜默設為空。
+如果您要建立健康檢查，請在建立來源池之前完成。來源池必須引用已存在的健康檢查 — 如果在建立來源池時健康檢查不存在，引用將會靜默地為空。
 </Aside>
 
 ```bash
@@ -96,9 +96,9 @@ curl -s -X POST \
   | jq .
 ```
 
-`200` 回應包含已建立的物件，確認健康檢查已建立。如果回應包含 `"code": 8` 且訊息類似 `"Object kind healthcheck has exhausted limits(150)"`，租戶已達到其健康檢查限制 — 跳至步驟 2 並省略健康檢查引用。CSD 不依賴健康監控。
+回應 `200` 並帶有已建立的物件，即確認健康檢查已成功建立。如果回應包含 `"code": 8` 並帶有類似 `"Object kind healthcheck has exhausted limits(150)"` 的訊息，表示租戶已達到健康檢查限制 — 請跳至步驟 2 並省略健康檢查引用。CSD 不依賴健康監控。
 
-### 證據
+### 驗證證據
 
 確認健康檢查存在：
 
@@ -109,18 +109,18 @@ curl -s \
   | jq '{name: .metadata.name, namespace: .metadata.namespace, path: .spec.http_health_check.path, interval: .spec.interval}'
 ```
 
-| 欄位 | 預期 | 狀態 |
+| 欄位 | 預期值 | 狀態 |
 | --- | --- | --- |
-| HTTP 狀態 | `200` 包含物件 | 如果返回則通過，如果為 `404` 則失敗 |
-| `name` | 符合 `F5XC_HC_NAME` | 通過 |
-| `path` | `/` | 通過 |
-| 步驟 1 已跳過（錯誤代碼 `8`，限制已耗盡） | — | 通過（健康檢查對 CSD 是可選的） |
+| HTTP 狀態碼 | `200` 並帶有物件 | 回傳則 PASS，`404` 則 FAIL |
+| `name` | 符合 `F5XC_HC_NAME` | PASS |
+| `path` | `/` | PASS |
+| 步驟 1 被跳過（錯誤代碼 `8`，限制已耗盡） | — | PASS（健康檢查對 CSD 為選擇性） |
 
-## 步驟 2：建立源伺服器池
+## 步驟 2：建立來源池
 
-建立指向您的後端伺服器的源伺服器池。如果您在步驟 1 中建立了健康檢查，請包含 `healthcheck` 引用。如果跳過了步驟 1，請使用空陣列。
+建立指向您後端伺服器的來源池。如果您在步驟 1 建立了健康檢查，請包含 `healthcheck` 引用。如果步驟 1 被跳過，請使用空陣列。
 
-**帶健康檢查**（步驟 1 成功）：
+**包含健康檢查**（步驟 1 成功）：
 
 ```bash
 curl -s -X POST \
@@ -156,7 +156,7 @@ curl -s -X POST \
   | jq .
 ```
 
-**不帶健康檢查**（步驟 1 已跳過）：
+**不包含健康檢查**（步驟 1 被跳過）：
 
 ```bash
 curl -s -X POST \
@@ -188,15 +188,15 @@ curl -s -X POST \
   | jq .
 ```
 
-`200` 回應確認源伺服器池已建立。
+回應 `200` 即確認來源池已建立。
 
 <Aside type="caution">
-如果回應包含 `"code": 8` 且訊息類似 `"Object kind endpoint has exhausted limits(500)"` 或 `"Object kind origin_pool has exhausted limits"`，租戶已達到其配額。與健康檢查不同，源伺服器池是**演示所必需的** — 沒有源伺服器池演示無法進行。從其他命名空間刪除未使用的源伺服器池以釋放容量（刪除源伺服器池也會釋放其端點子物件），然後重試。如果無法解決限制，請聯絡您的 F5 分散式雲端 (F5 XC) 管理員以增加租戶配額。
+如果回應包含 `"code": 8` 並帶有類似 `"Object kind endpoint has exhausted limits(500)"` 或 `"Object kind origin_pool has exhausted limits"` 的訊息，表示租戶已達到配額。與健康檢查不同，來源池是展示所**必需**的 — 沒有來源池展示無法進行。請從其他命名空間刪除未使用的來源池以釋放容量（刪除來源池也會釋放其端點子物件），然後重試。如果限制無法解決，請聯繫您的 F5 Distributed Cloud（F5 XC）管理員以增加租戶配額。
 </Aside>
 
-### 驗證健康檢查已連結
+### 驗證健康檢查連結
 
-如果您包含了健康檢查引用，請確認它已正確連結：
+如果您包含了健康檢查引用，請確認其已正確連結：
 
 ```bash
 curl -s \
@@ -205,11 +205,11 @@ curl -s \
   | jq '.spec.healthcheck'
 ```
 
-填充的陣列確認連結。空陣列 `[]` 是預期的，如果步驟 1 被跳過，或表示如果您打算連結一個，健康檢查未被找到。
+有內容的陣列即確認連結成功。空陣列 `[]` 在步驟 1 被跳過時為預期結果，或者如果您原本打算連結健康檢查，則表示未找到。
 
-### 證據
+### 驗證證據
 
-確認源伺服器池存在且具有正確的配置：
+確認來源池存在且設定正確：
 
 ```bash
 curl -s \
@@ -218,29 +218,29 @@ curl -s \
   | jq '{name: .metadata.name, origin_ip: .spec.origin_servers[0].public_ip.ip, port: .spec.port, healthcheck_count: (.spec.healthcheck | length)}'
 ```
 
-| 欄位 | 預期 | 狀態 |
+| 欄位 | 預期值 | 狀態 |
 | --- | --- | --- |
-| HTTP 狀態 | `200` | 如果返回則通過，如果為 `404` 則失敗 |
-| `name` | 符合 `F5XC_ORIGIN_POOL` | 通過 |
-| `origin_ip` | 符合 `F5XC_ORIGIN_IP` | 通過 |
-| `port` | 符合 `F5XC_ORIGIN_PORT` | 通過 |
-| `healthcheck_count` | `1`（帶 HC）或 `0`（無） | 兩種方式都通過 |
+| HTTP 狀態碼 | `200` | 回傳則 PASS，`404` 則 FAIL |
+| `name` | 符合 `F5XC_ORIGIN_POOL` | PASS |
+| `origin_ip` | 符合 `F5XC_ORIGIN_IP` | PASS |
+| `port` | 符合 `F5XC_ORIGIN_PORT` | PASS |
+| `healthcheck_count` | `1`（有健康檢查）或 `0`（無健康檢查） | 兩者皆 PASS |
 
-## 步驟 3：使用 CSD 建立 HTTP 負載平衡器
+## 步驟 3：建立啟用 CSD 的 HTTP 負載平衡器
 
-建立**兩個**啟用客戶端防禦的負載平衡器 — 一個 HTTP LB（主要，埠 80）和一個 HTTPS LB（次要，埠 443，帶自動憑證管理）。HTTP LB 是所有演示流量的預設值。HTTPS LB 是一個附加功能，取決於 Let's Encrypt 憑證佈建，在演示環境中可能會達到速率限制。
+建立**兩個**啟用用戶端防禦的負載平衡器 — HTTP LB（主要，連接埠 80）和 HTTPS LB（次要，連接埠 443 並搭配自動憑證管理）。HTTP LB 是所有展示流量的預設選項。HTTPS LB 屬於附加功能，依賴 Let's Encrypt 憑證配置，在展示環境中可能會遇到速率限制。
 
 <Aside type="note">
-HTTP 負載平衡器規格有 22 個以上的 `oneOf` 選擇組。每個組必須恰好設定一個選擇，否則 API 返回 `422` 錯誤。以下配置禁用除 CSD 外的所有可選安全功能 — 根據您的環境需要進行修改。兩個 LB 共享相同的源伺服器池、CSD 設定和域名 — 僅偵聽器類型不同。
+HTTP 負載平衡器規格有 22 個以上的 `oneOf` 選擇群組。每個群組必須恰好設定一個選項，否則 API 會回傳 `422` 錯誤。以下設定除 CSD 外停用所有選擇性安全功能 — 請根據您的環境需求進行修改。兩個 LB 共用相同的來源池、CSD 設定和網域 — 僅監聽器類型不同。
 </Aside>
 
 <Aside type="tip">
-兩個 LB 名稱都來自 `F5XC_LB_NAME`：HTTP LB 是 `${F5XC_LB_NAME}-http`，HTTPS LB 是 `${F5XC_LB_NAME}-https`。不需要其他環境變數。
+兩個 LB 名稱均衍生自 `F5XC_LB_NAME`：HTTP LB 為 `${F5XC_LB_NAME}-http`，HTTPS LB 為 `${F5XC_LB_NAME}-https`。不需要額外的環境變數。
 </Aside>
 
 ### HTTP 負載平衡器（主要）
 
-這是演示的**主要**負載平衡器。它在埠 80 上使用帶 F5 XC 託管 DNS 的 `http` 偵聽器。它不依賴 TLS 憑證佈建，因此在 DNS 解析後立即變為就緒。
+這是展示用的**主要**負載平衡器。它使用 `http` 監聽器於連接埠 80，搭配 F5 XC 受管 DNS。它不依賴 TLS 憑證配置，因此在 DNS 解析後即可立即就緒。
 
 ```bash
 curl -s -X POST \
@@ -305,15 +305,15 @@ curl -s -X POST \
   | jq .
 ```
 
-`200` 回應確認 HTTP 負載平衡器已建立且 CSD 已啟用。
+回應 `200` 即確認已建立啟用 CSD 的 HTTP 負載平衡器。
 
 <Aside type="caution">
-如果回應包含 `"code": 8` 且訊息類似 `"Object kind http_loadbalancer has exhausted limits"`，租戶已達到其負載平衡器配額。演示**需要**負載平衡器。刪除未使用的負載平衡器以釋放容量，然後重試。
+如果回應包含 `"code": 8` 並帶有類似 `"Object kind http_loadbalancer has exhausted limits"` 的訊息，表示租戶已達到負載平衡器配額。負載平衡器是展示所**必需**的。請刪除未使用的負載平衡器以釋放容量，然後重試。
 </Aside>
 
 ### HTTPS 負載平衡器（次要）
 
-這是**次要**負載平衡器。它在埠 443 上使用帶自動 Let's Encrypt 憑證佈建的 `https_auto_cert`。在建立它之前，檢查先前的清除中是否存在**骨架 HTTPS LB** — 如果存在，透過 PUT 而不是 POST 進行還原以保留現有的 Let's Encrypt 憑證並避免速率限制（每 7 天每個完全相同的識別符集合的 5 個重複憑證）。
+這是**次要**負載平衡器。它使用 `https_auto_cert` 於連接埠 443，搭配自動 Let's Encrypt 憑證配置。在建立之前，請檢查是否存在先前清除階段留下的**骨架 HTTPS LB** — 如果存在，請透過 PUT 而非 POST 進行還原，以保留現有的 Let's Encrypt 憑證並避免速率限制（每組精確識別碼集每 7 天限 5 張重複憑證）。
 
 **檢查 HTTPS LB 是否已存在：**
 
@@ -323,11 +323,11 @@ HTTPS_CHECK=$(curl -s -o /dev/null -w '%\{http_code\}' \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
 ```
 
-如果 `HTTPS_CHECK` 是 `200`，存在骨架 HTTPS LB — 使用**路徑 A (PUT)**。如果是 `404`，使用**路徑 B (POST)**。
+如果 `HTTPS_CHECK` 為 `200`，表示存在骨架 HTTPS LB — 使用**路徑 A（PUT）**。如果為 `404`，使用**路徑 B（POST）**。
 
-#### 路徑 A：透過 PUT 還原骨架（HTTPS LB 存在）
+#### 路徑 A：透過 PUT 還原骨架（HTTPS LB 已存在）
 
-當先前的清除中存在骨架 HTTPS LB 時，透過 PUT 還原完整配置。這會重新連接源伺服器池並重新啟用 CSD，**而不會觸發新的 Let's Encrypt 憑證請求** — 現有憑證保持有效。
+當先前清除階段留下骨架 HTTPS LB 時，透過 PUT 還原完整設定。這會重新附加來源池並重新啟用 CSD，**而不會觸發新的 Let's Encrypt 憑證請求** — 現有憑證仍然有效。
 
 ```bash
 curl -s -X PUT \
@@ -397,15 +397,15 @@ curl -s -X PUT \
   | jq .
 ```
 
-`200` 回應確認骨架已使用完整配置進行還原。憑證狀態應保持 `CertificateValid` — 不會觸發新的 Let's Encrypt 佈建。
+回應 `200` 即確認骨架已還原為完整設定。憑證狀態應維持為 `CertificateValid` — 不會觸發新的 Let's Encrypt 配置。
 
 <Aside type="note">
-**骨架還原。** PUT 替換整個物件規格。骨架 HTTPS LB 在清除期間保留其域名綁定和憑證。此 PUT 恢復源伺服器池引用並重新啟用客戶端防禦，而無需觸發新的 Let's Encrypt 憑證請求。HTTPS 立即可用。
+**骨架還原。** PUT 會替換整個物件規格。骨架 HTTPS LB 在清除階段保留了其網域綁定和憑證。此 PUT 還原來源池引用並重新啟用用戶端防禦，而不會觸發新的 Let's Encrypt 憑證請求。HTTPS 立即可用。
 </Aside>
 
-#### 路徑 B：透過 POST 新建（HTTPS LB 不存在）
+#### 路徑 B：透過 POST 建立新的（HTTPS LB 不存在）
 
-當不存在 HTTPS LB 時（第一次執行或完全清除後），透過 POST 建立它。這會觸發 Let's Encrypt 憑證佈建，可能需要 5–10 分鐘。
+當不存在 HTTPS LB 時（首次執行或完全清除後），透過 POST 建立。這會觸發 Let's Encrypt 憑證配置，可能需要 5–10 分鐘。
 
 ```bash
 curl -s -X POST \
@@ -475,19 +475,19 @@ curl -s -X POST \
   | jq .
 ```
 
-`200` 回應確認 HTTPS 負載平衡器已建立。憑證佈建自動開始。
+回應 `200` 即確認 HTTPS 負載平衡器已建立。憑證配置會自動開始。
 
 <Aside type="caution">
-如果回應包含 `"code": 8` 且「exhausted limits」，則無法建立 HTTPS LB。HTTPS LB 是可選的 — 演示使用 HTTP LB 進行。在第一階段證據摘要中將配額限制記錄為信息性。
+如果回應包含 `"code": 8` 並帶有「exhausted limits」訊息，表示無法建立 HTTPS LB。HTTPS LB 為選擇性 — 展示將使用 HTTP LB 進行。請在 Phase 1 驗證證據摘要中將配額限制記錄為 INFO。
 </Aside>
 
 <Aside type="note">
-**Let's Encrypt 速率限制。** 建立新的 HTTPS LB 會觸發 Let's Encrypt 憑證請求。Let's Encrypt 每 7 天每個完全相同的識別符集合允許最多 5 個重複憑證。如果 `cert_state` 顯示 `AutoCertDomainRateLimited`，演示繼續使用 HTTP LB。為了避免達到此限制，預設清除會將 HTTPS LB 保留為骨架 — 請參閱[第四階段 — 清除](/csd/demo/phase-4-teardown/)。
+**Let's Encrypt 速率限制。** 建立新的 HTTPS LB 會觸發 Let's Encrypt 憑證請求。Let's Encrypt 每組精確識別碼集每 7 天僅允許 5 張重複憑證。如果 `cert_state` 顯示 `AutoCertDomainRateLimited`，展示會繼續使用 HTTP LB。為避免達到此限制，預設清除會將 HTTPS LB 保留為骨架 — 請參閱 [Phase 4 — 清除](/csd/demo/phase-4-teardown/)。
 </Aside>
 
-### 證據
+### 驗證證據
 
-確認兩個負載平衡器都存在且 CSD 已啟用。請始終對證據使用 **GET** — POST 回應返回可能不反映最終配置的瞬態值。
+確認兩個負載平衡器都已存在且啟用 CSD。驗證時務必使用 **GET** — POST 回應會傳回暫態值，可能不反映穩定後的設定。
 
 **HTTP LB（主要）：**
 
@@ -498,13 +498,13 @@ curl -s \
   | jq '{name: .metadata.name, domains: .spec.domains, csd_enabled: (.spec.client_side_defense != null), state: .spec.state}'
 ```
 
-| 欄位 | 預期 | 狀態 |
+| 欄位 | 預期值 | 狀態 |
 | --- | --- | --- |
-| HTTP 狀態 | `200` | 如果返回則通過，如果為 `404` 則失敗 |
-| `name` | `${F5XC_LB_NAME}-http` | 通過 |
-| `domains` | 包含 `F5XC_DOMAINNAME` | 通過 |
-| `csd_enabled` | `true` | 通過 — 此 LB 上已配置 CSD |
-| `state` | `VIRTUAL_HOST_READY` 或 `VIRTUAL_HOST_PENDING_A_RECORD` | 預期 — HTTP LB 在 DNS 解析後轉換為 READY。任何其他狀態（例如 `VIRTUAL_HOST_FAILED`）為失敗 — 報告給操作員且不進行 |
+| HTTP 狀態碼 | `200` | 回傳則 PASS，`404` 則 FAIL |
+| `name` | `${F5XC_LB_NAME}-http` | PASS |
+| `domains` | 包含 `F5XC_DOMAINNAME` | PASS |
+| `csd_enabled` | `true` | PASS — CSD 已在此 LB 上設定 |
+| `state` | `VIRTUAL_HOST_READY` 或 `VIRTUAL_HOST_PENDING_A_RECORD` | 預期結果 — HTTP LB 在 DNS 解析後會轉換為 READY。任何其他狀態（例如 `VIRTUAL_HOST_FAILED`）為 FAIL — 回報給操作人員且不要繼續 |
 
 **HTTPS LB（次要）：**
 
@@ -515,44 +515,44 @@ curl -s \
   | jq '{name: .metadata.name, domains: .spec.domains, csd_enabled: (.spec.client_side_defense != null), state: .spec.state, cert_state: .spec.cert_state}'
 ```
 
-| 欄位 | 預期 | 狀態 |
+| 欄位 | 預期值 | 狀態 |
 | --- | --- | --- |
-| HTTP 狀態 | `200` | 如果返回則通過，如果為 `404` 則失敗 |
-| `name` | `${F5XC_LB_NAME}-https` | 通過 |
-| `domains` | 包含 `F5XC_DOMAINNAME` | 通過 |
-| `csd_enabled` | `true` | 通過 — 此 LB 上已配置 CSD |
-| `creation_method` | PUT（還原骨架）或 POST（新建） | 信息性 — PUT 保留現有憑證 |
-| `state` | `VIRTUAL_HOST_READY`（PUT）或 `VIRTUAL_HOST_PENDING_A_RECORD`（POST） | 預期 — PUT 路徑可能已經 READY，因為 DNS 從骨架保留 |
-| `cert_state` | `CertificateValid`（PUT）或 `PreDomainChallengePending`（POST） | PUT 保留現有憑證；POST 觸發新佈建 |
+| HTTP 狀態碼 | `200` | 回傳則 PASS，`404` 則 FAIL |
+| `name` | `${F5XC_LB_NAME}-https` | PASS |
+| `domains` | 包含 `F5XC_DOMAINNAME` | PASS |
+| `csd_enabled` | `true` | PASS — CSD 已在此 LB 上設定 |
+| `creation_method` | PUT（還原骨架）或 POST（新建） | INFO — PUT 保留現有憑證 |
+| `state` | `VIRTUAL_HOST_READY`（PUT）或 `VIRTUAL_HOST_PENDING_A_RECORD`（POST） | 預期結果 — PUT 路徑可能已為 READY，因為 DNS 從骨架延續 |
+| `cert_state` | `CertificateValid`（PUT）或 `PreDomainChallengePending`（POST） | PUT 保留現有憑證；POST 觸發新的配置 |
 
-## 步驟 4：配置 DNS
+## 步驟 4：設定 DNS
 
-建立負載平衡器後，它進入 `VIRTUAL_HOST_PENDING_A_RECORD` 狀態，自動憑證保持在 `PreDomainChallengePending`。在 LB 完全可運作之前，必須存在兩個 DNS 記錄：
+建立負載平衡器後，它會進入 `VIRTUAL_HOST_PENDING_A_RECORD` 狀態，且自動憑證停留在 `PreDomainChallengePending`。在 LB 完全運作之前，必須存在兩筆 DNS 記錄：
 
 1. **A 記錄** — `xF5XC_DOMAINNAMEx` 指向 VIP IP 位址（來自 LB 回應中的 `dns_info`）
-2. **ACME 質詢記錄** — `_acme-challenge.xF5XC_DOMAINNAMEx` 用於 TLS 憑證驗證（當使用具有託管記錄的 F5 XC DNS 時自動管理；外部 DNS 需要手動 CNAME）
+2. **ACME 挑戰記錄** — `_acme-challenge.xF5XC_DOMAINNAMEx` 用於 TLS 憑證驗證（使用 F5 XC DNS 搭配受管記錄時自動管理；外部 DNS 則需要手動建立 CNAME）
 
-該方法取決於 F5 XC 是否是您的域名的權威 DNS 提供者。
+方法取決於 F5 XC 是否為您網域的權威 DNS 提供者。
 
-### 偵測 DNS 權威
+### 偵測 DNS 權限
 
-檢查根域名的名稱伺服器：
+檢查您根網域的名稱伺服器：
 
 ```bash
 dig +short NS xF5XC_ROOT_DOMAINx
 ```
 
-如果回應包含 `ns1.f5clouddns.com` 和 `ns2.f5clouddns.com`，F5 XC 是權威 DNS 提供者 — 按照**選項 A**。否則，按照**選項 B**進行外部 DNS。
+如果回應包含 `ns1.f5clouddns.com` 和 `ns2.f5clouddns.com`，表示 F5 XC 是權威 DNS 提供者 — 請遵循**選項 A**。否則，請遵循**選項 B** 使用外部 DNS。
 
-### 選項 A：F5 XC 託管 DNS
+### 選項 A：F5 XC 受管 DNS
 
-當 F5 XC 是權威 DNS 提供者時，平台可以自動建立 A 記錄和 ACME 質詢 CNAME — 但僅當 DNS 區域啟用 `allow_http_lb_managed_records` 時。
+當 F5 XC 為權威 DNS 提供者時，平台可以自動建立 A 記錄和 ACME 挑戰 CNAME — 但僅在 DNS 區域啟用 `allow_http_lb_managed_records` 時才會生效。
 
 <Aside type="note">
-DNS 區域位於**系統**命名空間中，而非使用者命名空間。區域名稱符合根域名（例如，`bankexample.com`）。
+DNS 區域位於 **system** 命名空間中，而非使用者命名空間中。區域名稱符合根網域（例如 `bankexample.com`）。
 </Aside>
 
-**1. 檢查是否啟用了託管記錄：**
+**1. 檢查是否已啟用受管記錄：**
 
 ```bash
 curl -s \
@@ -561,23 +561,23 @@ curl -s \
   | jq '.spec.primary.allow_http_lb_managed_records'
 ```
 
-如果回應為 `true`，平台將自動為負載平衡器建立 DNS 記錄 — 跳至**3. 驗證 DNS 解析**。如果為 `false` 或 `null`，繼續下一步。
+如果回應為 `true`，平台將自動為負載平衡器建立 DNS 記錄 — 跳至 **3. 驗證 DNS 解析**。如果為 `false` 或 `null`，請繼續下一步。
 
-**2. 啟用託管記錄：**
+**2. 啟用受管記錄：**
 
 <Aside type="caution">
-`PUT` 負載必須包含**完整的區域規格** — 中繼資料和所有現有配置欄位。省略欄位將會將它們重置為預設值。首先檢索當前區域配置，然後僅修改 `allow_http_lb_managed_records` 欄位。
+`PUT` 請求內容必須包含**完整的區域規格** — metadata 和所有現有設定欄位。省略欄位會將其重設為預設值。請先擷取當前區域設定，然後僅修改 `allow_http_lb_managed_records` 欄位。
 </Aside>
 
-檢索當前區域配置、啟用託管記錄並進行更新：
+擷取當前區域設定、啟用受管記錄並更新：
 
 ```bash
-# 取得目前區域配置
+# Get current zone config
 ZONE_CONFIG=$(curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx")
 
-# 使用啟用的託管記錄進行更新
+# Update with managed records enabled
 echo "$ZONE_CONFIG" \
   | jq '.spec.primary.allow_http_lb_managed_records = true' \
   | curl -s -X PUT \
@@ -589,10 +589,10 @@ echo "$ZONE_CONFIG" \
 ```
 
 <Aside type="caution">
-區域規格包含平台管理的記錄的 `x-ves-io-managed` rr_set_group。您的 `PUT` 負載**必須保留此組** — 省略它會導致 HTTP 403「reserved for internal purposes」。始終先使用 `GET` 檢索當前區域配置，僅修改您需要的欄位，然後發送完整規格。
+區域規格包含一個 `x-ves-io-managed` rr_set_group，其中有平台管理的記錄。您的 `PUT` 請求內容**必須保留此群組** — 省略它會導致 HTTP 403 「reserved for internal purposes」。請務必先使用 `GET` 擷取當前區域設定，僅修改所需欄位，然後送回完整規格。
 </Aside>
 
-`200` 回應（空 `{}`）確認區域已更新。F5 XC 將在區域的自動管理記錄組中建立 A 記錄和 ACME 質詢記錄。如果託管記錄在 60 秒內未出現，重新應用負載平衡器以觸發記錄建立：
+回應 `200`（空的 `\{\}`）即確認區域已更新。F5 XC 將在區域的自動受管記錄群組中建立 A 記錄和 ACME 挑戰記錄。如果受管記錄在 60 秒內未出現，請重新套用負載平衡器以觸發記錄建立：
 
 ```bash
 LB_CONFIG=$(curl -s \
@@ -606,7 +606,7 @@ echo "$LB_CONFIG" | curl -s -X PUT \
   | jq .
 ```
 
-此 GET+PUT 重新應用不會更改 LB 配置 — 它只是觸發平台重新評估 DNS 區域並建立託管記錄。如果 A 記錄在重新應用後 60 秒內仍未解析，請停止並報告給操作員 — 不要重試超過一次重新應用。
+此 GET+PUT 重新套用不會更改 LB 設定 — 它只是觸發平台重新評估 DNS 區域並建立受管記錄。如果重新套用後 60 秒內 A 記錄仍未解析，請停止並回報給操作人員 — 不要重試重新套用超過一次。
 
 **3. 驗證 DNS 解析：**
 
@@ -614,10 +614,10 @@ echo "$LB_CONFIG" | curl -s -X PUT \
 dig +short xF5XC_DOMAINNAMEx A
 ```
 
-回應應返回 VIP IP 位址。F5 XC 託管區域的 DNS 傳播通常是即時的，但允許最多 60 秒。
+回應應傳回 VIP IP 位址。F5 XC 受管區域的 DNS 傳播通常是即時的，但請允許最多 60 秒。
 
 <Aside type="tip">
-**否定 DNS 快取：** 如果您在記錄存在之前查詢了該域名，您的遞歸解析器可能已快取 `NXDOMAIN` 回應。針對權威名稱伺服器或公開解析器進行驗證以排除陳舊快取：
+**負面 DNS 快取：** 如果您在記錄存在之前就查詢過該網域，您的遞迴解析器可能已快取 `NXDOMAIN` 回應。請對權威名稱伺服器或公共解析器進行驗證，以排除過時快取：
 
 ```bash
 dig +short xF5XC_DOMAINNAMEx A @ns1.f5clouddns.com
@@ -627,7 +627,7 @@ dig +short xF5XC_DOMAINNAMEx A @8.8.8.8
 
 ### 選項 B：外部 DNS 提供者
 
-當您的域名使用外部 DNS 提供者時，您必須手動建立記錄。從負載平衡器中提取所需的值：
+當您的網域使用外部 DNS 提供者時，您必須手動建立記錄。從負載平衡器擷取所需的值：
 
 ```bash
 curl -s \
@@ -639,7 +639,7 @@ curl -s \
   }'
 ```
 
-在您的 DNS 提供者處建立這些記錄：
+在您的 DNS 提供者建立以下記錄：
 
 | 類型 | 名稱 | 值 |
 | --- | --- | --- |
@@ -654,22 +654,22 @@ dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
 ```
 
 <Aside type="tip">
-A 記錄是 LB 從 `VIRTUAL_HOST_PENDING_A_RECORD` 轉換到 `VIRTUAL_HOST_READY` 所必需的。ACME CNAME 是自動 TLS 憑證佈建所必需的。沒有兩個記錄，LB 將保持在掛起狀態。
+A 記錄是 LB 從 `VIRTUAL_HOST_PENDING_A_RECORD` 轉換為 `VIRTUAL_HOST_READY` 所必需的。ACME CNAME 是自動 TLS 憑證配置所必需的。沒有這兩筆記錄，LB 將維持在待處理狀態。
 </Aside>
 
-### 證據
+### 驗證證據
 
-| 測試 | 命令 | 預期 | 狀態 |
+| 測試 | 命令 | 預期值 | 狀態 |
 | --- | --- | --- | --- |
-| DNS-1：A 記錄 | `dig +short $F5XC_DOMAINNAME A` | 返回 VIP IP 位址 | 如果返回 IP 則通過，如果空則失敗 |
-| DNS-2：ACME CNAME | `dig +short _acme-challenge.$F5XC_DOMAINNAME CNAME` | `*.autocerts.ves.volterra.io` | 如果返回 CNAME 則通過 |
-| DNS 權威 | `dig +short NS $F5XC_ROOT_DOMAIN` | F5 XC 或外部名稱伺服器 | 信息性 — 決定選項 A 與 B |
+| DNS-1：A 記錄 | `dig +short $F5XC_DOMAINNAME A` | 回傳 VIP IP 位址 | 回傳 IP 則 PASS，空白則 FAIL |
+| DNS-2：ACME CNAME | `dig +short _acme-challenge.$F5XC_DOMAINNAME CNAME` | `*.autocerts.ves.volterra.io` | 回傳 CNAME 則 PASS |
+| DNS 權限 | `dig +short NS $F5XC_ROOT_DOMAIN` | F5 XC 或外部名稱伺服器 | 資訊性 — 決定選項 A 或 B |
 
-如果 DNS-1 在 60 秒後返回空，請參閱[故障排除 &mdash; LB 卡在 VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record)。
+如果 DNS-1 在 60 秒後仍回傳空白，請參閱[疑難排解 &mdash; LB 卡在 VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record)。
 
 ## 步驟 5：驗證 CSD 已啟用
 
-檢查客戶端防禦是否為租戶啟用。CSD 在租戶級別配置 — 如果還未啟用，請聯絡您的 F5 XC 管理員。
+檢查租戶是否已啟用用戶端防禦。CSD 在租戶層級設定 — 如果尚未啟用，請聯繫您的 F5 XC 管理員。
 
 ```bash
 curl -s \
@@ -678,9 +678,9 @@ curl -s \
   | jq .
 ```
 
-包含 `"isConfigured": true` 和 `"isEnabled": true` 的回應確認 CSD 處於活動狀態。
+回應包含 `"isConfigured": true` 和 `"isEnabled": true` 即確認 CSD 已啟用。
 
-### 證據
+### 驗證證據
 
 ```bash
 curl -s \
@@ -689,23 +689,23 @@ curl -s \
   | jq '{configured: .isConfigured, enabled: .isEnabled}'
 ```
 
-| 欄位 | 預期 | 狀態 |
+| 欄位 | 預期值 | 狀態 |
 | --- | --- | --- |
-| `configured` | `true` | 通過 |
-| `enabled` | `true` | 通過 |
-| 任一為 `false` | — | 失敗 — 聯絡 F5 XC 管理員在租戶級別啟用 CSD |
+| `configured` | `true` | PASS |
+| `enabled` | `true` | PASS |
+| 任一為 `false` | — | FAIL — 聯繫 F5 XC 管理員在租戶層級啟用 CSD |
 
-## 步驟 6：登記受保護的域名
+## 步驟 6：註冊受保護網域
 
-登記 CSD 將監控的根域名。`protected_domain` 欄位必須是**有效頂級域名加一 (eTLD+1)** 根域名（例如，`f5demos.com`），而非完整 FQDN。
+註冊 CSD 將監控的根網域。`protected_domain` 欄位必須是 **eTLD+1** 根網域（例如 `f5demos.com`），而非完整 FQDN。
 
 <Aside type="caution">
-**受保護的域名是租戶範圍的，而非命名空間範圍的。** 與健康檢查、源伺服器池和負載平衡器不同，受保護的域名在租戶上全局登記 — API URL 中的命名空間是路由參數，而不是所有權邊界。但是，受保護的域名是與此部署相關的 CSD 配置物件，**應在清除期間刪除**（當完全移除部署時）。不要將此與共享基礎設施的 DNS 區域混淆，後者永遠不應被刪除。
+**受保護網域是租戶範圍的，而非命名空間範圍的。** 與健康檢查、來源池和負載平衡器不同，受保護網域是在租戶上全域註冊的 — API URL 中的命名空間是路由參數，而非所有權邊界。然而，受保護網域是與此部署綁定的 CSD 設定物件，**在完全移除部署時應在清除階段刪除**。不要將此與 DNS 區域混淆，DNS 區域是共用基礎架構，絕不應被刪除。
 </Aside>
 
-### 檢查是否已登記
+### 檢查是否已註冊
 
-在建立之前，請檢查該域名是否已在租戶上登記。POST 的 `409` 回應表示域名已存在 — 這是一個成功條件，而非錯誤。
+在建立之前，檢查網域是否已在租戶上註冊。POST 的 `409` 回應表示網域已存在 — 這是成功條件，而非錯誤。
 
 ```bash
 curl -s -X POST \
@@ -724,15 +724,15 @@ curl -s -X POST \
   | jq .
 ```
 
-| 回應 | 意義 | 操作 |
+| 回應 | 意義 | 動作 |
 | --- | --- | --- |
-| `200` | 域名已成功登記 | 繼續至步驟 7 |
-| `409`（域名已存在） | 域名先前在此租戶上已登記 | 已完成 — 繼續至步驟 7 |
-| `"code": 8`（耗盡限制） | 受保護的域名配額已滿 | **阻止性的** — CSD 需要受保護的域名。刪除未使用的受保護的域名或聯絡管理員。 |
+| `200` | 網域註冊成功 | 繼續至步驟 7 |
+| `409`（網域已存在） | 網域先前已在此租戶上註冊 | 已完成 — 繼續至步驟 7 |
+| `"code": 8`（限制已耗盡） | 受保護網域配額已滿 | **阻塞** — 受保護網域是 CSD 所必需的。請刪除未使用的受保護網域或聯繫您的管理員。 |
 
-### 證據
+### 驗證證據
 
-POST 回應本身是主要證據 — 它返回已登記的域名物件，其 `spec.protected_domain` 符合您的根域名。或者，列出所有受保護的域名以確認：
+POST 回應本身就是主要證據 — 它會傳回已註冊的網域物件，其 `spec.protected_domain` 符合您的根網域。或者，列出所有受保護網域以確認：
 
 ```bash
 curl -s \
@@ -741,34 +741,34 @@ curl -s \
   | jq '.items | length'
 ```
 
-| 欄位 | 預期 | 狀態 |
+| 欄位 | 預期值 | 狀態 |
 | --- | --- | --- |
-| POST 返回 `protected_domain` | 符合 `F5XC_ROOT_DOMAIN` | 通過 |
-| POST 返回 `200` 或 `409` | 域名已登記或已存在 | 通過 |
-| 列表項目計數 | &gt; 0 | 通過 |
+| POST 回傳 `protected_domain` | 符合 `F5XC_ROOT_DOMAIN` | PASS |
+| POST 回傳 `200` 或 `409` | 網域已註冊或已存在 | PASS |
+| 列表項目數 | &gt; 0 | PASS |
 
 <Aside type="note">
-個別 GET 端點（`/protected_domains/\{name\}`）不適用於受保護的域名。使用 POST 回應或列表端點進行驗證。
+受保護網域不提供個別 GET 端點（`/protected_domains/\{name\}`）。請使用 POST 回應或列表端點進行驗證。
 </Aside>
 
 ## 步驟 7：驗證
 
 ### DNS 解析
 
-確認 A 記錄正在解析且 ACME 質詢 CNAME 已就位：
+確認 A 記錄正在解析且 ACME 挑戰 CNAME 已就位：
 
 ```bash
 dig +short xF5XC_DOMAINNAMEx A
 dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
 ```
 
-A 記錄應返回 VIP IP 位址。CNAME 應指向 `*.autocerts.ves.volterra.io`（或相關的自動憑證目標）。
+A 記錄應傳回 VIP IP 位址。CNAME 應指向 `*.autocerts.ves.volterra.io`（或相關的 autocerts 目標）。
 
 ### 負載平衡器狀態
 
-檢查兩個負載平衡器是否已轉換出其掛起狀態。HTTP LB 是主要檢查 — 它應在 DNS 解析後達到 `VIRTUAL_HOST_READY`，無憑證依賴。HTTPS LB 憑證狀態僅為信息性。
+檢查兩個負載平衡器是否已離開待處理狀態。HTTP LB 是主要檢查項目 — 它應在 DNS 解析後達到 `VIRTUAL_HOST_READY`，無憑證依賴。HTTPS LB 憑證狀態僅為資訊性。
 
-**HTTP LB（主要 — 必須就緒才能繼續）：**
+**HTTP LB（主要 — 必須為 READY 才能繼續）：**
 
 ```bash
 curl -s \
@@ -777,11 +777,11 @@ curl -s \
   | jq '{state: .spec.state}'
 ```
 
-| 欄位 | 預期 | 中間狀態 |
+| 欄位 | 預期值 | 中間狀態 |
 | --- | --- | --- |
-| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS 未配置（請參閱步驟 4） |
+| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS 未設定（見步驟 4） |
 
-**HTTPS LB（次要 — 信息性，不阻止進行）：**
+**HTTPS LB（次要 — 資訊性，不阻擋進程）：**
 
 ```bash
 curl -s \
@@ -790,16 +790,16 @@ curl -s \
   | jq '{state: .spec.state, cert_state: .spec.cert_state}'
 ```
 
-| 欄位 | 預期 | 中間狀態 |
+| 欄位 | 預期值 | 中間狀態 |
 | --- | --- | --- |
-| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS 未配置；`VIRTUAL_HOST_DNS_A_RECORD_ADDED` — 找到 A 記錄，等待憑證 |
-| `cert_state` | `CertificateValid` | `PreDomainChallengePending` — 等待 ACME CNAME；`DomainChallengeStarted` — ACME 質詢進行中；`AutoCertDomainRateLimited` — Let's Encrypt 速率限制達到（在演示環境中預期，不影響 HTTP LB） |
+| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS 未設定；`VIRTUAL_HOST_DNS_A_RECORD_ADDED` — 已找到 A 記錄，等待憑證 |
+| `cert_state` | `CertificateValid` | `PreDomainChallengePending` — 等待 ACME CNAME；`DomainChallengeStarted` — ACME 挑戰進行中；`AutoCertDomainRateLimited` — Let's Encrypt 速率限制已觸發（在展示環境中為預期結果，不影響 HTTP LB） |
 
 <Aside type="note">
-憑證佈建在建立 DNS 記錄後可能需要 **5–10 分鐘**。如果 `cert_state` 顯示 `AutoCertDomainRateLimited`，這在演示環境中是預期的，其中基礎設施經常被建立和銷毀。HTTP LB 不受影響 — 使用 `http://` URL 繼續演示。
+憑證配置在 DNS 記錄建立後可能需要 **5–10 分鐘**。如果 `cert_state` 顯示 `AutoCertDomainRateLimited`，這在基礎架構頻繁建立和銷毀的展示環境中為預期結果。HTTP LB 不受影響 — 請使用 `http://` URL 繼續展示。
 </Aside>
 
-### JS 配置
+### JS 設定
 
 ```bash
 curl -s \
@@ -808,9 +808,9 @@ curl -s \
   | jq .
 ```
 
-回應包含一個 `scriptTag` 欄位，其中包含負載平衡器注入到頁面回應中的完整 HTML `<script>` 標籤。
+回應包含一個 `scriptTag` 欄位，其中有負載平衡器注入到頁面回應中的完整 HTML `<script>` 標籤。
 
-### 偵測到的域名
+### 偵測到的網域
 
 ```bash
 curl -s \
@@ -819,9 +819,9 @@ curl -s \
   | jq '{summary: .domain_summary, domains: .domains_list}'
 ```
 
-### 偵測到的指令碼
+### 偵測到的腳本
 
-指令碼端點需要使用 epoch 時間戳記（Unix epoch 以來的秒數）的時間範圍。下面的範例查詢過去 7 天。
+腳本端點需要使用 epoch 時間戳記（自 Unix epoch 以來的秒數）的時間範圍。以下範例查詢過去 7 天。
 
 ```bash
 NOW=$(date +%s)
@@ -847,31 +847,31 @@ curl -s \
   | jq '.form_fields'
 ```
 
-### 第一階段證據摘要
+### Phase 1 驗證證據摘要
 
-完成所有驗證檢查後，AI 助手應呈現一個整合的狀態表：
+完成所有驗證檢查後，AI 助理應呈現一份統整的狀態表：
 
-| 測試 ID | 檢查 | 預期 | 必需 | 狀態 |
+| 測試 ID | 檢查項目 | 預期值 | 必要 | 狀態 |
 | --- | --- | --- | --- | --- |
-| DNS-1 | A 記錄解析 | 返回 VIP IP | **是** | 通過 / 失敗 |
-| DNS-2 | ACME CNAME 存在 | `*.autocerts.ves.volterra.io` | 否 | 通過 / 待決 |
-| LB-1 | HTTP LB 狀態 | `VIRTUAL_HOST_READY` | **是** | 通過 / 待決 |
-| LB-2 | HTTPS LB 狀態 | `VIRTUAL_HOST_READY` | 否 | 通過 / 待決 / 信息 |
-| TLS-1 | 憑證狀態 | `CertificateValid` | 否 | 通過 / 待決 / 信息 |
-| CSD-1 | JS 配置 | 存在 `scriptTag` | **是** | 通過 / 失敗 |
-| CSD-2 | CSD 狀態 | `isEnabled: true` | **是** | 通過 / 失敗 |
-| CSD-3 | 受保護的域名 | 已登記域名 | **是** | 通過 / 失敗 |
+| DNS-1 | A 記錄解析 | 回傳 VIP IP | **是** | PASS / FAIL |
+| DNS-2 | ACME CNAME 存在 | `*.autocerts.ves.volterra.io` | 否 | PASS / PENDING |
+| LB-1 | HTTP LB 狀態 | `VIRTUAL_HOST_READY` | **是** | PASS / PENDING |
+| LB-2 | HTTPS LB 狀態 | `VIRTUAL_HOST_READY` | 否 | PASS / PENDING / INFO |
+| TLS-1 | 憑證狀態 | `CertificateValid` | 否 | PASS / PENDING / INFO |
+| CSD-1 | JS 設定 | `scriptTag` 存在 | **是** | PASS / FAIL |
+| CSD-2 | CSD 狀態 | `isEnabled: true` | **是** | PASS / FAIL |
+| CSD-3 | 受保護網域 | 網域已註冊 | **是** | PASS / FAIL |
 
 <Aside type="note">
-**第二階段使用 HTTP LB。** HTTPS 是可選的 — 如果 TLS-1 顯示 `AutoCertDomainRateLimited` 或 LB-2 保持待決，演示使用 `http://` URL 正常進行。只有 DNS-1、LB-1、CSD-1、CSD-2 和 CSD-3 是繼續進行至第二階段前需要通過的必需項。
+**Phase 2 使用 HTTP LB。** HTTPS 為選擇性 — 如果 TLS-1 顯示 `AutoCertDomainRateLimited` 或 LB-2 維持 PENDING，展示會使用 `http://` URL 正常進行。只有 DNS-1、LB-1、CSD-1、CSD-2 和 CSD-3 必須通過後才能繼續至 Phase 2。
 </Aside>
 
-如果 LB-1 顯示待決，每 30 秒輪詢最多 4 次迭代（總共 2 分鐘）。如果 4 次迭代後 LB-1 仍未達到 `VIRTUAL_HOST_READY`，使用 `dig` 檢查 DNS 解析並報告給操作員 — 不要在 LB-1 達到就緒前進行。對於 LB-2 和 TLS-1，每 60 秒輪詢最多 10 次迭代（10 分鐘）。如果 10 次迭代後仍在中間狀態，將當前狀態記錄為信息性並繼續 — 這些是信息性的，不阻止演示進行。
+如果 LB-1 顯示 PENDING，每 30 秒輪詢一次，最多 4 次迭代（共 2 分鐘）。如果 4 次迭代後 LB-1 仍非 `VIRTUAL_HOST_READY`，請使用 `dig` 檢查 DNS 解析並回報給操作人員 — 在 LB-1 達到 READY 之前不要繼續。對於 LB-2 和 TLS-1，每 60 秒輪詢一次，最多 10 次迭代（10 分鐘）。如果 10 次迭代後仍處於中間狀態，將當前狀態記錄為 INFO 並繼續 — 這些為資訊性且不阻擋展示進程。
 
 <Aside type="note">
-即使 DNS 正確解析，LB 回應中的 `dns_info` 欄位可能為空（`[]`）— 這在清除後重建時會發生。請始終使用 `dig` 驗證 DNS 解析，而不是依賴 `dns_info` 取得 VIP 位址。
+LB 回應中的 `dns_info` 欄位可能為空（`[]`），即使 DNS 正確解析 — 這在全新重建後會發生。請務必使用 `dig` 驗證 DNS 解析，而非依賴 `dns_info` 取得 VIP 位址。
 </Aside>
 
 ---
 
-**第一階段完成。** 進行至[第二階段 — 攻擊](/csd/demo/phase-2-attack/)執行攻擊模擬。
+**Phase 1 完成。** 請繼續至 [Phase 2 — 攻擊](/csd/demo/phase-2-attack/) 執行攻擊模擬。

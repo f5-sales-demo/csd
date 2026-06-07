@@ -1,9 +1,9 @@
 ---
-title: Phase 3 — Mitigate
-description: CSD 緩和ポリシーを適用して、攻撃トラフィックがブロックされていることを確認する
+title: フェーズ 3 — 緩和
+description: CSD緩和ポリシーを適用し、攻撃トラフィックがブロックされることを確認する
 sidebar:
   order: 4
-  label: Phase 3 — Mitigate
+  label: フェーズ 3 — 緩和
 i18n:
   sourceHash: 5d336f6c3bde
   translator: machine
@@ -11,21 +11,21 @@ i18n:
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-Phase 3 は、CSD 緩和の **ビフォー/アフター証明** を作成します。緩和なしで攻撃を再実行してベースラインを確立し、緩和を適用してから同じ攻撃を再実行して、CSD がネットワーク呼び出しをブロックしていることを証明します。Phase 2 を完了する必要があります — すべての DET チェックが PASS してから進んでください。
+フェーズ 3 では、CSD 緩和の**ビフォー・アフターの証拠**を作成します。まず緩和なしで攻撃を再実行してベースラインを確立し、次に緩和を適用した上で同じ攻撃を再実行し、CSD がネットワーク呼び出しをブロックすることを証明します。フェーズ 2 が完了していること（すべての DET チェックが PASS）が前提条件です。
 
 <Aside type="note">
-**CSD 緩和は、緩和済みドメインからのスクリプト読み込みをブロックします。** ドメインが緩和リストにある場合、CSD JavaScript は `&lt;script&gt;` タグのソース URL をインターセプトし、スクリプトの読み込みを防止します — サプライチェーン攻撃を源で止めます。CSD は `fetch()` または `XMLHttpRequest` 呼び出しをインターセプトしません。このフェーズは、緩和の前後で同じ攻撃を実行することで、スクリプトブロッキングの証明をキャプチャします。
+**CSD 緩和は、緩和対象ドメインからのスクリプト読み込みをブロックします。** ドメインが緩和リストに含まれている場合、CSD JavaScript が `&lt;script&gt;` タグのソース URL をインターセプトし、スクリプトの読み込みを防止します — サプライチェーン攻撃を根本から阻止します。CSD は `fetch()` や `XMLHttpRequest` の呼び出しはインターセプトしません。このフェーズでは、緩和の前後で同じ攻撃を実行し、スクリプトブロッキングの証拠を取得します。
 </Aside>
 
 <Aside type="caution">
-**ライブテストに関する注:** 緩和 POST/DELETE エンドポイントは開発環境で検証されていますが、動作詳細 (レスポンスタイミング、スクリプト検出ステータスへの影響) はテナント構成によって異なる場合があります。予期しないレスポンスが見られる場合は、[API リファレンス](/csd/api-reference/#mitigated-domains) で正規のエンドポイント定義を確認してください。
+**ライブテストに関する注意:** 緩和の POST/DELETE エンドポイントは開発環境で検証済みですが、動作の詳細（レスポンスのタイミング、スクリプト検出ステータスへの影響）はテナント構成によって異なる場合があります。予期しないレスポンスが発生した場合は、[API リファレンス](/csd/api-reference/#mitigated-domains)で正規のエンドポイント定義を確認してください。
 </Aside>
 
-## Step 1: アクティブな緩和がないことを確認 (ベースライン)
+## ステップ 1: アクティブな緩和がないことを確認（ベースライン）
 
-「ビフォー」スナップショットをキャプチャする前に、環境がクリーンであることを確認します — 緩和はアクティブではないはずです。これにより、ベースライン攻撃が CSD ブロッキングなしで実行されることが保証されます。
+「ビフォー」スナップショットを取得する前に、環境がクリーンであることを確認します — 緩和がアクティブであってはなりません。これにより、ベースライン攻撃が CSD のブロッキングなしで実行されます。
 
-### 緩和済みドメイン数を確認
+### 緩和対象ドメイン数の確認
 
 ```bash
 curl -s \
@@ -34,19 +34,19 @@ curl -s \
   | jq '{count: (.items | length)}'
 ```
 
-数が **0** でない場合、以前の実行から緩和が残っています。進める前に各ドメインを削除します:
+カウントが **`0` でない** 場合、以前の実行からの緩和が残っています。続行する前にすべて削除してください：
 
 ```bash
-# 緩和済みドメインを削除 (各ドメイン名について繰り返します)
+# 緩和対象ドメインを削除（各ドメイン名に対して繰り返す）
 curl -s -X DELETE \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/<domain-name>" \
   | jq .
 ```
 
-`<domain-name>` をドメインが緩和された時に使用された `metadata.name` に置き換えます (例: `cdn.jsdelivr.net`、`esm.sh`、`unpkg.com`、`ga.jspm.io`、`httpbin.org`、`jsonplaceholder.typicode.com`)。`httpbin.org` のクリーンアップが残った項目を残す場合は、`www.httpbin.org` の削除も試してください — 以前の実行でそれをメタデータ名として使用した可能性があります。
+`<domain-name>` を、ドメインを緩和した際に使用した `metadata.name` に置き換えてください（例: `cdn.jsdelivr.net`、`esm.sh`、`unpkg.com`、`ga.jspm.io`、`httpbin.org`、`jsonplaceholder.typicode.com`）。`httpbin.org` のクリーンアップ後にアイテムが残っている場合は、`www.httpbin.org` の削除も試してください — 以前の実行でメタデータ名として使用されている場合があります。
 
-### Phase 2 の検出があることを確認
+### フェーズ 2 の検出が存在することを確認
 
 ```bash
 curl -s \
@@ -55,86 +55,86 @@ curl -s \
   | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
 ```
 
-### 証拠
+### エビデンス
 
-| チェック | 期待される値 | ステータス |
+| チェック項目 | 期待値 | ステータス |
 | --- | --- | --- |
-| 緩和済みドメイン数 | `0` (クリーンベースライン) | 0 の場合は PASS、> 0 の場合はクリーンアップが必要 |
-| 検出ドメイン数 | > 0 (Phase 2 の検出が存在) | > 0 の場合は PASS |
-| 流出ドメインが存在 | `www.httpbin.org`、`jsonplaceholder.typicode.com` | 少なくとも 1 つが表示される場合は PASS |
+| 緩和対象ドメイン数 | `0`（クリーンなベースライン） | 0 なら PASS、0 より大きい場合はクリーンアップが必要 |
+| 検出ドメイン数 | 0 より大きい（フェーズ 2 の検出が存在） | 0 より大きければ PASS |
+| Exfil ドメインの存在 | `www.httpbin.org`、`jsonplaceholder.typicode.com` | 少なくとも 1 つ表示されれば PASS |
 
-## Step 2: 攻撃を実行 — 緩和前
+## ステップ 2: 攻撃の実行 — 緩和前
 
-**緩和がアクティブでない** 状態で組み合わせたシミュレーションを再実行して、新しいベースラインをキャプチャします。これは **「ビフォー」スナップショット** です — CSD 緩和が適用されない場合、攻撃が成功することの証明です。
+**緩和がアクティブでない状態**で統合シミュレーションを再実行し、フレッシュなベースラインを取得します。これが**「ビフォー」スナップショット**— CSD 緩和が適用されていない場合に攻撃が成功する証拠です。
 
 <Aside type="note">
-このステップはブラウザ側の JavaScript 実行が必要です — `curl` は CSD 検出をトリガーできません。ブラウザオートメーションツール (MCP Chrome DevTools、Playwright、Puppeteer) を使用する AI アシスタントは、以下の **AI 自動実行** シーケンスを使用してこれらのステップを直接実行します。ブラウザオートメーションなしのオペレーターは、手動ステップを実行します。
+このステップにはブラウザ側の JavaScript 実行が必要です — `curl` では CSD 検出をトリガーできません。ブラウザ自動化ツール（MCP Chrome DevTools、Playwright、Puppeteer）を持つ AI アシスタントは、以下の **AI 自動実行** シーケンスを使用してこれらのステップを直接実行します。ブラウザ自動化を持たないオペレーターは手動ステップを実行してください。
 </Aside>
 
 ### AI 自動実行
 
-ブラウザオートメーションツールを使用する AI アシスタントは、同じ Phase 2 initScript を使用してプログラムで攻撃シミュレーションを実行します (ネイティブ `fetch` を保存します):
+ブラウザ自動化ツールを持つ AI アシスタントは、同じフェーズ 2 の initScript（ネイティブ `fetch` を保存する）を使用して攻撃シミュレーションをプログラム的に実行します：
 
-1. **initScript で移動** — まず `about:blank` に移動して、クリーンなドキュメントコンテキストを確保し (以前の移動からの古い initScript を回避)、次に `navigate_page` を **Phase 2 initScript** で `http://$F5XC_DOMAINNAME/#/login` に設定します ([Phase 2 — AI 自動実行](/csd/demo/phase-2-attack/#ai-automated-execution) の逐語的コード)。この initScript はネイティブ `setInterval`、`clearInterval`、`fetch`、`console.log` を保存します — 緩和がアクティブでないため、ネイティブ `fetch` リファレンスはここで正しい
-2. **ウェルカムバナーを閉じる** — `press_key` で `Escape` を使用してウェルカムバナーを閉じます。その後の訪問では、バナーが表示されない場合があります (クッキーが保持されています)。クッキー同意ダイアログは Escape キーで自動的に閉じられます
-3. **完了を待つ** — すべての CDN スクリプト読み込み/エラーコールバックとフェッチプロミスの解決が完了するまで 10 秒待機します
-4. **証拠をキャプチャ** — `list_console_messages` で `[CSD Demo] Simulation complete` と CDN 読み込み結果を確認します。`list_network_requests` を `script` と `fetch` タイプでフィルタリングして、HTTP ステータスコード (`200`/`201` は成功) を確認します
+1. **initScript 付きでナビゲート** — まず `about:blank` にナビゲートしてクリーンなドキュメントコンテキストを確保し（前回のナビゲーションからの古い initScript を回避）、次に **フェーズ 2 の initScript**（[フェーズ 2 — AI 自動実行](/csd/demo/phase-2-attack/#ai-automated-execution) のそのままのコード）を使用して `navigate_page` で `http://$F5XC_DOMAINNAME/#/login` にナビゲートします。この initScript はネイティブの `setInterval`、`clearInterval`、`fetch`、`console.log` を保存します — 緩和がアクティブでないため、ネイティブ `fetch` の参照はここでは正しいです
+2. **ウェルカムバナーを閉じる** — `press_key` で `Escape` を押してウェルカムバナーを閉じます。以降の訪問ではバナーが表示されない場合があります（Cookie が保持されている）。Cookie 同意ダイアログも Escape キーで自動的に閉じられます
+3. **完了を待機** — すべての CDN スクリプトの読み込み/エラーコールバックおよび fetch プロミスの解決が完了するまで 10 秒待機します
+4. **エビデンスを取得** — `list_console_messages` で `[CSD Demo] Simulation complete` と CDN 読み込み結果を確認します。`list_network_requests` を `script` と `fetch` タイプでフィルタリングし、HTTP ステータスコード（成功時は `200`/`201`）を確認します
 
 <Aside type="caution">
-**zone.js の非互換性** — Juice Shop は Angular の zone.js を使用しており、`setTimeout`、`setInterval`、`fetch`、`XMLHttpRequest` および他のブラウザ API にパッチを当てます。これは MCP `evaluate_script`、`fill`、`click` ツールを `Cannot read properties of undefined (reading 'call')` で破損させます。`navigate_page` と `initScript` を代わりに使用します — `initScript` は zone.js 読み込み前に実行されるため、ネイティブ API リファレンスを保存してポーリングコールバックで使用できます。initScript はネイティブ `HTMLInputElement.prototype.value` セッターを使用してフォームフィールドを入力する必要があります (`fill` ではなく)、検出スクリプトをインラインで実行します (`setTimeout` ではなく、zone.js はページ読み込み後にこれをインターセプトする可能性があります)。詳細は [トリガー検出 — AI 自動実行](/csd/trigger-detection/#ai-automated-execution) を参照してください。
+**zone.js の非互換性** — Juice Shop は Angular の zone.js を使用しており、`setTimeout`、`setInterval`、`fetch`、`XMLHttpRequest` などのブラウザ API をパッチします。これにより、MCP の `evaluate_script`、`fill`、`click` ツールが `Cannot read properties of undefined (reading 'call')` エラーで失敗します。代わりに `navigate_page` と `initScript` を使用してください — `initScript` は zone.js の読み込み前に実行されるため、ネイティブ API の参照を保存してポーリングコールバックで使用できます。initScript はネイティブの `HTMLInputElement.prototype.value` セッターを使用してフォームフィールドに入力し（`fill` ではなく）、検出スクリプトをインラインで実行する必要があります（zone.js がページ読み込み後にインターセプトする可能性のある `setTimeout` ではなく）。詳細は[検出のトリガー — AI 自動実行](/csd/trigger-detection/#ai-automated-execution)を参照してください。
 </Aside>
 
 <Aside type="note">
-**initScript の蓄積** — 各 `navigate_page` 呼び出しに `initScript` パラメーターを付けると、スクリプトが後続のすべてのドキュメント読み込みで実行される永続リストに追加されます。古いスクリプトが干渉するのを避けるため、実行間に `about:blank` に移動するか、またはクリーンなブラウザコンテキストに `new_page` を `isolatedContext` で使用します。
+**initScript の蓄積** — `initScript` パラメータ付きの `navigate_page` 呼び出しのたびに、スクリプトが永続リストに追加され、以降のすべてのドキュメント読み込みで実行されます。古いスクリプトの干渉を避けるため、実行間に `about:blank` にナビゲートするか、クリーンなブラウザコンテキスト用に `isolatedContext` 付きの `new_page` を使用してください。
 </Aside>
 
 ### 手動実行
 
-ブラウザオートメーションツールがないオペレーターは、[Phase 2 — Step 8: Attack Simulation](/csd/demo/phase-2-attack/#step-8-attack-simulation) と同じプロシージャを使用してシミュレーションを手動で実行します:
+ブラウザ自動化ツールを持たないオペレーターは、[フェーズ 2 — ステップ 8: 攻撃シミュレーション](/csd/demo/phase-2-attack/#step-8-attack-simulation) と同じ手順でシミュレーションを手動実行します：
 
-1. `http://xF5XC_DOMAINNAMEx/#/login` に移動
-2. メールとパスワードフィールドにダミー認証情報を入力します (送信しません)
-3. DevTools を開きます — **F12** を押して **コンソール** タブに切り替えます
-4. [トリガー検出](/csd/trigger-detection/#run-the-combined-simulation-script) から組み合わせ検出スクリプトをコピーして実行します
-5. コンソール出力を観察します — すべての CDN スクリプトが読み込まれ、流出呼び出しが `200`/`201` レスポンスで成功するはずです
+1. `http://xF5XC_DOMAINNAMEx/#/login` にナビゲート
+2. メールアドレスとパスワードフィールドにダミーの認証情報を入力（送信はしない）
+3. DevTools を開く — **F12** を押して **Console** タブに切り替え
+4. [検出のトリガー](/csd/trigger-detection/#run-the-combined-simulation-script)の統合検出スクリプトを貼り付けて実行
+5. コンソール出力を確認 — すべての CDN スクリプトが読み込まれ、exfil 呼び出しが `200`/`201` レスポンスで成功するはずです
 
-### 証拠 — 緩和前
+### エビデンス — 緩和前
 
-| チェック | 期待される値 (緩和前) | ステータス |
+| チェック項目 | 期待値（緩和前） | ステータス |
 | --- | --- | --- |
-| CDN スクリプトが注入されている | すべての 4 つのスクリプトタグが読み込まれます — `[Supply Chain] Loaded from` メッセージが表示される、ネットワークタブが `200` を表示 | PASS |
-| `www.httpbin.org` への流出フェッチ | ネットワークタブが `200` を表示 — データが送信される | PASS |
-| jsonplaceholder.typicode.com への流出フェッチ | ネットワークタブが `201` を表示 — データが送信される | PASS |
+| CDN スクリプトの注入 | 4 つすべてのスクリプトタグが読み込まれる — `[Supply Chain] Loaded from` メッセージが表示され、ネットワークタブに `200` が表示 | PASS |
+| `www.httpbin.org` への Exfil fetch | ネットワークタブに `200` が表示 — データ送信済み | PASS |
+| jsonplaceholder.typicode.com への Exfil fetch | ネットワークタブに `201` が表示 — データ送信済み | PASS |
 | コンソール出力 | `[CSD Demo] Simulation complete` | PASS |
 
 <Aside type="note">
-**ネットワークリクエストで検証:** もっとも信頼できる証拠は **ネットワークタブ** (AI アシスタントの場合は `list_network_requests`) です。コンソールコールバックではありません。Juice Shop の zone.js はプロミス `.then()` コールバックとスクリプト `onload` ハンドラーを破損させることができ、ネットワークリクエストが成功してもコンソールメッセージが不完全になります。常にコンソール出力をネットワークリクエストのステータスコードと相互参照してください。
+**ネットワークリクエストによる検証:** 最も信頼性の高いエビデンスは**ネットワークタブ**（AI アシスタントの場合は `list_network_requests`）であり、コンソールコールバックではありません。Juice Shop の Zone.js はプロミスの `.then()` コールバックやスクリプトの `onload` ハンドラーを壊す可能性があり、ネットワークリクエストが成功してもコンソールメッセージが不完全になることがあります。常にコンソール出力とネットワークリクエストのステータスコードを照合してください。
 </Aside>
 
 <Aside type="tip">
-これはベースラインの証拠です: 緩和がアクティブでない場合、攻撃者のスクリプトは自由に読み込まれ、データ流出は成功します。この証拠を保存またはスクリーンショットしてください — Step 5 の「アフター」結果と直接比較します。
+これがベースラインの証拠です：緩和がアクティブでない場合、攻撃者のスクリプトは自由に読み込まれ、データの持ち出しが成功します。このエビデンスを保存またはスクリーンショットしてください — ステップ 5 の「アフター」の結果と直接比較します。
 </Aside>
 
-## Step 3: 緩和を適用
+## ステップ 3: 緩和の適用
 
-検出された各ドメインについて、緩和済みドメインエンドポイントに POST します。Phase 2 シミュレーションからの主要ターゲットは、4 つの CDN 注入ドメインと検出されたデータ流出ドメインです。
+検出された各ドメインに対して、緩和対象ドメインエンドポイントに POST します。フェーズ 2 シミュレーションからの主なターゲットは、4 つの CDN インジェクションドメインと検出されたデータ持ち出しドメインです。
 
-**主要な緩和ターゲット** (組み合わせシミュレーションスクリプトから):
+**主な緩和ターゲット**（統合シミュレーションスクリプトから）：
 
 | ドメイン | 役割 |
 | --- | --- |
-| `cdn.jsdelivr.net` | CDN スクリプト注入 |
-| `esm.sh` | CDN スクリプト注入 |
-| `unpkg.com` | CDN スクリプト注入 |
-| `ga.jspm.io` | CDN スクリプト注入 |
-| `www.httpbin.org` | データ流出エンドポイント |
-| `jsonplaceholder.typicode.com` | データ流出エンドポイント |
+| `cdn.jsdelivr.net` | CDN スクリプトインジェクション |
+| `esm.sh` | CDN スクリプトインジェクション |
+| `unpkg.com` | CDN スクリプトインジェクション |
+| `ga.jspm.io` | CDN スクリプトインジェクション |
+| `www.httpbin.org` | データ持ち出しエンドポイント |
+| `jsonplaceholder.typicode.com` | データ持ち出しエンドポイント |
 
 <Aside type="note">
-POST 本体は **両方の** `metadata.name` (オブジェクトの識別子) と `spec.mitigated_domain` (CSD が分類するドメイン文字列) が必要です。両方を設定する必要があります — `spec: {}` は `400` エラーを発生させます。ほとんどのドメインについて、両方のフィールドは同じ値を使用します (例: `cdn.jsdelivr.net`)。下記の `httpbin.org` 例外を参照してください。
+POST ボディには **`metadata.name`**（オブジェクトの識別子）と **`spec.mitigated_domain`**（CSD が分類するドメイン文字列）の**両方**が必要です。両方を設定する必要があり、`spec: {}` とすると `400` エラーが発生します。ほとんどのドメインでは、両方のフィールドに同じ値を使用します（例: `cdn.jsdelivr.net`）。以下の `httpbin.org` の例外を参照してください。
 </Aside>
 
-**ドメインを緩和** (ドメインごとに 1 回実行):
+**ドメインを緩和する**（ドメインごとに 1 回実行）：
 
 ```bash
 curl -s -X POST \
@@ -153,7 +153,7 @@ curl -s -X POST \
   | jq .
 ```
 
-各ドメインについて繰り返します:
+各ドメインに対して繰り返します：
 
 ```bash
 # esm.sh
@@ -180,7 +180,7 @@ curl -s -X POST \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
   | jq .
 
-# httpbin.org — mitigated_domain として www.httpbin.org を使用 (下記の注を参照)
+# httpbin.org — mitigated_domain として www.httpbin.org を使用（以下の注記を参照）
 curl -s -X POST \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   -H "Content-Type: application/json" \
@@ -198,14 +198,14 @@ curl -s -X POST \
 ```
 
 <Aside type="note">
-**`httpbin.org` eTLD+1 制約:** API は、ベア eTLD+1 ドメインを `mitigated_domain` 値として `"Invalid root domain: cannot derive eTLD+1"` で拒否します。`metadata.name` として `httpbin.org` を保持しながら、`spec.mitigated_domain` 値として `www.httpbin.org` を使用します。緩和は正しく適用されます — `name` 識別子は、緩和済みドメインリストに表示されるものです。カスタムシミュレーションスクリプトで流出ターゲットとして使用されるベアドメイン (サブドメインなし) は、同じ制約を持ちます。
+**`httpbin.org` の eTLD+1 制約:** API は `mitigated_domain` 値として裸の eTLD+1 ドメインを `"Invalid root domain: cannot derive eTLD+1"` エラーで拒否します。`metadata.name` には `httpbin.org` を保持したまま、`spec.mitigated_domain` 値として `www.httpbin.org` を使用してください。緩和は正しく適用されます — `name` 識別子が緩和対象ドメインリストに表示されるものです。カスタムシミュレーションスクリプトで exfil ターゲットとして使用される裸のドメイン（サブドメインなし）には、同じ制約が適用されます。
 </Aside>
 
-`200` レスポンスは作成された緩和済みドメインオブジェクトを返します。`409` レスポンスはドメインが既に緩和リストにあることを意味します — これは成功条件です。
+`200` レスポンスは、作成された緩和対象ドメインオブジェクトを返します。`409` レスポンスは、ドメインがすでに緩和リストに含まれていることを意味します — これは成功条件です。
 
-## Step 4: 緩和が適用されたことを確認
+## ステップ 4: 緩和の適用を確認
 
-すべての緩和済みドメインをリストし、数が送信されたドメイン数と一致することを確認します:
+すべての緩和対象ドメインをリストし、カウントが送信したドメイン数と一致することを確認します：
 
 ```bash
 curl -s \
@@ -215,84 +215,84 @@ curl -s \
 ```
 
 <Aside type="note">
-緩和済みドメインリストエンドポイントは、すべてのアイテムに対して null の `metadata.name` を持つアイテムを返します — 個別のドメイン名はリストレスポンスに表示されません。アイテム数が送信された POST リクエスト数と等しいことを確認して検証します (標準シミュレーションの場合は 6)。Step 3 の各個別の POST からの `200` レスポンスは、各緩和が作成されたことの確定的な証拠です。数が 1 未満で null 名の項目があり、緩和が適用されなかった場合、数を 0 として扱います — これはバックエンド成果物です ([飛行前チェック](/csd/demo/#pre-flight-check) の決定ルールを参照)。
+緩和対象ドメインリストエンドポイントは、すべてのアイテムで `metadata.name` が null のアイテムを返します — 個別のドメイン名はリストレスポンスでは表示されません。アイテム数が POST リクエストの数（標準シミュレーションでは 6）と等しいことを確認して検証してください。ステップ 3 の各個別 POST からの `200` レスポンスが、各緩和が作成されたことの権威ある証拠です。カウントが 1 で null 名のアイテムがあり、緩和が適用されていない場合は、カウントを 0 として扱ってください — これはバックエンドのアーティファクトです（判定ルールについては[プリフライトチェック](/csd/demo/#pre-flight-check)を参照してください）。
 </Aside>
 
-### 証拠
+### エビデンス
 
-| チェック | 期待される値 | ステータス |
+| チェック項目 | 期待値 | ステータス |
 | --- | --- | --- |
-| 緩和済みドメイン数 | 6 (POST 数と一致) | 数が一致する場合は PASS |
-| すべての Step 3 POST が `200` または `409` を返す | 各ドメインが受け入れられた | PASS |
+| 緩和対象ドメイン数 | 6（POST 数と一致） | カウントが一致すれば PASS |
+| ステップ 3 のすべての POST が `200` または `409` を返した | 各ドメインが受け入れられた | PASS |
 
-数が期待値より低い場合は、Step 3 から欠落しているドメインの POST コマンドを再実行します。
+カウントが期待値より低い場合は、ステップ 3 から不足しているドメインの POST コマンドを再実行してください。
 
-## Step 5: 攻撃を実行 — 緩和後
+## ステップ 5: 攻撃の実行 — 緩和後
 
-**まったく同じ** 組み合わせシミュレーションを再実行して、**「アフター」スナップショット** をキャプチャします。シミュレーションスクリプトは同一です — CSD の緩和状態が変わっただけです。緩和済みドメインからのスクリプト読み込みは、CSD JavaScript によってブロックされます (`&lt;script&gt;` タグ `src` は空の文字列にクリアされます)。
+**まったく同じ**統合シミュレーションを再実行し、**「アフター」スナップショット**を取得します。シミュレーションスクリプトは同一です — CSD の緩和状態のみが変更されています。緩和対象ドメインからのスクリプト読み込みは、CSD JavaScript によってブロックされるようになりました（`&lt;script&gt;` タグの `src` が空文字列にクリアされます）。
 
 <Aside type="note">
-このステップは Step 2 と同じブラウザオートメーションシーケンスを使用します。違いは実行内容ではなく、観察内容です。緩和がアクティブな場合、CSD は緩和済みドメインからの `&lt;script&gt;` タグ読み込みをブロックします。緩和ドメインへのフェッチ API 呼び出しは完了します — CSD 緩和はスクリプト読み込みをターゲットにしており、fetch/XHR ではありません。
+このステップではステップ 2 と同じブラウザ自動化シーケンスを使用します。違いは実行するものではなく、観察するものです。緩和がアクティブな場合、CSD は緩和対象ドメインからの `&lt;script&gt;` タグの読み込みをブロックします。緩和対象の exfil ドメインへの Fetch API 呼び出しは引き続き完了します — CSD 緩和はスクリプトの読み込みを対象としており、fetch/XHR は対象外です。
 </Aside>
 
 ### AI 自動実行
 
-ブラウザオートメーションツールを使用する AI アシスタントは、**同じ Phase 2 initScript** を使用してプログラムで攻撃シミュレーションを再実行します ([Phase 2 — AI 自動実行](/csd/demo/phase-2-attack/#ai-automated-execution) の逐語的コード)。initScript はネイティブ `fetch` を保存して zone.js エラーを回避します — CSD は `fetch()` 呼び出しをインターセプトしないため、これは CSD 緩和に影響しません。
+ブラウザ自動化ツールを持つ AI アシスタントは、**同じフェーズ 2 の initScript**（[フェーズ 2 — AI 自動実行](/csd/demo/phase-2-attack/#ai-automated-execution) のそのままのコード）を使用して攻撃シミュレーションを再実行します。initScript はネイティブ `fetch` を保存して zone.js エラーを回避します — CSD は `fetch()` 呼び出しをインターセプトしないため、これは CSD 緩和に影響しません。
 
-1. **initScript で移動** — クリーンなブラウザコンテキストに `new_page` を `isolatedContext` で使用 (Step 2 からの古い initScript を回避)、次に `about:blank` に移動、次に **Phase 2 initScript** でログインページに移動
+1. **initScript 付きでナビゲート** — クリーンなブラウザコンテキスト用に `isolatedContext` 付きの `new_page` を使用し（ステップ 2 からの古い initScript を回避）、次に `about:blank` にナビゲートし、その後 **フェーズ 2 の initScript** 付きでログインページにナビゲートします
 2. **ウェルカムバナーを閉じる** — `press_key` で `Escape`
-3. **完了を待つ** — すべての非同期コールバックに 10 秒待機
-4. **証拠をキャプチャ** — `list_console_messages` で `[CSD Demo] Simulation complete` を確認します。`list_network_requests` を `script` と `fetch` タイプでフィルタリングして、CDN スクリプト読み込みが **存在しない** (CSD がスクリプト src をクリア) ことを観察し、流出ドメインへのフェッチ呼び出しは正常に完了することを観察します
+3. **完了を待機** — すべての非同期コールバックが完了するまで 10 秒待機
+4. **エビデンスを取得** — `list_console_messages` で `[CSD Demo] Simulation complete` を確認します。`list_network_requests` を `script` と `fetch` タイプでフィルタリングし、CDN スクリプトの読み込みが**存在しない**こと（CSD がスクリプトの src をクリアした）を確認し、exfil ドメインへの fetch 呼び出しは引き続き正常に完了することを確認します
 
 ### 手動実行
 
-ブラウザオートメーションツールがないオペレーターは、[Phase 2 — Step 8: Attack Simulation](/csd/demo/phase-2-attack/#step-8-attack-simulation) と同じプロシージャを使用してシミュレーションを手動で再実行します:
+ブラウザ自動化ツールを持たないオペレーターは、[フェーズ 2 — ステップ 8: 攻撃シミュレーション](/csd/demo/phase-2-attack/#step-8-attack-simulation) と同じ手順でシミュレーションを手動で再実行します：
 
-1. `http://xF5XC_DOMAINNAMEx/#/login` に移動
-2. メールとパスワードフィールドにダミー認証情報を入力します (送信しません)
-3. DevTools を開きます — **F12** を押して **コンソール** タブに切り替えます
-4. [トリガー検出](/csd/trigger-detection/#run-the-combined-simulation-script) から組み合わせ検出スクリプトをコピーして実行します
-5. コンソールとネットワーク出力を観察します — 緩和済みドメイン用の CDN スクリプト `onload` および `onerror` コールバックは発火しません (CSD がスクリプト `src` を空の文字列にクリアして、ネットワークリクエスト全体を防止)。流出ドメイン (www.httpbin.org、jsonplaceholder.typicode.com) へのフェッチ呼び出しは `200`/`201` で **完了します** — CSD 緩和はスクリプト読み込みをブロックし、fetch/XHR ではありません
+1. `http://xF5XC_DOMAINNAMEx/#/login` にナビゲート
+2. メールアドレスとパスワードフィールドにダミーの認証情報を入力（送信はしない）
+3. DevTools を開く — **F12** を押して **Console** タブに切り替え
+4. [検出のトリガー](/csd/trigger-detection/#run-the-combined-simulation-script)の統合検出スクリプトを貼り付けて実行
+5. コンソールとネットワーク出力を確認 — 緩和対象ドメインに対して CDN スクリプトの `onload` と `onerror` コールバックは発火しません（CSD がスクリプトの `src` を空文字列にクリアし、ネットワークリクエスト自体を完全に防止）。exfil ドメイン（www.httpbin.org、jsonplaceholder.typicode.com）への fetch 呼び出しは `200`/`201` で**引き続き完了します** — CSD 緩和はスクリプトの読み込みをブロックするものであり、fetch/XHR 呼び出しはブロックしません
 
 <Aside type="caution" title="緩和の伝播タイミング">
-CSD JavaScript は、`&lt;script&gt;` タグ `src` セッターをインターセプトすることで、緩和済みドメインからのスクリプト読み込みをブロックすることが期待されています。ただし、HTTP (ポート 80) でのテスト中、スクリプト `src` クリアは緩和適用から 5 分以内に観察されませんでした — すべての CDN スクリプトは引き続き正常に読み込まれました。これは、緩和伝播が 5 分以上必要なこと、またはメカニズムが HTTP と HTTPS で異なるふるまいをすることを示す場合があります。緩和ブロッキングが観察されない場合は、伝播時間を追加で許可し、CSD テレメトリスクリプトが構成をリフレッシュしたことを確認します。
+CSD JavaScript は、`&lt;script&gt;` タグの `src` セッターをインターセプトすることで、緩和対象ドメインからのスクリプト読み込みをブロックすることが期待されます。ただし、HTTP（ポート 80）でのテストでは、緩和適用後 5 分以内にスクリプトの `src` クリアが観察されず、すべての CDN スクリプトが正常に読み込まれ続けました。これは、緩和の伝播に 5 分以上かかること、または HTTP と HTTPS でメカニズムの動作が異なることを示している可能性があります。緩和によるブロッキングが観察されない場合は、追加の伝播時間を待ち、CSD テレメトリスクリプトが設定を更新したことを確認してください。
 
-**フェッチ呼び出しは CSD 緩和によってインターセプトされません** (確認済み)。緩和済みドメインへの流出フェッチ呼び出し (www.httpbin.org、jsonplaceholder.typicode.com) は、緩和前後で `200`/`201` レスポンスで正常に完了します。CSD 緩和はサプライチェーンベクトル (悪意のあるスクリプト読み込み) をターゲットにしており、fetch/XHR 経由のデータ流出ではありません。Step 2 と Step 5 の両方に同じ Phase 2 initScript を使用します (ネイティブ `fetch` を保存)。
+**Fetch 呼び出しは CSD 緩和によってインターセプトされません**（検証済み）。緩和対象ドメイン（www.httpbin.org、jsonplaceholder.typicode.com）への Exfil fetch 呼び出しは、緩和の前後両方で `200`/`201` レスポンスで正常に完了します。CSD 緩和はサプライチェーンベクター（悪意のあるスクリプトの読み込み）を対象としており、fetch/XHR を介したデータ持ち出しは対象外です。ステップ 2 とステップ 5 の両方で同じフェーズ 2 の initScript（ネイティブ `fetch` を保存したもの）を使用してください。
 </Aside>
 
-### 証拠 — 緩和後
+### エビデンス — 緩和後
 
-| チェック | 期待される値 (緩和後) | ステータス |
+| チェック項目 | 期待値（緩和後） | ステータス |
 | --- | --- | --- |
-| CDN スクリプト読み込み | **ブロック** — スクリプトはネットワークタブに表示されません (CSD が `src` を空の文字列にクリア) | PASS |
-| CDN スクリプトコールバック | 緩和済みドメインについて `onload` および `onerror` のいずれも発火しません | PASS |
-| `www.httpbin.org` への流出フェッチ | `200` — フェッチは完了します (CSD はフェッチをインターセプトしません) | INFO |
-| jsonplaceholder.typicode.com への流出フェッチ | `201` — フェッチは完了します (CSD はフェッチをインターセプトしません) | INFO |
+| CDN スクリプトの読み込み | **ブロック** — スクリプトがネットワークタブに表示されない（CSD が `src` を空文字列にクリア） | PASS |
+| CDN スクリプトのコールバック | 緩和対象ドメインに対して `onload` も `onerror` も発火しない | PASS |
+| `www.httpbin.org` への Exfil fetch | `200` — fetch は引き続き完了（CSD は fetch をインターセプトしない） | INFO |
+| jsonplaceholder.typicode.com への Exfil fetch | `201` — fetch は引き続き完了（CSD は fetch をインターセプトしない） | INFO |
 | コンソール出力 | `[CSD Demo] Simulation complete` | PASS |
 
 <Aside type="tip">
-**バックエンド検証が最も信頼できる証拠です。** ブラウザに見えるスクリプトブロッキングがデモ期間内に観察されない場合は、`/detected_domains` API レスポンスをプライマリ証拠として使用します。ドメイン概要の `mitigatedDomains` 数と削減された `actionNeededCount` は、CSD JavaScript がまだその構成をリフレッシュしてブロッキングを実行していない場合でも、緩和がバックエンドでアクティブであることを確認します。
+**バックエンドの検証が最も信頼性の高い証拠です。** デモの時間枠内にブラウザで確認可能なスクリプトブロッキングが観察されない場合は、`/detected_domains` API レスポンスを主要なエビデンスとして使用してください。ドメインサマリーの `mitigatedDomains` カウントと減少した `actionNeededCount` は、ブラウザの CSD JavaScript が設定を更新してブロッキングを適用していなくても、バックエンドで緩和がアクティブであることを確認できます。
 </Aside>
 
-## Step 6: ビフォー vs アフター比較
+## ステップ 6: ビフォー vs アフターの比較
 
-これはデモのペイオフです — 同じ攻撃が、同じページで、同じスクリプトで、異なる結果を生成することを証明するサイドバイサイド証拠です。
+これがデモの成果です — 同じ攻撃が、同じページで、同じスクリプトで実行されたにもかかわらず、まったく異なる結果をもたらすことを証明するサイドバイサイドのエビデンスです。
 
-### 比較テーブル
+### 比較表
 
-| シグナル | 緩和前 (Step 2) | 緩和後 (Step 5) |
+| シグナル | 緩和前（ステップ 2） | 緩和後（ステップ 5） |
 | --- | --- | --- |
-| CDN スクリプト読み込み | `200` — すべての 4 つの CDN スクリプトが正常に読み込まれます | **ブロック** — スクリプトはネットワークタブに存在しません (CSD が `src` を空の文字列にクリア) |
-| CDN `onload` コールバック | `[Supply Chain] Loaded from` メッセージが表示されます | コールバックは発火しません (ネットワークリクエストが作成されませんでした) |
-| `www.httpbin.org` への流出 | `200` — データが流出されます | `200` — フェッチは完了します (CSD はフェッチをインターセプトしません) |
-| jsonplaceholder.typicode.com への流出 | `201` — データが流出されます | `201` — フェッチは完了します (CSD はフェッチをインターセプトしません) |
-| CSD 緩和済みドメイン API | 0 緩和 | 6 緩和 |
+| CDN スクリプトの読み込み | `200` — 4 つすべての CDN スクリプトが正常に読み込まれる | **ブロック** — スクリプトがネットワークタブに存在しない（CSD が `src` を空文字列にクリア） |
+| CDN `onload` コールバック | `[Supply Chain] Loaded from` メッセージが表示される | コールバックが発火しない（ネットワークリクエストが行われなかった） |
+| `www.httpbin.org` への Exfil | `200` — データ持ち出し成功 | `200` — fetch は引き続き完了（CSD は fetch をインターセプトしない） |
+| jsonplaceholder.typicode.com への Exfil | `201` — データ持ち出し成功 | `201` — fetch は引き続き完了（CSD は fetch をインターセプトしない） |
+| CSD 緩和対象ドメイン API | 0 緩和 | 6 緩和 |
 
-### バックエンドデータで緩和を検証
+### バックエンドデータでの緩和検証
 
-最大 10 イテレーション (10 分間) に対して 60 秒ごとに `/detected_domains` をクエリします。クエリが戻った後、または 10 分の最大値後に比較テーブルに進みます — これらのチェックは情報提供用であり、Phase 4 をゲートではありません。
+`/detected_domains` を 60 秒ごとに最大 10 回（10 分間）クエリします。クエリが返された時点、または 10 分の最大値に達した時点で比較表に進んでください — これらのチェックは情報提供目的であり、フェーズ 4 をゲートしません。
 
-**緩和後に検出されたドメインを確認:**
+**緩和後の検出ドメインを確認:**
 
 ```bash
 curl -s \
@@ -301,7 +301,7 @@ curl -s \
   | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
 ```
 
-**緩和ステータスのスクリプトをチェック:**
+**スクリプトの緩和ステータスを確認:**
 
 ```bash
 NOW=$(date +%s)
@@ -314,21 +314,21 @@ curl -s -X POST \
   | jq '{total: (.scripts | length), scripts: [.scripts[]? | {script_name: .script_name, risk_level: .risk_level}]}'
 ```
 
-### Phase 3 証拠サマリー
+### フェーズ 3 エビデンスサマリー
 
-| チェック | 期待される値 | ステータス |
+| チェック項目 | 期待値 | ステータス |
 | --- | --- | --- |
-| ベースラインがクリーン (Step 1) | 開始時に 0 個の緩和済みドメイン | PASS / FAIL |
-| ビフォー — 攻撃が成功 (Step 2) | スクリプトが読み込まれる、流出が 200/201 を返す | PASS / FAIL |
-| 緩和が適用される (Step 3) | すべての 6 ドメインが POST 経由で受け入れられる (200 または 409) | PASS / FAIL |
-| 緩和数が確認される (Step 4) | リストに 6 アイテム | PASS / FAIL |
-| アフター — スクリプト読み込みがブロック (Step 5) | CDN スクリプトはネットワークタブに存在しない、フェッチ呼び出しは完了 | PASS / FAIL |
-| ビフォー vs アフター比較 (Step 6) | Step 2 と Step 5 の証拠の明確な違い | PASS / FAIL |
+| ベースラインがクリーン（ステップ 1） | 開始時に緩和対象ドメインが 0 | PASS / FAIL |
+| ビフォー — 攻撃成功（ステップ 2） | スクリプトが読み込まれ、exfil が 200/201 を返す | PASS / FAIL |
+| 緩和が適用された（ステップ 3） | 6 つすべてのドメインが POST（200 または 409）で受け入れられた | PASS / FAIL |
+| 緩和数が確認された（ステップ 4） | リストに 6 アイテム | PASS / FAIL |
+| アフター — スクリプト読み込みがブロックされた（ステップ 5） | CDN スクリプトがネットワークタブに存在せず、fetch 呼び出しは引き続き完了 | PASS / FAIL |
+| ビフォー vs アフターの比較（ステップ 6） | ステップ 2 とステップ 5 のエビデンス間に明確な差異 | PASS / FAIL |
 
 <Aside type="note">
-緩和後の検出ステータスの更新は、API レスポンスに表示されるまでに時間がかかる場合があります。緩和直後にドメインが引き続き「アクションが必要」と表示される場合は、最大 10 イテレーション (10 分) に対して 60 秒ごとに `/detected_domains` をクエリします。10 イテレーション後も更新されない場合は、現在の状態を INFO として記録します — これは Phase 4 をブロックしません。
+緩和後の検出ステータスの更新が API レスポンスに反映されるまで時間がかかる場合があります。緩和直後にドメインがまだ「Action Needed」と表示される場合は、`/detected_domains` を 60 秒ごとに最大 10 回（10 分間）クエリしてください。10 回繰り返しても更新されない場合は、現在の状態を INFO として記録してください — これはフェーズ 4 をブロックしません。
 </Aside>
 
 ---
 
-**Phase 3 完了。** すべてのデプロイメントオブジェクトを削除する準備ができたら、[Phase 4 — Teardown](/csd/demo/phase-4-teardown/) に進んでください。
+**フェーズ 3 完了。** すべてのデプロイメントオブジェクトを削除する準備ができたら、[フェーズ 4 — ティアダウン](/csd/demo/phase-4-teardown/)に進んでください。

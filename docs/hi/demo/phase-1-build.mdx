@@ -1,8 +1,8 @@
 ---
 title: Phase 1 — Build
 description: >-
-  F5 XC API के माध्यम से CSD इन्फ्रास्ट्रक्चर को तैनात करें — healthcheck,
-  origin pool, load balancer, protected domain
+  F5 XC API के माध्यम से CSD इंफ्रास्ट्रक्चर डिप्लॉय करें — हेल्थचेक, ऑरिजिन
+  पूल, लोड बैलेंसर, प्रोटेक्टेड डोमेन
 sidebar:
   order: 2
   label: Phase 1 — Build
@@ -13,11 +13,11 @@ i18n:
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-Phase 1 पूर्ण CSD इन्फ्रास्ट्रक्चर को तैनात और सत्यापित करता है। सभी चरणों को क्रम में पूरा करें — प्रत्येक चरण को आगे बढ़ने से पहले **पास** होना चाहिए। इन कमांडों को चलाने से पहले [index](/csd/demo/) पर Environment Setup और variable resolution को पूरा करने के लिए वापस जाएं।
+Phase 1 पूर्ण CSD इंफ्रास्ट्रक्चर को डिप्लॉय और वैलिडेट करता है। सभी चरणों को क्रम में पूरा करें — आगे बढ़ने से पहले प्रत्येक चरण PASS होना चाहिए। इन कमांड्स को चलाने से पहले Environment Setup और वेरिएबल रेज़ोल्यूशन पूरा करने के लिए [index](/csd/demo/) पर वापस जाएं।
 
-## Step 0: Namespace की जांच और निर्माण (सशर्त)
+## चरण 0: नेमस्पेस जांचें और बनाएं (सशर्त)
 
-जांचें कि लक्ष्य namespace पहले से tenant पर मौजूद है या नहीं। यदि यह मौजूद नहीं है, तो इसे बनाएं। `NAMESPACE_CREATED` shell variable में परिणाम को ट्रैक करें — Phase 4 teardown इसका उपयोग यह निर्धारित करने के लिए करता है कि namespace को हटाना है या नहीं।
+जांचें कि टारगेट नेमस्पेस टेनेंट पर पहले से मौजूद है या नहीं। यदि यह मौजूद नहीं है, तो इसे बनाएं। परिणाम को `NAMESPACE_CREATED` शेल वेरिएबल में ट्रैक करें — Phase 4 teardown इसका उपयोग यह तय करने के लिए करता है कि नेमस्पेस को डिलीट करना है या नहीं।
 
 ```bash
 NS_CHECK=$(curl -s -o /dev/null -w '%\{http_code\}' \
@@ -36,12 +36,12 @@ fi
 ```
 
 <Aside type="note">
-**`spec` फील्ड आवश्यक है।** F5 XC namespace API को request body में `spec` फील्ड की आवश्यकता होती है, भले ही कोई कॉन्फ़िगरेशन की आवश्यकता न हो — एक खाली object `{}` पास करें। `spec` को छोड़ने से error code `3` ("spec should not be empty in request") आता है।
+**`spec` फ़ील्ड आवश्यक है।** F5 XC नेमस्पेस API को रिक्वेस्ट बॉडी में `spec` फ़ील्ड की आवश्यकता होती है, भले ही कोई कॉन्फ़िगरेशन न हो — एक खाली ऑब्जेक्ट `{}` पास करें। `spec` को छोड़ने पर एरर कोड `3` ("spec should not be empty in request") रिटर्न होता है।
 </Aside>
 
-### Evidence
+### साक्ष्य
 
-Confirm the namespace exists और record करें कि क्या यह बनाया गया था:
+पुष्टि करें कि नेमस्पेस मौजूद है और रिकॉर्ड करें कि इसे बनाया गया था या नहीं:
 
 ```bash
 curl -s -o /dev/null -w '%\{http_code\}' \
@@ -50,19 +50,19 @@ curl -s -o /dev/null -w '%\{http_code\}' \
 echo "NAMESPACE_CREATED=$NAMESPACE_CREATED"
 ```
 
-| Field | Expected | Status |
+| फ़ील्ड | अपेक्षित | स्थिति |
 | --- | --- | --- |
-| HTTP Status | `200` | PASS यदि returned, FAIL यदि `404` या अन्य |
-| `NAMESPACE_CREATED` | `true` (created) या `false` (pre-existing) | जानकारीपूर्ण — Phase 4 teardown द्वारा उपयोग किया जाता है |
+| HTTP Status | `200` | यदि रिटर्न हो तो PASS, `404` या अन्य हो तो FAIL |
+| `NAMESPACE_CREATED` | `true` (बनाया गया) या `false` (पहले से मौजूद) | सूचनात्मक — Phase 4 teardown द्वारा उपयोग किया जाता है |
 
-## Step 1: Healthcheck बनाएं (वैकल्पिक)
+## चरण 1: हेल्थचेक बनाएं (वैकल्पिक)
 
-एक HTTP healthcheck बनाएं जो origin pool backend स्वास्थ्य की निगरानी के लिए उपयोग कर सकता है।
+एक HTTP हेल्थचेक बनाएं जिसका उपयोग ऑरिजिन पूल बैकएंड हेल्थ मॉनिटर करने के लिए कर सके।
 
 <Aside type="note">
-**Healthchecks CSD के लिए वैकल्पिक हैं।** Client-Side Defense feature origin health monitoring पर निर्भर नहीं करता है। यदि आपका tenant healthcheck object limit को समाप्त कर दिया है (error code `8` — Error Handling देखें), इस चरण को छोड़ें और origin pool को healthcheck reference के बिना बनाएं। CSD सामान्य रूप से कार्य करेगा।
+**हेल्थचेक CSD के लिए वैकल्पिक हैं।** Client-Side Defense फ़ीचर ऑरिजिन हेल्थ मॉनिटरिंग पर निर्भर नहीं करता। यदि आपके टेनेंट ने हेल्थचेक ऑब्जेक्ट लिमिट पूरी कर ली है (एरर कोड `8` — Error Handling देखें), तो इस चरण को छोड़ दें और हेल्थचेक रेफरेंस के बिना ऑरिजिन पूल बनाएं। CSD सामान्य रूप से काम करेगा।
 
-यदि आप एक healthcheck बनाते हैं, तो इसे origin pool से **पहले** बनाएं। origin pool को एक मौजूदा healthcheck का संदर्भ देना चाहिए — यदि healthcheck origin pool बनाते समय मौजूद नहीं है, तो संदर्भ शांत रहेगा।
+यदि आप हेल्थचेक बनाते हैं, तो इसे ऑरिजिन पूल से पहले बनाएं। ऑरिजिन पूल को एक मौजूदा हेल्थचेक का रेफरेंस देना होगा — यदि ऑरिजिन पूल बनाते समय हेल्थचेक मौजूद नहीं है, तो रेफरेंस चुपचाप खाली रहेगा।
 </Aside>
 
 ```bash
@@ -98,11 +98,11 @@ curl -s -X POST \
   | jq .
 ```
 
-एक `200` response बनाए गए object के साथ potvrđuje कि healthcheck बनाया गया था। यदि response में `"code": 8` है जिसमें `"Object kind healthcheck has exhausted limits(150)"` जैसा message है, तो tenant ने अपनी healthcheck limit को मार दिया है — Step 2 पर जाएं और healthcheck reference को छोड़ें। CSD health monitoring पर निर्भर नहीं करता है।
+क्रिएटेड ऑब्जेक्ट के साथ `200` रिस्पॉन्स पुष्टि करता है कि हेल्थचेक बनाया गया। यदि रिस्पॉन्स में `"code": 8` के साथ `"Object kind healthcheck has exhausted limits(150)"` जैसा मैसेज है, तो टेनेंट ने अपनी हेल्थचेक लिमिट पूरी कर ली है — चरण 2 पर जाएं और हेल्थचेक रेफरेंस छोड़ दें। CSD हेल्थ मॉनिटरिंग पर निर्भर नहीं करता।
 
-### Evidence
+### साक्ष्य
 
-Confirm करें कि healthcheck मौजूद है:
+पुष्टि करें कि हेल्थचेक मौजूद है:
 
 ```bash
 curl -s \
@@ -111,18 +111,18 @@ curl -s \
   | jq '{name: .metadata.name, namespace: .metadata.namespace, path: .spec.http_health_check.path, interval: .spec.interval}'
 ```
 
-| Field | Expected | Status |
+| फ़ील्ड | अपेक्षित | स्थिति |
 | --- | --- | --- |
-| HTTP Status | `200` with object | PASS यदि returned, FAIL यदि `404` |
-| `name` | Matches `F5XC_HC_NAME` | PASS |
+| HTTP Status | ऑब्जेक्ट के साथ `200` | यदि रिटर्न हो तो PASS, `404` हो तो FAIL |
+| `name` | `F5XC_HC_NAME` से मेल खाता है | PASS |
 | `path` | `/` | PASS |
-| Step 1 skipped (error code `8`, limit exhausted) | — | PASS (healthcheck CSD के लिए वैकल्पिक है) |
+| चरण 1 छोड़ दिया गया (एरर कोड `8`, लिमिट पूरी) | — | PASS (हेल्थचेक CSD के लिए वैकल्पिक है) |
 
-## Step 2: Origin Pool बनाएं
+## चरण 2: ऑरिजिन पूल बनाएं
 
-अपने backend server की ओर इशारा करते हुए एक origin pool बनाएं। यदि आपने Step 1 में एक healthcheck बनाया है, तो `healthcheck` reference शामिल करें। यदि Step 1 को छोड़ दिया गया था, तो एक empty array का उपयोग करें।
+अपने बैकएंड सर्वर की ओर इंगित करने वाला एक ऑरिजिन पूल बनाएं। यदि आपने चरण 1 में हेल्थचेक बनाया है, तो `healthcheck` रेफरेंस शामिल करें। यदि चरण 1 छोड़ा गया था, तो एक खाली ऐरे का उपयोग करें।
 
-**Healthcheck के साथ** (Step 1 सफल):
+**हेल्थचेक के साथ** (चरण 1 सफल रहा):
 
 ```bash
 curl -s -X POST \
@@ -158,7 +158,7 @@ curl -s -X POST \
   | jq .
 ```
 
-**Healthcheck के बिना** (Step 1 को छोड़ दिया गया):
+**हेल्थचेक के बिना** (चरण 1 छोड़ा गया):
 
 ```bash
 curl -s -X POST \
@@ -190,15 +190,15 @@ curl -s -X POST \
   | jq .
 ```
 
-एक `200` response confirm करता है कि origin pool बनाया गया था।
+`200` रिस्पॉन्स पुष्टि करता है कि ऑरिजिन पूल बनाया गया।
 
 <Aside type="caution">
-यदि response में `"code": 8` है जिसमें `"Object kind endpoint has exhausted limits(500)"` या `"Object kind origin_pool has exhausted limits"` जैसा message है, तो tenant ने अपने quota को मार दिया है। Healthchecks के विपरीत, origin pools demo के लिए **आवश्यक** हैं — demo बिना उनके आगे नहीं बढ़ सकता है। अन्य namespaces से अप्रयुक्त origin pools को हटाएं क्षमता को मुक्त करने के लिए (एक origin pool को हटाना भी इसके endpoint sub-objects को मुक्त करता है), फिर पुनः प्रयास करें। यदि limit को हल नहीं किया जा सकता है, तो tenant quota को बढ़ाने के लिए अपने F5 Distributed Cloud (F5 XC) administrator से संपर्क करें।
+यदि रिस्पॉन्स में `"code": 8` के साथ `"Object kind endpoint has exhausted limits(500)"` या `"Object kind origin_pool has exhausted limits"` जैसा मैसेज है, तो टेनेंट ने अपना कोटा पूरा कर लिया है। हेल्थचेक के विपरीत, ऑरिजिन पूल डेमो के लिए **आवश्यक** हैं — इसके बिना डेमो आगे नहीं बढ़ सकता। क्षमता खाली करने के लिए अन्य नेमस्पेस से अप्रयुक्त ऑरिजिन पूल डिलीट करें (ऑरिजिन पूल डिलीट करने से उसके एंडपॉइंट सब-ऑब्जेक्ट भी मुक्त होते हैं), फिर पुनः प्रयास करें। यदि लिमिट हल नहीं हो सकती, तो टेनेंट कोटा बढ़ाने के लिए अपने F5 Distributed Cloud (F5 XC) एडमिनिस्ट्रेटर से संपर्क करें।
 </Aside>
 
-### Verify करें कि Healthcheck लिंक किया गया है
+### हेल्थचेक लिंक की पुष्टि करें
 
-यदि आपने एक healthcheck reference शामिल किया है, तो confirm करें कि यह सही तरीके से लिंक किया गया है:
+यदि आपने हेल्थचेक रेफरेंस शामिल किया है, तो पुष्टि करें कि यह सही ढंग से लिंक है:
 
 ```bash
 curl -s \
@@ -207,11 +207,11 @@ curl -s \
   | jq '.spec.healthcheck'
 ```
 
-एक populated array link को confirm करता है। एक empty array `[]` expected है यदि Step 1 को छोड़ दिया गया था, या यदि आप एक link करना चाहते थे तो यह healthcheck नहीं मिला।
+एक भरा हुआ ऐरे लिंक की पुष्टि करता है। एक खाली ऐरे `[]` अपेक्षित है यदि चरण 1 छोड़ा गया था, या इसका मतलब है कि हेल्थचेक नहीं मिला यदि आप इसे लिंक करना चाहते थे।
 
-### Evidence
+### साक्ष्य
 
-Confirm करें कि origin pool मौजूद है और सही configuration में है:
+पुष्टि करें कि ऑरिजिन पूल मौजूद है और सही कॉन्फ़िगरेशन है:
 
 ```bash
 curl -s \
@@ -220,29 +220,29 @@ curl -s \
   | jq '{name: .metadata.name, origin_ip: .spec.origin_servers[0].public_ip.ip, port: .spec.port, healthcheck_count: (.spec.healthcheck | length)}'
 ```
 
-| Field | Expected | Status |
+| फ़ील्ड | अपेक्षित | स्थिति |
 | --- | --- | --- |
-| HTTP Status | `200` | PASS यदि returned, FAIL यदि `404` |
-| `name` | Matches `F5XC_ORIGIN_POOL` | PASS |
-| `origin_ip` | Matches `F5XC_ORIGIN_IP` | PASS |
-| `port` | Matches `F5XC_ORIGIN_PORT` | PASS |
-| `healthcheck_count` | `1` (with HC) या `0` (without) | दोनों तरीकों से PASS |
+| HTTP Status | `200` | यदि रिटर्न हो तो PASS, `404` हो तो FAIL |
+| `name` | `F5XC_ORIGIN_POOL` से मेल खाता है | PASS |
+| `origin_ip` | `F5XC_ORIGIN_IP` से मेल खाता है | PASS |
+| `port` | `F5XC_ORIGIN_PORT` से मेल खाता है | PASS |
+| `healthcheck_count` | `1` (HC के साथ) या `0` (बिना) | दोनों स्थितियों में PASS |
 
-## Step 3: Client-Side Defense के साथ HTTP Load Balancers बनाएं
+## चरण 3: CSD के साथ HTTP लोड बैलेंसर बनाएं
 
-Client-Side Defense enabled के साथ **दो** load balancers बनाएं — एक HTTP LB (primary, port 80) और एक HTTPS LB (secondary, port 443 with automatic certificate management)। HTTP LB सभी demo traffic के लिए default है। HTTPS LB एक nice to have है जो Let's Encrypt certificate provisioning पर निर्भर करता है, जो demo environments में rate limits को मार सकता है।
+Client-Side Defense सक्षम करके **दो** लोड बैलेंसर बनाएं — एक HTTP LB (प्राथमिक, पोर्ट 80) और एक HTTPS LB (द्वितीयक, पोर्ट 443 स्वचालित प्रमाणपत्र प्रबंधन के साथ)। HTTP LB सभी डेमो ट्रैफ़िक के लिए डिफ़ॉल्ट है। HTTPS LB एक अच्छा-होना (nice to have) है जो Let's Encrypt प्रमाणपत्र प्रावधान पर निर्भर करता है, जो डेमो वातावरण में रेट लिमिट से प्रभावित हो सकता है।
 
 <Aside type="note">
-HTTP Load Balancer spec में 22+ `oneOf` choice groups हैं। प्रत्येक group के पास exactly one choice set होना चाहिए या API एक `422` error return करता है। नीचे दिए गए configurations CSD को छोड़कर सभी optional security features को disable करते हैं — अपने environment के लिए आवश्यकतानुसार modify करें। दोनों LBs same origin pool, CSD settings, और domain साझा करते हैं — केवल listener type अलग होता है।
+HTTP Load Balancer spec में 22+ `oneOf` चॉइस ग्रुप हैं। प्रत्येक ग्रुप में बिल्कुल एक चॉइस सेट होना चाहिए अन्यथा API `422` एरर रिटर्न करता है। नीचे दिए गए कॉन्फ़िगरेशन CSD को छोड़कर सभी वैकल्पिक सुरक्षा फ़ीचर्स को अक्षम करते हैं — अपने वातावरण के अनुसार आवश्यकतानुसार संशोधित करें। दोनों LB एक ही ऑरिजिन पूल, CSD सेटिंग्स और डोमेन साझा करते हैं — केवल लिसनर प्रकार भिन्न है।
 </Aside>
 
 <Aside type="tip">
-दोनों LB names `F5XC_LB_NAME` से derive होते हैं: HTTP LB `${F5XC_LB_NAME}-http` है और HTTPS LB `${F5XC_LB_NAME}-https` है। कोई अतिरिक्त environment variables की आवश्यकता नहीं है।
+दोनों LB नाम `F5XC_LB_NAME` से व्युत्पन्न होते हैं: HTTP LB `${F5XC_LB_NAME}-http` है और HTTPS LB `${F5XC_LB_NAME}-https` है। किसी अतिरिक्त एनवायरनमेंट वेरिएबल की आवश्यकता नहीं है।
 </Aside>
 
-### HTTP Load Balancer (Primary)
+### HTTP लोड बैलेंसर (प्राथमिक)
 
-यह demos के लिए **primary** load balancer है। यह F5 XC managed DNS के साथ port 80 पर एक `http` listener का उपयोग करता है। यह TLS certificate provisioning पर निर्भर नहीं करता है, इसलिए DNS resolve होने के बाद यह तुरंत ready हो जाता है।
+यह डेमो के लिए **प्राथमिक** लोड बैलेंसर है। यह F5 XC प्रबंधित DNS के साथ पोर्ट 80 पर `http` लिसनर का उपयोग करता है। यह TLS प्रमाणपत्र प्रावधान पर निर्भर नहीं करता, इसलिए DNS रिज़ॉल्व होते ही यह तुरंत तैयार हो जाता है।
 
 ```bash
 curl -s -X POST \
@@ -307,17 +307,17 @@ curl -s -X POST \
   | jq .
 ```
 
-एक `200` response confirm करता है कि HTTP load balancer CSD enabled के साथ बनाया गया था।
+`200` रिस्पॉन्स पुष्टि करता है कि CSD सक्षम HTTP लोड बैलेंसर बनाया गया।
 
 <Aside type="caution">
-यदि response में `"code": 8` है जिसमें `"Object kind http_loadbalancer has exhausted limits"` जैसा message है, तो tenant ने अपने load balancer quota को मार दिया है। Load balancers demo के लिए **आवश्यक** हैं। क्षमता को मुक्त करने के लिए अप्रयुक्त load balancers को हटाएं, फिर पुनः प्रयास करें।
+यदि रिस्पॉन्स में `"code": 8` के साथ `"Object kind http_loadbalancer has exhausted limits"` जैसा मैसेज है, तो टेनेंट ने अपना लोड बैलेंसर कोटा पूरा कर लिया है। लोड बैलेंसर डेमो के लिए **आवश्यक** हैं। क्षमता खाली करने के लिए अप्रयुक्त लोड बैलेंसर डिलीट करें, फिर पुनः प्रयास करें।
 </Aside>
 
-### HTTPS Load Balancer (Secondary)
+### HTTPS लोड बैलेंसर (द्वितीयक)
 
-यह **secondary** load balancer है। यह port 443 पर `https_auto_cert` का उपयोग करता है with automatic Let's Encrypt certificate provisioning। इसे बनाने से पहले, एक **skeleton HTTPS LB** की जांच करें जो एक previous teardown से exist कर सकता है — यदि ऐसा है, तो इसे PUT के माध्यम से restore करें instead of POST ताकि existing Let's Encrypt certificate को preserve किया जा सके और rate limits को avoid किया जा सके (5 duplicate certificates per exact identifier set per 7 days)।
+यह **द्वितीयक** लोड बैलेंसर है। यह स्वचालित Let's Encrypt प्रमाणपत्र प्रावधान के साथ पोर्ट 443 पर `https_auto_cert` का उपयोग करता है। इसे बनाने से पहले, जांचें कि पिछले teardown से कोई **स्केलेटन HTTPS LB** मौजूद है या नहीं — यदि है, तो मौजूदा Let's Encrypt प्रमाणपत्र को संरक्षित करने और रेट लिमिट से बचने के लिए POST के बजाय PUT के माध्यम से इसे पुनर्स्थापित करें (प्रति exact identifier set प्रति 7 दिनों में 5 डुप्लिकेट प्रमाणपत्र)।
 
-**Check करें कि क्या HTTPS LB पहले से मौजूद है:**
+**जांचें कि HTTPS LB पहले से मौजूद है या नहीं:**
 
 ```bash
 HTTPS_CHECK=$(curl -s -o /dev/null -w '%\{http_code\}' \
@@ -325,11 +325,11 @@ HTTPS_CHECK=$(curl -s -o /dev/null -w '%\{http_code\}' \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
 ```
 
-यदि `HTTPS_CHECK` `200` है, एक skeleton HTTPS LB exist करता है — **Path A (PUT)** का उपयोग करें। यदि `404`, **Path B (POST)** का उपयोग करें।
+यदि `HTTPS_CHECK` `200` है, तो एक स्केलेटन HTTPS LB मौजूद है — **Path A (PUT)** का उपयोग करें। यदि `404` है, तो **Path B (POST)** का उपयोग करें।
 
-#### Path A: Skeleton को PUT के माध्यम से Restore करें (HTTPS LB exist करता है)
+#### Path A: PUT के माध्यम से स्केलेटन पुनर्स्थापित करें (HTTPS LB मौजूद है)
 
-जब एक skeleton HTTPS LB एक prior teardown से exist करता है, तो पूर्ण configuration को PUT के माध्यम से restore करें। यह origin pool को re-attach करता है और CSD को re-enable करता है **बिना एक नए Let's Encrypt certificate request को trigger किए** — existing certificate valid रहता है।
+जब पिछले teardown से एक स्केलेटन HTTPS LB मौजूद होता है, तो PUT के माध्यम से पूर्ण कॉन्फ़िगरेशन पुनर्स्थापित करें। यह ऑरिजिन पूल को पुनः जोड़ता है और CSD को पुनः सक्षम करता है **नए Let's Encrypt प्रमाणपत्र अनुरोध को ट्रिगर किए बिना** — मौजूदा प्रमाणपत्र वैध रहता है।
 
 ```bash
 curl -s -X PUT \
@@ -399,15 +399,15 @@ curl -s -X PUT \
   | jq .
 ```
 
-एक `200` response confirm करता है कि skeleton को पूर्ण configuration के साथ restore किया गया। Certificate state `CertificateValid` रहना चाहिए — कोई नया Let's Encrypt provisioning trigger नहीं होता है।
+`200` रिस्पॉन्स पुष्टि करता है कि स्केलेटन पूर्ण कॉन्फ़िगरेशन के साथ पुनर्स्थापित हो गया। प्रमाणपत्र स्थिति `CertificateValid` रहनी चाहिए — कोई नया Let's Encrypt प्रावधान ट्रिगर नहीं होता।
 
 <Aside type="note">
-**Skeleton restoration।** PUT संपूर्ण object spec को replace करता है। Skeleton HTTPS LB ने teardown के दौरान अपनी domain binding और certificate को retain किया। यह PUT origin pool reference को restore करता है और Client-Side Defense को re-enable करता है बिना एक नए Let's Encrypt certificate request को trigger किए। HTTPS तुरंत available है।
+**स्केलेटन पुनर्स्थापना।** PUT पूरे ऑब्जेक्ट spec को बदल देता है। स्केलेटन HTTPS LB ने teardown के दौरान अपनी डोमेन बाइंडिंग और प्रमाणपत्र बनाए रखा। यह PUT नए Let's Encrypt प्रमाणपत्र अनुरोध को ट्रिगर किए बिना ऑरिजिन पूल रेफरेंस पुनर्स्थापित करता है और Client-Side Defense को पुनः सक्षम करता है। HTTPS तुरंत उपलब्ध है।
 </Aside>
 
-#### Path B: नया POST के माध्यम से Create करें (HTTPS LB exist नहीं करता है)
+#### Path B: POST के माध्यम से नया बनाएं (HTTPS LB मौजूद नहीं है)
 
-जब कोई HTTPS LB exist नहीं करता है (first run या एक पूर्ण teardown के बाद), इसे POST के माध्यम से create करें। यह Let's Encrypt certificate provisioning को trigger करता है, जो 5–10 मिनट ले सकता है।
+जब कोई HTTPS LB मौजूद नहीं है (पहला रन या पूर्ण teardown के बाद), POST के माध्यम से बनाएं। यह Let's Encrypt प्रमाणपत्र प्रावधान ट्रिगर करता है, जिसमें 5-10 मिनट लग सकते हैं।
 
 ```bash
 curl -s -X POST \
@@ -477,21 +477,21 @@ curl -s -X POST \
   | jq .
 ```
 
-एक `200` response confirm करता है कि HTTPS load balancer बनाया गया। Certificate provisioning automatically शुरू होता है।
+`200` रिस्पॉन्स पुष्टि करता है कि HTTPS लोड बैलेंसर बनाया गया। प्रमाणपत्र प्रावधान स्वचालित रूप से शुरू हो जाता है।
 
 <Aside type="caution">
-यदि response में `"code": 8` है "exhausted limits" के साथ, HTTPS LB को create नहीं किया जा सकता है। HTTPS LB optional है — demo HTTP LB का उपयोग करके proceed करता है। Phase 1 Evidence Summary में quota limitation को INFO के रूप में note करें।
+यदि रिस्पॉन्स में `"code": 8` के साथ "exhausted limits" है, तो HTTPS LB नहीं बनाया जा सकता। HTTPS LB वैकल्पिक है — डेमो HTTP LB का उपयोग करके आगे बढ़ता है। Phase 1 Evidence Summary में कोटा सीमा को INFO के रूप में नोट करें।
 </Aside>
 
 <Aside type="note">
-**Let's Encrypt rate limits।** एक नया HTTPS LB create करना एक Let's Encrypt certificate request को trigger करता है। Let's Encrypt केवल 5 duplicate certificates per exact identifier set per 7 days allow करता है। यदि `cert_state` `AutoCertDomainRateLimited` दिखाता है, तो demo HTTP LB का उपयोग करके continue करता है। इस limit को avoid करने के लिए, default teardown HTTPS LB को एक skeleton के रूप में preserve करता है — [Phase 4 — Teardown](/csd/demo/phase-4-teardown/) देखें।
+**Let's Encrypt रेट लिमिट।** नया HTTPS LB बनाने पर Let's Encrypt प्रमाणपत्र अनुरोध ट्रिगर होता है। Let's Encrypt प्रति exact identifier set प्रति 7 दिनों में केवल 5 डुप्लिकेट प्रमाणपत्र की अनुमति देता है। यदि `cert_state` `AutoCertDomainRateLimited` दिखाता है, तो डेमो HTTP LB का उपयोग करके जारी रहता है। इस लिमिट से बचने के लिए, डिफ़ॉल्ट teardown HTTPS LB को एक स्केलेटन के रूप में संरक्षित करता है — [Phase 4 — Teardown](/csd/demo/phase-4-teardown/) देखें।
 </Aside>
 
-### Evidence
+### साक्ष्य
 
-Confirm करें कि दोनों load balancers exist करते हैं with CSD enabled। हमेशा evidence के लिए एक **GET** का उपयोग करें — POST response transient state values return करता है जो settled configuration को reflect नहीं कर सकते हैं।
+पुष्टि करें कि दोनों लोड बैलेंसर CSD सक्षम होकर मौजूद हैं। साक्ष्य के लिए हमेशा **GET** का उपयोग करें — POST रिस्पॉन्स अस्थायी स्टेट वैल्यू रिटर्न करता है जो स्थिर कॉन्फ़िगरेशन को प्रतिबिंबित नहीं कर सकता।
 
-**HTTP LB (primary):**
+**HTTP LB (प्राथमिक):**
 
 ```bash
 curl -s \
@@ -500,15 +500,15 @@ curl -s \
   | jq '{name: .metadata.name, domains: .spec.domains, csd_enabled: (.spec.client_side_defense != null), state: .spec.state}'
 ```
 
-| Field | Expected | Status |
+| फ़ील्ड | अपेक्षित | स्थिति |
 | --- | --- | --- |
-| HTTP Status | `200` | PASS यदि returned, FAIL यदि `404` |
+| HTTP Status | `200` | यदि रिटर्न हो तो PASS, `404` हो तो FAIL |
 | `name` | `${F5XC_LB_NAME}-http` | PASS |
-| `domains` | Contains `F5XC_DOMAINNAME` | PASS |
-| `csd_enabled` | `true` | PASS — CSD इस LB पर configured है |
-| `state` | `VIRTUAL_HOST_READY` या `VIRTUAL_HOST_PENDING_A_RECORD` | Expected — HTTP LB DNS resolve होने के बाद READY में transition करता है। कोई अन्य state (e.g. `VIRTUAL_HOST_FAILED`) एक FAIL है — operator को report करें और proceed न करें |
+| `domains` | `F5XC_DOMAINNAME` शामिल है | PASS |
+| `csd_enabled` | `true` | PASS — इस LB पर CSD कॉन्फ़िगर है |
+| `state` | `VIRTUAL_HOST_READY` या `VIRTUAL_HOST_PENDING_A_RECORD` | अपेक्षित — DNS रिज़ॉल्व होने के बाद HTTP LB READY में बदल जाता है। कोई अन्य स्थिति (जैसे `VIRTUAL_HOST_FAILED`) FAIL है — ऑपरेटर को रिपोर्ट करें और आगे न बढ़ें |
 
-**HTTPS LB (secondary):**
+**HTTPS LB (द्वितीयक):**
 
 ```bash
 curl -s \
@@ -517,44 +517,44 @@ curl -s \
   | jq '{name: .metadata.name, domains: .spec.domains, csd_enabled: (.spec.client_side_defense != null), state: .spec.state, cert_state: .spec.cert_state}'
 ```
 
-| Field | Expected | Status |
+| फ़ील्ड | अपेक्षित | स्थिति |
 | --- | --- | --- |
-| HTTP Status | `200` | PASS यदि returned, FAIL यदि `404` |
+| HTTP Status | `200` | यदि रिटर्न हो तो PASS, `404` हो तो FAIL |
 | `name` | `${F5XC_LB_NAME}-https` | PASS |
-| `domains` | Contains `F5XC_DOMAINNAME` | PASS |
-| `csd_enabled` | `true` | PASS — CSD इस LB पर configured है |
-| `creation_method` | PUT (restored skeleton) या POST (new) | INFO — PUT existing certificate को preserve करता है |
-| `state` | `VIRTUAL_HOST_READY` (PUT) या `VIRTUAL_HOST_PENDING_A_RECORD` (POST) | Expected — PUT path पहले से ही READY में हो सकता है क्योंकि DNS skeleton से persist हुआ |
-| `cert_state` | `CertificateValid` (PUT) या `PreDomainChallengePending` (POST) | PUT existing cert को preserve करता है; POST नया provisioning trigger करता है |
+| `domains` | `F5XC_DOMAINNAME` शामिल है | PASS |
+| `csd_enabled` | `true` | PASS — इस LB पर CSD कॉन्फ़िगर है |
+| `creation_method` | PUT (पुनर्स्थापित स्केलेटन) या POST (नया) | INFO — PUT मौजूदा प्रमाणपत्र संरक्षित करता है |
+| `state` | `VIRTUAL_HOST_READY` (PUT) या `VIRTUAL_HOST_PENDING_A_RECORD` (POST) | अपेक्षित — PUT पथ पहले से READY हो सकता है क्योंकि DNS स्केलेटन से बना रहा |
+| `cert_state` | `CertificateValid` (PUT) या `PreDomainChallengePending` (POST) | PUT मौजूदा प्रमाणपत्र संरक्षित करता है; POST नया प्रावधान ट्रिगर करता है |
 
-## Step 4: DNS कॉन्फ़िगर करें
+## चरण 4: DNS कॉन्फ़िगर करें
 
-Load balancer बनाने के बाद, यह `VIRTUAL_HOST_PENDING_A_RECORD` status में enter करता है और automatic certificate `PreDomainChallengePending` में रहता है। LB fully operational होने से पहले दो DNS records मौजूद होने चाहिए:
+लोड बैलेंसर बनाने के बाद, यह `VIRTUAL_HOST_PENDING_A_RECORD` स्थिति में प्रवेश करता है और स्वचालित प्रमाणपत्र `PreDomainChallengePending` में रहता है। LB पूरी तरह से परिचालन होने से पहले दो DNS रिकॉर्ड मौजूद होने चाहिए:
 
-1. **A record** — `xF5XC_DOMAINNAMEx` को VIP IP address की ओर इशारा करते हुए (LB response में `dns_info` से)
-2. **ACME challenge record** — `_acme-challenge.xF5XC_DOMAINNAMEx` TLS certificate validation के लिए (automatically managed जब F5 XC DNS को managed records के साथ उपयोग किया जाता है; external DNS के लिए manual CNAME required)
+1. **A रिकॉर्ड** — `xF5XC_DOMAINNAMEx` VIP IP एड्रेस की ओर इंगित (LB रिस्पॉन्स में `dns_info` से)
+2. **ACME चैलेंज रिकॉर्ड** — TLS प्रमाणपत्र सत्यापन के लिए `_acme-challenge.xF5XC_DOMAINNAMEx` (प्रबंधित रिकॉर्ड के साथ F5 XC DNS का उपयोग करते समय स्वचालित रूप से प्रबंधित; बाहरी DNS के लिए मैन्युअल CNAME आवश्यक)
 
-Approach इस बात पर निर्भर करता है कि क्या F5 XC आपके domain के लिए authoritative DNS provider है।
+दृष्टिकोण इस पर निर्भर करता है कि F5 XC आपके डोमेन के लिए आधिकारिक DNS प्रदाता है या नहीं।
 
-### DNS Authority को Detect करें
+### DNS प्राधिकरण का पता लगाएं
 
-अपने root domain के लिए nameservers को check करें:
+अपने रूट डोमेन के नेमसर्वर जांचें:
 
 ```bash
 dig +short NS xF5XC_ROOT_DOMAINx
 ```
 
-यदि response में `ns1.f5clouddns.com` और `ns2.f5clouddns.com` शामिल हैं, F5 XC authoritative DNS provider है — **Option A** को follow करें। अन्यथा, external DNS के लिए **Option B** को follow करें।
+यदि रिस्पॉन्स में `ns1.f5clouddns.com` और `ns2.f5clouddns.com` शामिल हैं, तो F5 XC आधिकारिक DNS प्रदाता है — **Option A** का पालन करें। अन्यथा, बाहरी DNS के लिए **Option B** का पालन करें।
 
-### Option A: F5 XC Managed DNS
+### Option A: F5 XC प्रबंधित DNS
 
-जब F5 XC authoritative DNS provider है, तो platform automatically दोनों A record और ACME challenge CNAME को create कर सकता है — लेकिन केवल जब DNS zone में `allow_http_lb_managed_records` enabled हो।
+जब F5 XC आधिकारिक DNS प्रदाता है, तो प्लेटफ़ॉर्म स्वचालित रूप से A रिकॉर्ड और ACME चैलेंज CNAME दोनों बना सकता है — लेकिन केवल तब जब DNS ज़ोन में `allow_http_lb_managed_records` सक्षम हो।
 
 <Aside type="note">
-DNS zones **system** namespace में live करते हैं, user namespaces में नहीं। Zone name root domain से match करता है (e.g., `bankexample.com`)।
+DNS ज़ोन **system** नेमस्पेस में रहते हैं, उपयोगकर्ता नेमस्पेस में नहीं। ज़ोन का नाम रूट डोमेन से मेल खाता है (जैसे, `bankexample.com`)।
 </Aside>
 
-**1. Check करें कि क्या managed records enabled हैं:**
+**1. जांचें कि प्रबंधित रिकॉर्ड सक्षम हैं या नहीं:**
 
 ```bash
 curl -s \
@@ -563,15 +563,15 @@ curl -s \
   | jq '.spec.primary.allow_http_lb_managed_records'
 ```
 
-यदि response `true` है, तो platform load balancers के लिए auto-create DNS records करेगा — **3. Verify DNS resolution** को skip करें। यदि `false` या `null`, अगले step को continue करें।
+यदि रिस्पॉन्स `true` है, तो प्लेटफ़ॉर्म लोड बैलेंसर के लिए DNS रिकॉर्ड स्वचालित रूप से बनाएगा — **3. DNS रिज़ोल्यूशन सत्यापित करें** पर जाएं। यदि `false` या `null` है, तो अगले चरण पर जारी रखें।
 
-**2. Managed records को enable करें:**
+**2. प्रबंधित रिकॉर्ड सक्षम करें:**
 
 <Aside type="caution">
-`PUT` payload को **पूर्ण zone spec** शामिल करना चाहिए — metadata और सभी existing configuration fields। Fields को omit करना उन्हें defaults में reset कर देगा। पहले current zone configuration को retrieve करें, फिर केवल `allow_http_lb_managed_records` field को modify करें।
+`PUT` पेलोड में **पूर्ण ज़ोन spec** शामिल होना चाहिए — मेटाडेटा और सभी मौजूदा कॉन्फ़िगरेशन फ़ील्ड। फ़ील्ड छोड़ने पर वे डिफ़ॉल्ट पर रीसेट हो जाएंगे। पहले वर्तमान ज़ोन कॉन्फ़िगरेशन प्राप्त करें, फिर केवल `allow_http_lb_managed_records` फ़ील्ड को संशोधित करें।
 </Aside>
 
-Current zone configuration को retrieve करें, managed records को enable करें, और update करें:
+वर्तमान ज़ोन कॉन्फ़िगरेशन प्राप्त करें, प्रबंधित रिकॉर्ड सक्षम करें, और अपडेट करें:
 
 ```bash
 # Get current zone config
@@ -591,10 +591,10 @@ echo "$ZONE_CONFIG" \
 ```
 
 <Aside type="caution">
-Zone spec में एक `x-ves-io-managed` rr_set_group है platform-managed records के साथ। आपके `PUT` payload को यह group को **preserve** करना चाहिए — इसे omit करना HTTP 403 "reserved for internal purposes" का कारण बनता है। हमेशा पहले `GET` के साथ current zone configuration को retrieve करें, केवल उन fields को modify करें जिनकी आवश्यकता है, और पूर्ण spec को वापस भेजें।
+ज़ोन spec में प्लेटफ़ॉर्म-प्रबंधित रिकॉर्ड के साथ एक `x-ves-io-managed` rr_set_group होता है। आपके `PUT` पेलोड में **इस ग्रुप को संरक्षित रखना चाहिए** — इसे छोड़ने पर HTTP 403 "reserved for internal purposes" एरर आता है। हमेशा पहले `GET` के साथ वर्तमान ज़ोन कॉन्फ़िगरेशन प्राप्त करें, केवल आवश्यक फ़ील्ड संशोधित करें, और पूर्ण spec वापस भेजें।
 </Aside>
 
-एक `200` response (empty `\{\}`) confirm करता है कि zone को update किया गया। F5 XC zone के auto-managed record group में A record और ACME challenge record को create करेगा। यदि managed records 60 seconds के भीतर appear नहीं होते, तो load balancer को re-apply करें record creation को trigger करने के लिए:
+`200` रिस्पॉन्स (खाली `\{\}`) पुष्टि करता है कि ज़ोन अपडेट हो गया। F5 XC ज़ोन के ऑटो-प्रबंधित रिकॉर्ड ग्रुप में A रिकॉर्ड और ACME चैलेंज रिकॉर्ड बनाएगा। यदि प्रबंधित रिकॉर्ड 60 सेकंड के भीतर नहीं दिखाई देते, तो रिकॉर्ड निर्माण ट्रिगर करने के लिए लोड बैलेंसर को पुनः लागू करें:
 
 ```bash
 LB_CONFIG=$(curl -s \
@@ -608,18 +608,18 @@ echo "$LB_CONFIG" | curl -s -X PUT \
   | jq .
 ```
 
-यह GET+PUT re-apply LB configuration को change नहीं करता है — यह बस platform को DNS zone को re-evaluate करने और managed records को create करने के लिए trigger करता है। यदि A record 60 seconds बाद भी resolve नहीं होता है re-apply के बाद, stop करें और operator को report करें — re-apply को एक बार से अधिक retry न करें।
+यह GET+PUT पुनः लागू करना LB कॉन्फ़िगरेशन को नहीं बदलता — यह बस प्लेटफ़ॉर्म को DNS ज़ोन का पुनर्मूल्यांकन करने और प्रबंधित रिकॉर्ड बनाने के लिए ट्रिगर करता है। यदि पुनः लागू करने के 60 सेकंड बाद भी A रिकॉर्ड रिज़ॉल्व नहीं होता, तो रुकें और ऑपरेटर को रिपोर्ट करें — पुनः लागू करना एक से अधिक बार न दोहराएं।
 
-**3. DNS resolution को verify करें:**
+**3. DNS रिज़ोल्यूशन सत्यापित करें:**
 
 ```bash
 dig +short xF5XC_DOMAINNAMEx A
 ```
 
-Response को VIP IP address return करना चाहिए। DNS propagation typically F5 XC managed zones के लिए immediate है, लेकिन 60 seconds तक allow करें।
+रिस्पॉन्स में VIP IP एड्रेस आना चाहिए। F5 XC प्रबंधित ज़ोन के लिए DNS प्रसार आमतौर पर तत्काल होता है, लेकिन 60 सेकंड तक का समय दें।
 
 <Aside type="tip">
-**Negative DNS cache:** यदि आपने domain को query किया है record exist करने से पहले, आपके recursive resolver ने `NXDOMAIN` response को cache किया हो सकता है। Stale cache को rule out करने के लिए authoritative nameserver या एक public resolver के विरुद्ध verify करें:
+**नेगेटिव DNS कैश:** यदि आपने रिकॉर्ड मौजूद होने से पहले डोमेन की क्वेरी की थी, तो आपके रिकर्सिव रिज़ॉल्वर ने `NXDOMAIN` रिस्पॉन्स कैश कर लिया हो सकता है। स्टेल कैश को बाहर करने के लिए आधिकारिक नेमसर्वर या सार्वजनिक रिज़ॉल्वर के विरुद्ध सत्यापित करें:
 
 ```bash
 dig +short xF5XC_DOMAINNAMEx A @ns1.f5clouddns.com
@@ -627,9 +627,9 @@ dig +short xF5XC_DOMAINNAMEx A @8.8.8.8
 ```
 </Aside>
 
-### Option B: External DNS Provider
+### Option B: बाहरी DNS प्रदाता
 
-जब आपका domain एक external DNS provider का उपयोग करता है, तो आपको records को manually create करना चाहिए। Load balancer से required values को extract करें:
+जब आपका डोमेन बाहरी DNS प्रदाता का उपयोग करता है, तो आपको मैन्युअल रूप से रिकॉर्ड बनाने होंगे। लोड बैलेंसर से आवश्यक मान निकालें:
 
 ```bash
 curl -s \
@@ -641,14 +641,14 @@ curl -s \
   }'
 ```
 
-अपने DNS provider पर ये records create करें:
+अपने DNS प्रदाता पर ये रिकॉर्ड बनाएं:
 
-| Type | Name | Value |
+| प्रकार | नाम | मान |
 | --- | --- | --- |
 | A | `xF5XC_DOMAINNAMEx` | `dns_info[0].ip_address` से VIP IP |
 | CNAME | `_acme-challenge.xF5XC_DOMAINNAMEx` | `*.autocerts.ves.volterra.io` |
 
-Records को create करने के बाद, resolution को verify करें:
+रिकॉर्ड बनाने के बाद, रिज़ोल्यूशन सत्यापित करें:
 
 ```bash
 dig +short xF5XC_DOMAINNAMEx A
@@ -656,22 +656,22 @@ dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
 ```
 
 <Aside type="tip">
-A record LB को `VIRTUAL_HOST_PENDING_A_RECORD` से `VIRTUAL_HOST_READY` में transition के लिए required है। ACME CNAME automatic TLS certificate provisioning के लिए required है। दोनों records के बिना, LB एक pending state में remain करेगा।
+A रिकॉर्ड LB को `VIRTUAL_HOST_PENDING_A_RECORD` से `VIRTUAL_HOST_READY` में बदलने के लिए आवश्यक है। ACME CNAME स्वचालित TLS प्रमाणपत्र प्रावधान के लिए आवश्यक है। दोनों रिकॉर्ड के बिना, LB पेंडिंग स्थिति में रहेगा।
 </Aside>
 
-### Evidence
+### साक्ष्य
 
-| Test | Command | Expected | Status |
+| परीक्षण | कमांड | अपेक्षित | स्थिति |
 | --- | --- | --- | --- |
-| DNS-1: A Record | `dig +short $F5XC_DOMAINNAME A` | VIP IP address returned | PASS यदि IP returned, FAIL यदि empty |
-| DNS-2: ACME CNAME | `dig +short _acme-challenge.$F5XC_DOMAINNAME CNAME` | `*.autocerts.ves.volterra.io` | PASS यदि CNAME returned |
-| DNS authority | `dig +short NS $F5XC_ROOT_DOMAIN` | F5 XC या external nameservers | जानकारीपूर्ण — Option A vs B को determine करता है |
+| DNS-1: A रिकॉर्ड | `dig +short $F5XC_DOMAINNAME A` | VIP IP एड्रेस रिटर्न | यदि IP रिटर्न हो तो PASS, खाली हो तो FAIL |
+| DNS-2: ACME CNAME | `dig +short _acme-challenge.$F5XC_DOMAINNAME CNAME` | `*.autocerts.ves.volterra.io` | यदि CNAME रिटर्न हो तो PASS |
+| DNS प्राधिकरण | `dig +short NS $F5XC_ROOT_DOMAIN` | F5 XC या बाहरी नेमसर्वर | सूचनात्मक — Option A बनाम B निर्धारित करता है |
 
-यदि DNS-1 60 seconds के बाद empty return करता है, [Troubleshooting — LB Stuck in VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record) देखें।
+यदि DNS-1 60 सेकंड के बाद खाली रिटर्न करता है, तो [Troubleshooting &mdash; LB Stuck in VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record) देखें।
 
-## Step 5: Verify करें कि CSD Enabled है
+## चरण 5: CSD सक्षम होने की पुष्टि करें
 
-Check करें कि Client-Side Defense tenant के लिए enabled है। CSD tenant level पर configured है — यदि यह पहले से enable नहीं किया गया है, तो अपने F5 XC administrator से contact करें।
+जांचें कि टेनेंट के लिए Client-Side Defense सक्षम है। CSD टेनेंट स्तर पर कॉन्फ़िगर किया जाता है — यदि इसे अभी तक सक्षम नहीं किया गया है, तो अपने F5 XC एडमिनिस्ट्रेटर से संपर्क करें।
 
 ```bash
 curl -s \
@@ -680,9 +680,9 @@ curl -s \
   | jq .
 ```
 
-एक response जिसमें `"isConfigured": true` और `"isEnabled": true` शामिल है, confirm करता है कि CSD active है।
+`"isConfigured": true` और `"isEnabled": true` वाला रिस्पॉन्स पुष्टि करता है कि CSD सक्रिय है।
 
-### Evidence
+### साक्ष्य
 
 ```bash
 curl -s \
@@ -691,23 +691,23 @@ curl -s \
   | jq '{configured: .isConfigured, enabled: .isEnabled}'
 ```
 
-| Field | Expected | Status |
+| फ़ील्ड | अपेक्षित | स्थिति |
 | --- | --- | --- |
 | `configured` | `true` | PASS |
 | `enabled` | `true` | PASS |
-| कोई भी `false` | — | FAIL — CSD को tenant level पर enable करने के लिए F5 XC administrator से contact करें |
+| कोई भी `false` है | — | FAIL — टेनेंट स्तर पर CSD सक्षम करने के लिए F5 XC एडमिनिस्ट्रेटर से संपर्क करें |
 
-## Step 6: Protected Domain को Register करें
+## चरण 6: प्रोटेक्टेड डोमेन पंजीकृत करें
 
-Root domain को register करें जिसे CSD monitor करेगा। `protected_domain` field **eTLD+1** root domain होना चाहिए (e.g., `f5demos.com`), full FQDN नहीं।
+वह रूट डोमेन पंजीकृत करें जिसकी CSD निगरानी करेगा। `protected_domain` फ़ील्ड **eTLD+1** रूट डोमेन (जैसे, `f5demos.com`) होना चाहिए, पूर्ण FQDN नहीं।
 
 <Aside type="caution">
-**Protected domains tenant-scoped हैं, namespace-scoped नहीं।** Healthchecks, origin pools, और load balancers के विपरीत, protected domains globally tenant पर registered हैं — API URL में namespace एक routing parameter है, ownership boundary नहीं। हालांकि, protected domain एक CSD configuration object है जो इस deployment से जुड़ा है और **teardown के दौरान हटाया जाना चाहिए** जब deployment को fully remove किया जा रहा हो। इसे DNS zone से confuse न करें, जो shared infrastructure है और कभी भी deleted नहीं होना चाहिए।
+**प्रोटेक्टेड डोमेन टेनेंट-स्कोप्ड हैं, नेमस्पेस-स्कोप्ड नहीं।** हेल्थचेक, ऑरिजिन पूल और लोड बैलेंसर के विपरीत, प्रोटेक्टेड डोमेन टेनेंट पर वैश्विक रूप से पंजीकृत होते हैं — API URL में नेमस्पेस एक रूटिंग पैरामीटर है, स्वामित्व सीमा नहीं। हालांकि, प्रोटेक्टेड डोमेन इस डिप्लॉयमेंट से जुड़ा एक CSD कॉन्फ़िगरेशन ऑब्जेक्ट है और जब डिप्लॉयमेंट को पूरी तरह से हटाया जा रहा हो तो **teardown के दौरान इसे डिलीट किया जाना चाहिए**। इसे DNS ज़ोन के साथ भ्रमित न करें, जो साझा इंफ्रास्ट्रक्चर है और कभी डिलीट नहीं किया जाना चाहिए।
 </Aside>
 
-### Check करें कि क्या पहले से Registered है
+### जांचें कि पहले से पंजीकृत है या नहीं
 
-Create करने से पहले, check करें कि domain पहले से tenant पर registered है या नहीं। POST के लिए एक `409` response का मतलब domain पहले से exist करता है — यह एक error नहीं, success condition है।
+बनाने से पहले, जांचें कि डोमेन टेनेंट पर पहले से पंजीकृत है या नहीं। POST के लिए `409` रिस्पॉन्स का मतलब है कि डोमेन पहले से मौजूद है — यह एक सफलता की स्थिति है, एरर नहीं।
 
 ```bash
 curl -s -X POST \
@@ -726,15 +726,15 @@ curl -s -X POST \
   | jq .
 ```
 
-| Response | Meaning | Action |
+| रिस्पॉन्स | अर्थ | कार्रवाई |
 | --- | --- | --- |
-| `200` | Domain successfully registered | Step 7 को continue करें |
-| `409` (domain already exists) | Domain को पहले इस tenant पर register किया गया था | पहले से done है — Step 7 को continue करें |
-| `"code": 8` (exhausted limits) | Protected domain quota full | **Blocking** — protected domains CSD के लिए required हैं। अप्रयुक्त protected domains को delete करें या अपने administrator से contact करें। |
+| `200` | डोमेन सफलतापूर्वक पंजीकृत | चरण 7 पर जारी रखें |
+| `409` (डोमेन पहले से मौजूद) | डोमेन इस टेनेंट पर पहले पंजीकृत किया गया था | पहले से हो चुका — चरण 7 पर जारी रखें |
+| `"code": 8` (exhausted limits) | प्रोटेक्टेड डोमेन कोटा पूरा | **अवरोधक** — CSD के लिए प्रोटेक्टेड डोमेन आवश्यक हैं। अप्रयुक्त प्रोटेक्टेड डोमेन डिलीट करें या अपने एडमिनिस्ट्रेटर से संपर्क करें। |
 
-### Evidence
+### साक्ष्य
 
-POST response ही primary evidence है — यह registered domain object को return करता है with `spec.protected_domain` matching आपके root domain। Alternatively, सभी protected domains को list करें confirm करने के लिए:
+POST रिस्पॉन्स ही प्राथमिक साक्ष्य है — यह `spec.protected_domain` के साथ पंजीकृत डोमेन ऑब्जेक्ट रिटर्न करता है जो आपके रूट डोमेन से मेल खाता है। वैकल्पिक रूप से, पुष्टि के लिए सभी प्रोटेक्टेड डोमेन सूचीबद्ध करें:
 
 ```bash
 curl -s \
@@ -743,34 +743,34 @@ curl -s \
   | jq '.items | length'
 ```
 
-| Field | Expected | Status |
+| फ़ील्ड | अपेक्षित | स्थिति |
 | --- | --- | --- |
-| POST returned `protected_domain` | Matches `F5XC_ROOT_DOMAIN` | PASS |
-| POST returned `200` या `409` | Domain registered या पहले से exist करता है | PASS |
-| List items count | &gt; 0 | PASS |
+| POST ने `protected_domain` रिटर्न किया | `F5XC_ROOT_DOMAIN` से मेल खाता है | PASS |
+| POST ने `200` या `409` रिटर्न किया | डोमेन पंजीकृत या पहले से मौजूद | PASS |
+| सूची आइटम संख्या | &gt; 0 | PASS |
 
 <Aside type="note">
-Individual GET endpoint (`/protected_domains/\{name\}`) protected domains के लिए available नहीं है। Verification के लिए POST response या list endpoint का उपयोग करें।
+व्यक्तिगत GET एंडपॉइंट (`/protected_domains/\{name\}`) प्रोटेक्टेड डोमेन के लिए उपलब्ध नहीं है। सत्यापन के लिए POST रिस्पॉन्स या सूची एंडपॉइंट का उपयोग करें।
 </Aside>
 
-## Step 7: Verify करें
+## चरण 7: सत्यापन
 
-### DNS Resolution
+### DNS रिज़ोल्यूशन
 
-Confirm करें कि A record resolve हो रहा है और ACME challenge CNAME in place है:
+पुष्टि करें कि A रिकॉर्ड रिज़ॉल्व हो रहा है और ACME चैलेंज CNAME स्थापित है:
 
 ```bash
 dig +short xF5XC_DOMAINNAMEx A
 dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
 ```
 
-A record को VIP IP address return करना चाहिए। CNAME को `*.autocerts.ves.volterra.io` की ओर point करना चाहिए (या एक related autocerts target)।
+A रिकॉर्ड को VIP IP एड्रेस रिटर्न करना चाहिए। CNAME को `*.autocerts.ves.volterra.io` (या संबंधित autocerts टारगेट) की ओर इंगित करना चाहिए।
 
-### Load Balancer State
+### लोड बैलेंसर स्थिति
 
-Check करें कि दोनों load balancers अपनी pending states से बाहर आ गए हैं। HTTP LB primary check है — इसे `VIRTUAL_HOST_READY` तक पहुंचना चाहिए एक बार DNS resolve हो जाने पर, बिना certificate dependency के। HTTPS LB certificate state informational only है।
+जांचें कि दोनों लोड बैलेंसर अपनी पेंडिंग स्थिति से बाहर आ गए हैं। HTTP LB प्राथमिक जांच है — DNS रिज़ॉल्व होने के बाद इसे `VIRTUAL_HOST_READY` तक पहुंचना चाहिए, बिना किसी प्रमाणपत्र निर्भरता के। HTTPS LB प्रमाणपत्र स्थिति केवल सूचनात्मक है।
 
-**HTTP LB (primary — proceed से पहले READY होना चाहिए):**
+**HTTP LB (प्राथमिक — आगे बढ़ने के लिए READY होना चाहिए):**
 
 ```bash
 curl -s \
@@ -779,11 +779,11 @@ curl -s \
   | jq '{state: .spec.state}'
 ```
 
-| Field | Expected | Intermediate States |
+| फ़ील्ड | अपेक्षित | मध्यवर्ती स्थितियां |
 | --- | --- | --- |
-| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS configured नहीं (Step 4 देखें) |
+| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS कॉन्फ़िगर नहीं है (चरण 4 देखें) |
 
-**HTTPS LB (secondary — informational, progression को block नहीं करता):**
+**HTTPS LB (द्वितीयक — सूचनात्मक, प्रगति को अवरुद्ध नहीं करता):**
 
 ```bash
 curl -s \
@@ -792,16 +792,16 @@ curl -s \
   | jq '{state: .spec.state, cert_state: .spec.cert_state}'
 ```
 
-| Field | Expected | Intermediate States |
+| फ़ील्ड | अपेक्षित | मध्यवर्ती स्थितियां |
 | --- | --- | --- |
-| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS configured नहीं; `VIRTUAL_HOST_DNS_A_RECORD_ADDED` — A record found, cert के लिए wait करना |
-| `cert_state` | `CertificateValid` | `PreDomainChallengePending` — ACME CNAME के लिए wait करना; `DomainChallengeStarted` — ACME challenge in progress; `AutoCertDomainRateLimited` — Let's Encrypt rate limit hit (demo environments में expected, HTTP LB को affect नहीं करता) |
+| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS कॉन्फ़िगर नहीं; `VIRTUAL_HOST_DNS_A_RECORD_ADDED` — A रिकॉर्ड मिला, प्रमाणपत्र की प्रतीक्षा |
+| `cert_state` | `CertificateValid` | `PreDomainChallengePending` — ACME CNAME की प्रतीक्षा; `DomainChallengeStarted` — ACME चैलेंज प्रगति पर; `AutoCertDomainRateLimited` — Let's Encrypt रेट लिमिट हिट (डेमो वातावरण में अपेक्षित, HTTP LB को प्रभावित नहीं करता) |
 
 <Aside type="note">
-Certificate provisioning **5–10 मिनट** ले सकता है DNS records बनाने के बाद। यदि `cert_state` `AutoCertDomainRateLimited` दिखाता है, यह demo environments में expected है जहां infrastructure frequently created और destroyed होता है। HTTP LB unaffected है — demo को `http://` URLs का उपयोग करके continue करें।
+DNS रिकॉर्ड बनने के बाद प्रमाणपत्र प्रावधान में **5-10 मिनट** लग सकते हैं। यदि `cert_state` `AutoCertDomainRateLimited` दिखाता है, तो यह डेमो वातावरण में अपेक्षित है जहां इंफ्रास्ट्रक्चर बार-बार बनाया और नष्ट किया जाता है। HTTP LB अप्रभावित है — `http://` URL का उपयोग करके डेमो आगे बढ़ाएं।
 </Aside>
 
-### JS Configuration
+### JS कॉन्फ़िगरेशन
 
 ```bash
 curl -s \
@@ -810,9 +810,9 @@ curl -s \
   | jq .
 ```
 
-Response में एक `scriptTag` field है जिसमें full HTML `<script>` tag है जो load balancer page responses में inject करता है।
+रिस्पॉन्स में एक `scriptTag` फ़ील्ड होती है जिसमें पूर्ण HTML `<script>` टैग होता है जिसे लोड बैलेंसर पेज रिस्पॉन्स में इंजेक्ट करता है।
 
-### Detected Domains
+### डिटेक्टेड डोमेन
 
 ```bash
 curl -s \
@@ -821,9 +821,9 @@ curl -s \
   | jq '{summary: .domain_summary, domains: .domains_list}'
 ```
 
-### Detected Scripts
+### डिटेक्टेड स्क्रिप्ट
 
-Scripts endpoint को epoch timestamps (Unix epoch से seconds) का उपयोग करके एक time range की आवश्यकता होती है। नीचे का example पिछले 7 दिन को query करता है।
+स्क्रिप्ट एंडपॉइंट को epoch टाइमस्टैम्प (Unix epoch से सेकंड) का उपयोग करके समय सीमा की आवश्यकता होती है। नीचे दिया गया उदाहरण पिछले 7 दिनों की क्वेरी करता है।
 
 ```bash
 NOW=$(date +%s)
@@ -836,9 +836,9 @@ curl -s -X POST \
   | jq '[.scripts[]? | {script_name: .script_name, risk_level: .risk_level}]'
 ```
 
-### Form Fields
+### फ़ॉर्म फ़ील्ड
 
-Form fields endpoint को epoch timestamps की आवश्यकता होती है, query parameters के रूप में passed।
+फ़ॉर्म फ़ील्ड एंडपॉइंट को epoch टाइमस्टैम्प का उपयोग करके समय सीमा की आवश्यकता होती है, जो क्वेरी पैरामीटर के रूप में पास की जाती है।
 
 ```bash
 NOW=$(date +%s)
@@ -849,31 +849,31 @@ curl -s \
   | jq '.form_fields'
 ```
 
-### Phase 1 Evidence Summary
+### Phase 1 साक्ष्य सारांश
 
-सभी verification checks को complete करने के बाद, AI assistant को एक consolidated status table present करना चाहिए:
+सभी सत्यापन जांच पूरी करने के बाद, AI सहायक को एक समेकित स्थिति तालिका प्रस्तुत करनी चाहिए:
 
-| Test ID | Check | Expected | Required | Status |
+| परीक्षण ID | जांच | अपेक्षित | आवश्यक | स्थिति |
 | --- | --- | --- | --- | --- |
-| DNS-1 | A Record resolves | VIP IP returned | **Yes** | PASS / FAIL |
-| DNS-2 | ACME CNAME exists | `*.autocerts.ves.volterra.io` | No | PASS / PENDING |
-| LB-1 | HTTP LB state | `VIRTUAL_HOST_READY` | **Yes** | PASS / PENDING |
-| LB-2 | HTTPS LB state | `VIRTUAL_HOST_READY` | No | PASS / PENDING / INFO |
-| TLS-1 | Certificate state | `CertificateValid` | No | PASS / PENDING / INFO |
-| CSD-1 | JS configuration | `scriptTag` present | **Yes** | PASS / FAIL |
-| CSD-2 | CSD status | `isEnabled: true` | **Yes** | PASS / FAIL |
-| CSD-3 | Protected domain | Domain registered | **Yes** | PASS / FAIL |
+| DNS-1 | A रिकॉर्ड रिज़ॉल्व होता है | VIP IP रिटर्न | **हां** | PASS / FAIL |
+| DNS-2 | ACME CNAME मौजूद है | `*.autocerts.ves.volterra.io` | नहीं | PASS / PENDING |
+| LB-1 | HTTP LB स्थिति | `VIRTUAL_HOST_READY` | **हां** | PASS / PENDING |
+| LB-2 | HTTPS LB स्थिति | `VIRTUAL_HOST_READY` | नहीं | PASS / PENDING / INFO |
+| TLS-1 | प्रमाणपत्र स्थिति | `CertificateValid` | नहीं | PASS / PENDING / INFO |
+| CSD-1 | JS कॉन्फ़िगरेशन | `scriptTag` मौजूद | **हां** | PASS / FAIL |
+| CSD-2 | CSD स्थिति | `isEnabled: true` | **हां** | PASS / FAIL |
+| CSD-3 | प्रोटेक्टेड डोमेन | डोमेन पंजीकृत | **हां** | PASS / FAIL |
 
 <Aside type="note">
-**Phase 2 HTTP LB का उपयोग करता है।** HTTPS optional है — यदि TLS-1 `AutoCertDomainRateLimited` दिखाता है या LB-2 PENDING में remain करता है, demo normally `http://` URLs का उपयोग करके proceed करता है। केवल DNS-1, LB-1, CSD-1, CSD-2, और CSD-3 को Phase 2 में proceed करने से पहले PASS करना required है।
+**Phase 2 HTTP LB का उपयोग करता है।** HTTPS वैकल्पिक है — यदि TLS-1 `AutoCertDomainRateLimited` दिखाता है या LB-2 PENDING रहता है, तो डेमो `http://` URL का उपयोग करके सामान्य रूप से आगे बढ़ता है। Phase 2 में जाने से पहले केवल DNS-1, LB-1, CSD-1, CSD-2, और CSD-3 को पास करना आवश्यक है।
 </Aside>
 
-यदि LB-1 PENDING दिखाता है, तो हर 30 seconds को 4 iterations के लिए poll करें (total 2 मिनट)। यदि LB-1 4 iterations के बाद `VIRTUAL_HOST_READY` में नहीं पहुंचा है, तो `dig` के साथ DNS resolution को check करें और operator को report करें — जब तक LB-1 READY तक नहीं पहुंचता तब तक proceed न करें। LB-2 और TLS-1 के लिए, हर 60 seconds को 10 iterations के लिए poll करें (10 मिनट total)। यदि 10 iterations के बाद भी एक intermediate state में है, तो current state को INFO के रूप में record करें और proceed करें — ये informational हैं और demo progression को block नहीं करते हैं।
+यदि LB-1 PENDING दिखाता है, तो अधिकतम 4 पुनरावृत्तियों (कुल 2 मिनट) के लिए हर 30 सेकंड पोल करें। यदि 4 पुनरावृत्तियों के बाद भी LB-1 `VIRTUAL_HOST_READY` नहीं है, तो `dig` से DNS रिज़ोल्यूशन जांचें और ऑपरेटर को रिपोर्ट करें — जब तक LB-1 READY नहीं पहुंचता, आगे न बढ़ें। LB-2 और TLS-1 के लिए, अधिकतम 10 पुनरावृत्तियों (10 मिनट) के लिए हर 60 सेकंड पोल करें। यदि 10 पुनरावृत्तियों के बाद भी मध्यवर्ती स्थिति में है, तो वर्तमान स्थिति को INFO के रूप में रिकॉर्ड करें और आगे बढ़ें — ये सूचनात्मक हैं और डेमो प्रगति को अवरुद्ध नहीं करते।
 
 <Aside type="note">
-LB response में `dns_info` field empty (`[]`) हो सकता है भले ही DNS सही तरीके से resolve हो — यह एक clean recreation के बाद होता है। VIP address के लिए `dns_info` पर rely करने के बजाय हमेशा `dig` के साथ DNS resolution को verify करें।
+LB रिस्पॉन्स में `dns_info` फ़ील्ड DNS सही ढंग से रिज़ॉल्व होने पर भी खाली (`[]`) हो सकती है — ऐसा क्लीन पुनर्निर्माण के बाद होता है। VIP एड्रेस के लिए `dns_info` पर निर्भर रहने के बजाय हमेशा `dig` से DNS रिज़ोल्यूशन सत्यापित करें।
 </Aside>
 
 ---
 
-**Phase 1 complete।** [Phase 2 — Attack](/csd/demo/phase-2-attack/) को proceed करने के लिए attack simulation को run करें।
+**Phase 1 पूर्ण।** हमले का अनुकरण चलाने के लिए [Phase 2 — Attack](/csd/demo/phase-2-attack/) पर आगे बढ़ें।

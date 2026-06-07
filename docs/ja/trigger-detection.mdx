@@ -1,9 +1,9 @@
 ---
-title: トリガー検出
-description: 攻撃検出トリガー、閾値調整、信号検証
+title: Trigger Detection
+description: 'Attack detection triggers, threshold tuning, and signal validation'
 sidebar:
   order: 6
-  label: トリガー検出
+  label: Trigger Detection
 i18n:
   sourceHash: 3c5915b65966
   translator: machine
@@ -86,40 +86,40 @@ export const combinedScript = `// CSD Demo — Combined Detection Script
     console.log('='.repeat(50));
 })();`;
 
-## トリガー検出
+## 検出のトリガー
 
-CSDはブラウザ内のJavaScript動作を監視します。WAFやBot Defenseと異なり、curlコマンドでCSD検出をトリガーすることはできません。実ブラウザ側のスクリプト活動が必要です。以下の統合スクリプトは、フォームフィールド収集、複数CDNドメインからのサードパーティスクリプト注入、および外部エンドポイントへのデータ流出の3つすべてのCSD検出信号をトリガーします。
+CSDはブラウザ内のJavaScriptの動作を監視します。WAFやBot Defenseとは異なり、curlコマンドではCSD検出をトリガーできません。実際のブラウザ側のスクリプトアクティビティが必要です。以下の統合スクリプトは、1回の実行で3つのCSD検出シグナルすべてをトリガーします：フォームフィールドの収集、複数のCDNドメインからのサードパーティスクリプトの注入、および外部エンドポイントへのデータ流出です。
 
 ### 統合シミュレーションスクリプトの実行
 
 <Steps>
 1. Juice Shopの**ログインページ**（`https://botdemo.sales-demo.f5demos.com/#/login`）に移動します
 
-2. フォームフィールドにダミー認証情報を入力します — **メール**フィールドに`test@example.com`、**パスワード**フィールドに`P@ssword123`を入力します（フォームを送信しないでください）
+2. フォームフィールドにダミーの認証情報を入力します — **Email**フィールドに`test@example.com`、**Password**フィールドに`P@ssword123`と入力します（フォームは送信しないでください）
 
-3. DevTools（**F12** → **コンソール**タブ）を開きます
+3. DevToolsを開きます（**F12** &rarr; **Console**タブ）
 
-   <Screenshot light="/images/devtools-console-light.png" dark="/images/devtools-console-dark.png" alt="スクリプト入力準備ができた空のDevToolsコンソール" />
+   <Screenshot light="/images/devtools-console-light.png" dark="/images/devtools-console-dark.png" alt="スクリプト入力の準備ができた空のDevToolsコンソール" />
 
-4. 次のスクリプトをコンソールに貼り付け、**Enter**キーを押します — 自己実行型関数として自動的に実行されます
+4. 以下のスクリプトをコンソールに貼り付けて**Enter**を押します — 自己実行関数として自動的に実行されます
 
-   <Code code={combinedScript} lang="js" title="統合検出スクリプト" />
+   <Code code={combinedScript} lang="js" title="Combined Detection Script" />
 
-5. フェーズごとの`[CSD Demo]`コンソール出力を確認します：フィールド収集、4つのCDNドメインからのスクリプト注入、およびデータ流出。`esm.sh`はES moduleシンタックス（`export default …`）を提供します — クラシック`<script>`タグとしてロードされる場合、`Uncaught SyntaxError: Cannot use import statement outside a module`が発生します。これは予期した動作であり、CSD検出に影響しません（スクリプトタグは依然として注入され、ネットワークリクエストは依然として行われます）
+5. 各ステップを確認するフェーズごとの`[CSD Demo]`コンソール出力を確認します：フィールドの収集、4つのCDNドメインからのスクリプト注入、およびデータ流出。`esm.sh`はESモジュール構文（`export default …`）を提供します — クラシックな`<script>`タグとして読み込まれると`Uncaught SyntaxError: Cannot use import statement outside a module`が発生します。これは想定された動作であり、CSD検出には影響しません（スクリプトタグは注入され、ネットワークリクエストも実行されます）
 
    <Screenshot light="/images/devtools-console-output-light.png" dark="/images/devtools-console-output-dark.png" alt="シミュレーションスクリプト実行後のコンソール出力" />
 </Steps>
 
 ### AI自動実行
 
-ブラウザオートメーションツール（MCP Chrome DevTools、Playwright、Puppeteer）を備えたAIアシスタントは、上記の手動ステップの代わりにシミュレーションをプログラムで実行します：
+ブラウザ自動化ツール（MCP Chrome DevTools、Playwright、Puppeteer）を備えたAIアシスタントは、上記の手動手順に従う代わりに、プログラムでシミュレーションを実行します：
 
-1. **initScriptで移動** — 最初に`about:blank`に移動して明確なドキュメントコンテキストを確保し、その後ログインページURL（例：`http://$F5XC_DOMAINNAME/#/login`）に`navigate_page`を実行します。`initScript`はzone.jsがネイティブ`setInterval`、`clearInterval`、`fetch`、`console.log`をパッチする前に保存し、ログインフォームフィールドをポーリングし、ネイティブ`HTMLInputElement.prototype.value`セッターを通じて認証情報を入力し、統合検出スクリプトをインラインで即座に実行します。以下の逐語的なinitScriptを使用してください。
-2. **ウェルカムバナーを閉じる** — **Escape**キーで`press_key`を使用して、ウェルカムバナーを閉じます。後続の訪問ではバナーが表示されない場合があります（クッキーが永続化）
-3. **完了を待つ** — すべてのCDNスクリプトロード/エラーコールバックおよびfetchプロミスの解決を完了するまで10秒待機します
-4. **証拠をキャプチャ** — `list_console_messages`で`[CSD Demo] Simulation complete`を確認し、`list_network_requests`を`script`と`fetch`タイプでフィルタして、HTTPステータスコードを確認します
+1. **initScriptを使用したナビゲーション** — まず`about:blank`に移動してクリーンなドキュメントコンテキストを確保し、次に`navigate_page`でログインページURL（例：`http://$F5XC_DOMAINNAME/#/login`）に移動します。`initScript`を使用して、zone.jsがパッチを適用する前にネイティブの`setInterval`、`clearInterval`、`fetch`、`console.log`を保存し、ログインフォームフィールドをポーリングし、ネイティブの`HTMLInputElement.prototype.value`セッターで認証情報を入力し、統合検出スクリプトをインラインで即座に実行します。以下のinitScriptをそのまま使用してください。
+2. **ウェルカムバナーの閉じる** — `press_key`で`Escape`を押してウェルカムバナーを閉じます。2回目以降のアクセスではバナーが表示されない場合があります（Cookieが保持されるため）
+3. **完了を待機** — すべてのCDNスクリプトのロード/エラーコールバックとfetchプロミスの解決が完了するまで10秒待ちます
+4. **エビデンスのキャプチャ** — `list_console_messages`で`[CSD Demo] Simulation complete`を確認し、`list_network_requests`で`script`および`fetch`タイプをフィルタリングしてHTTPステータスコードを検証します
 
-**initScriptハーネス（逐語的 — 統合検出スクリプトを自動実行用にラップします）：**
+**initScriptハーネス（そのまま使用 — 自動実行用に統合検出スクリプトをラップします）：**
 
 ```javascript
 // Save native references before zone.js patches them
@@ -196,36 +196,36 @@ var _poll = _si(function() {
 }, 300);
 ```
 
-**ネイティブ`fetch`に関する注記：** このハーネスは`window.fetch.bind(window)`を保存して、zone.jsエラーを回避します。これはすべての攻撃シミュレーションフェーズの正しい動作です。CSD緩和はスクリプトロード（`<script>`タグの`src`値をクリアすることで）をブロックします。`fetch()`呼び出しはブロックしないため、ネイティブfetch参照を保存しても、緩和動作には影響しません。同じinitScriptがフェーズ2および3に使用されます。
+**ネイティブ`fetch`に関する注意：** このハーネスはzone.jsのエラーを回避するために`window.fetch.bind(window)`を保存します。これはすべての攻撃シミュレーションフェーズで正しい動作です。CSDの緩和策はスクリプトの読み込みをブロックします（`&lt;script&gt;`タグの`src`値をクリアすることで）が、`fetch()`呼び出しはブロックしないため、ネイティブのfetch参照を保存しても緩和動作には影響しません。同じinitScriptがフェーズ2とフェーズ3で使用されます。
 
 <Aside type="caution">
-**zone.js非互換性** — Juice ShopはAngularのzone.jsを使用します。これは`setTimeout`、`setInterval`、`fetch`、`XMLHttpRequest`、およびその他のブラウザAPIをパッチします。これはMCPの`evaluate_script`、`fill`、`click`ツールを`Cannot read properties of undefined (reading 'call')`で破壊します。代わりに`navigate_page`と`initScript`を使用してください — `initScript`はzone.jsがロードされる前に実行されるため、ネイティブAPI参照を保存できます。initScriptは（`fill`ツールではなく）ネイティブ`HTMLInputElement.prototype.value`セッターを使用してフォームフィールドを入力し、`setInterval`コールバック内で検出スクリプトをインラインで実行する必要があります。
+**zone.jsの非互換性** — Juice ShopはAngularのzone.jsを使用しており、`setTimeout`、`setInterval`、`fetch`、`XMLHttpRequest`、その他のブラウザAPIにパッチを適用します。これにより、MCPの`evaluate_script`、`fill`、`click`ツールが`Cannot read properties of undefined (reading 'call')`エラーで動作しなくなります。代わりに`navigate_page`と`initScript`を使用してください — `initScript`はzone.jsの読み込み前に実行されるため、ネイティブAPIの参照を保存できます。initScriptは、ネイティブの`HTMLInputElement.prototype.value`セッターを使用してフォームフィールドを入力し（`fill`ツールではなく）、`setInterval`コールバック内で検出スクリプトをインラインで実行する必要があります。
 </Aside>
 
 <Aside type="note">
-**initScript累積** — `initScript`パラメータ付きの各`navigate_page`呼び出しはスクリプトを永続リストに追加し、そのブラウザコンテキストのすべての後続ドキュメントロード上で実行されます。古いスクリプトの干渉を回避するには、実行間に`about:blank`に移動するか、クリーンコンテキストために`new_page`と`isolatedContext`を使用してください。
+**initScriptの蓄積** — `initScript`パラメータを使用した`navigate_page`呼び出しごとに、スクリプトが永続リストに追加され、そのブラウザコンテキストでの後続のすべてのドキュメント読み込み時に実行されます。古いスクリプトの干渉を避けるため、実行間に`about:blank`に移動するか、`new_page`と`isolatedContext`を使用してクリーンなコンテキストを確保してください。
 </Aside>
 
-ブラウザオートメーションツールを持たないオペレータは、上記の手動ステップを使用します。
+ブラウザ自動化ツールを持たないオペレーターは、上記の手動手順を使用してください。
 
 <Aside type="tip">
-検出は、CSDダッシュボードに表示されるまで**5～10分**かかります。スクリプト実行後、アラートがまだ表示されていない場合は、[CSDコンソールウォークスルー](/csd/csd-console/)を続行して、後で確認してください。
+検出がCSDダッシュボードに表示されるまで**5〜10分**かかります。スクリプト実行後にアラートがまだ表示されない場合は、[CSDコンソールのウォークスルー](/csd/csd-console/)に進み、後で確認してください。
 </Aside>
 
-### スクリプトの処理内容
+### スクリプトの動作内容
 
-統合シミュレーションは3つすべてのCSD検出信号をトリガーします：
+統合シミュレーションは、3つのCSD検出シグナルすべてをトリガーします：
 
-| 動作 | スクリプトの処理 | CSDが認識するもの |
+| 動作 | スクリプトの実行内容 | CSDが検出する内容 |
 | --- | --- | --- |
 | **フィールド収集** | 既存の`input`要素（メール、パスワード）から値を読み取る | 機密フォームフィールドを読み取るスクリプト — 高リスクとしてフラグ付け |
-| **スクリプト注入** | 4つの`<script>`タグを`cdn.jsdelivr.net`、`esm.sh`、`unpkg.com`、`ga.jspm.io`からロードするよう追加 | ページ上の4つの新しいサードパーティスクリプトドメイン |
-| **データ流出** | `fetch`を使用して収集されたデータを`www.httpbin.org`および`jsonplaceholder.typicode.com`に送信 | 外部ドメインへのネットワークコール（注：fetchの宛先はネットワークドメインビューではなく、スクリプトネットワークインタラクションとして表示されます） |
+| **スクリプト注入** | `cdn.jsdelivr.net`、`esm.sh`、`unpkg.com`、`ga.jspm.io`から読み込む4つの`<script>`タグを追加 | ページ上の4つの新しいサードパーティスクリプトドメイン |
+| **データ流出** | 収集したデータを`fetch`で`www.httpbin.org`および`jsonplaceholder.typicode.com`に送信 | 外部ドメインへのネットワーク呼び出し（注：fetchの宛先はスクリプトのネットワークインタラクションとして表示され、ネットワークドメインビューには表示されません） |
 
 <Aside type="note">
-CSDには特定の検出境界があります — 例えば、ページロードDOMフィールドのみが追跡され、ネットワークビューにはスクリプトロードドメインのみが表示されます。完全なリストについては、[検出の境界](/csd/overview/#detection-boundaries)を参照してください。
+CSDには特定の検出境界があります — 例えば、ページ読み込み時のDOMフィールドのみが追跡され、ネットワークビューにはスクリプト読み込みドメインのみが表示されます。完全なリストについては[検出境界](/csd/overview/#detection-boundaries)を参照してください。
 </Aside>
 
 ### 高度なシミュレーション
 
-上記の統合スクリプトは、ほとんどのデモに適した簡略版の3フェーズ版（収集、注入、流出）です。[攻撃スクリプトライブラリ](/csd/attack-scripts/)は、攻撃タイプ別に整理された10個の対象スクリプトを提供します。統合スクリプトのカバレッジに加えて、DOM操作、クッキー流出、イメージビーコンチャネルを追加する**最大検出**ストレステストが含まれています。個別のスクリプトを使用して、特定の攻撃カテゴリ（フォームジャッキング、デジタルスキミング、サプライチェーン注入、データ流出、DOM操作）を単独で実証してください。
+上記の統合スクリプトは、ほとんどのデモに適した簡略化された3フェーズバージョン（収集、注入、流出）です。[攻撃スクリプトライブラリ](/csd/attack-scripts/)には、攻撃タイプ別に整理された10個の対象を絞ったスクリプトが用意されています。統合スクリプトのカバレッジに加えてDOM操作、Cookie流出、画像ビーコンチャネルを追加する**最大検出**ストレステストも含まれています。個別のスクリプトを使用して、特定の攻撃カテゴリ（フォームジャッキング、デジタルスキミング、サプライチェーンインジェクション、データ流出、DOM操作）を個別にデモンストレーションできます。

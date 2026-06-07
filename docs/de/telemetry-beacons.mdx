@@ -1,6 +1,8 @@
 ---
-title: Telemetry-Beacons
-description: 'Konfiguration von Telemetrie-Beacons, Injektionsverifikation und Überwachung'
+title: Telemetrie-Beacons
+description: >-
+  Konfiguration von Telemetrie-Beacons, Überprüfung der Einbindung und
+  Monitoring
 sidebar:
   order: 5
   label: Telemetrie-Beacons
@@ -12,39 +14,39 @@ i18n:
 import { Aside, Steps } from "@astrojs/starlight/components";
 import Screenshot from "@f5xc-salesdemos/docs-theme/components/Screenshot.astro";
 
-CSD-Telemetrie funktioniert in zwei Phasen. Zunächst werden Instrumentierungsskripte vom Anwendungsursprung über standardmäßige **GET**-Anfragen geladen – diese injizieren CSDs Überwachungscode in die Seite. Das Skript-URL-Muster folgt dem Format `https://<collection-domain>/__imp_apg__/js/<tenant-script>.js`, obwohl der genaue Pfad je nach Bereitstellung variiert. Nach der Initialisierung senden die Skripte regelmäßig Telemetriedaten über **POST**-Anfragen, sogenannte **Beacons**, an F5 zurück. Diese Beacons werden an von F5 betriebene Signalerfassungsdomänen (`*.zeronaught.com`) gesendet, nicht zum Anwendungsursprung.
+Die CSD-Telemetrie arbeitet in zwei Phasen. Zunächst werden Instrumentierungsskripte über standardmäßige **GET**-Anfragen vom Anwendungsursprung geladen — diese binden den Monitoring-Code von CSD in die Seite ein. Das URL-Muster der Skripte folgt dem Format `https://<collection-domain>/__imp_apg__/js/<tenant-script>.js`, wobei der genaue Pfad je nach Bereitstellung variiert. Nach der Initialisierung senden die Skripte periodisch Telemetriedaten über **POST**-Anfragen, sogenannte **Beacons**, an F5 zurück. Diese Beacons werden an von F5 betriebene Signal-Erfassungsdomänen (`*.zeronaught.com`) gesendet, nicht an den Anwendungsursprung.
 
 | Eigenschaft | Wert |
 | --- | --- |
-| Skript-Laden | CSD-Instrumentierungsskripte geladen via `GET`-Anfragen am Anwendungsursprung – filtern Sie nach `__imp_apg__` oder `zeronaught` in DevTools, um diese zu identifizieren |
-| Beacon-Ziele | `POST` an F5-Signalerfassungsinfrastruktur (z. B. `us.gimp.zeronaught.com`, `csd.zeronaught.com`) |
-| Payload-Format | Codiert binär – nicht menschenlesbares JSON |
-| Häufigkeit | Regelmäßig während der Lebensdauer der Seite; zusätzliche Beacons werden bei bestimmten Ereignissen ausgelöst (Formuliarfeldzugriff, neues Skript-Laden) |
+| Skript-Ladungen | CSD-Instrumentierungsskripte werden über `GET`-Anfragen am Anwendungsursprung geladen — filtern Sie nach `__imp_apg__` oder `zeronaught` in den DevTools, um sie zu identifizieren |
+| Beacon-Ziele | `POST` an die F5-Signal-Erfassungsinfrastruktur (z. B. `us.gimp.zeronaught.com`, `csd.zeronaught.com`) |
+| Payload-Format | Kodiertes Binärformat — kein menschenlesbares JSON |
+| Häufigkeit | Periodisch während der Lebensdauer der Seite; zusätzliche Beacons werden bei bestimmten Ereignissen ausgelöst (Formularfeldzugriff, neues Skript geladen) |
 
 ## Was Beacons melden
 
-CSD-Beacons enthalten **Metadaten zum Skriptverhalten**, keine Benutzereingaben:
+CSD-Beacons übertragen **Metadaten zum Skriptverhalten**, keine Benutzereingaben:
 
-- **Skript-Inventar** – welche Skripte auf der Seite geladen wurden und von welchen Quelldomänen
-- **Formuliarfeldzugriff-Ereignisse** – welche Skripte auf welche Eingabefelder zugegriffen oder interagiert haben (Feldnamen und -typen)
-- **Seiten-Metadaten** – aktuelle URL, Zeitstempel, Lebenszyklusereignisse der Seite
+- **Skript-Inventar** — welche Skripte auf der Seite geladen wurden und von welchen Quelldomänen
+- **Formularfeld-Zugriffsereignisse** — welche Skripte auf welche Eingabefelder zugegriffen oder mit ihnen interagiert haben (Feldnamen und -typen)
+- **Seiten-Metadaten** — aktuelle URL, Zeitstempel, Seitenlebenszyklusereignisse
 
-CSD ist so konzipiert, dass es Metadaten zum Skriptverhalten – Feldnamen, Eingabetypen und Zugriffsmuster – meldet, nicht von Benutzern eingegebene Formulardaten. Die [F5 CSD-Datenschutzerklärung](https://www.f5.com/company/policies/f5-distributed-cloud-client-side-defense-privacy-statement) beschreibt CSD als das Sammeln von "Informationen darüber, welche Assets auf verschiedene Seitenelemente oder Datenstrukturen zugreifen", wobei der Fokus auf Skriptverhalten und nicht auf Benutzereingabeinhalte liegt.
+CSD ist so konzipiert, dass es Metadaten zum Skriptverhalten meldet — Feldnamen, Eingabetypen und Zugriffsmuster — und nicht vom Benutzer eingegebene Formulardaten. Die [F5 CSD-Datenschutzerklärung](https://www.f5.com/company/policies/f5-distributed-cloud-client-side-defense-privacy-statement) beschreibt, dass CSD "Informationen darüber sammelt, welche Assets auf verschiedene Seitenelemente oder Datenstrukturen zugreifen", wobei der Fokus auf dem Skriptverhalten und nicht auf dem Inhalt von Benutzereingaben liegt.
 
-## Beacons in DevTools beobachten
+## Beacons in den DevTools beobachten
 
 <Steps>
-1. Öffnen Sie Chrome DevTools (**F12**) und wechseln Sie zur Registerkarte **Network**
-2. Navigieren Sie durch die Anwendung oder interagieren Sie mit Formulierfeldern, um Datenverkehr zu generieren
-3. Geben Sie `zeronaught` in die Filterleiste ein, um CSD-Datenverkehr zu isolieren – Sie sehen das Skript-Laden (`GET`) und die Telemetrie-Beacons (`POST`) zu `us.gimp.zeronaught.com`
-4. Schauen Sie in der Spalte **Method** nach: `GET`-Einträge sind der CSD-Instrumentierungscode, der geladen wird; `POST`-Einträge namens `dip` sind die Telemetrie-Beacons, die Signaledaten zurück an F5 tragen
-5. Klicken Sie auf einen `dip`-Beacon, um seine Header und Payload zu überprüfen; beachten Sie, dass der Anforderungstext binär codiert ist, nicht menschenlesbares JSON
+1. Öffnen Sie die Chrome DevTools (**F12**) und wechseln Sie zum **Network**-Tab
+2. Navigieren Sie durch die Anwendung oder interagieren Sie mit Formularfeldern, um Traffic zu erzeugen
+3. Geben Sie `zeronaught` in die Filterleiste ein, um den CSD-Traffic zu isolieren — Sie sehen die Skript-Ladung (`GET`) und die Telemetrie-Beacons (`POST`) an `us.gimp.zeronaught.com`
+4. Schauen Sie in die Spalte **Method**: `GET`-Einträge sind der ladende CSD-Instrumentierungscode; `POST`-Einträge mit dem Namen `dip` sind die Telemetrie-Beacons, die Signaldaten an F5 zurücksenden
+5. Klicken Sie auf einen `dip`-Beacon, um dessen Header und Payload zu inspizieren; beachten Sie, dass der Anfragekörper kodiertes Binärformat ist und kein menschenlesbares JSON
 </Steps>
 
-<Screenshot light="/images/devtools-beacons-light.png" dark="/images/devtools-beacons-dark.png" alt="DevTools Network-Registerkarte gefiltert auf zeronaught mit GET-Skript-Laden und POST-Telemetrie-Beacons" />
+<Screenshot light="/images/devtools-beacons-light.png" dark="/images/devtools-beacons-dark.png" alt="DevTools Network-Tab gefiltert nach zeronaught, zeigt GET-Skript-Ladung und POST-Telemetrie-Beacons" />
 
-<Aside type="tip" title="CSD-Beacons vs. Exfiltration von Angriffen">
-CSD-Telemetrie-Beacons sind POST-Anfragen, die an **von F5 betriebene Infrastruktur** (`*.zeronaught.com`-Domänen) gesendet werden. Ein böswilliges Formjacking-Skript exfiltriert gestohlene Daten dagegen an eine **von Angreifern kontrollierte Domäne** – typischerweise über `fetch()`, `XMLHttpRequest` oder Image-Beacon (`new Image().src`).
+<Aside type="tip" title="CSD-Beacons vs. Angriffs-Exfiltration">
+CSD-Telemetrie-Beacons sind POST-Anfragen, die an **von F5 betriebene Infrastruktur** (`*.zeronaught.com`-Domänen) gesendet werden. Ein bösartiges Formjacking-Skript hingegen schleust gestohlene Daten an eine **vom Angreifer kontrollierte Domäne** aus — typischerweise über `fetch()`, `XMLHttpRequest` oder Image-Beacon (`new Image().src`).
 
-Sowohl CSD-Beacons als auch Angriffsexfiltration sind Cross-Origin-Anfragen, aber die Hauptunterschiede sind **Ziel** und **Inhalt**: CSD sendet **Metadaten zum Skriptverhalten** an bekannte F5-Infrastruktur, während Exfiltration **von Benutzern eingegebene Daten** (Passwörter, Kartennummern) an einen Server eines Angreifers sendet. Diese Unterscheidung ist zentral für die Funktionsweise der CSD-Angriffserkennung – siehe [CSD-Fähigkeiten – Erkennungsgrenzen](/csd/overview/#detection-boundaries) für das, was CSD beobachten kann und nicht kann.
+Sowohl CSD-Beacons als auch Angriffs-Exfiltration sind Cross-Origin-Anfragen, aber die wesentlichen Unterschiede liegen im **Ziel** und im **Inhalt**: CSD sendet **Metadaten zum Skriptverhalten** an bekannte F5-Infrastruktur, während Exfiltration **vom Benutzer eingegebene Daten** (Passwörter, Kartennummern) an den Server eines Angreifers sendet. Diese Unterscheidung ist zentral dafür, wie CSD Angriffe erkennt — siehe [CSD-Funktionen — Erkennungsgrenzen](/csd/overview/#detection-boundaries) für Details darüber, was CSD beobachten kann und was nicht.
 </Aside>

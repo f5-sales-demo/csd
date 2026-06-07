@@ -1,8 +1,8 @@
 ---
 title: Phase 2 — Attaque
 description: >-
-  Simuler le trafic d'attaque côté client à l'aide de scripts prédéfinis pour
-  déclencher la détection CSD
+  Simuler le trafic d'attaque côté client à l'aide de scripts pré-construits
+  pour déclencher la détection CSD
 sidebar:
   order: 3
   label: Phase 2 — Attaque
@@ -13,26 +13,26 @@ i18n:
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-La Phase 2 génère un trafic d'attaque simulé contre l'application protégée et confirme que CSD l'a détecté. La Phase 1 doit être complète — tous les contrôles de l'étape 7 doivent être RÉUSSIS — avant de procéder.
+La Phase 2 génère un trafic d'attaque simulé contre l'application protégée et confirme que le CSD l'a détecté. La Phase 1 doit être terminée — toutes les vérifications de l'Étape 7 doivent être RÉUSSIES — avant de poursuivre.
 
 ## Étape 8 : Simulation d'attaque
 
 <Aside type="note">
-Cette étape nécessite l'exécution de JavaScript côté navigateur — `curl` ne peut pas déclencher la détection CSD. Les assistants IA disposant d'outils d'automatisation de navigateur (MCP Chrome DevTools, Playwright, Puppeteer) exécutent ces étapes directement à l'aide de la séquence d'**exécution automatisée par IA** ci-dessous. Les opérateurs sans automatisation de navigateur effectuent les étapes manuelles.
+Cette étape nécessite l'exécution de JavaScript côté navigateur — `curl` ne peut pas déclencher la détection CSD. Les assistants IA disposant d'outils d'automatisation de navigateur (MCP Chrome DevTools, Playwright, Puppeteer) exécutent ces étapes directement en utilisant la séquence **Exécution automatisée par IA** ci-dessous. Les opérateurs sans automatisation de navigateur effectuent les étapes manuelles.
 </Aside>
 
-Après vérification de l'infrastructure (tous les contrôles de l'étape 7 de la Phase 1 sont RÉUSSIS), exécutez les scripts de simulation d'attaque pour générer les détections CSD. Les scripts sont définis dans le guide [Trigger Detection](/csd/trigger-detection/) et la [Attack Script Library](/csd/attack-scripts/).
+Une fois l'infrastructure vérifiée (toutes les vérifications de la Phase 1 Étape 7 sont RÉUSSIES), exécutez les scripts de simulation d'attaque pour générer des détections CSD. Les scripts sont définis dans le guide [Déclencher la détection](/csd/trigger-detection/) et dans la [Bibliothèque de scripts d'attaque](/csd/attack-scripts/).
 
 ### Exécution automatisée par IA
 
-Les assistants IA disposant d'outils d'automatisation de navigateur exécutent la simulation d'attaque par programmation :
+Les assistants IA disposant d'outils d'automatisation de navigateur exécutent la simulation d'attaque de manière programmatique :
 
-1. **Naviguer avec initScript** — d'abord naviguer vers `about:blank` pour assurer un contexte de document propre (évite les initScripts obsolètes des navigations antérieures), puis `navigate_page` vers `http://$F5XC_DOMAINNAME/#/login` avec un `initScript` qui enregistre les éléments natifs `setInterval`, `clearInterval`, `fetch` et `console.log` avant que zone.js ne les corrige, sonde les champs du formulaire de connexion, remplit les identifiants via le setter natif `HTMLInputElement.prototype.value`, et exécute immédiatement le script de détection combiné en ligne. Utilisez le verbatim initScript ci-dessous.
-2. **Fermer la bannière de bienvenue** — `press_key` avec `Escape` pour fermer la bannière de bienvenue. Les visites ultérieures peuvent ne pas afficher la bannière (cookies persistés). La boîte de dialogue de consentement aux cookies est automatiquement fermée par la touche Escape.
-3. **Attendre la fin** — attendre 10 secondes pour que tous les rappels de chargement/erreur des scripts CDN et les résolutions des promesses fetch se terminent.
-4. **Capturer les preuves** — `list_console_messages` pour vérifier la présence de `[CSD Demo] Simulation complete` et les résultats de chargement CDN ; `list_network_requests` filtré par types `script` et `fetch` pour vérifier les codes de statut HTTP (`200`/`201` pour le succès, `pending` pour les demandes retenues).
+1. **Naviguer avec initScript** — naviguez d'abord vers `about:blank` pour garantir un contexte de document propre (évite les initScripts obsolètes des navigations précédentes), puis `navigate_page` vers `http://$F5XC_DOMAINNAME/#/login` avec un `initScript` qui sauvegarde les fonctions natives `setInterval`, `clearInterval`, `fetch` et `console.log` avant que zone.js ne les modifie, interroge les champs du formulaire de connexion, remplit les identifiants via le setter natif `HTMLInputElement.prototype.value`, et exécute immédiatement le Script de détection combiné en ligne. Utilisez l'initScript ci-dessous textuellement.
+2. **Fermer la bannière de bienvenue** — `press_key` avec `Escape` pour fermer la bannière de bienvenue. Lors des visites suivantes, la bannière peut ne pas apparaître (cookies persistants). La boîte de dialogue de consentement aux cookies est automatiquement fermée par la touche Escape
+3. **Attendre la fin** — attendre 10 secondes pour que tous les callbacks de chargement/erreur des scripts CDN et les résolutions de promesses fetch se terminent
+4. **Capturer les preuves** — `list_console_messages` pour vérifier la présence de `[CSD Demo] Simulation complete` et les résultats de chargement CDN ; `list_network_requests` filtré sur les types `script` et `fetch` pour vérifier les codes de statut HTTP (`200`/`201` pour succès, `pending` pour les requêtes en attente)
 
-**Phase 2 initScript (verbatim — utilisez exactement tel qu'écrit) :**
+**initScript de la Phase 2 (textuellement — utilisez exactement tel qu'écrit) :**
 
 ```javascript
 // Save native references before zone.js patches them
@@ -110,83 +110,88 @@ var _poll = _si(function() {
 ```
 
 <Aside type="caution">
-**Incompatibilité avec zone.js** — Juice Shop utilise le zone.js d'Angular, qui corrige `setTimeout`, `setInterval`, `fetch`, `XMLHttpRequest` et d'autres API du navigateur. Cela perturbe les outils `evaluate_script`, `fill` et `click` du MCP avec `Cannot read properties of undefined (reading 'call')`. Utilisez à la place `navigate_page` avec `initScript` — `initScript` s'exécute avant le chargement de zone.js, vous pouvez donc enregistrer les références d'API natives et les utiliser dans les rappels de sondage. Le initScript doit remplir les champs du formulaire à l'aide du setter natif `HTMLInputElement.prototype.value` (pas `fill`) et exécuter le script de détection en ligne (pas via `setTimeout`, que zone.js peut intercepter après le chargement de la page). Voir [Trigger Detection — AI-Automated Execution](/csd/trigger-detection/#ai-automated-execution) pour plus de détails.
+**Incompatibilité zone.js** — Juice Shop utilise zone.js d'Angular, qui modifie `setTimeout`, `setInterval`, `fetch`, `XMLHttpRequest` et d'autres API du navigateur. Cela casse les outils MCP `evaluate_script`, `fill` et `click` avec l'erreur `Cannot read properties of undefined (reading 'call')`. Utilisez `navigate_page` avec `initScript` à la place — `initScript` s'exécute avant le chargement de zone.js, ce qui vous permet de sauvegarder les références des API natives et de les utiliser dans les callbacks de polling. L'initScript doit remplir les champs de formulaire en utilisant le setter natif `HTMLInputElement.prototype.value` (et non `fill`) et exécuter le script de détection en ligne (et non via `setTimeout`, que zone.js peut intercepter après le chargement de la page). Voir [Déclencher la détection — Exécution automatisée par IA](/csd/trigger-detection/#ai-automated-execution) pour plus de détails.
 </Aside>
 
 <Aside type="note">
-**Accumulation d'initScript** — chaque appel `navigate_page` avec un paramètre `initScript` ajoute le script à une liste persistante qui s'exécute lors de chaque chargement de document ultérieur. Pour éviter que les scripts obsolètes ne interfèrent, naviguez vers `about:blank` entre les exécutions ou utilisez `new_page` avec `isolatedContext` pour un contexte de navigateur propre.
+**Accumulation des initScripts** — chaque appel `navigate_page` avec un paramètre `initScript` ajoute le script à une liste persistante qui s'exécute à chaque chargement de document ultérieur. Pour éviter que des scripts obsolètes n'interfèrent, naviguez vers `about:blank` entre les exécutions ou utilisez `new_page` avec `isolatedContext` pour un contexte de navigateur propre.
 </Aside>
 
 <Aside type="note">
-**Enregistrement du `fetch` natif dans l'initScript** — l'initScript enregistre `window.fetch.bind(window)` avant que zone.js ne le corrige. Cela garantit que les appels fetch fonctionnent correctement sans erreurs zone.js `Cannot read properties of undefined`. Le même initScript (avec le `fetch` natif enregistré) est utilisé pour les exécutions d'attaque Phase 2 et Phase 3 — la mitigation CSD n'intercepte pas les appels `fetch()`, donc enregistrer la référence native n'affecte pas le comportement de mitigation.
+**Sauvegarde du `fetch` natif dans l'initScript** — l'initScript sauvegarde `window.fetch.bind(window)` avant que zone.js ne le modifie. Cela garantit que les appels fetch fonctionnent correctement sans les erreurs zone.js `Cannot read properties of undefined`. Le même initScript (avec le `fetch` natif sauvegardé) est utilisé pour les exécutions d'attaque de la Phase 2 et de la Phase 3 — la mitigation CSD n'intercepte pas les appels `fetch()`, donc sauvegarder la référence native n'affecte pas le comportement de la mitigation.
 </Aside>
 
 <Aside type="caution">
-**Origine transitoire 404** — à la première navigation vers l'application Angular, `polyfills.js` ou d'autres scripts d'application peuvent renvoyer une erreur HTTP 404 transitoire du serveur d'origine. Cela provoque l'échec du bootstrapping d'Angular, ce qui entraîne une page vierge sans formulaire de connexion. Le 404 est éphémère — les demandes ultérieures renvoient 200 ou 304. **Récupération :** naviguer vers `about:blank`, attendre 2 secondes, puis réessayer la navigation. Si le problème persiste sur plusieurs tentatives, vérifier la santé de l'origine via le chemin d'équilibrage de charge (`curl -s -o /dev/null -w '%{http_code}' http://$F5XC_DOMAINNAME/polyfills.js`).
+**Erreur 404 transitoire de l'origine** — lors de la première navigation vers l'application Angular, `polyfills.js` ou d'autres scripts applicatifs peuvent retourner une erreur HTTP 404 transitoire du serveur d'origine. Cela empêche Angular de se bootstrapper, résultant en une page blanche sans formulaire de connexion. L'erreur 404 est éphémère — les requêtes suivantes retournent 200 ou 304. **Récupération :** naviguez vers `about:blank`, attendez 2 secondes, puis retentez la navigation. Si le problème persiste après plusieurs tentatives, vérifiez la santé de l'origine via le chemin du load balancer (`curl -s -o /dev/null -w '%{http_code}' http://$F5XC_DOMAINNAME/polyfills.js`).
 </Aside>
 
 ### Exécution manuelle
 
 Les opérateurs sans outils d'automatisation de navigateur effectuent les étapes manuellement :
 
-1. **Naviguer** vers la page de connexion de l'application protégée : `http://xF5XC_DOMAINNAMEx/#/login`
-2. **Entrer des identifiants fictifs** — tapez `test@example.com` dans le champ Email et `P@ssword123` dans le champ Mot de passe (ne soumettez pas le formulaire)
-3. **Ouvrir DevTools** — appuyez sur **F12** et basculez vers l'onglet **Console**
-4. **Exécuter le script de détection combiné** — collez le script du [Trigger Detection &mdash; Run the Combined Simulation Script](/csd/trigger-detection/#run-the-combined-simulation-script) dans la console et appuyez sur Entrée
-5. **Vérifier la sortie console** — confirmez que la sortie en phases `[CSD Demo]` affiche : la récolte des champs du formulaire, l'injection de scripts à partir de 4 domaines CDN, et l'exfiltration de données vers 2 points de terminaison
+1. **Naviguez** vers la page de connexion de l'application protégée : `http://xF5XC_DOMAINNAMEx/#/login`
+2. **Entrez des identifiants fictifs** — tapez `test@example.com` dans le champ Email et `P@ssword123` dans le champ Mot de passe (ne soumettez pas le formulaire)
+3. **Ouvrez les DevTools** — appuyez sur **F12** et basculez sur l'onglet **Console**
+4. **Exécutez le Script de détection combiné** — collez le script de [Déclencher la détection &mdash; Exécuter le script de simulation combiné](/csd/trigger-detection/#run-the-combined-simulation-script) dans la console et appuyez sur Entrée
+5. **Vérifiez la sortie de la console** — confirmez que la sortie phasée `[CSD Demo]` affiche : la collecte de champs, l'injection de scripts depuis 4 domaines CDN, et l'exfiltration de données vers 2 points de terminaison
 
 ### Ce qui est déclenché
 
 | Signal | Comportement | Détection |
 | --- | --- | --- |
-| Récolte des champs du formulaire | Lit les valeurs des champs d'entrée email et mot de passe | Les scripts lisant des champs de formulaire sensibles — signalé Risque élevé |
-| Injection de scripts | Injecte 4 balises `&lt;script&gt;` à partir de `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io` | Jusqu'à 4 nouveaux domaines de scripts tiers détectés (la disponibilité CDN varie) |
+| Collecte de champs de formulaire | Lit les valeurs des champs email et mot de passe | Scripts lisant des champs de formulaire sensibles — signalé Risque élevé |
+| Injection de scripts | Injecte 4 balises `&lt;script&gt;` depuis `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io` | Jusqu'à 4 nouveaux domaines de scripts tiers détectés (la disponibilité des CDN varie) |
 | Exfiltration de données | Envoie les données collectées via `fetch` vers `www.httpbin.org` et `jsonplaceholder.typicode.com` | Appels réseau vers des domaines externes |
 
 <Aside type="note">
-**La disponibilité du CDN varie.** Tous les 4 scripts CDN ne se chargeront pas à chaque exécution — les limites de ressources du navigateur, les conditions réseau ou l'étranglement du CDN peuvent entraîner l'échec de certains avec `ERR_INSUFFICIENT_RESOURCES` ou dépassement de délai. La simulation réussit si **au moins un** script CDN se charge. CSD détecte la tentative d'injection indépendamment du fait que le script se charge avec succès — la création de la balise `&lt;script&gt;` elle-même est le signal de détection.
+**La disponibilité des CDN varie.** Les 4 scripts CDN ne se chargeront pas tous
+à chaque exécution — les limites de ressources du navigateur, les conditions réseau ou
+le throttling des CDN peuvent en faire échouer certains avec `ERR_INSUFFICIENT_RESOURCES` ou un timeout.
+La simulation réussit si **n'importe quel** script CDN se charge. Le CSD détecte la
+tentative d'injection indépendamment du chargement réussi ou non du script —
+la création de la balise `&lt;script&gt;` elle-même est le signal de détection.
 
-Dans les cas graves, `ERR_INSUFFICIENT_RESOURCES` peut s'aggraver en une défaillance au niveau de la page — la page entière devient vierge, les captures d'écran expirent, et `take_snapshot` échoue. Cela se produit généralement après plusieurs navigations avec de lourds initScripts qui s'accumulent dans le même contexte de navigateur. **Récupération :** utilisez `new_page` avec `isolatedContext` pour créer un contexte de navigateur frais, puis réessayez depuis la séquence `about:blank` → `navigate_page` avec initScript. Ceci est distinct des échecs de scripts CDN individuels, qui n'affectent pas la réussite de la simulation.
+Dans les cas graves, `ERR_INSUFFICIENT_RESOURCES` peut s'aggraver en une défaillance au niveau de la page — la page entière devient blanche, les captures d'écran expirent, et `take_snapshot` échoue. Cela se produit généralement après que plusieurs navigations avec des initScripts lourds se sont accumulées dans le même contexte de navigateur. **Récupération :** utilisez `new_page` avec `isolatedContext` pour créer un contexte de navigateur propre, puis retentez la séquence `about:blank` → `navigate_page` avec initScript. Cela est distinct des échecs individuels de scripts CDN, qui n'affectent pas le succès de la simulation.
 </Aside>
 
 <Aside type="tip">
-Après avoir exécuté la simulation d'attaque, utilisez cette boucle de sondage déterministe pour attendre les détections :
+Après avoir exécuté la simulation d'attaque, utilisez cette boucle de polling déterministe pour attendre les détections :
 
-1. Interroger `/detected_domains` toutes les 60 secondes
-2. Si DET-3 est réussi (les domaines d'exfiltration apparaissent dans `/detected_domains`), procédez à l'étape 9 immédiatement
-3. Si toujours vide après 10 requêtes (10 minutes), vérifier le statut CSD (Phase 1 Étape 5) et l'enregistrement du domaine protégé (Phase 1 Étape 6) — l'un d'eux est probablement mal configuré
-4. Si toujours vide après 30 requêtes (30 minutes), arrêter et signaler à l'opérateur — ne pas procéder à la Phase 3
+1. Interrogez `/detected_domains` toutes les 60 secondes
+2. Si DET-3 réussit (les domaines d'exfiltration apparaissent dans `/detected_domains`), passez immédiatement à l'Étape 9
+3. Si toujours vide après 10 requêtes (10 minutes), vérifiez le statut CSD (Phase 1 Étape 5) et l'enregistrement du domaine protégé (Phase 1 Étape 6) — l'un d'eux est probablement mal configuré
+4. Si toujours vide après 30 requêtes (30 minutes), arrêtez et signalez à l'opérateur — ne poursuivez pas vers la Phase 3
 
-Pour les simulations ciblées supplémentaires (catégories d'attaque individuelles, test de stress de détection maximal), voir la [Attack Script Library](/csd/attack-scripts/).
+Pour des simulations ciblées supplémentaires (catégories d'attaque individuelles, test de stress de détection maximale), consultez la [Bibliothèque de scripts d'attaque](/csd/attack-scripts/).
 </Aside>
 
-### Preuve
+### Preuves
 
-L'assistant IA doit signaler ce qui suit. Pour l'exécution automatisée par IA, la preuve est capturée par programmation via `list_console_messages` (la fonction de sondage du initScript enregistre les résultats dans la console). Pour l'exécution manuelle, l'opérateur lit la sortie console du navigateur.
+L'assistant IA doit rapporter les éléments suivants. Pour l'exécution automatisée par IA, les preuves sont capturées de manière programmatique via `list_console_messages` (la fonction de polling de l'initScript enregistre les résultats dans la console). Pour l'exécution manuelle, l'opérateur lit la sortie de la console du navigateur.
 
-| Contrôle | Attendu | Statut |
+| Vérification | Attendu | Statut |
 | --- | --- | --- |
 | Page de connexion chargée | `200 OK` à `http://$F5XC_DOMAINNAME/#/login` | RÉUSSI / ÉCHOUÉ |
-| Script console exécuté | `[CSD Demo] Simulation complete` dans la sortie console | RÉUSSI / ÉCHOUÉ |
-| Champs collectés | Nombre > 0 dans la sortie console | RÉUSSI |
-| Scripts injectés | 1–4 domaines CDN dans la sortie console (certains peuvent échouer avec des erreurs de ressources) | RÉUSSI si au moins un domaine CDN apparaît |
-| Canaux d'exfiltration | 2 tentatives POST fetch dans la sortie console | RÉUSSI |
+| Script de console exécuté | `[CSD Demo] Simulation complete` dans la sortie de la console | RÉUSSI / ÉCHOUÉ |
+| Champs collectés | Nombre &gt; 0 dans la sortie de la console | RÉUSSI |
+| Scripts injectés | 1 à 4 domaines CDN dans la sortie de la console (certains peuvent échouer avec des erreurs de ressources) | RÉUSSI si un domaine CDN apparaît |
+| Canaux d'exfiltration | 2 tentatives de fetch POST dans la sortie de la console | RÉUSSI |
 
 <Aside type="tip">
-Si le certificat LB HTTPS est valide (`CertificateValid`), vous pouvez optionnellement exécuter la simulation contre `https://$F5XC_DOMAINNAME/#/login` aussi. Ceci n'est pas requis pour la progression de la démo.
+Si le certificat du HTTPS LB est valide (`CertificateValid`), vous pouvez optionnellement exécuter la simulation contre `https://$F5XC_DOMAINNAME/#/login` également. Cela n'est pas requis pour la progression de la démo.
 </Aside>
 
-## Étape 9 : Vérification de la détection via API
+## Étape 9 : Vérification de la détection via l'API
 
-Interroger les points de terminaison de l'API CSD pour confirmer l'apparition des détections. Utilisez la boucle de sondage : interroger `/detected_domains` toutes les 60 secondes ; procédez dès que DET-3 est réussi. Si DET-3 n'est pas réussi après 10 minutes, vérifier la configuration CSD. Si DET-3 n'est pas réussi après 30 minutes, arrêter et signaler à l'opérateur. Ces points de terminaison sont documentés dans la [API Reference](/csd/api-reference/) et utilisent la même authentification et l'espace de noms que les étapes précédentes.
+Interrogez les points de terminaison de l'API CSD pour confirmer que les détections sont apparues. Utilisez la boucle de polling : interrogez `/detected_domains` toutes les 60 secondes ; poursuivez dès que DET-3 réussit. Si DET-3 ne réussit pas après 10 minutes, vérifiez la configuration CSD. Si DET-3 ne réussit pas après 30 minutes, arrêtez et signalez à l'opérateur. Ces points de terminaison sont documentés dans la [Référence API](/csd/api-reference/) et utilisent la même authentification et le même namespace que les étapes précédentes.
 
 <Aside type="note">
-**Ordre de traitement des points de terminaison :** `/detected_domains` est rempli en premier et est l'indicateur principal que le pipeline CSD fonctionne. `/scripts` et `/formFields` sont remplis selon un calendrier de traitement backend plus lent et peuvent rester vides pendant 20–30 minutes même après plusieurs exécutions de simulation. Si `/detected_domains` affiche les domaines d'exfiltration (`www.httpbin.org`, `jsonplaceholder.typicode.com`), traitez la simulation comme détectée avec succès et procédez — le contrôle DET-1 ci-dessous reflète ceci.
+**Ordre de traitement des points de terminaison :** `/detected_domains` est rempli en premier et constitue l'indicateur principal que le pipeline CSD fonctionne. `/scripts` et `/formFields` sont remplis selon un calendrier de traitement backend plus lent et peuvent rester vides pendant 20 à 30 minutes même après plusieurs exécutions de simulation. Si `/detected_domains` affiche les domaines d'exfiltration (`www.httpbin.org`, `jsonplaceholder.typicode.com`), considérez la simulation comme détectée avec succès et poursuivez — la vérification DET-1 ci-dessous reflète cela.
 </Aside>
 
 ### Scripts détectés
 
-Interroger les scripts détectés au cours des dernières 24 heures :
+Interrogez les scripts détectés au cours des dernières 24 heures :
 
 ```bash
 NOW=$(date +%s)
@@ -201,8 +206,8 @@ curl -s -X POST \
 
 | Champ | Attendu | Statut |
 | --- | --- | --- |
-| `total` | > 0 (scripts détectés) | RÉUSSI si > 0 ; EN ATTENTE si 0 mais `/detected_domains` affiche les domaines d'exfiltration |
-| Noms de scripts | Inclut les domaines CDN (`cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io`) dans `script_name` | RÉUSSI si les domaines CDN injectés apparaissent |
+| `total` | &gt; 0 (scripts détectés) | RÉUSSI si &gt; 0 ; EN ATTENTE si 0 mais `/detected_domains` affiche les domaines d'exfiltration |
+| Noms des scripts | Inclut les domaines CDN (`cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io`) dans `script_name` | RÉUSSI si les domaines CDN injectés apparaissent |
 
 ### Domaines détectés
 
@@ -215,7 +220,7 @@ curl -s \
 
 | Champ | Attendu | Statut |
 | --- | --- | --- |
-| `total_domains` | > 0 | RÉUSSI si > 0 |
+| `total_domains` | &gt; 0 | RÉUSSI si &gt; 0 |
 | Liste des domaines | Inclut les domaines CDN et d'exfiltration | RÉUSSI si les domaines attendus apparaissent |
 
 ### Champs de formulaire
@@ -231,29 +236,35 @@ curl -s \
 
 | Champ | Attendu | Statut |
 | --- | --- | --- |
-| `total` | > 0 | RÉUSSI si > 0 ; EN ATTENTE si 0 mais DET-3 est réussi |
+| `total` | &gt; 0 | RÉUSSI si &gt; 0 ; EN ATTENTE si 0 mais DET-3 réussit |
 | `name` | Inclut `email`, `password` | RÉUSSI si les champs sensibles apparaissent |
-| `sensitivity` | `Sensitive` pour les champs email/mot de passe | RÉUSSI si ML a classifié correctement |
+| `sensitivity` | `Sensitive` pour les champs email/mot de passe | RÉUSSI si le ML a classifié correctement |
 
 <Aside type="note">
-**Le traitement des champs de formulaire est plus lent que la détection de domaines.** Le point de terminaison `/formFields` peut renvoyer des champs avec des métadonnées partielles à la première requête. La classification de sensibilité ML (`Sensitive` vs `Not Sensitive`) est remplie après la fin du traitement backend — cela peut prendre 20–30 minutes après la première exécution de simulation. Si les champs s'affichent mais manquent de classification, interroger à nouveau plus tard. DET-3 (`/detected_domains`) est le critère de passage principal.
+**Le traitement des champs de formulaire est plus lent que la détection de domaines.** Le
+point de terminaison `/formFields` peut retourner des champs avec des métadonnées partielles
+lors de la première requête. La classification de sensibilité par ML (`Sensitive` vs
+`Not Sensitive`) est renseignée après la fin du traitement backend —
+cela peut prendre 20 à 30 minutes après la première exécution de simulation. Si
+les champs apparaissent mais sans classification, réinterrogez plus tard. DET-3
+(`/detected_domains`) est le critère de réussite principal.
 </Aside>
 
-### Résumé des preuves Phase 2
+### Résumé des preuves de la Phase 2
 
-Après toutes les requêtes de détection, présenter le statut de détection final :
+Après toutes les requêtes de détection, présentez le statut final de détection :
 
-| ID de test | Contrôle | Statut |
+| ID du test | Vérification | Statut |
 | --- | --- | --- |
-| DET-1 | Scripts détectés (point de terminaison `/scripts`) | RÉUSSI si > 0 ; EN ATTENTE si vide mais DET-3 est réussi |
+| DET-1 | Scripts détectés (point de terminaison `/scripts`) | RÉUSSI si &gt; 0 ; EN ATTENTE si vide mais DET-3 réussit |
 | DET-2 | Domaines CDN détectés | RÉUSSI / ÉCHOUÉ |
 | DET-3 | Domaines d'exfiltration détectés (`/detected_domains`) | **Indicateur principal** — RÉUSSI si `www.httpbin.org` ou `jsonplaceholder.typicode.com` apparaissent |
-| DET-4 | Champs de formulaire détectés (point de terminaison `/formFields`) | RÉUSSI si > 0 ; EN ATTENTE si vide mais DET-3 est réussi |
+| DET-4 | Champs de formulaire détectés (point de terminaison `/formFields`) | RÉUSSI si &gt; 0 ; EN ATTENTE si vide mais DET-3 réussit |
 
 <Aside type="note">
-**Critères de passage minimum pour procéder à la Phase 3 :** DET-3 doit être RÉUSSI (domaines d'exfiltration visibles dans `/detected_domains`). DET-1 et DET-4 peuvent afficher EN ATTENTE lors de la première utilisation ou après une reconstruction fraîche — ceci est normal. Si DET-3 affiche également ÉCHOUÉ après 30 minutes, vérifier que CSD est activé (Phase 1 Étape 5), que le domaine protégé est enregistré (Phase 1 Étape 6), et que la balise JS CSD est injectée (vérification de configuration JS de l'étape 7 de la Phase 1).
+**Critères minimaux de réussite pour passer à la Phase 3 :** DET-3 doit être RÉUSSI (domaines d'exfiltration visibles dans `/detected_domains`). DET-1 et DET-4 peuvent afficher EN ATTENTE lors de la première utilisation ou après une reconstruction complète — c'est normal. Si DET-3 affiche également ÉCHOUÉ après 30 minutes, vérifiez que le CSD est activé (Phase 1 Étape 5), que le domaine protégé est enregistré (Phase 1 Étape 6), et que la balise JS CSD est injectée (Phase 1 Étape 7 vérification de la configuration JS).
 </Aside>
 
 ---
 
-**Phase 2 terminée.** Procédez à [Phase 3 — Mitiger](/csd/demo/phase-3-mitigate/) pour appliquer les règles de mitigation et vérifier que les domaines sont bloqués.
+**Phase 2 terminée.** Passez à la [Phase 3 — Mitigation](/csd/demo/phase-3-mitigate/) pour appliquer les règles de mitigation et vérifier que les domaines sont bloqués.

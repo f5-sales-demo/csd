@@ -1,9 +1,9 @@
 ---
-title: Trigger Detection
-description: 攻击检测触发、阈值调优与信号验证
+title: 触发检测
+description: 攻击检测触发器、阈值调优和信号验证
 sidebar:
   order: 6
-  label: Trigger Detection
+  label: 触发检测
 i18n:
   sourceHash: 3c5915b65966
   translator: machine
@@ -88,38 +88,38 @@ export const combinedScript = `// CSD Demo — Combined Detection Script
 
 ## 触发检测
 
-CSD 监控浏览器内部的 JavaScript 行为。与 WAF 或 Bot Defense 不同，您无法通过 curl 命令触发 CSD 检测——它需要真实的浏览器端脚本活动。以下组合脚本在一次执行中触发所有三种 CSD 检测信号：表单字段采集、从多个 CDN 域注入第三方脚本以及向外部端点进行数据外泄。
+CSD 监控浏览器内部的 JavaScript 行为。与 WAF 或 Bot Defense 不同，您无法通过 curl 命令触发 CSD 检测——它需要真实的浏览器端脚本活动。以下组合脚本在一次执行中触发所有三种 CSD 检测信号：表单字段采集、从多个 CDN 域注入第三方脚本以及向外部端点窃取数据。
 
 ### 运行组合模拟脚本
 
 <Steps>
-1. 导航到 Juice Shop 的**登录页面** `https://botdemo.sales-demo.f5demos.com/#/login`
+1. 导航到 Juice Shop **登录页面** `https://botdemo.sales-demo.f5demos.com/#/login`
 
-2. 在表单字段中输入虚拟凭据——在**Email**字段中输入 `test@example.com`，在**Password**字段中输入 `P@ssword123`（不要提交表单）
+2. 在表单字段中输入虚拟凭据——在 **Email** 字段中输入 `test@example.com`，在 **Password** 字段中输入 `P@ssword123`（不要提交表单）
 
-3. 打开开发者工具（**F12** &rarr; **Console** 选项卡）
+3. 打开开发者工具（**F12** &rarr; **Console** 标签页）
 
-   <Screenshot light="/images/devtools-console-light.png" dark="/images/devtools-console-dark.png" alt="准备好接受脚本输入的空白开发者工具控制台" />
+   <Screenshot light="/images/devtools-console-light.png" dark="/images/devtools-console-dark.png" alt="准备接收脚本输入的空白开发者工具控制台" />
 
-4. 将以下脚本粘贴到控制台中并按**Enter**——它会作为自执行函数自动运行
+4. 将以下脚本粘贴到控制台中并按 **Enter** 键——它作为自执行函数自动运行
 
    <Code code={combinedScript} lang="js" title="Combined Detection Script" />
 
-5. 观察分阶段的 `[CSD Demo]` 控制台输出，确认每个步骤：字段采集、从 4 个 CDN 域注入脚本以及数据外泄。`esm.sh` 提供 ES 模块语法（`export default …`）——当作为经典 `<script>` 标签加载时会导致 `Uncaught SyntaxError: Cannot use import statement outside a module`。这是预期行为，不会影响 CSD 检测（脚本标签仍然被注入，网络请求仍然会发出）
+5. 观察分阶段的 `[CSD Demo]` 控制台输出，确认每个步骤：字段采集、从 4 个 CDN 域注入脚本以及数据窃取。`esm.sh` 提供 ES 模块语法（`export default …`）——当作为经典 `<script>` 标签加载时，会导致 `Uncaught SyntaxError: Cannot use import statement outside a module`。这是预期行为，不会影响 CSD 检测（script 标签仍然被注入，网络请求仍然会发出）
 
    <Screenshot light="/images/devtools-console-output-light.png" dark="/images/devtools-console-output-dark.png" alt="运行模拟脚本后的控制台输出" />
 </Steps>
 
 ### AI 自动化执行
 
-具有浏览器自动化工具（MCP Chrome DevTools、Playwright、Puppeteer）的 AI 助手可以通过编程方式执行模拟，而无需按照上述手动步骤操作：
+具有浏览器自动化工具（MCP Chrome DevTools、Playwright、Puppeteer）的 AI 助手可以通过编程方式执行模拟，而不是按照上述手动步骤操作：
 
-1. **使用 initScript 导航** — 首先导航到 `about:blank` 以确保干净的文档上下文，然后使用 `navigate_page` 导航到登录页面 URL（例如 `http://$F5XC_DOMAINNAME/#/login`），并附带一个 `initScript`，该脚本在 zone.js 打补丁之前保存原生 `setInterval`、`clearInterval`、`fetch` 和 `console.log`，轮询登录表单字段，通过原生 `HTMLInputElement.prototype.value` setter 填充凭据，并立即内联执行组合检测脚本。请使用下方的逐字 initScript。
-2. **关闭欢迎横幅** — 使用 `press_key` 按 `Escape` 关闭欢迎横幅。在后续访问中横幅可能不会出现（cookie 已保留）
-3. **等待完成** — 等待 10 秒，让所有 CDN 脚本加载/错误回调和 fetch promise 完成
-4. **采集证据** — 使用 `list_console_messages` 检查 `[CSD Demo] Simulation complete`；使用 `list_network_requests` 筛选 `script` 和 `fetch` 类型以验证 HTTP 状态码
+1. **使用 initScript 导航** — 首先导航到 `about:blank` 以确保干净的文档上下文，然后使用 `navigate_page` 导航到登录页面 URL（例如 `http://$F5XC_DOMAINNAME/#/login`），并附带一个 `initScript`，该脚本在 zone.js 修补原生 API 之前保存原生 `setInterval`、`clearInterval`、`fetch` 和 `console.log`，轮询登录表单字段，通过原生 `HTMLInputElement.prototype.value` setter 填充凭据，并立即内联执行组合检测脚本。请使用以下逐字 initScript。
+2. **关闭欢迎横幅** — 使用 `press_key` 按 `Escape` 关闭欢迎横幅。在后续访问中，横幅可能不会出现（cookie 已持久化）
+3. **等待完成** — 等待 10 秒，让所有 CDN 脚本加载/错误回调和 fetch promise 解析完成
+4. **捕获证据** — 使用 `list_console_messages` 检查是否有 `[CSD Demo] Simulation complete`；使用 `list_network_requests` 过滤 `script` 和 `fetch` 类型以验证 HTTP 状态码
 
-**initScript 封装脚本（逐字使用——将组合检测脚本封装用于自动化执行）：**
+**initScript 包装器（逐字使用——将组合检测脚本封装用于自动化执行）：**
 
 ```javascript
 // Save native references before zone.js patches them
@@ -196,36 +196,36 @@ var _poll = _si(function() {
 }, 300);
 ```
 
-**关于原生 `fetch` 的说明：** 此封装脚本保存 `window.fetch.bind(window)` 以避免 zone.js 错误。这对所有攻击模拟阶段都是正确的行为。CSD 缓解措施通过清除 `&lt;script&gt;` 标签的 `src` 值来阻止脚本加载，而不是阻止 `fetch()` 调用，因此保存原生 fetch 引用不会影响缓解行为。Phase 2 和 Phase 3 使用相同的 initScript。
+**关于原生 `fetch` 的说明：**此包装器保存了 `window.fetch.bind(window)` 以避免 zone.js 错误。这是所有攻击模拟阶段的正确行为。CSD 缓解措施通过清除 `&lt;script&gt;` 标签的 `src` 值来阻止脚本加载，而不是阻止 `fetch()` 调用，因此保存原生 fetch 引用不会影响缓解行为。相同的 initScript 用于第 2 阶段和第 3 阶段。
 
 <Aside type="caution">
-**zone.js 不兼容性** — Juice Shop 使用 Angular 的 zone.js，它会对 `setTimeout`、`setInterval`、`fetch`、`XMLHttpRequest` 及其他浏览器 API 打补丁。这会导致 MCP 的 `evaluate_script`、`fill` 和 `click` 工具出现 `Cannot read properties of undefined (reading 'call')` 错误。请改用带有 `initScript` 的 `navigate_page` —— `initScript` 在 zone.js 加载之前运行，因此您可以保存原生 API 引用。initScript 必须使用原生 `HTMLInputElement.prototype.value` setter（而非 `fill` 工具）填充表单字段，并在 `setInterval` 回调中内联运行检测脚本。
+**zone.js 不兼容** — Juice Shop 使用 Angular 的 zone.js，它会修补 `setTimeout`、`setInterval`、`fetch`、`XMLHttpRequest` 和其他浏览器 API。这会导致 MCP 的 `evaluate_script`、`fill` 和 `click` 工具出现 `Cannot read properties of undefined (reading 'call')` 错误。请改用带有 `initScript` 的 `navigate_page`——`initScript` 在 zone.js 加载之前运行，因此您可以保存原生 API 引用。initScript 必须使用原生 `HTMLInputElement.prototype.value` setter（而非 `fill` 工具）填充表单字段，并在 `setInterval` 回调中内联运行检测脚本。
 </Aside>
 
 <Aside type="note">
-**initScript 累积** — 每次使用 `initScript` 参数调用 `navigate_page` 都会将脚本添加到一个持久列表中，该列表在该浏览器上下文的每次后续文档加载时都会运行。为避免旧脚本产生干扰，请在两次运行之间导航到 `about:blank`，或使用带有 `isolatedContext` 的 `new_page` 获取干净的上下文。
+**initScript 累积** — 每次使用 `initScript` 参数调用 `navigate_page` 都会将脚本添加到一个持久列表中，该列表在该浏览器上下文中的每次后续文档加载时运行。为避免残留脚本干扰，请在两次运行之间导航到 `about:blank`，或使用带有 `isolatedContext` 的 `new_page` 获取干净的上下文。
 </Aside>
 
-没有浏览器自动化工具的操作者请使用上述手动步骤。
+没有浏览器自动化工具的操作人员请使用上述手动步骤。
 
 <Aside type="tip">
-检测结果需要 **5-10 分钟**才会出现在 CSD 仪表板上。如果运行脚本后警报尚未显示，请继续进行 [CSD 控制台演练](/csd/csd-console/)并稍后回来查看。
+检测结果需要 **5-10 分钟** 才能在 CSD 仪表板上显示。如果运行脚本后尚未看到告警，请继续进行 [CSD 控制台演练](/csd/csd-console/) 并稍后回来检查。
 </Aside>
 
-### 脚本的工作原理
+### 脚本的作用
 
 组合模拟脚本触发所有三种 CSD 检测信号：
 
 | 行为 | 脚本执行的操作 | CSD 检测到的内容 |
 | --- | --- | --- |
-| **字段采集** | 读取现有 `input` 元素（电子邮件、密码）的值 | 脚本读取敏感表单字段——标记为高风险 |
-| **脚本注入** | 追加 4 个 `<script>` 标签，从 `cdn.jsdelivr.net`、`esm.sh`、`unpkg.com` 和 `ga.jspm.io` 加载 | 页面上出现 4 个新的第三方脚本域 |
-| **数据外泄** | 通过 `fetch` 将采集的数据发送到 `www.httpbin.org` 和 `jsonplaceholder.typicode.com` | 向外部域发起的网络调用（注意：fetch 目标显示为脚本网络交互，而不是在 Network 域视图中） |
+| **字段采集** | 读取现有 `input` 元素（email、password）的值 | 脚本读取敏感表单字段——标记为高风险 |
+| **脚本注入** | 添加 4 个 `<script>` 标签，分别从 `cdn.jsdelivr.net`、`esm.sh`、`unpkg.com` 和 `ga.jspm.io` 加载 | 页面上出现 4 个新的第三方脚本域 |
+| **数据窃取** | 通过 `fetch` 将采集的数据发送到 `www.httpbin.org` 和 `jsonplaceholder.typicode.com` | 向外部域发起网络调用（注意：fetch 目标显示为脚本网络交互，而非在 Network 域视图中显示） |
 
 <Aside type="note">
-CSD 有特定的检测边界——例如，仅跟踪页面加载时的 DOM 字段，Network 视图仅显示脚本加载域。完整列表请参阅[检测边界](/csd/overview/#detection-boundaries)。
+CSD 有特定的检测边界——例如，仅跟踪页面加载时 DOM 中的字段，Network 视图仅显示脚本加载域。完整列表请参阅[检测边界](/csd/overview/#detection-boundaries)。
 </Aside>
 
 ### 高级模拟
 
-上述组合脚本是一个简化的三阶段版本（采集、注入、外泄），适用于大多数演示场景。[攻击脚本库](/csd/attack-scripts/)提供了 10 个按攻击类型组织的针对性脚本，包括一个**最大检测**压力测试，它在组合脚本覆盖范围的基础上增加了 DOM 操作、cookie 外泄和图片信标通道。使用单独的脚本可以独立演示特定的攻击类别（表单劫持、数字窃取、供应链注入、数据外泄、DOM 操作）。
+上面的组合脚本是简化的 3 阶段版本（采集、注入、窃取），适用于大多数演示场景。[攻击脚本库](/csd/attack-scripts/)提供了 10 个按攻击类型组织的定向脚本，包括一个**最大检测**压力测试，它在组合脚本覆盖范围的基础上增加了 DOM 操纵、cookie 窃取和图片信标通道。使用单独的脚本可以独立演示特定攻击类别（表单劫持、数字盗刷、供应链注入、数据窃取、DOM 操纵）。

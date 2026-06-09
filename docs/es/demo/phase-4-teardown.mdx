@@ -13,12 +13,12 @@ i18n:
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-La Fase 4 elimina todos los objetos creados durante el ejercicio en orden inverso de dependencia. Esta fase requiere confirmación humana explícita antes de cualquier operación destructiva.
+La Fase 4 elimina todos los objetos creados durante el ejercicio en orden inverso de dependencias. Esta fase requiere confirmación humana explícita antes de cualquier operación destructiva.
 
 <Aside type="caution">
-**Confirme antes de continuar.** Si usted es un asistente de IA, DEBE preguntar al operador humano: "La Fase 4 eliminará permanentemente todos los objetos de despliegue. ¿Está listo para el desmontaje? Responda 'sí' para continuar." No ejecute ningún comando DELETE hasta que el operador confirme.
+**Confirme antes de continuar.** Si usted es un asistente de IA, DEBE preguntar al operador humano: "La Fase 4 eliminará permanentemente todos los objetos del despliegue. ¿Está listo para el desmontaje? Responda 'sí' para continuar." No ejecute ningún comando DELETE hasta que el operador confirme.
 
-**Excepción:** Cuando el desmontaje se ejecuta como parte de la Etapa 1 de Preparación (limpieza previa a la reunión), la frase de activación "preparar la demostración" del operador sirve como autorización implícita. No se necesita confirmación adicional. La puerta de confirmación anterior aplica únicamente durante el desmontaje independiente o la Etapa 4 posterior a la reunión.
+**Excepción:** Cuando el desmontaje se ejecuta como parte de la Etapa 1 de Preparación (limpieza previa a la reunión), la frase de activación "preparar la demostración" del operador sirve como autorización implícita. No se necesita confirmación adicional. La puerta de confirmación anterior aplica solo durante el desmontaje independiente o la Etapa 4 posterior a la reunión.
 </Aside>
 
 ## Orden de Desmontaje
@@ -26,10 +26,10 @@ La Fase 4 elimina todos los objetos creados durante el ejercicio en orden invers
 Elimine los objetos en **orden inverso de creación** — elimine primero los objetos que dependen de otros objetos:
 
 1. **Dominios Mitigados** — eliminar todos los dominios mitigados de CSD creados en la Fase 3
-2. **Balanceador de Carga HTTPS** (`${F5XC_LB_NAME}-https`) — reducir a esqueleto (preservar el certificado de Let's Encrypt); DELETE completo si `NAMESPACE_CREATED=true` o bajo solicitud explícita
+2. **Balanceador de Carga HTTPS** (`${F5XC_LB_NAME}-https`) — reducir a esqueleto (preservar el certificado Let's Encrypt); DELETE completo si `NAMESPACE_CREATED=true` o por solicitud explícita
 3. **Balanceador de Carga HTTP** (`${F5XC_LB_NAME}-http`) — depende del Origin Pool
 4. **Origin Pool** — depende del Healthcheck (si fue creado)
-5. **Limpieza de zona DNS** — el esqueleto del HTTPS LB conserva sus registros A y ACME gestionados (esto es intencional — mantiene el certificado válido). Los registros gestionados del HTTP LB se limpian automáticamente al eliminarlo. Los registros manuales en `default_rr_set_group` necesitan limpieza manual mediante `PUT`
+5. **Limpieza de zona DNS** — el esqueleto del HTTPS LB retiene sus registros A y ACME gestionados (esto es lo deseado — mantiene válido el certificado). Los registros gestionados del HTTP LB se limpian automáticamente al eliminarse. Los registros manuales en `default_rr_set_group` necesitan limpieza manual mediante `PUT`
 6. **Healthcheck** — solo si fue creado en la Fase 1 Paso 1
 7. **Dominio Protegido** — eliminar el registro de dominio protegido de CSD
 8. **Namespace** — solo si fue creado durante la Fase 1 Paso 0 (`NAMESPACE_CREATED=true`)
@@ -40,7 +40,7 @@ Elimine los objetos en **orden inverso de creación** — elimine primero los ob
 
 ## Eliminar Dominios Mitigados
 
-Si se ejecutó la Fase 3, elimine todos los dominios mitigados antes de eliminar los objetos de infraestructura. La simulación estándar crea 6 dominios mitigados:
+Si se ejecutó la Fase 3, elimine todos los dominios mitigados antes de remover los objetos de infraestructura. La simulación estándar crea 6 dominios mitigados:
 
 ```bash
 for domain in cdn.jsdelivr.net esm.sh unpkg.com ga.jspm.io httpbin.org jsonplaceholder.typicode.com; do
@@ -50,7 +50,7 @@ for domain in cdn.jsdelivr.net esm.sh unpkg.com ga.jspm.io httpbin.org jsonplace
 done
 ```
 
-Verificar: Liste los dominios mitigados para confirmar que el conteo es 0 (o 1 — véase la nota a continuación):
+Verificar: Liste los dominios mitigados para confirmar que el conteo es 0 (o 1 — vea la nota a continuación):
 
 ```bash
 curl -s \
@@ -60,19 +60,19 @@ curl -s \
 ```
 
 <Aside type="note">
-La lista de dominios mitigados puede devolver una entrada fantasma (count = 1) con metadatos nulos después de que todos los dominios mitigados hayan sido eliminados. Este es un artefacto del backend que aparece cuando el estado del servicio CSD se encuentra entre configuraciones — no representa una mitigación real y puede ignorarse. Intentar eliminar esta entrada fantasma devuelve `"Delete list when service not configured"`.
+La lista de dominios mitigados puede devolver una entrada fantasma (conteo = 1) con metadatos nulos después de que todos los dominios mitigados hayan sido eliminados. Este es un artefacto del backend que aparece cuando el estado del servicio CSD está entre configuraciones — no representa una mitigación real y puede ignorarse. Intentar eliminar esta entrada fantasma devuelve `"Delete list when service not configured"`.
 </Aside>
 
 ## Balanceador de Carga HTTPS
 
 El comportamiento de desmontaje del HTTPS LB depende de si el namespace fue creado durante esta sesión de demostración (variable `NAMESPACE_CREATED` de la Fase 1 Paso 0):
 
-- **`NAMESPACE_CREATED=false`** (namespace preexistente) — reducir al estado **esqueleto**, preservando el certificado de Let's Encrypt para reutilización
+- **`NAMESPACE_CREATED=false`** (namespace preexistente) — reducir al estado **esqueleto**, preservando el certificado Let's Encrypt para reutilización
 - **`NAMESPACE_CREATED=true`** (namespace creado durante la demostración) — **DELETE completo**, ya que el namespace mismo será eliminado y el certificado no puede preservarse
 
 ### Ruta A: Reducir a Esqueleto (Namespace Preexistente)
 
-Cuando el namespace es preexistente, reduzca el HTTPS LB a un estado **esqueleto** — elimine la referencia al origin pool y la configuración de CSD mientras preserva el enlace de dominio, la configuración de `https_auto_cert` y el certificado de Let's Encrypt. Esto evita activar una nueva solicitud de certificado en la siguiente ejecución de la demostración (Let's Encrypt impone un límite de 5 certificados duplicados por conjunto exacto de identificadores por cada 7 días).
+Cuando el namespace es preexistente, reduzca el HTTPS LB a un estado **esqueleto** — elimine la referencia al origin pool y la configuración de CSD mientras preserva la vinculación de dominio, la configuración de `https_auto_cert` y el certificado Let's Encrypt. Esto evita activar una nueva solicitud de certificado en la siguiente ejecución de demostración (Let's Encrypt impone un límite de 5 certificados duplicados por conjunto exacto de identificadores cada 7 días).
 
 **Paso 1 — Obtener (GET) la configuración actual del HTTPS LB:**
 
@@ -82,7 +82,7 @@ HTTPS_LB_JSON=$(curl -s \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
 ```
 
-**Paso 2 — Reducir a esqueleto mediante jq y enviar PUT de vuelta:**
+**Paso 2 — Reducir a esqueleto mediante jq y enviar (PUT) de vuelta:**
 
 ```bash
 echo "$HTTPS_LB_JSON" | jq '{
@@ -96,7 +96,7 @@ echo "$HTTPS_LB_JSON" | jq '{
   | jq .
 ```
 
-El filtro jq preserva toda la spec (dominios, `https_auto_cert`, `advertise_on_public_default_vip` y todas las flags de características deshabilitadas) mientras elimina `client_side_defense` (reemplazado con `disable_client_side_defense: {}`) y limpia `default_route_pools` a un array vacío. El certificado y los enlaces DNS permanecen intactos.
+El filtro jq preserva el spec completo (dominios, `https_auto_cert`, `advertise_on_public_default_vip` y todas las banderas de características deshabilitadas) mientras elimina `client_side_defense` (reemplazado con `disable_client_side_defense: {}`) y limpia `default_route_pools` a un arreglo vacío. El certificado y las vinculaciones DNS permanecen intactos.
 
 **Verificar** que el HTTPS LB es ahora un esqueleto:
 
@@ -128,12 +128,12 @@ curl -s -X DELETE \
 Verificar: `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` no debería contener `${F5XC_LB_NAME}-https`.
 
 <Aside type="tip">
-**Opción de desmontaje completo (namespace preexistente).** Incluso cuando el namespace es preexistente, puede eliminar completamente el HTTPS LB si está descomisionando permanentemente el dominio de demostración o si el operador solicita explícitamente "desmontaje completo" o "eliminación forzada". Solo use DELETE completo cuando el dominio no será reutilizado dentro de los próximos 7 días. Eliminar el HTTPS LB activa una nueva solicitud de certificado de Let's Encrypt en la siguiente ejecución de la demostración.
+**Opción de desmontaje completo (namespace preexistente).** Incluso cuando el namespace es preexistente, puede eliminar completamente el HTTPS LB si está descomisionando el dominio de demostración permanentemente o si el operador solicita explícitamente "desmontaje completo" o "eliminación forzada". Solo use DELETE completo cuando el dominio no será reutilizado dentro de los próximos 7 días. Eliminar el HTTPS LB activa una nueva solicitud de certificado Let's Encrypt en la siguiente ejecución de demostración.
 </Aside>
 
 ## Eliminar Balanceador de Carga HTTP
 
-Elimine el HTTP LB principal:
+Elimine el balanceador de carga HTTP principal:
 
 ```bash
 curl -s -X DELETE \
@@ -141,7 +141,7 @@ curl -s -X DELETE \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http"
 ```
 
-Verificar: `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` no debería contener `${F5XC_LB_NAME}-http`. Si el objeto aún aparece en la lista después de que DELETE devolvió `200`, espere 30 segundos y vuelva a verificar una vez. Si aún está presente después de la segunda verificación, informe al operador — no continúe.
+Verificar: `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` no debería contener `${F5XC_LB_NAME}-http`. Si el objeto aún aparece en la lista después de que DELETE devolvió `200`, espere 30 segundos y vuelva a verificar una vez. Si aún está presente después de la segunda verificación, reporte al operador — no continúe.
 
 ## Eliminar Origin Pool
 
@@ -151,7 +151,7 @@ curl -s -X DELETE \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx"
 ```
 
-Verificar: `GET /api/config/namespaces/\{namespace\}/origin_pools` no debería contener el nombre del pool. Si el objeto aún aparece en la lista después de que DELETE devolvió `200`, espere 30 segundos y vuelva a verificar una vez. Si aún está presente después de la segunda verificación, informe al operador.
+Verificar: `GET /api/config/namespaces/\{namespace\}/origin_pools` no debería contener el nombre del pool. Si el objeto aún aparece en la lista después de que DELETE devolvió `200`, espere 30 segundos y vuelva a verificar una vez. Si aún está presente después de la segunda verificación, reporte al operador.
 
 ## Eliminar Healthcheck
 
@@ -161,11 +161,11 @@ curl -s -X DELETE \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx"
 ```
 
-Verificar: `GET /api/config/namespaces/\{namespace\}/healthchecks` no debería contener el nombre del healthcheck. Si el objeto aún aparece en la lista después de que DELETE devolvió `200`, espere 30 segundos y vuelva a verificar una vez. Si aún está presente después de la segunda verificación, informe al operador.
+Verificar: `GET /api/config/namespaces/\{namespace\}/healthchecks` no debería contener el nombre del healthcheck. Si el objeto aún aparece en la lista después de que DELETE devolvió `200`, espere 30 segundos y vuelva a verificar una vez. Si aún está presente después de la segunda verificación, reporte al operador.
 
 ## Eliminar Dominio Protegido
 
-Elimine el registro de dominio protegido de CSD. El dominio protegido tiene alcance de tenant (no de namespace), pero es un objeto de configuración de CSD vinculado a este despliegue — no infraestructura compartida como la zona DNS.
+Elimine el registro de dominio protegido de CSD. El dominio protegido tiene alcance de tenant (no de namespace), pero es un objeto de configuración de CSD vinculado a este despliegue — no es infraestructura compartida como la zona DNS.
 
 ```bash
 curl -s -X DELETE \
@@ -191,7 +191,7 @@ El endpoint GET individual (`/protected_domains/\{name\}`) puede devolver "API G
 Este paso se ejecuta **solo** si el namespace fue creado durante la Fase 1 Paso 0 (`NAMESPACE_CREATED=true`). Si el namespace era preexistente (`NAMESPACE_CREATED=false`), omita este paso por completo — el namespace es infraestructura compartida que no debe eliminarse.
 
 <Aside type="caution">
-**La eliminación en cascada remueve todos los objetos con alcance de namespace.** El endpoint de eliminación en cascada remueve el namespace y cada objeto dentro de él. Todos los objetos de infraestructura (balanceadores de carga, origin pools, healthchecks) ya deberían haber sido eliminados por los pasos previos de desmontaje. La eliminación en cascada actúa como limpieza final para capturar cualquier objeto restante y eliminar el namespace mismo.
+**La eliminación en cascada remueve todos los objetos con alcance de namespace.** El endpoint de eliminación en cascada remueve el namespace y cada objeto dentro de él. Todos los objetos de infraestructura (balanceadores de carga, origin pools, healthchecks) ya deberían haber sido eliminados por los pasos de desmontaje anteriores. La eliminación en cascada actúa como limpieza final para capturar cualquier objeto restante y remover el namespace en sí.
 </Aside>
 
 ```bash
@@ -229,8 +229,8 @@ Esperado: `404` si `NAMESPACE_CREATED=true`, `200` si `NAMESPACE_CREATED=false`.
 | Healthcheck | `200` (`\{\}` vacío) u omitido | No en la lista — APROBADO |
 | Dominio Protegido | `200` (`\{\}` vacío) | No en la lista — APROBADO |
 | Zona DNS | NO eliminada (infra compartida) | La zona aún existe — APROBADO |
-| Namespace | `200` (eliminación en cascada) si `NAMESPACE_CREATED=true`, omitido en caso contrario | `404` si eliminado, `200` si preservado — APROBADO |
+| Namespace | `200` (eliminación en cascada) si `NAMESPACE_CREATED=true`, omitido en caso contrario | `404` si fue eliminado, `200` si fue preservado — APROBADO |
 
 ---
 
-**Desmontaje completo.** Cuando el namespace era preexistente (`NAMESPACE_CREATED=false`), todos los objetos de despliegue han sido eliminados excepto el esqueleto del HTTPS LB, que preserva el certificado de Let's Encrypt y el enlace de dominio para la próxima ejecución de la demostración. Cuando el namespace fue creado durante la demostración (`NAMESPACE_CREATED=true`), todos los objetos incluyendo el HTTPS LB y el namespace han sido completamente eliminados. La zona DNS y sus registros no gestionados permanecen intactos en ambos casos.
+**Desmontaje completo.** Cuando el namespace era preexistente (`NAMESPACE_CREATED=false`), todos los objetos del despliegue han sido eliminados excepto el esqueleto del HTTPS LB, que preserva el certificado Let's Encrypt y la vinculación de dominio para la siguiente ejecución de demostración. Cuando el namespace fue creado durante la demostración (`NAMESPACE_CREATED=true`), todos los objetos incluyendo el HTTPS LB y el namespace han sido completamente eliminados. La zona DNS y sus registros no gestionados permanecen intactos en ambos casos.

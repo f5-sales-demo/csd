@@ -11,53 +11,53 @@ i18n:
 
 import { Aside } from "@astrojs/starlight/components";
 
-Preguntas frecuentes sobre F5 Distributed Cloud Client-Side Defense, recopiladas a partir de sesiones de demostración y conversaciones con clientes.
+Preguntas frecuentes sobre F5 Distributed Cloud Client-Side Defense, recopiladas de sesiones de demostración y conversaciones con clientes.
 
-## ¿CSD genera alertas cuando se detectan violaciones?
+## ¿Genera CSD alertas cuando se detectan violaciones?
 
-Sí, pero las reglas de alerta específicas de CSD deben configurarse explícitamente. CSD crea automáticamente un Alert Receiver utilizando la dirección de correo electrónico de la cuenta proporcionada durante la configuración. Puede configurar disparadores de alerta para:
+Sí, pero las reglas de alerta específicas de CSD deben configurarse explícitamente. CSD crea automáticamente un Receptor de Alertas utilizando la dirección de correo electrónico de la cuenta proporcionada durante la configuración. Puede configurar disparadores de alerta para:
 
 - Nuevo dominio sospechoso detectado
 - Umbral de puntuación de riesgo superado
 - Nuevo script detectado en una página protegida
 - Cambio de comportamiento en un script previamente observado
 
-Las alertas pueden limitarse por dominio o aplicarse globalmente en todos los dominios protegidos. Consulte la sección [CSD Console — Alert Configuration](/csd/csd-console/#alert-configuration) para obtener detalles de configuración.
+Las alertas pueden configurarse por dominio o aplicarse globalmente en todos los dominios protegidos. Consulte la sección [Consola CSD — Configuración de alertas](/csd/csd-console/#alert-configuration) para detalles de configuración.
 
 <Aside type="note">
-Las reglas de alerta se configuran en el panel de CSD, no a través de la API de automatización. Los endpoints de la API (`/scripts`, `/detected_domains`) proporcionan datos de detección, pero no activan alertas por sí mismos.
+Las reglas de alerta se configuran en el panel de CSD, no a través de la API de automatización. Los endpoints de la API (`/scripts`, `/detected_domains`) proporcionan datos de detección pero no activan alertas por sí mismos.
 </Aside>
 
 ## ¿Puedo ver los registros de solicitudes HTTP para eventos de CSD?
 
 CSD opera mediante **telemetría JavaScript del lado del cliente** — no existen registros HTTP del lado del servidor para las detecciones de scripts o la aplicación de mitigaciones. El pipeline de detección funciona de la siguiente manera:
 
-1. La etiqueta JavaScript de CSD (inyectada por el load balancer) se ejecuta en el navegador del visitante
-2. Monitoriza la carga de scripts, las mutaciones del DOM y el acceso a campos de formulario
+1. La etiqueta JavaScript de CSD (inyectada por el balanceador de carga) se ejecuta en el navegador del visitante
+2. Monitorea la carga de scripts, las mutaciones del DOM y el acceso a campos de formulario
 3. Los beacons de telemetría se envían al backend de F5 para su análisis
 4. Los resultados de detección aparecen en la API y el panel de CSD
 
-Los **registros de acceso del load balancer** (`/api/data/namespaces/\{ns\}/access_logs`) incluyen un campo `csd_js_injection` que confirma si la etiqueta del script CSD fue inyectada en una respuesta. Para los datos de detección de CSD, utilice los endpoints de la API: [`/scripts`](/csd/api-reference/#detected-scripts), [`/detected_domains`](/csd/api-reference/#detected-domains) y [`/formFields`](/csd/api-reference/#form-fields).
+Los **registros de acceso del balanceador de carga** (`/api/data/namespaces/\{ns\}/access_logs`) incluyen un campo `csd_js_injection` que confirma si la etiqueta del script CSD fue inyectada en una respuesta. Para datos de detección de CSD, utilice los endpoints de la API: [`/scripts`](/csd/api-reference/#detected-scripts), [`/detected_domains`](/csd/api-reference/#detected-domains) y [`/formFields`](/csd/api-reference/#form-fields).
 
-Consulte la guía de [Diagnostics](/csd/diagnostics/) para las pruebas completas de verificación de Capa 7 (HTTP) y Capa 8 (telemetría CSD).
+Consulte la guía de [Diagnósticos](/csd/diagnostics/) para las pruebas completas de verificación de Capa 7 (HTTP) y Capa 8 (telemetría CSD).
 
-## ¿CSD se integra con herramientas SIEM (Splunk, Datadog, etc.)?
+## ¿Se integra CSD con herramientas SIEM (Splunk, Datadog, etc.)?
 
-No se documenta una integración nativa de webhook SIEM o syslog específicamente para CSD. Los datos de detección de CSD están disponibles a través de los endpoints de la API REST:
+No existe documentación de integración nativa de CSD con webhooks SIEM o syslog específicamente. Los datos de detección de CSD están disponibles a través de los endpoints de la API REST:
 
 - `/scripts` — scripts detectados con niveles de riesgo
 - `/detected_domains` — dominios categorizados (CDN, exfiltración, etc.)
 - `/formFields` — campos de formulario accedidos por scripts con clasificación de sensibilidad
 
-Los clientes pueden consultar estos endpoints de la API de forma programada y reenviar los datos de detección a su SIEM. Consulte la [API Reference](/csd/api-reference/) para obtener detalles de los endpoints y autenticación.
+Los clientes pueden consultar estos endpoints de la API de forma programada y reenviar los datos de detección a su SIEM. Consulte la [Referencia de la API](/csd/api-reference/) para detalles de endpoints y autenticación.
 
 <Aside type="tip">
-La plataforma F5 Distributed Cloud admite configuraciones de **Global Log Receiver** para transmitir registros de acceso HTTP a sistemas externos (Splunk, Datadog, S3, etc.). Aunque esto cubre los registros de acceso del load balancer (incluido el campo `csd_js_injection`), no incluye los eventos de detección de CSD. Para los datos de detección, utilice el enfoque de consulta de API descrito anteriormente.
+La plataforma F5 Distributed Cloud admite configuraciones de **Global Log Receiver** para transmitir registros de acceso HTTP a sistemas externos (Splunk, Datadog, S3, etc.). Si bien esto cubre los registros de acceso del balanceador de carga (incluyendo el campo `csd_js_injection`), no incluye los eventos de detección de CSD. Para datos de detección, utilice el enfoque de consulta de API descrito anteriormente.
 </Aside>
 
 ## ¿Qué bloquea realmente la mitigación de CSD?
 
-La mitigación de CSD bloquea la carga de etiquetas `<script>` desde dominios mitigados interceptando el atributo `src` — el JavaScript de CSD limpia el `src` estableciéndolo como una cadena vacía, previniendo completamente la solicitud de red. Esto se dirige al **vector de cadena de suministro**: scripts maliciosos de terceros que se inyectan en la página mediante etiquetas `<script>`.
+La mitigación de CSD bloquea la carga de etiquetas `<script>` desde dominios mitigados interceptando el atributo `src` — el JavaScript de CSD limpia el `src` estableciéndolo como una cadena vacía, previniendo completamente la solicitud de red. Esto apunta al **vector de cadena de suministro**: scripts maliciosos de terceros que se inyectan en la página mediante etiquetas `<script>`.
 
 La mitigación de CSD **no** intercepta:
 
@@ -66,20 +66,20 @@ La mitigación de CSD **no** intercepta:
 - Cargas de etiquetas `<img>` o `<link>`
 - Conexiones WebSocket
 
-Este diseño es intencional — CSD se enfoca en el mecanismo de carga de scripts que los ataques de cadena de suministro (Magecart, formjacking, skimming) utilizan para inyectar código malicioso. Las llamadas API a nivel de aplicación realizadas mediante `fetch()` o `XMLHttpRequest` están fuera del alcance de CSD y son gestionadas por otras funcionalidades de seguridad de F5 XC (WAF, Bot Defense, API Protection).
+Este diseño es intencional — CSD se enfoca en el mecanismo de carga de scripts que los ataques de cadena de suministro (Magecart, formjacking, skimming) utilizan para inyectar código malicioso. Las llamadas API a nivel de aplicación realizadas mediante `fetch()` o `XMLHttpRequest` están fuera del alcance de CSD y son gestionadas por otras características de seguridad de F5 XC (WAF, Bot Defense, API Protection).
 
-Consulte [Phase 3 — Mitigate](/csd/demo/phase-3-mitigate/) para obtener una prueba de antes/después que demuestra el comportamiento de bloqueo de scripts.
+Consulte [Fase 3 — Mitigar](/csd/demo/phase-3-mitigate/) para una demostración antes/después que evidencia el comportamiento de bloqueo de scripts.
 
-## ¿Cuánto tiempo tardan las detecciones en aparecer después de ejecutar un ataque?
+## ¿Cuánto tiempo tardan en aparecer las detecciones después de ejecutar un ataque?
 
 El tiempo de detección varía según el endpoint:
 
 | Endpoint | Tiempo típico | Notas |
 | --- | --- | --- |
-| `/detected_domains` | Minutos | Se completa primero — este es el indicador principal de que el pipeline de CSD está procesando |
-| `/scripts` | 10–30 minutos | Utiliza un programa de procesamiento en backend más lento |
+| `/detected_domains` | Minutos | Se puebla primero — este es el indicador principal de que el pipeline de CSD está procesando |
+| `/scripts` | 10–30 minutos | Utiliza un cronograma de procesamiento backend más lento |
 | `/formFields` | 20–30 minutos | La clasificación de sensibilidad por ML (`Sensitive` vs `Not Sensitive`) requiere procesamiento adicional |
 
-Las detecciones **persisten tras el desmontaje/reconstrucción de la infraestructura** cuando el mismo dominio protegido se vuelve a registrar en el mismo tenant. Después de un desmontaje y reconstrucción, consulte `/detected_domains` una vez — si la respuesta contiene elementos, las detecciones previas aún están disponibles y no se requiere espera.
+Las detecciones **persisten a través del desmantelamiento/reconstrucción de infraestructura** cuando el mismo dominio protegido se vuelve a registrar en el mismo tenant. Después de un desmantelamiento y reconstrucción, consulte `/detected_domains` una vez — si la respuesta contiene elementos, las detecciones anteriores todavía están disponibles y no se requiere espera.
 
-Consulte la sección [Phase 2 — Detection Verification](/csd/demo/phase-2-attack/#step-9-detection-verification-via-api) para conocer el protocolo de consulta recomendado.
+Consulte la sección [Fase 2 — Verificación de detección](/csd/demo/phase-2-attack/#step-9-detection-verification-via-api) para el protocolo de consulta recomendado.

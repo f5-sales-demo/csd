@@ -1,0 +1,879 @@
+---
+title: Phase 1 — Aufbau
+description: >-
+  Bereitstellung der CSD-Infrastruktur über die F5 XC API — Healthcheck, Origin
+  Pool, Load Balancer, geschützte Domain
+sidebar:
+  order: 2
+  label: Phase 1 — Aufbau
+i18n:
+  sourceHash: 6ecd8b98f257
+  translator: machine
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Phase 1 stellt die vollständige CSD-Infrastruktur bereit und validiert sie. Führen Sie alle Schritte der Reihe nach aus — jeder Schritt muss BESTANDEN sein, bevor Sie fortfahren. Kehren Sie zum [Index](/csd/demo/) zurück, um die Umgebungseinrichtung und Variablenauflösung abzuschließen, bevor Sie diese Befehle ausführen.
+
+## Schritt 0: Namespace prüfen und erstellen (bedingt)
+
+Prüfen Sie, ob der Ziel-Namespace bereits auf dem Tenant existiert. Falls er nicht existiert, erstellen Sie ihn. Speichern Sie das Ergebnis in der Shell-Variable `NAMESPACE_CREATED` — der Teardown in Phase 4 verwendet diese, um zu entscheiden, ob der Namespace gelöscht werden soll.
+
+```bash
+NS_CHECK=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx")
+
+NAMESPACE_CREATED="false"
+if [ "$NS_CHECK" = "404" ]; then
+  curl -s -X POST \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d '{"metadata": {"name": "xF5XC_NAMESPACEx"}, "spec": {}}' \
+    "xF5XC_API_URLx/api/web/namespaces" | jq .
+  NAMESPACE_CREATED="true"
+fi
+```
+
+<Aside type="note">
+**Das `spec`-Feld ist erforderlich.** Die F5 XC Namespace-API erfordert ein `spec`-Feld im Request-Body, auch wenn keine Konfiguration benötigt wird — übergeben Sie ein leeres Objekt `{}`. Das Weglassen von `spec` führt zu Fehlercode `3` ("spec should not be empty in request").
+</Aside>
+
+### Nachweis
+
+Bestätigen Sie, dass der Namespace existiert, und dokumentieren Sie, ob er erstellt wurde:
+
+```bash
+curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx"
+echo "NAMESPACE_CREATED=$NAMESPACE_CREATED"
+```
+
+| Feld | Erwartet | Status |
+| --- | --- | --- |
+| HTTP-Status | `200` | BESTANDEN wenn zurückgegeben, FEHLGESCHLAGEN wenn `404` oder anderer |
+| `NAMESPACE_CREATED` | `true` (erstellt) oder `false` (bereits vorhanden) | Informativ — wird vom Teardown in Phase 4 verwendet |
+
+## Schritt 1: Healthcheck erstellen (optional)
+
+Erstellen Sie einen HTTP-Healthcheck, den der Origin Pool zur Überwachung des Backend-Zustands verwenden kann.
+
+<Aside type="note">
+**Healthchecks sind für CSD optional.** Die Client-Side Defense-Funktion hängt nicht von der Origin-Health-Überwachung ab. Wenn Ihr Tenant das Healthcheck-Objektlimit erreicht hat (Fehlercode `8` — siehe Fehlerbehandlung), überspringen Sie diesen Schritt und erstellen Sie den Origin Pool ohne Healthcheck-Referenz. CSD funktioniert normal.
+
+Wenn Sie einen Healthcheck erstellen, erstellen Sie ihn VOR dem Origin Pool. Der Origin Pool muss einen existierenden Healthcheck referenzieren — wenn der Healthcheck beim Erstellen des Origin Pools nicht existiert, wird die Referenz stillschweigend leer sein.
+</Aside>
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_HC_NAMEx",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "disable": false
+    },
+    "spec": {
+      "http_health_check": {
+        "use_origin_server_name": {},
+        "path": "/",
+        "use_http2": false,
+        "headers": {},
+        "request_headers_to_remove": [],
+        "expected_status_codes": ["200"]
+      },
+      "timeout": 3,
+      "interval": 15,
+      "jitter": 0,
+      "unhealthy_threshold": 1,
+      "healthy_threshold": 3,
+      "jitter_percent": 30
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks" \
+  | jq .
+```
+
+Eine `200`-Antwort mit dem erstellten Objekt bestätigt, dass der Healthcheck erstellt wurde. Wenn die Antwort `"code": 8` mit einer Nachricht wie `"Object kind healthcheck has exhausted limits(150)"` enthält, hat der Tenant sein Healthcheck-Limit erreicht — fahren Sie mit Schritt 2 fort und lassen Sie die Healthcheck-Referenz weg. CSD hängt nicht von der Health-Überwachung ab.
+
+### Nachweis
+
+Bestätigen Sie, dass der Healthcheck existiert:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx" \
+  | jq '{name: .metadata.name, namespace: .metadata.namespace, path: .spec.http_health_check.path, interval: .spec.interval}'
+```
+
+| Feld | Erwartet | Status |
+| --- | --- | --- |
+| HTTP-Status | `200` mit Objekt | BESTANDEN wenn zurückgegeben, FEHLGESCHLAGEN wenn `404` |
+| `name` | Stimmt mit `F5XC_HC_NAME` überein | BESTANDEN |
+| `path` | `/` | BESTANDEN |
+| Schritt 1 übersprungen (Fehlercode `8`, Limit ausgeschöpft) | — | BESTANDEN (Healthcheck ist für CSD optional) |
+
+## Schritt 2: Origin Pool erstellen
+
+Erstellen Sie einen Origin Pool, der auf Ihren Backend-Server zeigt. Wenn Sie in Schritt 1 einen Healthcheck erstellt haben, fügen Sie die `healthcheck`-Referenz hinzu. Wenn Schritt 1 übersprungen wurde, verwenden Sie ein leeres Array.
+
+**Mit Healthcheck** (Schritt 1 erfolgreich):
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_ORIGIN_POOLx",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "Origin pool for CSD demo",
+      "disable": false
+    },
+    "spec": {
+      "origin_servers": [{
+        "public_ip": { "ip": "xF5XC_ORIGIN_IPx" },
+        "labels": {}
+      }],
+      "no_tls": {},
+      "port": xF5XC_ORIGIN_PORTx,
+      "same_as_endpoint_port": {},
+      "healthcheck": [{
+        "namespace": "xF5XC_NAMESPACEx",
+        "name": "xF5XC_HC_NAMEx",
+        "kind": "healthcheck"
+      }],
+      "loadbalancer_algorithm": "LB_OVERRIDE",
+      "endpoint_selection": "LOCAL_PREFERRED"
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools" \
+  | jq .
+```
+
+**Ohne Healthcheck** (Schritt 1 übersprungen):
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_ORIGIN_POOLx",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "Origin pool for CSD demo",
+      "disable": false
+    },
+    "spec": {
+      "origin_servers": [{
+        "public_ip": { "ip": "xF5XC_ORIGIN_IPx" },
+        "labels": {}
+      }],
+      "no_tls": {},
+      "port": xF5XC_ORIGIN_PORTx,
+      "same_as_endpoint_port": {},
+      "healthcheck": [],
+      "loadbalancer_algorithm": "LB_OVERRIDE",
+      "endpoint_selection": "LOCAL_PREFERRED"
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools" \
+  | jq .
+```
+
+Eine `200`-Antwort bestätigt, dass der Origin Pool erstellt wurde.
+
+<Aside type="caution">
+Wenn die Antwort `"code": 8` mit einer Nachricht wie `"Object kind endpoint has exhausted limits(500)"` oder `"Object kind origin_pool has exhausted limits"` enthält, hat der Tenant sein Kontingent erreicht. Anders als bei Healthchecks sind Origin Pools **erforderlich** für die Demo — die Demo kann ohne einen nicht fortgesetzt werden. Löschen Sie ungenutzte Origin Pools aus anderen Namespaces, um Kapazität freizugeben (das Löschen eines Origin Pools gibt auch seine Endpoint-Unterobjekte frei), und versuchen Sie es erneut. Wenn das Limit nicht aufgelöst werden kann, kontaktieren Sie Ihren F5 Distributed Cloud (F5 XC)-Administrator, um das Tenant-Kontingent zu erhöhen.
+</Aside>
+
+### Healthcheck-Verknüpfung überprüfen
+
+Wenn Sie eine Healthcheck-Referenz eingefügt haben, bestätigen Sie, dass sie korrekt verknüpft ist:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '.spec.healthcheck'
+```
+
+Ein gefülltes Array bestätigt die Verknüpfung. Ein leeres Array `[]` ist erwartet, wenn Schritt 1 übersprungen wurde, oder bedeutet, dass der Healthcheck nicht gefunden wurde, wenn Sie beabsichtigt hatten, einen zu verknüpfen.
+
+### Nachweis
+
+Bestätigen Sie, dass der Origin Pool existiert und die korrekte Konfiguration hat:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
+  | jq '{name: .metadata.name, origin_ip: .spec.origin_servers[0].public_ip.ip, port: .spec.port, healthcheck_count: (.spec.healthcheck | length)}'
+```
+
+| Feld | Erwartet | Status |
+| --- | --- | --- |
+| HTTP-Status | `200` | BESTANDEN wenn zurückgegeben, FEHLGESCHLAGEN wenn `404` |
+| `name` | Stimmt mit `F5XC_ORIGIN_POOL` überein | BESTANDEN |
+| `origin_ip` | Stimmt mit `F5XC_ORIGIN_IP` überein | BESTANDEN |
+| `port` | Stimmt mit `F5XC_ORIGIN_PORT` überein | BESTANDEN |
+| `healthcheck_count` | `1` (mit HC) oder `0` (ohne) | BESTANDEN in beiden Fällen |
+
+## Schritt 3: HTTP Load Balancer mit CSD erstellen
+
+Erstellen Sie **zwei** Load Balancer mit aktiviertem Client-Side Defense — einen HTTP LB (primär, Port 80) und einen HTTPS LB (sekundär, Port 443 mit automatischer Zertifikatsverwaltung). Der HTTP LB ist der Standard für den gesamten Demo-Verkehr. Der HTTPS LB ist eine optionale Ergänzung, die von der Let's Encrypt-Zertifikatsbereitstellung abhängt, welche in Demo-Umgebungen Ratenbegrenzungen erreichen kann.
+
+<Aside type="note">
+Die HTTP Load Balancer-Spezifikation hat über 22 `oneOf`-Auswahlgruppen. Jede Gruppe muss genau eine Auswahl gesetzt haben, sonst gibt die API einen `422`-Fehler zurück. Die untenstehenden Konfigurationen deaktivieren alle optionalen Sicherheitsfunktionen außer CSD — passen Sie diese nach Bedarf für Ihre Umgebung an. Beide LBs teilen sich denselben Origin Pool, dieselben CSD-Einstellungen und dieselbe Domain — nur der Listener-Typ unterscheidet sich.
+</Aside>
+
+<Aside type="tip">
+Beide LB-Namen leiten sich von `F5XC_LB_NAME` ab: Der HTTP LB ist `${F5XC_LB_NAME}-http` und der HTTPS LB ist `${F5XC_LB_NAME}-https`. Es werden keine zusätzlichen Umgebungsvariablen benötigt.
+</Aside>
+
+### HTTP Load Balancer (primär)
+
+Dies ist der **primäre** Load Balancer für Demos. Er verwendet einen `http`-Listener auf Port 80 mit F5 XC-verwaltetem DNS. Er hängt nicht von der TLS-Zertifikatsbereitstellung ab und wird daher sofort nach der DNS-Auflösung betriebsbereit.
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_LB_NAMEx-http",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "HTTP LB with Client-Side Defense enabled (primary demo LB)",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["xF5XC_DOMAINNAMEx"],
+      "http": {
+        "dns_volterra_managed": true,
+        "port": 80
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [{
+        "pool": {
+          "namespace": "xF5XC_NAMESPACEx",
+          "name": "xF5XC_ORIGIN_POOLx",
+          "kind": "origin_pool"
+        },
+        "weight": 1,
+        "priority": 1
+      }],
+      "client_side_defense": {
+        "policy": {
+          "js_insert_all_pages": {}
+        }
+      },
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers" \
+  | jq .
+```
+
+Eine `200`-Antwort bestätigt, dass der HTTP Load Balancer mit aktiviertem CSD erstellt wurde.
+
+<Aside type="caution">
+Wenn die Antwort `"code": 8` mit einer Nachricht wie `"Object kind http_loadbalancer has exhausted limits"` enthält, hat der Tenant sein Load-Balancer-Kontingent erreicht. Load Balancer sind **erforderlich** für die Demo. Löschen Sie ungenutzte Load Balancer, um Kapazität freizugeben, und versuchen Sie es erneut.
+</Aside>
+
+### HTTPS Load Balancer (sekundär)
+
+Dies ist der **sekundäre** Load Balancer. Er verwendet `https_auto_cert` auf Port 443 mit automatischer Let's Encrypt-Zertifikatsbereitstellung. Prüfen Sie vor dem Erstellen, ob ein **Skelett-HTTPS-LB** von einem vorherigen Teardown existiert — wenn ja, stellen Sie ihn per PUT statt POST wieder her, um das vorhandene Let's Encrypt-Zertifikat zu bewahren und Ratenbegrenzungen zu vermeiden (5 doppelte Zertifikate pro exaktem Identifier-Set pro 7 Tage).
+
+**Prüfen Sie, ob der HTTPS LB bereits existiert:**
+
+```bash
+HTTPS_CHECK=$(curl -s -o /dev/null -w '%\{http_code\}' \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
+```
+
+Wenn `HTTPS_CHECK` `200` ist, existiert ein Skelett-HTTPS-LB — verwenden Sie **Pfad A (PUT)**. Wenn `404`, verwenden Sie **Pfad B (POST)**.
+
+#### Pfad A: Skelett per PUT wiederherstellen (HTTPS LB existiert)
+
+Wenn ein Skelett-HTTPS-LB von einem vorherigen Teardown existiert, stellen Sie die vollständige Konfiguration per PUT wieder her. Dies verbindet den Origin Pool wieder und aktiviert CSD erneut, **ohne eine neue Let's Encrypt-Zertifikatsanforderung auszulösen** — das vorhandene Zertifikat bleibt gültig.
+
+```bash
+curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_LB_NAMEx-https",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "HTTPS LB with Client-Side Defense enabled (secondary, cert-dependent)",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["xF5XC_DOMAINNAMEx"],
+      "https_auto_cert": {
+        "http_redirect": false,
+        "add_hsts": false,
+        "port": 443,
+        "default_header": {},
+        "enable_path_normalize": {},
+        "no_mtls": {},
+        "default_loadbalancer": {}
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [{
+        "pool": {
+          "namespace": "xF5XC_NAMESPACEx",
+          "name": "xF5XC_ORIGIN_POOLx",
+          "kind": "origin_pool"
+        },
+        "weight": 1,
+        "priority": 1
+      }],
+      "client_side_defense": {
+        "policy": {
+          "js_insert_all_pages": {}
+        }
+      },
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq .
+```
+
+Eine `200`-Antwort bestätigt, dass das Skelett mit der vollständigen Konfiguration wiederhergestellt wurde. Der Zertifikatsstatus sollte `CertificateValid` bleiben — es wird keine neue Let's Encrypt-Bereitstellung ausgelöst.
+
+<Aside type="note">
+**Skelett-Wiederherstellung.** PUT ersetzt die gesamte Objektspezifikation. Der Skelett-HTTPS-LB hat seine Domain-Bindung und sein Zertifikat während des Teardowns beibehalten. Dieses PUT stellt die Origin-Pool-Referenz wieder her und aktiviert Client-Side Defense erneut, ohne eine neue Let's Encrypt-Zertifikatsanforderung auszulösen. HTTPS ist sofort verfügbar.
+</Aside>
+
+#### Pfad B: Neu erstellen per POST (HTTPS LB existiert nicht)
+
+Wenn kein HTTPS LB existiert (erster Durchlauf oder nach einem vollständigen Teardown), erstellen Sie ihn per POST. Dies löst die Let's Encrypt-Zertifikatsbereitstellung aus, die 5–10 Minuten dauern kann.
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_LB_NAMEx-https",
+      "namespace": "xF5XC_NAMESPACEx",
+      "labels": {},
+      "annotations": {},
+      "description": "HTTPS LB with Client-Side Defense enabled (secondary, cert-dependent)",
+      "disable": false
+    },
+    "spec": {
+      "domains": ["xF5XC_DOMAINNAMEx"],
+      "https_auto_cert": {
+        "http_redirect": false,
+        "add_hsts": false,
+        "port": 443,
+        "default_header": {},
+        "enable_path_normalize": {},
+        "no_mtls": {},
+        "default_loadbalancer": {}
+      },
+      "advertise_on_public_default_vip": {},
+      "default_route_pools": [{
+        "pool": {
+          "namespace": "xF5XC_NAMESPACEx",
+          "name": "xF5XC_ORIGIN_POOLx",
+          "kind": "origin_pool"
+        },
+        "weight": 1,
+        "priority": 1
+      }],
+      "client_side_defense": {
+        "policy": {
+          "js_insert_all_pages": {}
+        }
+      },
+      "disable_rate_limit": {},
+      "no_service_policies": {},
+      "round_robin": {},
+      "disable_waf": {},
+      "no_challenge": {},
+      "disable_bot_defense": {},
+      "disable_api_definition": {},
+      "disable_api_discovery": {},
+      "disable_ip_reputation": {},
+      "disable_malicious_user_detection": {},
+      "single_lb_app": {
+        "disable_discovery": {},
+        "disable_ddos_detection": {},
+        "disable_malicious_user_detection": {}
+      },
+      "disable_trust_client_ip_headers": {},
+      "user_id_client_ip": {},
+      "disable_threat_mesh": {},
+      "l7_ddos_action_default": {},
+      "system_default_timeouts": {},
+      "default_sensitive_data_policy": {},
+      "disable_malware_protection": {},
+      "disable_api_testing": {}
+    }
+  }' \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers" \
+  | jq .
+```
+
+Eine `200`-Antwort bestätigt, dass der HTTPS Load Balancer erstellt wurde. Die Zertifikatsbereitstellung beginnt automatisch.
+
+<Aside type="caution">
+Wenn die Antwort `"code": 8` mit "exhausted limits" enthält, kann der HTTPS LB nicht erstellt werden. Der HTTPS LB ist optional — die Demo wird über den HTTP LB fortgesetzt. Vermerken Sie die Kontingentbeschränkung in der Nachweiszusammenfassung von Phase 1 als INFO.
+</Aside>
+
+<Aside type="note">
+**Let's Encrypt-Ratenbegrenzungen.** Das Erstellen eines neuen HTTPS LB löst eine Let's Encrypt-Zertifikatsanforderung aus. Let's Encrypt erlaubt nur 5 doppelte Zertifikate pro exaktem Identifier-Set pro 7 Tage. Wenn `cert_state` `AutoCertDomainRateLimited` anzeigt, wird die Demo über den HTTP LB fortgesetzt. Um dieses Limit zu vermeiden, bewahrt der Standard-Teardown den HTTPS LB als Skelett — siehe [Phase 4 — Teardown](/csd/demo/phase-4-teardown/).
+</Aside>
+
+### Nachweis
+
+Bestätigen Sie, dass beide Load Balancer mit aktiviertem CSD existieren. Verwenden Sie für den Nachweis immer ein **GET** — die POST-Antwort gibt vorübergehende Statuswerte zurück, die möglicherweise nicht die endgültige Konfiguration widerspiegeln.
+
+**HTTP LB (primär):**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{name: .metadata.name, domains: .spec.domains, csd_enabled: (.spec.client_side_defense != null), state: .spec.state}'
+```
+
+| Feld | Erwartet | Status |
+| --- | --- | --- |
+| HTTP-Status | `200` | BESTANDEN wenn zurückgegeben, FEHLGESCHLAGEN wenn `404` |
+| `name` | `${F5XC_LB_NAME}-http` | BESTANDEN |
+| `domains` | Enthält `F5XC_DOMAINNAME` | BESTANDEN |
+| `csd_enabled` | `true` | BESTANDEN — CSD ist auf diesem LB konfiguriert |
+| `state` | `VIRTUAL_HOST_READY` oder `VIRTUAL_HOST_PENDING_A_RECORD` | Erwartet — HTTP LB wechselt zu READY, sobald DNS aufgelöst wird. Jeder andere Status (z.B. `VIRTUAL_HOST_FAILED`) ist ein FEHLGESCHLAGEN — melden Sie dies dem Operator und fahren Sie nicht fort |
+
+**HTTPS LB (sekundär):**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{name: .metadata.name, domains: .spec.domains, csd_enabled: (.spec.client_side_defense != null), state: .spec.state, cert_state: .spec.cert_state}'
+```
+
+| Feld | Erwartet | Status |
+| --- | --- | --- |
+| HTTP-Status | `200` | BESTANDEN wenn zurückgegeben, FEHLGESCHLAGEN wenn `404` |
+| `name` | `${F5XC_LB_NAME}-https` | BESTANDEN |
+| `domains` | Enthält `F5XC_DOMAINNAME` | BESTANDEN |
+| `csd_enabled` | `true` | BESTANDEN — CSD ist auf diesem LB konfiguriert |
+| `creation_method` | PUT (Skelett wiederhergestellt) oder POST (neu) | INFO — PUT bewahrt vorhandenes Zertifikat |
+| `state` | `VIRTUAL_HOST_READY` (PUT) oder `VIRTUAL_HOST_PENDING_A_RECORD` (POST) | Erwartet — PUT-Pfad kann bereits READY sein, da DNS vom Skelett erhalten blieb |
+| `cert_state` | `CertificateValid` (PUT) oder `PreDomainChallengePending` (POST) | PUT bewahrt vorhandenes Zertifikat; POST löst neue Bereitstellung aus |
+
+## Schritt 4: DNS konfigurieren
+
+Nach dem Erstellen des Load Balancers wechselt dieser in den Status `VIRTUAL_HOST_PENDING_A_RECORD` und das automatische Zertifikat bleibt in `PreDomainChallengePending`. Zwei DNS-Einträge müssen existieren, bevor der LB vollständig betriebsbereit wird:
+
+1. **A-Eintrag** — `xF5XC_DOMAINNAMEx` zeigt auf die VIP-IP-Adresse (aus `dns_info` in der LB-Antwort)
+2. **ACME-Challenge-Eintrag** — `_acme-challenge.xF5XC_DOMAINNAMEx` für die TLS-Zertifikatsvalidierung (wird automatisch verwaltet bei Verwendung von F5 XC DNS mit verwalteten Einträgen; manueller CNAME erforderlich bei externem DNS)
+
+Der Ansatz hängt davon ab, ob F5 XC der autoritative DNS-Anbieter für Ihre Domain ist.
+
+### DNS-Autorität erkennen
+
+Prüfen Sie die Nameserver für Ihre Root-Domain:
+
+```bash
+dig +short NS xF5XC_ROOT_DOMAINx
+```
+
+Wenn die Antwort `ns1.f5clouddns.com` und `ns2.f5clouddns.com` enthält, ist F5 XC der autoritative DNS-Anbieter — folgen Sie **Option A**. Andernfalls folgen Sie **Option B** für externes DNS.
+
+### Option A: F5 XC-verwaltetes DNS
+
+Wenn F5 XC der autoritative DNS-Anbieter ist, kann die Plattform sowohl den A-Eintrag als auch den ACME-Challenge-CNAME automatisch erstellen — aber nur wenn die DNS-Zone `allow_http_lb_managed_records` aktiviert hat.
+
+<Aside type="note">
+DNS-Zonen befinden sich im **system**-Namespace, nicht in Benutzer-Namespaces. Der Zonenname entspricht der Root-Domain (z.B. `bankexample.com`).
+</Aside>
+
+**1. Prüfen Sie, ob verwaltete Einträge aktiviert sind:**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq '.spec.primary.allow_http_lb_managed_records'
+```
+
+Wenn die Antwort `true` ist, erstellt die Plattform automatisch DNS-Einträge für Load Balancer — fahren Sie mit **3. DNS-Auflösung überprüfen** fort. Wenn `false` oder `null`, fahren Sie mit dem nächsten Schritt fort.
+
+**2. Verwaltete Einträge aktivieren:**
+
+<Aside type="caution">
+Der `PUT`-Payload muss die **vollständige Zonenspezifikation** enthalten — Metadaten und alle vorhandenen Konfigurationsfelder. Das Weglassen von Feldern setzt diese auf Standardwerte zurück. Rufen Sie zuerst die aktuelle Zonenkonfiguration ab und ändern Sie dann nur das Feld `allow_http_lb_managed_records`.
+</Aside>
+
+Rufen Sie die aktuelle Zonenkonfiguration ab, aktivieren Sie verwaltete Einträge und aktualisieren Sie:
+
+```bash
+# Get current zone config
+ZONE_CONFIG=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx")
+
+# Update with managed records enabled
+echo "$ZONE_CONFIG" \
+  | jq '.spec.primary.allow_http_lb_managed_records = true' \
+  | curl -s -X PUT \
+    -H "Authorization: APIToken xF5XC_API_TOKENx" \
+    -H "Content-Type: application/json" \
+    -d @- \
+    "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
+  | jq .
+```
+
+<Aside type="caution">
+Die Zonenspezifikation enthält eine `x-ves-io-managed` rr_set_group mit plattformverwalteten Einträgen. Ihr `PUT`-Payload **muss diese Gruppe bewahren** — das Weglassen verursacht HTTP 403 "reserved for internal purposes". Rufen Sie immer zuerst die aktuelle Zonenkonfiguration mit `GET` ab, ändern Sie nur die benötigten Felder und senden Sie die vollständige Spezifikation zurück.
+</Aside>
+
+Eine `200`-Antwort (leeres `\{\}`) bestätigt, dass die Zone aktualisiert wurde. F5 XC erstellt den A-Eintrag und den ACME-Challenge-Eintrag in der automatisch verwalteten Eintragsgruppe der Zone. Wenn die verwalteten Einträge nicht innerhalb von 60 Sekunden erscheinen, wenden Sie den Load Balancer erneut an, um die Eintragserstellung auszulösen:
+
+```bash
+LB_CONFIG=$(curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http")
+echo "$LB_CONFIG" | curl -s -X PUT \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d @- \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq .
+```
+
+Diese GET+PUT-Neuanwendung ändert die LB-Konfiguration nicht — sie löst lediglich aus, dass die Plattform die DNS-Zone neu evaluiert und verwaltete Einträge erstellt. Wenn der A-Eintrag auch 60 Sekunden nach der Neuanwendung nicht aufgelöst wird, stoppen Sie und melden Sie dies dem Operator — versuchen Sie die Neuanwendung nicht mehr als einmal.
+
+**3. DNS-Auflösung überprüfen:**
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A
+```
+
+Die Antwort sollte die VIP-IP-Adresse zurückgeben. Die DNS-Propagierung ist für F5 XC-verwaltete Zonen typischerweise sofort, aber planen Sie bis zu 60 Sekunden ein.
+
+<Aside type="tip">
+**Negativer DNS-Cache:** Wenn Sie die Domain abgefragt haben, bevor der Eintrag existierte, hat Ihr rekursiver Resolver möglicherweise die `NXDOMAIN`-Antwort zwischengespeichert. Überprüfen Sie gegen den autoritativen Nameserver oder einen öffentlichen Resolver, um einen veralteten Cache auszuschließen:
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A @ns1.f5clouddns.com
+dig +short xF5XC_DOMAINNAMEx A @8.8.8.8
+```
+</Aside>
+
+### Option B: Externer DNS-Anbieter
+
+Wenn Ihre Domain einen externen DNS-Anbieter verwendet, müssen Sie die Einträge manuell erstellen. Extrahieren Sie die erforderlichen Werte aus dem Load Balancer:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{
+    vip_ip: .spec.dns_info[0].ip_address,
+    acme_target: .spec.auto_cert_info.dns_records
+  }'
+```
+
+Erstellen Sie diese Einträge bei Ihrem DNS-Anbieter:
+
+| Typ | Name | Wert |
+| --- | --- | --- |
+| A | `xF5XC_DOMAINNAMEx` | VIP-IP aus `dns_info[0].ip_address` |
+| CNAME | `_acme-challenge.xF5XC_DOMAINNAMEx` | `*.autocerts.ves.volterra.io` |
+
+Überprüfen Sie nach dem Erstellen der Einträge die Auflösung:
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+```
+
+<Aside type="tip">
+Der A-Eintrag ist erforderlich, damit der LB von `VIRTUAL_HOST_PENDING_A_RECORD` zu `VIRTUAL_HOST_READY` wechselt. Der ACME-CNAME ist erforderlich für die automatische TLS-Zertifikatsbereitstellung. Ohne beide Einträge bleibt der LB in einem ausstehenden Zustand.
+</Aside>
+
+### Nachweis
+
+| Test | Befehl | Erwartet | Status |
+| --- | --- | --- | --- |
+| DNS-1: A-Eintrag | `dig +short $F5XC_DOMAINNAME A` | VIP-IP-Adresse zurückgegeben | BESTANDEN wenn IP zurückgegeben, FEHLGESCHLAGEN wenn leer |
+| DNS-2: ACME-CNAME | `dig +short _acme-challenge.$F5XC_DOMAINNAME CNAME` | `*.autocerts.ves.volterra.io` | BESTANDEN wenn CNAME zurückgegeben |
+| DNS-Autorität | `dig +short NS $F5XC_ROOT_DOMAIN` | F5 XC- oder externe Nameserver | Informativ — bestimmt Option A vs. B |
+
+Wenn DNS-1 nach 60 Sekunden leer zurückgibt, siehe [Fehlerbehebung &mdash; LB hängt in VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record).
+
+## Schritt 5: CSD-Aktivierung überprüfen
+
+Prüfen Sie, ob Client-Side Defense für den Tenant aktiviert ist. CSD wird auf Tenant-Ebene konfiguriert — wenn es noch nicht aktiviert wurde, kontaktieren Sie Ihren F5 XC-Administrator.
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq .
+```
+
+Eine Antwort mit `"isConfigured": true` und `"isEnabled": true` bestätigt, dass CSD aktiv ist.
+
+### Nachweis
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
+  | jq '{configured: .isConfigured, enabled: .isEnabled}'
+```
+
+| Feld | Erwartet | Status |
+| --- | --- | --- |
+| `configured` | `true` | BESTANDEN |
+| `enabled` | `true` | BESTANDEN |
+| Eines ist `false` | — | FEHLGESCHLAGEN — kontaktieren Sie den F5 XC-Administrator, um CSD auf Tenant-Ebene zu aktivieren |
+
+## Schritt 6: Geschützte Domain registrieren
+
+Registrieren Sie die Root-Domain, die CSD überwachen wird. Das Feld `protected_domain` muss die **eTLD+1**-Root-Domain sein (z.B. `f5demos.com`), nicht der vollständige FQDN.
+
+<Aside type="caution">
+**Geschützte Domains sind tenant-bezogen, nicht namespace-bezogen.** Anders als Healthchecks, Origin Pools und Load Balancer werden geschützte Domains global auf dem Tenant registriert — der Namespace in der API-URL ist ein Routing-Parameter, keine Eigentümergrenze. Die geschützte Domain ist jedoch ein CSD-Konfigurationsobjekt, das an diese Bereitstellung gebunden ist und **während des Teardowns gelöscht werden sollte**, wenn die Bereitstellung vollständig entfernt wird. Verwechseln Sie dies nicht mit der DNS-Zone, die eine gemeinsame Infrastruktur ist und niemals gelöscht werden sollte.
+</Aside>
+
+### Prüfen, ob bereits registriert
+
+Prüfen Sie vor dem Erstellen, ob die Domain bereits auf dem Tenant registriert ist. Eine `409`-Antwort auf den POST bedeutet, dass die Domain bereits existiert — dies ist eine Erfolgsbedingung, kein Fehler.
+
+```bash
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "name": "xF5XC_DOMAINNAMEx",
+      "namespace": "xF5XC_NAMESPACEx"
+    },
+    "spec": {
+      "protected_domain": "xF5XC_ROOT_DOMAINx"
+    }
+  }' \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq .
+```
+
+| Antwort | Bedeutung | Aktion |
+| --- | --- | --- |
+| `200` | Domain erfolgreich registriert | Weiter zu Schritt 7 |
+| `409` (Domain existiert bereits) | Domain wurde zuvor auf diesem Tenant registriert | Bereits erledigt — weiter zu Schritt 7 |
+| `"code": 8` (Limit ausgeschöpft) | Kontingent für geschützte Domains voll | **Blockierend** — geschützte Domains sind für CSD erforderlich. Löschen Sie ungenutzte geschützte Domains oder kontaktieren Sie Ihren Administrator. |
+
+### Nachweis
+
+Die POST-Antwort selbst ist der primäre Nachweis — sie gibt das registrierte Domain-Objekt mit `spec.protected_domain` zurück, das mit Ihrer Root-Domain übereinstimmt. Alternativ listen Sie alle geschützten Domains auf, um dies zu bestätigen:
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
+  | jq '.items | length'
+```
+
+| Feld | Erwartet | Status |
+| --- | --- | --- |
+| POST gab `protected_domain` zurück | Stimmt mit `F5XC_ROOT_DOMAIN` überein | BESTANDEN |
+| POST gab `200` oder `409` zurück | Domain registriert oder existiert bereits | BESTANDEN |
+| Listenelemente-Anzahl | &gt; 0 | BESTANDEN |
+
+<Aside type="note">
+Der individuelle GET-Endpunkt (`/protected_domains/\{name\}`) ist für geschützte Domains nicht verfügbar. Verwenden Sie die POST-Antwort oder den Listen-Endpunkt zur Überprüfung.
+</Aside>
+
+## Schritt 7: Überprüfung
+
+### DNS-Auflösung
+
+Bestätigen Sie, dass der A-Eintrag aufgelöst wird und der ACME-Challenge-CNAME vorhanden ist:
+
+```bash
+dig +short xF5XC_DOMAINNAMEx A
+dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
+```
+
+Der A-Eintrag sollte die VIP-IP-Adresse zurückgeben. Der CNAME sollte auf `*.autocerts.ves.volterra.io` (oder ein verwandtes autocerts-Ziel) zeigen.
+
+### Load Balancer-Status
+
+Prüfen Sie, dass beide Load Balancer ihren ausstehenden Status verlassen haben. Der HTTP LB ist die primäre Prüfung — er sollte `VIRTUAL_HOST_READY` erreichen, sobald DNS aufgelöst wird, ohne Zertifikatsabhängigkeit. Der HTTPS LB-Zertifikatsstatus ist nur informativ.
+
+**HTTP LB (primär — muss READY sein, um fortzufahren):**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
+  | jq '{state: .spec.state}'
+```
+
+| Feld | Erwartet | Zwischenzustände |
+| --- | --- | --- |
+| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS nicht konfiguriert (siehe Schritt 4) |
+
+**HTTPS LB (sekundär — informativ, blockiert den Fortschritt nicht):**
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
+  | jq '{state: .spec.state, cert_state: .spec.cert_state}'
+```
+
+| Feld | Erwartet | Zwischenzustände |
+| --- | --- | --- |
+| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS nicht konfiguriert; `VIRTUAL_HOST_DNS_A_RECORD_ADDED` — A-Eintrag gefunden, wartet auf Zertifikat |
+| `cert_state` | `CertificateValid` | `PreDomainChallengePending` — wartet auf ACME-CNAME; `DomainChallengeStarted` — ACME-Challenge läuft; `AutoCertDomainRateLimited` — Let's Encrypt-Ratenlimit erreicht (erwartet in Demo-Umgebungen, beeinflusst den HTTP LB nicht) |
+
+<Aside type="note">
+Die Zertifikatsbereitstellung kann **5–10 Minuten** dauern, nachdem die DNS-Einträge erstellt wurden. Wenn `cert_state` `AutoCertDomainRateLimited` anzeigt, ist dies in Demo-Umgebungen erwartet, in denen Infrastruktur häufig erstellt und zerstört wird. Der HTTP LB ist nicht betroffen — fahren Sie mit der Demo unter Verwendung von `http://`-URLs fort.
+</Aside>
+
+### JS-Konfiguration
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
+  | jq .
+```
+
+Die Antwort enthält ein `scriptTag`-Feld mit dem vollständigen HTML-`<script>`-Tag, das der Load Balancer in Seitenantworten einbettet.
+
+### Erkannte Domains
+
+```bash
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
+  | jq '{summary: .domain_summary, domains: .domains_list}'
+```
+
+### Erkannte Skripte
+
+Der Skript-Endpunkt erfordert einen Zeitbereich mit Epoch-Zeitstempeln (Sekunden seit der Unix-Epoche). Das folgende Beispiel fragt die letzten 7 Tage ab.
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+curl -s -X POST \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Content-Type: application/json" \
+  -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
+  | jq '[.scripts[]? | {script_name: .script_name, risk_level: .risk_level}]'
+```
+
+### Formularfelder
+
+Der Formularfelder-Endpunkt erfordert einen Zeitbereich mit Epoch-Zeitstempeln, die als Query-Parameter übergeben werden.
+
+```bash
+NOW=$(date +%s)
+START=$(( NOW - 604800 ))
+curl -s \
+  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields?startTime=$START&endTime=$NOW" \
+  | jq '.form_fields'
+```
+
+### Nachweiszusammenfassung Phase 1
+
+Nach Abschluss aller Überprüfungsprüfungen sollte der KI-Assistent eine konsolidierte Statustabelle präsentieren:
+
+| Test-ID | Prüfung | Erwartet | Erforderlich | Status |
+| --- | --- | --- | --- | --- |
+| DNS-1 | A-Eintrag wird aufgelöst | VIP-IP zurückgegeben | **Ja** | BESTANDEN / FEHLGESCHLAGEN |
+| DNS-2 | ACME-CNAME existiert | `*.autocerts.ves.volterra.io` | Nein | BESTANDEN / AUSSTEHEND |
+| LB-1 | HTTP LB-Status | `VIRTUAL_HOST_READY` | **Ja** | BESTANDEN / AUSSTEHEND |
+| LB-2 | HTTPS LB-Status | `VIRTUAL_HOST_READY` | Nein | BESTANDEN / AUSSTEHEND / INFO |
+| TLS-1 | Zertifikatsstatus | `CertificateValid` | Nein | BESTANDEN / AUSSTEHEND / INFO |
+| CSD-1 | JS-Konfiguration | `scriptTag` vorhanden | **Ja** | BESTANDEN / FEHLGESCHLAGEN |
+| CSD-2 | CSD-Status | `isEnabled: true` | **Ja** | BESTANDEN / FEHLGESCHLAGEN |
+| CSD-3 | Geschützte Domain | Domain registriert | **Ja** | BESTANDEN / FEHLGESCHLAGEN |
+
+<Aside type="note">
+**Phase 2 verwendet den HTTP LB.** HTTPS ist optional — wenn TLS-1 `AutoCertDomainRateLimited` anzeigt oder LB-2 AUSSTEHEND bleibt, wird die Demo normal mit `http://`-URLs fortgesetzt. Nur DNS-1, LB-1, CSD-1, CSD-2 und CSD-3 müssen bestanden sein, bevor mit Phase 2 fortgefahren wird.
+</Aside>
+
+Wenn LB-1 AUSSTEHEND anzeigt, pollen Sie alle 30 Sekunden für bis zu 4 Iterationen (insgesamt 2 Minuten). Wenn LB-1 nach 4 Iterationen immer noch nicht `VIRTUAL_HOST_READY` ist, prüfen Sie die DNS-Auflösung mit `dig` und melden Sie dies dem Operator — fahren Sie nicht fort, bis LB-1 READY erreicht hat. Für LB-2 und TLS-1 pollen Sie alle 60 Sekunden für bis zu 10 Iterationen (10 Minuten). Wenn nach 10 Iterationen noch ein Zwischenzustand vorliegt, dokumentieren Sie den aktuellen Status als INFO und fahren Sie fort — diese sind informativ und blockieren den Demo-Fortschritt nicht.
+
+<Aside type="note">
+Das Feld `dns_info` in der LB-Antwort kann leer (`[]`) sein, selbst wenn DNS korrekt aufgelöst wird — dies passiert nach einer sauberen Neuerstellung. Überprüfen Sie die DNS-Auflösung immer mit `dig`, anstatt sich für die VIP-Adresse auf `dns_info` zu verlassen.
+</Aside>
+
+---
+
+**Phase 1 abgeschlossen.** Fahren Sie mit [Phase 2 — Angriff](/csd/demo/phase-2-attack/) fort, um die Angriffssimulation auszuführen.

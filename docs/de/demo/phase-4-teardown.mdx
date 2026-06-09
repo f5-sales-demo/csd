@@ -1,6 +1,6 @@
 ---
 title: Phase 4 — Abbau
-description: Demo-Objekte nach Abschluss der Demo vom F5 XC-Mandanten bereinigen
+description: Demo-Objekte vom F5 XC Tenant nach Abschluss der Demo bereinigen
 sidebar:
   order: 5
   label: Phase 4 — Abbau
@@ -14,26 +14,26 @@ import { Aside, Steps } from "@astrojs/starlight/components";
 Phase 4 entfernt alle während der Übung erstellten Objekte in umgekehrter Abhängigkeitsreihenfolge. Diese Phase erfordert eine explizite menschliche Bestätigung, bevor destruktive Operationen durchgeführt werden.
 
 <Aside type="caution">
-**Bestätigen Sie vor dem Fortfahren.** Wenn Sie ein KI-Assistent sind, MÜSSEN Sie den menschlichen Operator fragen: "Phase 4 wird alle Deployment-Objekte dauerhaft löschen. Sind Sie bereit für den Abbau? Antworten Sie mit 'ja', um fortzufahren." Führen Sie keine DELETE-Befehle aus, bis der Operator bestätigt hat.
+**Vor dem Fortfahren bestätigen.** Wenn Sie ein KI-Assistent sind, MÜSSEN Sie den menschlichen Operator fragen: "Phase 4 wird alle Deployment-Objekte dauerhaft löschen. Sind Sie bereit für den Abbau? Antworten Sie mit ‚ja', um fortzufahren." Führen Sie keine DELETE-Befehle aus, bis der Operator bestätigt hat.
 
-**Ausnahme:** Wenn der Abbau als Teil von Stufe 1 Vorbereitung (Bereinigung vor dem Meeting) ausgeführt wird, dient die "Demo vorbereiten"-Auslösephrase des Operators als implizite Autorisierung. Eine zusätzliche Bestätigung ist nicht erforderlich. Die obige Bestätigungsschranke gilt nur während eines eigenständigen Abbaus oder nach dem Meeting in Stufe 4.
+**Ausnahme:** Wenn der Abbau als Teil von Stufe 1 Vorbereitung (Bereinigung vor dem Meeting) ausgeführt wird, dient die "Demo vorbereiten"-Auslösephrase des Operators als implizite Autorisierung. Eine zusätzliche Bestätigung ist nicht erforderlich. Die obige Bestätigungssperre gilt nur beim eigenständigen Abbau oder bei Stufe 4 nach dem Meeting.
 </Aside>
 
 ## Abbau-Reihenfolge
 
-Entfernen Sie Objekte in **umgekehrter Erstellungsreihenfolge** — löschen Sie zuerst Objekte, die von anderen Objekten abhängen:
+Objekte in **umgekehrter Erstellungsreihenfolge** entfernen — Objekte, die von anderen Objekten abhängen, zuerst löschen:
 
 1. **Mitigierte Domains** — alle in Phase 3 erstellten CSD-mitigierten Domains löschen
-2. **HTTPS Load Balancer** (`${F5XC_LB_NAME}-https`) — auf Skelett reduzieren (Let's-Encrypt-Zertifikat beibehalten); vollständiges DELETE wenn `NAMESPACE_CREATED=true` oder auf explizite Anforderung
-3. **HTTP Load Balancer** (`${F5XC_LB_NAME}-http`) — hängt vom Origin Pool ab
-4. **Origin Pool** — hängt vom Healthcheck ab (falls erstellt)
+2. **HTTPS Load Balancer** (`${F5XC_LB_NAME}-https`) — auf Skelett reduzieren (Let's-Encrypt-Zertifikat beibehalten); vollständiges DELETE, wenn `NAMESPACE_CREATED=true` oder auf ausdrückliche Anfrage
+3. **HTTP Load Balancer** (`${F5XC_LB_NAME}-http`) — abhängig vom Origin Pool
+4. **Origin Pool** — abhängig vom Healthcheck (falls erstellt)
 5. **DNS-Zonen-Bereinigung** — das HTTPS-LB-Skelett behält seine verwalteten A- und ACME-Einträge bei (dies ist gewünscht — es hält das Zertifikat gültig). Die verwalteten Einträge des HTTP-LB werden bei der Löschung automatisch bereinigt. Manuelle Einträge in `default_rr_set_group` müssen manuell über `PUT` bereinigt werden
 6. **Healthcheck** — nur wenn in Phase 1 Schritt 1 erstellt
 7. **Geschützte Domain** — die CSD-Registrierung der geschützten Domain löschen
 8. **Namespace** — nur wenn während Phase 1 Schritt 0 erstellt (`NAMESPACE_CREATED=true`)
 
 <Aside type="caution">
-**Löschen Sie nicht die DNS-Zone.** Die DNS-Zone ist eine gemeinsam genutzte Infrastruktur, die viele andere DNS-Einträge auf der gesamten Plattform unterstützt und sollte niemals gelöscht werden. Bereinigen Sie nur Einträge, die Sie manuell zur `default_rr_set_group` hinzugefügt haben. Die geschützte Domain hingegen ist ein CSD-Konfigurationsobjekt, das an dieses Deployment gebunden ist und beim vollständigen Abbau **gelöscht werden sollte**.
+**Die DNS-Zone nicht löschen.** Die DNS-Zone ist eine gemeinsam genutzte Infrastruktur, die viele andere DNS-Einträge auf der gesamten Plattform unterstützt, und sollte niemals gelöscht werden. Bereinigen Sie nur Einträge, die Sie manuell zur `default_rr_set_group` hinzugefügt haben. Die geschützte Domain hingegen ist ein CSD-Konfigurationsobjekt, das an dieses Deployment gebunden ist, und **sollte** beim vollständigen Abbau gelöscht werden.
 </Aside>
 
 ## Mitigierte Domains löschen
@@ -48,7 +48,7 @@ for domain in cdn.jsdelivr.net esm.sh unpkg.com ga.jspm.io httpbin.org jsonplace
 done
 ```
 
-Überprüfung: Listen Sie mitigierte Domains auf, um zu bestätigen, dass die Anzahl 0 ist (oder 1 — siehe Hinweis unten):
+Überprüfen: Mitigierte Domains auflisten, um zu bestätigen, dass die Anzahl 0 ist (oder 1 — siehe Hinweis unten):
 
 ```bash
 curl -s \
@@ -58,21 +58,21 @@ curl -s \
 ```
 
 <Aside type="note">
-Die Liste der mitigierten Domains kann einen Phantomeintrag (Anzahl = 1) mit null-Metadaten zurückgeben, nachdem alle mitigierten Domains gelöscht wurden. Dies ist ein Backend-Artefakt, das erscheint, wenn sich der CSD-Dienststatus zwischen Konfigurationen befindet — es stellt keine echte Mitigation dar und kann ignoriert werden. Der Versuch, diesen Phantomeintrag zu löschen, gibt `"Delete list when service not configured"` zurück.
+Die Liste der mitigierten Domains kann nach dem Löschen aller mitigierten Domains einen Phantomeintrag (Anzahl = 1) mit Null-Metadaten zurückgeben. Dies ist ein Backend-Artefakt, das auftritt, wenn sich der CSD-Dienststatus zwischen Konfigurationen befindet — es stellt keine echte Mitigation dar und kann ignoriert werden. Der Versuch, diesen Phantomeintrag zu löschen, gibt `"Delete list when service not configured"` zurück.
 </Aside>
 
 ## HTTPS Load Balancer
 
-Das Abbauverhalten des HTTPS LB hängt davon ab, ob der Namespace während dieser Demo-Sitzung erstellt wurde (`NAMESPACE_CREATED`-Variable aus Phase 1 Schritt 0):
+Das Abbau-Verhalten des HTTPS-LB hängt davon ab, ob der Namespace während dieser Demo-Sitzung erstellt wurde (`NAMESPACE_CREATED`-Variable aus Phase 1 Schritt 0):
 
-- **`NAMESPACE_CREATED=false`** (bereits vorhandener Namespace) — auf **Skelett**-Zustand reduzieren, wobei das Let's-Encrypt-Zertifikat zur Wiederverwendung erhalten bleibt
-- **`NAMESPACE_CREATED=true`** (Namespace während der Demo erstellt) — **vollständiges DELETE**, da der Namespace selbst am Ende des Abbaus entfernt wird und das Zertifikat nicht erhalten werden kann
+- **`NAMESPACE_CREATED=false`** (vorhandener Namespace) — auf **Skelett**-Zustand reduzieren, wobei das Let's-Encrypt-Zertifikat zur Wiederverwendung beibehalten wird
+- **`NAMESPACE_CREATED=true`** (Namespace während der Demo erstellt) — **vollständiges DELETE**, da der Namespace selbst gelöscht wird und das Zertifikat nicht beibehalten werden kann
 
-### Pfad A: Auf Skelett reduzieren (bereits vorhandener Namespace)
+### Pfad A: Auf Skelett reduzieren (vorhandener Namespace)
 
-Wenn der Namespace bereits vorhanden ist, reduzieren Sie den HTTPS LB auf einen **Skelett**-Zustand — entfernen Sie die Origin-Pool-Referenz und die CSD-Konfiguration, während die Domain-Bindung, die `https_auto_cert`-Einstellungen und das Let's-Encrypt-Zertifikat erhalten bleiben. Dies vermeidet die Auslösung einer neuen Zertifikatsanforderung beim nächsten Demo-Durchlauf (Let's Encrypt erzwingt ein Limit von 5 doppelten Zertifikaten pro exaktem Identifikator-Set pro 7 Tage).
+Wenn der Namespace bereits vorhanden ist, reduzieren Sie den HTTPS-LB auf einen **Skelett**-Zustand — entfernen Sie die Origin-Pool-Referenz und die CSD-Konfiguration, während die Domain-Bindung, die `https_auto_cert`-Einstellungen und das Let's-Encrypt-Zertifikat beibehalten werden. Dies vermeidet eine neue Zertifikatsanfrage beim nächsten Demo-Durchlauf (Let's Encrypt erzwingt ein Limit von 5 Duplikat-Zertifikaten pro exaktem Identifikator-Set pro 7 Tage).
 
-**Schritt 1 — GET der aktuellen HTTPS-LB-Konfiguration:**
+**Schritt 1 — Aktuelle HTTPS-LB-Konfiguration per GET abrufen:**
 
 ```bash
 HTTPS_LB_JSON=$(curl -s \
@@ -80,7 +80,7 @@ HTTPS_LB_JSON=$(curl -s \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
 ```
 
-**Schritt 2 — Über jq auf Skelett reduzieren und per PUT zurückschreiben:**
+**Schritt 2 — Per jq auf Skelett reduzieren und per PUT zurückschreiben:**
 
 ```bash
 echo "$HTTPS_LB_JSON" | jq '{
@@ -94,9 +94,9 @@ echo "$HTTPS_LB_JSON" | jq '{
   | jq .
 ```
 
-Der jq-Filter bewahrt die gesamte Spezifikation (Domains, `https_auto_cert`, `advertise_on_public_default_vip` und alle deaktivierten Feature-Flags), während `client_side_defense` entfernt (ersetzt durch `disable_client_side_defense: {}`) und `default_route_pools` auf ein leeres Array gesetzt wird. Das Zertifikat und die DNS-Bindungen bleiben intakt.
+Der jq-Filter behält die gesamte Spec bei (Domains, `https_auto_cert`, `advertise_on_public_default_vip` und alle deaktivierten Feature-Flags), während `client_side_defense` entfernt (ersetzt durch `disable_client_side_defense: {}`) und `default_route_pools` auf ein leeres Array zurückgesetzt wird. Das Zertifikat und die DNS-Bindungen bleiben intakt.
 
-**Überprüfung**, dass der HTTPS LB nun ein Skelett ist:
+**Überprüfen**, dass der HTTPS-LB jetzt ein Skelett ist:
 
 ```bash
 curl -s \
@@ -115,7 +115,7 @@ Erwartet: `has_origin_pools: false`, `has_csd: false`, `domains` weiterhin befü
 
 ### Pfad B: Vollständiges Löschen (Namespace während der Demo erstellt)
 
-Wenn der Namespace während dieser Demo-Sitzung erstellt wurde, muss der HTTPS LB vollständig gelöscht werden — eine Skelett-Erhaltung ist unnötig, da der Namespace selbst am Ende des Abbaus entfernt wird.
+Wenn der Namespace während dieser Demo-Sitzung erstellt wurde, muss der HTTPS-LB vollständig gelöscht werden — eine Skelett-Beibehaltung ist unnötig, da der Namespace selbst am Ende des Abbaus entfernt wird.
 
 ```bash
 curl -s -X DELETE \
@@ -123,15 +123,15 @@ curl -s -X DELETE \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https"
 ```
 
-Überprüfung: `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` sollte `${F5XC_LB_NAME}-https` nicht enthalten.
+Überprüfen: `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` sollte `${F5XC_LB_NAME}-https` nicht enthalten.
 
 <Aside type="tip">
-**Option für vollständigen Abbau (bereits vorhandener Namespace).** Auch wenn der Namespace bereits vorhanden ist, können Sie den HTTPS LB vollständig löschen, wenn die Demo-Domain dauerhaft außer Betrieb genommen wird oder der Operator ausdrücklich "vollständigen Abbau" oder "erzwungenes Löschen" anfordert. Verwenden Sie vollständiges DELETE nur, wenn die Domain nicht innerhalb von 7 Tagen wiederverwendet wird. Das Löschen des HTTPS LB löst beim nächsten Demo-Durchlauf eine neue Let's-Encrypt-Zertifikatsanforderung aus.
+**Option für vollständigen Abbau (vorhandener Namespace).** Auch wenn der Namespace bereits vorhanden ist, können Sie den HTTPS-LB vollständig löschen, wenn die Demo-Domain dauerhaft außer Betrieb genommen wird oder der Operator ausdrücklich "vollständigen Abbau" oder "erzwungenes Löschen" anfordert. Verwenden Sie vollständiges DELETE nur, wenn die Domain nicht innerhalb von 7 Tagen wiederverwendet wird. Das Löschen des HTTPS-LB löst beim nächsten Demo-Durchlauf eine neue Let's-Encrypt-Zertifikatsanfrage aus.
 </Aside>
 
 ## HTTP Load Balancer löschen
 
-Löschen Sie den primären HTTP LB:
+Den primären HTTP-LB löschen:
 
 ```bash
 curl -s -X DELETE \
@@ -139,7 +139,7 @@ curl -s -X DELETE \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http"
 ```
 
-Überprüfung: `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` sollte `${F5XC_LB_NAME}-http` nicht enthalten. Wenn das Objekt nach dem DELETE mit Rückgabe `200` weiterhin in der Liste erscheint, warten Sie 30 Sekunden und prüfen Sie erneut. Wenn es nach der zweiten Prüfung immer noch vorhanden ist, melden Sie dies dem Operator — fahren Sie nicht fort.
+Überprüfen: `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` sollte `${F5XC_LB_NAME}-http` nicht enthalten. Wenn das Objekt nach dem DELETE mit Rückgabe `200` noch in der Liste erscheint, 30 Sekunden warten und einmal erneut prüfen. Wenn es nach der zweiten Prüfung noch vorhanden ist, dem Operator melden — nicht fortfahren.
 
 ## Origin Pool löschen
 
@@ -149,7 +149,7 @@ curl -s -X DELETE \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx"
 ```
 
-Überprüfung: `GET /api/config/namespaces/\{namespace\}/origin_pools` sollte den Pool-Namen nicht enthalten. Wenn das Objekt nach dem DELETE mit Rückgabe `200` weiterhin in der Liste erscheint, warten Sie 30 Sekunden und prüfen Sie erneut. Wenn es nach der zweiten Prüfung immer noch vorhanden ist, melden Sie dies dem Operator.
+Überprüfen: `GET /api/config/namespaces/\{namespace\}/origin_pools` sollte den Pool-Namen nicht enthalten. Wenn das Objekt nach dem DELETE mit Rückgabe `200` noch in der Liste erscheint, 30 Sekunden warten und einmal erneut prüfen. Wenn es nach der zweiten Prüfung noch vorhanden ist, dem Operator melden.
 
 ## Healthcheck löschen
 
@@ -159,11 +159,11 @@ curl -s -X DELETE \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx"
 ```
 
-Überprüfung: `GET /api/config/namespaces/\{namespace\}/healthchecks` sollte den Healthcheck-Namen nicht enthalten. Wenn das Objekt nach dem DELETE mit Rückgabe `200` weiterhin in der Liste erscheint, warten Sie 30 Sekunden und prüfen Sie erneut. Wenn es nach der zweiten Prüfung immer noch vorhanden ist, melden Sie dies dem Operator.
+Überprüfen: `GET /api/config/namespaces/\{namespace\}/healthchecks` sollte den Healthcheck-Namen nicht enthalten. Wenn das Objekt nach dem DELETE mit Rückgabe `200` noch in der Liste erscheint, 30 Sekunden warten und einmal erneut prüfen. Wenn es nach der zweiten Prüfung noch vorhanden ist, dem Operator melden.
 
 ## Geschützte Domain löschen
 
-Löschen Sie die CSD-Registrierung der geschützten Domain. Die geschützte Domain ist mandantenbezogen (nicht namespace-bezogen), aber es ist ein CSD-Konfigurationsobjekt, das an dieses Deployment gebunden ist — keine gemeinsam genutzte Infrastruktur wie die DNS-Zone.
+Die CSD-Registrierung der geschützten Domain löschen. Die geschützte Domain ist Tenant-weit gültig (nicht Namespace-bezogen), aber es ist ein CSD-Konfigurationsobjekt, das an dieses Deployment gebunden ist — keine gemeinsam genutzte Infrastruktur wie die DNS-Zone.
 
 ```bash
 curl -s -X DELETE \
@@ -171,7 +171,7 @@ curl -s -X DELETE \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/xF5XC_ROOT_DOMAINx"
 ```
 
-Überprüfung: Listen Sie geschützte Domains auf, um zu bestätigen, dass die Domain nicht mehr registriert ist:
+Überprüfen: Geschützte Domains auflisten, um zu bestätigen, dass die Domain nicht mehr registriert ist:
 
 ```bash
 curl -s -X GET \
@@ -181,15 +181,15 @@ curl -s -X GET \
 ```
 
 <Aside type="note">
-Der individuelle GET-Endpunkt (`/protected_domains/\{name\}`) kann "API Group could not be determined." zurückgeben. Wenn der DELETE-Endpunkt denselben Fehler zurückgibt, verwenden Sie den Listen-Endpunkt, um zu überprüfen, dass die Domain nicht mehr erscheint, oder löschen Sie die geschützte Domain stattdessen über die F5 Distributed Cloud (F5 XC) Console-UI.
+Der individuelle GET-Endpunkt (`/protected_domains/\{name\}`) kann "API Group could not be determined." zurückgeben. Wenn der DELETE-Endpunkt denselben Fehler zurückgibt, verwenden Sie den Listen-Endpunkt, um zu überprüfen, dass die Domain nicht mehr erscheint, oder löschen Sie die geschützte Domain stattdessen über die F5 Distributed Cloud (F5 XC) Konsolen-Benutzeroberfläche.
 </Aside>
 
 ## Namespace löschen (bedingt)
 
-Dieser Schritt wird **nur** ausgeführt, wenn der Namespace während Phase 1 Schritt 0 erstellt wurde (`NAMESPACE_CREATED=true`). Wenn der Namespace bereits vorhanden war (`NAMESPACE_CREATED=false`), überspringen Sie diesen Schritt vollständig — der Namespace ist eine gemeinsam genutzte Infrastruktur, die nicht gelöscht werden darf.
+Dieser Schritt wird **nur** ausgeführt, wenn der Namespace während Phase 1 Schritt 0 erstellt wurde (`NAMESPACE_CREATED=true`). Wenn der Namespace bereits vorhanden war (`NAMESPACE_CREATED=false`), überspringen Sie diesen Schritt vollständig — der Namespace ist gemeinsam genutzte Infrastruktur, die nicht gelöscht werden darf.
 
 <Aside type="caution">
-**Kaskadenlöschung entfernt alle namespace-bezogenen Objekte.** Der Kaskadenlösch-Endpunkt entfernt den Namespace und jedes Objekt darin. Alle Infrastrukturobjekte (Load Balancer, Origin Pools, Healthchecks) sollten bereits durch die vorhergehenden Abbauschritte gelöscht worden sein. Die Kaskadenlöschung dient als abschließende Bereinigung, um verbleibende Objekte zu erfassen und den Namespace selbst zu entfernen.
+**Kaskadenlöschung entfernt alle Namespace-bezogenen Objekte.** Der Kaskadenlöschungs-Endpunkt entfernt den Namespace und jedes Objekt darin. Alle Infrastrukturobjekte (Load Balancer, Origin Pools, Healthchecks) sollten bereits durch die vorhergehenden Abbau-Schritte gelöscht worden sein. Die Kaskadenlöschung dient als abschließende Bereinigung, um verbleibende Objekte aufzufangen und den Namespace selbst zu entfernen.
 </Aside>
 
 ```bash
@@ -203,10 +203,10 @@ fi
 ```
 
 <Aside type="note">
-Der Standard-Endpunkt `DELETE /api/web/namespaces/{name}` gibt `"Not Implemented"` (Fehlercode `12`) zurück. Sie **müssen** den Kaskadenlösch-Endpunkt (`POST .../cascade_delete`) verwenden, um einen Namespace zu löschen.
+Der Standard-Endpunkt `DELETE /api/web/namespaces/{name}` gibt `"Not Implemented"` (Fehlercode `12`) zurück. Sie **müssen** den Kaskadenlöschungs-Endpunkt (`POST .../cascade_delete`) verwenden, um einen Namespace zu löschen.
 </Aside>
 
-Überprüfung: Bestätigen Sie, dass der Namespace nicht mehr existiert:
+Überprüfen: Bestätigen, dass der Namespace nicht mehr existiert:
 
 ```bash
 curl -s -o /dev/null -w '%\{http_code\}' \
@@ -216,19 +216,19 @@ curl -s -o /dev/null -w '%\{http_code\}' \
 
 Erwartet: `404` wenn `NAMESPACE_CREATED=true`, `200` wenn `NAMESPACE_CREATED=false`.
 
-## Phase 4 Nachweiszusammenfassung
+## Phase 4 Ergebnis-Zusammenfassung
 
 | Objekt | Löschstatus | Überprüfungsstatus |
 | --- | --- | --- |
-| Mitigierte Domains (6) | Alle `200` (leeres `\{\}`) oder übersprungen wenn Phase 3 nicht ausgeführt | Anzahl 0 (oder 1 Phantom) — BESTANDEN |
+| Mitigierte Domains (6) | Alle `200` (leeres `\{\}`) oder übersprungen, wenn Phase 3 nicht ausgeführt wurde | Anzahl 0 (oder 1 Phantom) — BESTANDEN |
 | HTTPS Load Balancer (`-https`) | `200` (Skelett-PUT) oder `200` (vollständiges DELETE wenn `NAMESPACE_CREATED=true`) | Skelett verifiziert oder nicht in Liste — BESTANDEN |
 | HTTP Load Balancer (`-http`) | `200` (leeres `\{\}`) | Nicht in Liste — BESTANDEN |
 | Origin Pool | `200` (leeres `\{\}`) | Nicht in Liste — BESTANDEN |
 | Healthcheck | `200` (leeres `\{\}`) oder übersprungen | Nicht in Liste — BESTANDEN |
 | Geschützte Domain | `200` (leeres `\{\}`) | Nicht in Liste — BESTANDEN |
-| DNS-Zone | NICHT gelöscht (gemeinsame Infrastruktur) | Zone existiert weiterhin — BESTANDEN |
-| Namespace | `200` (Kaskadenlöschung) wenn `NAMESPACE_CREATED=true`, andernfalls übersprungen | `404` wenn gelöscht, `200` wenn erhalten — BESTANDEN |
+| DNS-Zone | NICHT gelöscht (gemeinsame Infrastruktur) | Zone existiert noch — BESTANDEN |
+| Namespace | `200` (Kaskadenlöschung) wenn `NAMESPACE_CREATED=true`, andernfalls übersprungen | `404` wenn gelöscht, `200` wenn beibehalten — BESTANDEN |
 
 ---
 
-**Abbau abgeschlossen.** Wenn der Namespace bereits vorhanden war (`NAMESPACE_CREATED=false`), wurden alle Deployment-Objekte entfernt, mit Ausnahme des HTTPS-LB-Skeletts, das das Let's-Encrypt-Zertifikat und die Domain-Bindung für den nächsten Demo-Durchlauf bewahrt. Wenn der Namespace während der Demo erstellt wurde (`NAMESPACE_CREATED=true`), wurden alle Objekte einschließlich des HTTPS LB und des Namespace vollständig gelöscht. Die DNS-Zone und ihre nicht verwalteten Einträge bleiben in beiden Fällen intakt.
+**Abbau abgeschlossen.** Wenn der Namespace bereits vorhanden war (`NAMESPACE_CREATED=false`), wurden alle Deployment-Objekte entfernt, mit Ausnahme des HTTPS-LB-Skeletts, das das Let's-Encrypt-Zertifikat und die Domain-Bindung für den nächsten Demo-Durchlauf beibehält. Wenn der Namespace während der Demo erstellt wurde (`NAMESPACE_CREATED=true`), wurden alle Objekte einschließlich des HTTPS-LB und des Namespace vollständig gelöscht. Die DNS-Zone und ihre nicht verwalteten Einträge bleiben in beiden Fällen intakt.

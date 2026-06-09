@@ -15,51 +15,51 @@ import { Aside } from "@astrojs/starlight/components";
 
 Häufig gestellte Fragen zu F5 Distributed Cloud Client-Side Defense, zusammengestellt aus Demo-Sitzungen und Kundengesprächen.
 
-## Erzeugt CSD Alarme, wenn Verstöße erkannt werden?
+## Generiert CSD Alarme, wenn Verstöße erkannt werden?
 
-Ja, aber CSD-spezifische Alarmregeln müssen explizit konfiguriert werden. CSD erstellt automatisch einen Alert Receiver unter Verwendung der E-Mail-Adresse des Kontos, die während der Einrichtung angegeben wurde. Sie können Alarm-Auslöser konfigurieren für:
+Ja, aber CSD-spezifische Alarmregeln müssen explizit konfiguriert werden. CSD erstellt automatisch einen Alert Receiver unter Verwendung der bei der Einrichtung angegebenen Konto-E-Mail-Adresse. Sie können Alarm-Trigger konfigurieren für:
 
 - Neue verdächtige Domain erkannt
-- Risikobewertungs-Schwellenwert überschritten
+- Risiko-Score-Schwellenwert überschritten
 - Neues Skript auf einer geschützten Seite erkannt
 - Verhaltensänderung bei einem zuvor gesehenen Skript
 
-Alarme können pro Domain eingegrenzt oder global über alle geschützten Domains hinweg angewendet werden. Siehe den Abschnitt [CSD-Konsole — Alarm-Konfiguration](/csd/csd-console/#alert-configuration) für Details zur Einrichtung.
+Alarme können pro Domain oder global über alle geschützten Domains hinweg konfiguriert werden. Weitere Informationen zur Einrichtung finden Sie im Abschnitt [CSD-Konsole — Alarmkonfiguration](/csd/csd-console/#alert-configuration).
 
 <Aside type="note">
-Alarmregeln werden im CSD-Dashboard konfiguriert, nicht über die Automatisierungs-API. Die API-Endpunkte (`/scripts`, `/detected_domains`) liefern Erkennungsdaten, lösen aber selbst keine Alarme aus.
+Alarmregeln werden im CSD-Dashboard konfiguriert, nicht über die Automatisierungs-API. Die API-Endpunkte (`/scripts`, `/detected_domains`) liefern Erkennungsdaten, lösen aber von sich aus keine Alarme aus.
 </Aside>
 
 ## Kann ich HTTP-Anforderungsprotokolle für CSD-Ereignisse einsehen?
 
 CSD arbeitet über **clientseitige JavaScript-Telemetrie** — es gibt keine serverseitigen HTTP-Protokolle für Skripterkennungen oder Durchsetzung von Gegenmaßnahmen. Die Erkennungspipeline funktioniert wie folgt:
 
-1. Das CSD-JavaScript-Tag (eingefügt durch den Load Balancer) wird im Browser des Besuchers ausgeführt
+1. Das CSD-JavaScript-Tag (vom Load Balancer eingefügt) wird im Browser des Besuchers ausgeführt
 2. Es überwacht das Laden von Skripten, DOM-Mutationen und den Zugriff auf Formularfelder
 3. Telemetrie-Beacons werden zur Analyse an das F5-Backend gesendet
 4. Erkennungsergebnisse erscheinen in der CSD-API und im Dashboard
 
 Die **Load-Balancer-Zugriffsprotokolle** (`/api/data/namespaces/\{ns\}/access_logs`) enthalten ein Feld `csd_js_injection`, das bestätigt, ob das CSD-Skript-Tag in eine Antwort eingefügt wurde. Für CSD-Erkennungsdaten verwenden Sie die API-Endpunkte: [`/scripts`](/csd/api-reference/#detected-scripts), [`/detected_domains`](/csd/api-reference/#detected-domains) und [`/formFields`](/csd/api-reference/#form-fields).
 
-Siehe die Anleitung [Diagnose](/csd/diagnostics/) für die vollständigen Layer-7-(HTTP-) und Layer-8-(CSD-Telemetrie-)Verifizierungstests.
+Weitere Informationen finden Sie im Leitfaden [Diagnose](/csd/diagnostics/) für die vollständigen Layer-7-(HTTP)- und Layer-8-(CSD-Telemetrie)-Verifizierungstests.
 
-## Integriert sich CSD mit SIEM-Tools (Splunk, Datadog usw.)?
+## Lässt sich CSD mit SIEM-Tools (Splunk, Datadog usw.) integrieren?
 
 Für CSD ist keine native SIEM-Webhook- oder Syslog-Integration dokumentiert. Die CSD-Erkennungsdaten sind über die REST-API-Endpunkte verfügbar:
 
 - `/scripts` — erkannte Skripte mit Risikostufen
 - `/detected_domains` — kategorisierte Domains (CDN, Exfiltration usw.)
-- `/formFields` — von Skripten aufgerufene Formularfelder mit Sensibilitätsklassifizierung
+- `/formFields` — von Skripten aufgerufene Formularfelder mit Sensitivitätsklassifizierung
 
-Kunden können diese API-Endpunkte nach einem Zeitplan abfragen und die Erkennungsdaten an ihr SIEM weiterleiten. Siehe die [API-Referenz](/csd/api-reference/) für Endpunktdetails und Authentifizierung.
+Kunden können diese API-Endpunkte planmäßig abfragen und Erkennungsdaten an ihr SIEM weiterleiten. Einzelheiten zu den Endpunkten und zur Authentifizierung finden Sie in der [API-Referenz](/csd/api-reference/).
 
 <Aside type="tip">
-Die F5 Distributed Cloud-Plattform unterstützt **Global Log Receiver**-Konfigurationen zum Streaming von HTTP-Zugriffsprotokollen an externe Systeme (Splunk, Datadog, S3 usw.). Dies umfasst zwar Load-Balancer-Zugriffsprotokolle (einschließlich des Feldes `csd_js_injection`), beinhaltet jedoch keine CSD-Erkennungsereignisse. Für Erkennungsdaten verwenden Sie den oben beschriebenen API-Abfrageansatz.
+Die F5 Distributed Cloud-Plattform unterstützt **Global Log Receiver**-Konfigurationen zum Streaming von HTTP-Zugriffsprotokollen an externe Systeme (Splunk, Datadog, S3 usw.). Dies umfasst zwar die Load-Balancer-Zugriffsprotokolle (einschließlich des Feldes `csd_js_injection`), beinhaltet jedoch keine CSD-Erkennungsereignisse. Für Erkennungsdaten verwenden Sie den oben beschriebenen API-Abfrageansatz.
 </Aside>
 
 ## Was blockiert die CSD-Mitigation tatsächlich?
 
-Die CSD-Mitigation blockiert das Laden von `<script>`-Tags von mitigierten Domains, indem das `src`-Attribut abgefangen wird — das CSD-JavaScript setzt `src` auf einen leeren String, wodurch die Netzwerkanfrage vollständig verhindert wird. Dies zielt auf den **Supply-Chain-Vektor** ab: bösartige Drittanbieter-Skripte, die über `<script>`-Tags in die Seite eingefügt werden.
+Die CSD-Mitigation blockiert das Laden von `<script>`-Tags von mitigierten Domains, indem das `src`-Attribut abgefangen wird — das CSD-JavaScript setzt das `src` auf einen leeren String und verhindert so die Netzwerkanfrage vollständig. Dies zielt auf den **Supply-Chain-Vektor**: bösartige Drittanbieter-Skripte, die über `<script>`-Tags in die Seite eingefügt werden.
 
 Die CSD-Mitigation fängt **nicht** ab:
 
@@ -68,20 +68,20 @@ Die CSD-Mitigation fängt **nicht** ab:
 - `<img>`- oder `<link>`-Tag-Ladevorgänge
 - WebSocket-Verbindungen
 
-Dieses Design ist beabsichtigt — CSD konzentriert sich auf den Skript-Lademechanismus, den Supply-Chain-Angriffe (Magecart, Formjacking, Skimming) verwenden, um bösartigen Code einzuschleusen. API-Aufrufe auf Anwendungsebene über `fetch()` oder `XMLHttpRequest` liegen außerhalb des CSD-Anwendungsbereichs und werden von anderen F5 XC-Sicherheitsfunktionen behandelt (WAF, Bot Defense, API Protection).
+Dieses Design ist beabsichtigt — CSD konzentriert sich auf den Skript-Lademechanismus, den Supply-Chain-Angriffe (Magecart, Formjacking, Skimming) zur Einschleusung von bösartigem Code verwenden. API-Aufrufe auf Anwendungsebene über `fetch()` oder `XMLHttpRequest` liegen außerhalb des CSD-Bereichs und werden von anderen F5 XC-Sicherheitsfunktionen (WAF, Bot Defense, API Protection) behandelt.
 
-Siehe [Phase 3 — Mitigieren](/csd/demo/phase-3-mitigate/) für einen Vorher/Nachher-Nachweis, der das Skript-Blockierungsverhalten demonstriert.
+Siehe [Phase 3 — Mitigation](/csd/demo/phase-3-mitigate/) für einen Vorher/Nachher-Nachweis, der das Skript-Blockierungsverhalten demonstriert.
 
 ## Wie lange dauert es, bis Erkennungen nach einem Angriff erscheinen?
 
-Die Erkennungszeit variiert je nach Endpunkt:
+Die Erkennungszeiten variieren je nach Endpunkt:
 
 | Endpunkt | Typische Dauer | Hinweise |
 | --- | --- | --- |
-| `/detected_domains` | Minuten | Wird zuerst befüllt — dies ist der primäre Indikator dafür, dass die CSD-Pipeline verarbeitet |
+| `/detected_domains` | Minuten | Wird zuerst befüllt — dies ist der primäre Indikator, dass die CSD-Pipeline verarbeitet |
 | `/scripts` | 10–30 Minuten | Verwendet einen langsameren Backend-Verarbeitungszyklus |
-| `/formFields` | 20–30 Minuten | Die ML-Sensibilitätsklassifizierung (`Sensitive` vs. `Not Sensitive`) erfordert zusätzliche Verarbeitung |
+| `/formFields` | 20–30 Minuten | Die ML-Sensitivitätsklassifizierung (`Sensitive` vs. `Not Sensitive`) erfordert zusätzliche Verarbeitung |
 
-Erkennungen **bleiben über Infrastruktur-Abbau/Neuaufbau hinweg bestehen**, wenn dieselbe geschützte Domain auf demselben Tenant erneut registriert wird. Nach einem Abbau und Neuaufbau fragen Sie `/detected_domains` einmal ab — wenn die Antwort Einträge enthält, sind frühere Erkennungen weiterhin verfügbar und es ist keine Wartezeit erforderlich.
+Erkennungen **bleiben über Infrastruktur-Abbau/-Neuaufbau hinweg bestehen**, wenn dieselbe geschützte Domain auf demselben Mandanten erneut registriert wird. Nach einem Abbau und Neuaufbau fragen Sie `/detected_domains` einmal ab — wenn die Antwort Einträge enthält, sind frühere Erkennungen noch verfügbar und es ist keine Wartezeit erforderlich.
 
 Siehe den Abschnitt [Phase 2 — Erkennungsverifizierung](/csd/demo/phase-2-attack/#step-9-detection-verification-via-api) für das empfohlene Abfrageprotokoll.

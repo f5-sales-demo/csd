@@ -1,6 +1,6 @@
 ---
 title: 阶段 3 — 缓解
-description: 应用 CSD 缓解策略并验证攻击流量已被阻止
+description: 应用 CSD 缓解策略并验证攻击流量被阻断
 sidebar:
   order: 4
   label: 阶段 3 — 缓解
@@ -11,19 +11,19 @@ i18n:
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-阶段 3 创建 CSD 缓解的**前后对比证据**。您将在无缓解措施的情况下重新运行攻击以建立基线，然后应用缓解措施，再重新运行相同的攻击以证明 CSD 阻止了网络调用。必须先完成阶段 2 — 所有 DET 检查均为 PASS — 才能继续。
+阶段 3 创建 CSD 缓解的**前后对比证据**。您在没有缓解措施的情况下重新运行攻击以建立基线，然后应用缓解措施，再重新运行相同的攻击以证明 CSD 阻断了网络调用。阶段 2 必须已完成——所有 DET 检查均为 PASS——才能继续。
 
 <Aside type="note">
-**CSD 缓解会阻止从被缓解域名加载脚本。**当某个域名在缓解列表中时，CSD JavaScript 会拦截 `&lt;script&gt;` 标签的源 URL 并阻止脚本加载——从源头阻断供应链攻击。CSD 不会拦截 `fetch()` 或 `XMLHttpRequest` 调用。此阶段通过在缓解前后运行相同的攻击来获取脚本阻止的证据。
+**CSD 缓解会阻断从已缓解域名加载脚本。** 当域名在缓解列表中时，CSD JavaScript 会拦截 `&lt;script&gt;` 标签的源 URL 并阻止脚本加载——从源头阻止供应链攻击。CSD 不会拦截 `fetch()` 或 `XMLHttpRequest` 调用。此阶段通过在缓解前后运行相同的攻击来捕获脚本阻断的证据。
 </Aside>
 
 <Aside type="caution">
-**实时测试说明：**缓解 POST/DELETE 端点已在开发环境中验证，但行为细节（响应时间、对脚本检测状态的影响）可能因租户配置而异。如果您观察到意外响应，请查阅 [API 参考](/csd/api-reference/#mitigated-domains)获取规范端点定义。
+**实时测试说明：** 缓解 POST/DELETE 端点已在开发环境中验证，但行为细节（响应时间、对脚本检测状态的影响）可能因租户配置而异。如果您观察到意外响应，请查看 [API 参考](/csd/api-reference/#mitigated-domains) 获取规范端点定义。
 </Aside>
 
-## 步骤 1：确认无活跃缓解措施（基线）
+## 步骤 1：确认没有活跃的缓解措施（基线）
 
-在捕获"之前"快照之前，验证环境是干净的——不应有任何活跃的缓解措施。这确保基线攻击在没有任何 CSD 阻止的情况下运行。
+在捕获"之前"快照前，验证环境是干净的——不应有任何活跃的缓解措施。这确保基线攻击在没有任何 CSD 阻断的情况下运行。
 
 ### 检查已缓解域名数量
 
@@ -34,7 +34,7 @@ curl -s \
   | jq '{count: (.items | length)}'
 ```
 
-如果数量**不是** `0`，则表示上次运行中残留了缓解措施。在继续之前逐个删除：
+如果数量**不是** `0`，则表示之前运行的缓解措施仍然存在。在继续之前删除每一个：
 
 ```bash
 # Delete a mitigated domain (repeat for each domain name)
@@ -44,7 +44,7 @@ curl -s -X DELETE \
   | jq .
 ```
 
-将 `<domain-name>` 替换为缓解域名时使用的 `metadata.name`（例如 `cdn.jsdelivr.net`、`esm.sh`、`unpkg.com`、`ga.jspm.io`、`httpbin.org`、`jsonplaceholder.typicode.com`）。如果清理 `httpbin.org` 后仍有残余项，请尝试删除 `www.httpbin.org`——之前的运行可能使用了该名称作为 metadata name。
+将 `<domain-name>` 替换为缓解域名时使用的 `metadata.name`（例如 `cdn.jsdelivr.net`、`esm.sh`、`unpkg.com`、`ga.jspm.io`、`httpbin.org`、`jsonplaceholder.typicode.com`）。如果清理 `httpbin.org` 后仍有剩余项目，也尝试删除 `www.httpbin.org`——之前的运行可能使用了该名称作为元数据名称。
 
 ### 确认阶段 2 检测结果存在
 
@@ -59,65 +59,65 @@ curl -s \
 
 | 检查项 | 预期结果 | 状态 |
 | --- | --- | --- |
-| 已缓解域名数量 | `0`（干净基线） | 为 0 则 PASS，大于 0 则需要清理 |
+| 已缓解域名数量 | `0`（干净基线） | 为 0 则 PASS，大于 0 则需清理 |
 | 已检测域名数量 | &gt; 0（阶段 2 检测结果存在） | 大于 0 则 PASS |
-| 数据泄露域名存在 | `www.httpbin.org`、`jsonplaceholder.typicode.com` | 至少出现一个则 PASS |
+| 数据窃取域名存在 | `www.httpbin.org`、`jsonplaceholder.typicode.com` | 至少出现一个则 PASS |
 
 ## 步骤 2：运行攻击 — 缓解之前
 
-在**无活跃缓解措施**的情况下重新运行组合模拟以捕获新的基线。这是**"之前"快照**——证明在未应用 CSD 缓解时攻击可以成功。
+在**没有活跃缓解措施**的情况下重新运行组合模拟，以捕获新的基线。这是**"之前"快照**——证明在未应用 CSD 缓解时攻击可以成功。
 
 <Aside type="note">
-此步骤需要浏览器端 JavaScript 执行——`curl` 无法触发 CSD 检测。具有浏览器自动化工具（MCP Chrome DevTools、Playwright、Puppeteer）的 AI 助手使用下方的 **AI 自动化执行**序列直接执行这些步骤。没有浏览器自动化的操作人员执行手动步骤。
+此步骤需要浏览器端 JavaScript 执行——`curl` 无法触发 CSD 检测。具有浏览器自动化工具（MCP Chrome DevTools、Playwright、Puppeteer）的 AI 助手使用下面的 **AI 自动化执行**序列直接执行这些步骤。没有浏览器自动化的操作员执行手动步骤。
 </Aside>
 
 ### AI 自动化执行
 
-具有浏览器自动化工具的 AI 助手使用相同的阶段 2 initScript（保存原生 `fetch`）以编程方式运行攻击模拟：
+具有浏览器自动化工具的 AI 助手使用与阶段 2 相同的 initScript（保存原生 `fetch`）以编程方式运行攻击模拟：
 
-1. **使用 initScript 导航** — 首先导航到 `about:blank` 以确保干净的文档上下文（避免先前导航残留的 initScript），然后使用 **阶段 2 initScript** `navigate_page` 到 `http://$F5XC_DOMAINNAME/#/login`（完整代码在 [阶段 2 — AI 自动化执行](/csd/demo/phase-2-attack/#ai-automated-execution) 中）。此 initScript 保存原生 `setInterval`、`clearInterval`、`fetch` 和 `console.log`——这里使用原生 `fetch` 引用是正确的，因为没有活跃的缓解措施
-2. **关闭欢迎横幅** — `press_key` 按 `Escape` 关闭欢迎横幅。后续访问时横幅可能不会出现（cookie 已持久化）。Cookie 同意对话框也会被 Escape 键自动关闭
+1. **使用 initScript 导航** — 首先导航到 `about:blank` 以确保干净的文档上下文（避免来自先前导航的陈旧 initScript），然后使用 **阶段 2 initScript**（[阶段 2 — AI 自动化执行](/csd/demo/phase-2-attack/#ai-automated-execution) 中的原始代码）`navigate_page` 到 `http://$F5XC_DOMAINNAME/#/login`。此 initScript 保存原生 `setInterval`、`clearInterval`、`fetch` 和 `console.log`——此处原生 `fetch` 引用是正确的，因为没有活跃的缓解措施
+2. **关闭欢迎横幅** — 使用 `Escape` 键 `press_key` 关闭欢迎横幅。后续访问时横幅可能不会出现（cookie 已持久化）。Cookie 同意对话框也会被 Escape 键自动关闭
 3. **等待完成** — 等待 10 秒，让所有 CDN 脚本加载/错误回调和 fetch promise 解析完成
-4. **捕获证据** — `list_console_messages` 检查 `[CSD Demo] Simulation complete` 和 CDN 加载结果；`list_network_requests` 过滤 `script` 和 `fetch` 类型以验证 HTTP 状态码（成功为 `200`/`201`）
+4. **捕获证据** — 使用 `list_console_messages` 检查 `[CSD Demo] Simulation complete` 和 CDN 加载结果；使用 `list_network_requests` 过滤 `script` 和 `fetch` 类型以验证 HTTP 状态码（成功为 `200`/`201`）
 
 <Aside type="caution">
-**zone.js 不兼容问题** — Juice Shop 使用 Angular 的 zone.js，它会对 `setTimeout`、`setInterval`、`fetch`、`XMLHttpRequest` 和其他浏览器 API 进行补丁。这会导致 MCP 的 `evaluate_script`、`fill` 和 `click` 工具出现 `Cannot read properties of undefined (reading 'call')` 错误。请改用带 `initScript` 的 `navigate_page`——`initScript` 在 zone.js 加载之前运行，因此您可以保存原生 API 引用并在轮询回调中使用它们。initScript 必须使用原生 `HTMLInputElement.prototype.value` setter（而非 `fill`）填充表单字段，并内联运行检测脚本（而非通过 `setTimeout`，zone.js 可能在页面加载后拦截它）。详见[触发检测 — AI 自动化执行](/csd/trigger-detection/#ai-automated-execution)。
+**zone.js 不兼容** — Juice Shop 使用 Angular 的 zone.js，它会修补 `setTimeout`、`setInterval`、`fetch`、`XMLHttpRequest` 和其他浏览器 API。这会导致 MCP `evaluate_script`、`fill` 和 `click` 工具出现 `Cannot read properties of undefined (reading 'call')` 错误。请改用带 `initScript` 的 `navigate_page`——`initScript` 在 zone.js 加载之前运行，因此您可以保存原生 API 引用并在轮询回调中使用它们。initScript 必须使用原生 `HTMLInputElement.prototype.value` setter（而非 `fill`）填充表单字段，并内联运行检测脚本（而非通过 `setTimeout`，因为 zone.js 可能在页面加载后拦截它）。详见[触发检测 — AI 自动化执行](/csd/trigger-detection/#ai-automated-execution)。
 </Aside>
 
 <Aside type="note">
-**initScript 累积** — 每次带 `initScript` 参数的 `navigate_page` 调用都会将脚本添加到持久列表中，该列表在每次后续文档加载时运行。为避免残留脚本干扰，要么在运行之间导航到 `about:blank`，要么使用带 `isolatedContext` 的 `new_page` 获取干净的浏览器上下文。
+**initScript 累积** — 每次带 `initScript` 参数的 `navigate_page` 调用都会将脚本添加到持久列表中，该列表在每次后续文档加载时运行。为避免陈旧脚本干扰，可以在两次运行之间导航到 `about:blank`，或使用带 `isolatedContext` 的 `new_page` 获取干净的浏览器上下文。
 </Aside>
 
 ### 手动执行
 
-没有浏览器自动化工具的操作人员使用与[阶段 2 — 步骤 8：攻击模拟](/csd/demo/phase-2-attack/#step-8-attack-simulation)相同的过程手动运行模拟：
+没有浏览器自动化工具的操作员使用与[阶段 2 — 步骤 8：攻击模拟](/csd/demo/phase-2-attack/#step-8-attack-simulation)相同的过程手动运行模拟：
 
 1. 导航到 `http://xF5XC_DOMAINNAMEx/#/login`
-2. 在 Email 和 Password 字段中输入虚拟凭据（不要提交）
-3. 打开 DevTools — 按 **F12** 并切换到 **Console** 选项卡
-4. 粘贴并运行来自[触发检测](/csd/trigger-detection/#run-the-combined-simulation-script)的组合检测脚本
-5. 观察控制台输出——所有 CDN 脚本应加载成功，数据泄露调用应以 `200`/`201` 响应成功返回
+2. 在邮箱和密码字段中输入虚拟凭据（不要提交）
+3. 打开 DevTools — 按 **F12** 并切换到 **Console** 标签页
+4. 粘贴并运行[触发检测](/csd/trigger-detection/#run-the-combined-simulation-script)中的组合检测脚本
+5. 观察控制台输出——所有 CDN 脚本应成功加载，数据窃取调用应以 `200`/`201` 响应成功
 
 ### 证据 — 缓解之前
 
 | 检查项 | 预期结果（缓解之前） | 状态 |
 | --- | --- | --- |
-| CDN 脚本注入 | 所有 4 个 script 标签加载成功——出现 `[Supply Chain] Loaded from` 消息，网络选项卡显示 `200` | PASS |
-| 向 `www.httpbin.org` 发送泄露 fetch | 网络选项卡显示 `200`——数据已发送 | PASS |
-| 向 jsonplaceholder.typicode.com 发送泄露 fetch | 网络选项卡显示 `201`——数据已发送 | PASS |
+| CDN 脚本注入 | 全部 4 个脚本标签加载——出现 `[Supply Chain] Loaded from` 消息，网络标签页显示 `200` | PASS |
+| 到 `www.httpbin.org` 的数据窃取 fetch | 网络标签页显示 `200`——数据已发送 | PASS |
+| 到 jsonplaceholder.typicode.com 的数据窃取 fetch | 网络标签页显示 `201`——数据已发送 | PASS |
 | 控制台输出 | `[CSD Demo] Simulation complete` | PASS |
 
 <Aside type="note">
-**通过网络请求验证：**最可靠的证据是**网络选项卡**（或 AI 助手使用的 `list_network_requests`），而非控制台回调。Juice Shop 中的 zone.js 可能会破坏 promise 的 `.then()` 回调和脚本的 `onload` 处理程序，导致即使网络请求成功，控制台消息也可能不完整。请始终将控制台输出与网络请求状态码交叉验证。
+**通过网络请求验证：** 最可靠的证据是**网络标签页**（AI 助手使用 `list_network_requests`），而非控制台回调。Juice Shop 中的 zone.js 可能会破坏 promise `.then()` 回调和脚本 `onload` 处理程序，导致即使网络请求成功，控制台消息也不完整。始终将控制台输出与网络请求状态码进行交叉验证。
 </Aside>
 
 <Aside type="tip">
-这是基线证据：在没有活跃缓解措施的情况下，攻击者的脚本可以自由加载，数据泄露成功。保存或截图此证据——您将在步骤 5 中直接与"之后"的结果进行对比。
+这是基线证据：在没有活跃缓解措施的情况下，攻击者的脚本可以自由加载，数据窃取成功。保存或截图此证据——您将在步骤 5 中直接与"之后"结果进行对比。
 </Aside>
 
 ## 步骤 3：应用缓解措施
 
-对每个已检测的域名，向已缓解域名端点发送 POST 请求。阶段 2 模拟中的主要目标是 4 个 CDN 注入域名和所有已检测到的数据泄露域名。
+对每个已检测的域名，向缓解域名端点发送 POST 请求。阶段 2 模拟中的主要目标是 4 个 CDN 注入域名和任何已检测到的数据窃取域名。
 
 **主要缓解目标**（来自组合模拟脚本）：
 
@@ -127,11 +127,11 @@ curl -s \
 | `esm.sh` | CDN 脚本注入 |
 | `unpkg.com` | CDN 脚本注入 |
 | `ga.jspm.io` | CDN 脚本注入 |
-| `www.httpbin.org` | 数据泄露端点 |
-| `jsonplaceholder.typicode.com` | 数据泄露端点 |
+| `www.httpbin.org` | 数据窃取端点 |
+| `jsonplaceholder.typicode.com` | 数据窃取端点 |
 
 <Aside type="note">
-POST 请求体需要**同时**包含 `metadata.name`（对象标识符）和 `spec.mitigated_domain`（CSD 将分类的域名字符串）。两者都必须设置——`spec: {}` 会导致 `400` 错误。对于大多数域名，两个字段使用相同的值（例如 `cdn.jsdelivr.net`）。请参阅下方的 `httpbin.org` 例外情况。
+POST 请求体需要**同时**设置 `metadata.name`（对象的标识符）和 `spec.mitigated_domain`（CSD 将分类的域名字符串）。两者都必须设置——`spec: {}` 会导致 `400` 错误。对于大多数域名，两个字段使用相同的值（例如 `cdn.jsdelivr.net`）。请参阅下方 `httpbin.org` 的例外情况。
 </Aside>
 
 **缓解一个域名**（每个域名运行一次）：
@@ -198,14 +198,14 @@ curl -s -X POST \
 ```
 
 <Aside type="note">
-**`httpbin.org` eTLD+1 约束：**API 会拒绝裸 eTLD+1 域名作为 `mitigated_domain` 值，并返回 `"Invalid root domain: cannot derive eTLD+1"` 错误。请使用 `www.httpbin.org` 作为 `spec.mitigated_domain` 值，同时保持 `httpbin.org` 作为 `metadata.name`。缓解措施将正确应用——`name` 标识符是在已缓解域名列表中显示的内容。在自定义模拟脚本中用作泄露目标的任何裸域名（无子域名）都有相同的约束。
+**`httpbin.org` eTLD+1 约束：** API 会拒绝裸 eTLD+1 域名作为 `mitigated_domain` 值，并返回 `"Invalid root domain: cannot derive eTLD+1"` 错误。请使用 `www.httpbin.org` 作为 `spec.mitigated_domain` 值，同时保持 `httpbin.org` 作为 `metadata.name`。缓解措施将正确应用——`name` 标识符是显示在已缓解域名列表中的内容。在自定义模拟脚本中用作数据窃取目标的任何裸域名（无子域名）都具有相同的约束。
 </Aside>
 
-`200` 响应返回创建的已缓解域名对象。`409` 响应表示该域名已在缓解列表中——这是成功条件。
+`200` 响应返回已创建的缓解域名对象。`409` 响应表示该域名已在缓解列表中——这是一种成功条件。
 
 ## 步骤 4：验证缓解措施已应用
 
-列出所有已缓解域名并确认数量与刚提交的域名数量匹配：
+列出所有已缓解的域名并确认数量与刚提交的域名数量一致：
 
 ```bash
 curl -s \
@@ -215,82 +215,82 @@ curl -s \
 ```
 
 <Aside type="note">
-已缓解域名列表端点返回的所有项目的 `metadata.name` 均为 null——列表响应中不显示各个域名名称。通过检查项目数量是否等于发出的 POST 请求数量（标准模拟为 6 个）来验证。步骤 3 中每个单独 POST 的 `200` 响应是每个缓解措施已创建的权威证据。如果计数为 1 且项目名称为 null 但未应用任何缓解措施，则将计数视为 0——这是后端的异常现象（参见[预检检查](/csd/demo/#pre-flight-check)了解判断规则）。
+已缓解域名列表端点返回的所有项目的 `metadata.name` 均为 null——在列表响应中无法看到各个域名名称。通过检查项目数量是否等于发出的 POST 请求数量来验证（标准模拟为 6 个）。步骤 3 中每个单独 POST 的 `200` 响应是每个缓解措施已创建的权威证据。如果数量为 1 且具有 null 名称的项目且未应用任何缓解措施，则将数量视为 0——这是一个后端异常（请参阅[预检](/csd/demo/#pre-flight-check)了解判断规则）。
 </Aside>
 
 ### 证据
 
 | 检查项 | 预期结果 | 状态 |
 | --- | --- | --- |
-| 已缓解域名数量 | 6（与 POST 数量匹配） | 数量匹配则 PASS |
-| 步骤 3 所有 POST 返回 `200` 或 `409` | 每个域名已被接受 | PASS |
+| 已缓解域名数量 | 6（与 POST 数量一致） | 数量匹配则 PASS |
+| 步骤 3 所有 POST 返回 `200` 或 `409` | 每个域名均被接受 | PASS |
 
-如果数量低于预期，请从步骤 3 重新运行缺失域名的 POST 命令。
+如果数量低于预期，从步骤 3 重新运行缺失域名的 POST 命令。
 
 ## 步骤 5：运行攻击 — 缓解之后
 
-重新运行**完全相同的**组合模拟以捕获**"之后"快照**。模拟脚本完全相同——只有 CSD 的缓解状态发生了变化。来自已缓解域名的脚本加载现在被 CSD JavaScript 阻止（`&lt;script&gt;` 标签的 `src` 被清空为空字符串）。
+重新运行**完全相同**的组合模拟以捕获**"之后"快照**。模拟脚本完全相同——只有 CSD 的缓解状态发生了变化。来自已缓解域名的脚本加载现在被 CSD JavaScript 阻断（`&lt;script&gt;` 标签的 `src` 被清除为空字符串）。
 
 <Aside type="note">
-此步骤使用与步骤 2 相同的浏览器自动化序列。区别不在于您运行什么——而在于您观察到什么。在缓解措施活跃的情况下，CSD 会阻止从已缓解域名加载 `&lt;script&gt;` 标签。对已缓解泄露域名的 Fetch API 调用仍然会完成——CSD 缓解针对的是脚本加载，而非 fetch/XHR。
+此步骤使用与步骤 2 相同的浏览器自动化序列。区别不在于您运行什么——而在于您观察到什么。在缓解措施活跃时，CSD 会阻断从已缓解域名加载 `&lt;script&gt;` 标签。到已缓解数据窃取域名的 Fetch API 调用仍然会完成——CSD 缓解针对的是脚本加载，而非 fetch/XHR。
 </Aside>
 
 ### AI 自动化执行
 
-具有浏览器自动化工具的 AI 助手使用**相同的阶段 2 initScript**（完整代码在 [阶段 2 — AI 自动化执行](/csd/demo/phase-2-attack/#ai-automated-execution) 中）以编程方式重新运行攻击模拟。initScript 保存原生 `fetch` 以避免 zone.js 错误——这不会影响 CSD 缓解，因为 CSD 不会拦截 `fetch()` 调用。
+具有浏览器自动化工具的 AI 助手使用**相同的阶段 2 initScript**（[阶段 2 — AI 自动化执行](/csd/demo/phase-2-attack/#ai-automated-execution)中的原始代码）以编程方式重新运行攻击模拟。initScript 保存原生 `fetch` 以避免 zone.js 错误——这不影响 CSD 缓解，因为 CSD 不会拦截 `fetch()` 调用。
 
-1. **使用 initScript 导航** — 使用带 `isolatedContext` 的 `new_page` 获取干净的浏览器上下文（避免步骤 2 残留的 initScript），然后导航到 `about:blank`，再使用**阶段 2 initScript** 导航到登录页面
-2. **关闭欢迎横幅** — `press_key` 按 `Escape`
+1. **使用 initScript 导航** — 使用带 `isolatedContext` 的 `new_page` 获取干净的浏览器上下文（避免步骤 2 的陈旧 initScript），然后导航到 `about:blank`，再使用**阶段 2 initScript** 导航到登录页面
+2. **关闭欢迎横幅** — 使用 `Escape` 键 `press_key`
 3. **等待完成** — 等待 10 秒让所有异步回调完成
-4. **捕获证据** — `list_console_messages` 检查 `[CSD Demo] Simulation complete`；`list_network_requests` 过滤 `script` 和 `fetch` 类型以观察 CDN 脚本加载**不存在**（CSD 清除了脚本 src），而对泄露域名的 fetch 调用仍然正常完成
+4. **捕获证据** — 使用 `list_console_messages` 检查 `[CSD Demo] Simulation complete`；使用 `list_network_requests` 过滤 `script` 和 `fetch` 类型，观察 CDN 脚本加载**已缺失**（CSD 清除了脚本 src），而到数据窃取域名的 fetch 调用仍正常完成
 
 ### 手动执行
 
-没有浏览器自动化工具的操作人员使用与[阶段 2 — 步骤 8：攻击模拟](/csd/demo/phase-2-attack/#step-8-attack-simulation)相同的过程手动重新运行模拟：
+没有浏览器自动化工具的操作员使用与[阶段 2 — 步骤 8：攻击模拟](/csd/demo/phase-2-attack/#step-8-attack-simulation)相同的过程手动重新运行模拟：
 
 1. 导航到 `http://xF5XC_DOMAINNAMEx/#/login`
-2. 在 Email 和 Password 字段中输入虚拟凭据（不要提交）
-3. 打开 DevTools — 按 **F12** 并切换到 **Console** 选项卡
-4. 粘贴并运行来自[触发检测](/csd/trigger-detection/#run-the-combined-simulation-script)的组合检测脚本
-5. 观察控制台和网络输出——已缓解域名的 CDN 脚本 `onload` 和 `onerror` 回调不会触发（CSD 将脚本 `src` 清空为空字符串，完全阻止了网络请求）。对泄露域名（www.httpbin.org、jsonplaceholder.typicode.com）的 Fetch 调用**仍然以** `200`/`201` 完成——CSD 缓解阻止的是脚本加载，而非 fetch/XHR 调用
+2. 在邮箱和密码字段中输入虚拟凭据（不要提交）
+3. 打开 DevTools — 按 **F12** 并切换到 **Console** 标签页
+4. 粘贴并运行[触发检测](/csd/trigger-detection/#run-the-combined-simulation-script)中的组合检测脚本
+5. 观察控制台和网络输出——已缓解域名的 CDN 脚本 `onload` 和 `onerror` 回调不会触发（CSD 将脚本 `src` 清除为空字符串，完全阻止了网络请求）。到数据窃取域名（www.httpbin.org、jsonplaceholder.typicode.com）的 Fetch 调用**仍然完成**，返回 `200`/`201`——CSD 缓解阻断脚本加载，而非 fetch/XHR 调用
 
 <Aside type="caution" title="缓解传播时间">
-CSD JavaScript 预期通过拦截 `&lt;script&gt;` 标签的 `src` setter 来阻止从已缓解域名加载脚本。然而，在通过 HTTP（端口 80）进行测试时，在应用缓解措施后 5 分钟内未观察到脚本 `src` 被清除——所有 CDN 脚本继续正常加载。这可能表明缓解传播需要超过 5 分钟，或者该机制在 HTTP 与 HTTPS 上的行为不同。如果未观察到缓解阻止，请留出更多传播时间并验证 CSD 遥测脚本是否已刷新其配置。
+CSD JavaScript 预期通过拦截 `&lt;script&gt;` 标签的 `src` setter 来阻断从已缓解域名加载脚本。然而，在通过 HTTP（端口 80）测试时，在应用缓解措施后 5 分钟内未观察到脚本 `src` 清除——所有 CDN 脚本继续正常加载。这可能表明缓解传播需要超过 5 分钟，或者该机制在 HTTP 与 HTTPS 下的行为不同。如果未观察到缓解阻断，请留出额外的传播时间并验证 CSD 遥测脚本是否已刷新其配置。
 
-**Fetch 调用不会被 CSD 缓解拦截**（已验证）。对已缓解域名（www.httpbin.org、jsonplaceholder.typicode.com）的泄露 fetch 调用在缓解前后都以 `200`/`201` 响应正常完成。CSD 缓解针对的是供应链攻击向量（恶意脚本加载），而非通过 fetch/XHR 进行的数据泄露。步骤 2 和步骤 5 均使用相同的阶段 2 initScript（保存了原生 `fetch`）。
+**Fetch 调用不会被 CSD 缓解拦截**（已验证）。到已缓解域名（www.httpbin.org、jsonplaceholder.typicode.com）的数据窃取 fetch 调用在缓解前后均正常完成，返回 `200`/`201` 响应。CSD 缓解针对的是供应链攻击向量（恶意脚本加载），而非通过 fetch/XHR 的数据窃取。步骤 2 和步骤 5 使用相同的阶段 2 initScript（保存了原生 `fetch`）。
 </Aside>
 
 ### 证据 — 缓解之后
 
 | 检查项 | 预期结果（缓解之后） | 状态 |
 | --- | --- | --- |
-| CDN 脚本加载 | **已阻止** — 脚本未出现在网络选项卡中（CSD 将 `src` 清空为空字符串） | PASS |
+| CDN 脚本加载 | **已阻断** — 脚本未出现在网络标签页中（CSD 将 `src` 清除为空字符串） | PASS |
 | CDN 脚本回调 | 已缓解域名的 `onload` 和 `onerror` 均未触发 | PASS |
-| 向 `www.httpbin.org` 发送泄露 fetch | `200` — fetch 仍然完成（CSD 不拦截 fetch） | INFO |
-| 向 jsonplaceholder.typicode.com 发送泄露 fetch | `201` — fetch 仍然完成（CSD 不拦截 fetch） | INFO |
+| 到 `www.httpbin.org` 的数据窃取 fetch | `200` — fetch 仍然完成（CSD 不拦截 fetch） | INFO |
+| 到 jsonplaceholder.typicode.com 的数据窃取 fetch | `201` — fetch 仍然完成（CSD 不拦截 fetch） | INFO |
 | 控制台输出 | `[CSD Demo] Simulation complete` | PASS |
 
 <Aside type="tip">
-**后端验证是最可靠的证据。**如果在演示时间范围内未观察到浏览器可见的脚本阻止，请使用 `/detected_domains` API 响应作为主要证据。域名摘要中的 `mitigatedDomains` 计数和减少的 `actionNeededCount` 确认缓解措施在后端是活跃的——即使浏览器中的 CSD JavaScript 尚未刷新其配置以执行阻止。
+**后端验证是最可靠的证据。** 如果在演示时间范围内未观察到浏览器可见的脚本阻断，请使用 `/detected_domains` API 响应作为主要证据。域名摘要中的 `mitigatedDomains` 数量和减少的 `actionNeededCount` 确认缓解措施在后端已激活——即使浏览器中的 CSD JavaScript 尚未刷新其配置以执行阻断。
 </Aside>
 
-## 步骤 6：缓解前后对比
+## 步骤 6：前后对比
 
-这是演示的成果——并排展示的证据证明相同的攻击，在相同的页面上，使用相同的脚本，现在产生了完全不同的结果。
+这是演示的成果展示——并排证据证明相同的攻击、在相同的页面上、使用相同的脚本，现在产生了完全不同的结果。
 
 ### 对比表
 
 | 信号 | 缓解之前（步骤 2） | 缓解之后（步骤 5） |
 | --- | --- | --- |
-| CDN 脚本加载 | `200` — 所有 4 个 CDN 脚本正常加载 | **已阻止** — 脚本未出现在网络选项卡中（CSD 将 `src` 清空为空字符串） |
-| CDN `onload` 回调 | 出现 `[Supply Chain] Loaded from` 消息 | 没有回调触发（未发起网络请求） |
-| 向 `www.httpbin.org` 泄露 | `200` — 数据已泄露 | `200` — fetch 仍然完成（CSD 不拦截 fetch） |
-| 向 jsonplaceholder.typicode.com 泄露 | `201` — 数据已泄露 | `201` — fetch 仍然完成（CSD 不拦截 fetch） |
+| CDN 脚本加载 | `200` — 全部 4 个 CDN 脚本正常加载 | **已阻断** — 脚本在网络标签页中缺失（CSD 将 `src` 清除为空字符串） |
+| CDN `onload` 回调 | 出现 `[Supply Chain] Loaded from` 消息 | 没有回调触发（没有发出网络请求） |
+| 到 `www.httpbin.org` 的数据窃取 | `200` — 数据已窃取 | `200` — fetch 仍然完成（CSD 不拦截 fetch） |
+| 到 jsonplaceholder.typicode.com 的数据窃取 | `201` — 数据已窃取 | `201` — fetch 仍然完成（CSD 不拦截 fetch） |
 | CSD 已缓解域名 API | 0 个已缓解 | 6 个已缓解 |
 
 ### 在后端数据中验证缓解状态
 
-每 60 秒查询 `/detected_domains` 一次，最多 10 次迭代（10 分钟）。查询返回后或达到 10 分钟最大值后进入对比表——这些检查是信息性的，不会阻止阶段 4。
+每 60 秒查询一次 `/detected_domains`，最多查询 10 次（10 分钟）。查询返回后或达到 10 分钟上限后继续进行对比表——这些检查为信息性的，不阻止阶段 4。
 
 **检查缓解后的已检测域名：**
 
@@ -319,16 +319,16 @@ curl -s -X POST \
 | 检查项 | 预期结果 | 状态 |
 | --- | --- | --- |
 | 基线干净（步骤 1） | 开始时 0 个已缓解域名 | PASS / FAIL |
-| 之前 — 攻击成功（步骤 2） | 脚本加载成功，泄露返回 200/201 | PASS / FAIL |
-| 缓解措施已应用（步骤 3） | 所有 6 个域名通过 POST 接受（200 或 409） | PASS / FAIL |
-| 已缓解数量确认（步骤 4） | 列表中 6 个项目 | PASS / FAIL |
-| 之后 — 脚本加载被阻止（步骤 5） | CDN 脚本未出现在网络选项卡中，fetch 调用仍然完成 | PASS / FAIL |
-| 缓解前后对比（步骤 6） | 步骤 2 和步骤 5 的证据之间有明显差异 | PASS / FAIL |
+| 之前 — 攻击成功（步骤 2） | 脚本加载，数据窃取返回 200/201 | PASS / FAIL |
+| 缓解措施已应用（步骤 3） | 全部 6 个域名通过 POST 被接受（200 或 409） | PASS / FAIL |
+| 已缓解数量确认（步骤 4） | 列表中有 6 个项目 | PASS / FAIL |
+| 之后 — 脚本加载被阻断（步骤 5） | CDN 脚本在网络标签页中缺失，fetch 调用仍然完成 | PASS / FAIL |
+| 前后对比（步骤 6） | 步骤 2 和步骤 5 的证据之间有明显差异 | PASS / FAIL |
 
 <Aside type="note">
-缓解后的检测状态更新可能需要时间才能出现在 API 响应中。如果域名在缓解后立即仍显示"Action Needed"，请每 60 秒查询一次 `/detected_domains`，最多 10 次迭代（10 分钟）。如果 10 次迭代后仍未更新，将当前状态记录为 INFO——这不会阻止阶段 4。
+缓解后的检测状态更新可能需要一些时间才能出现在 API 响应中。如果域名在缓解后立即仍显示"Action Needed"，每 60 秒查询一次 `/detected_domains`，最多查询 10 次（10 分钟）。如果 10 次迭代后仍未更新，将当前状态记录为 INFO——这不阻止阶段 4。
 </Aside>
 
 ---
 
-**阶段 3 完成。**当您准备好移除所有部署对象时，请继续进入[阶段 4 — 清理](/csd/demo/phase-4-teardown/)。
+**阶段 3 完成。** 当您准备好移除所有部署对象时，继续进入[阶段 4 — 清理](/csd/demo/phase-4-teardown/)。

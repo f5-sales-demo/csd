@@ -12,24 +12,24 @@ i18n:
 import { Aside, Steps } from "@astrojs/starlight/components";
 import Screenshot from "@f5xc-salesdemos/docs-theme/components/Screenshot.astro";
 
-La telemetría de CSD opera en dos fases. Primero, los scripts de instrumentación se cargan desde el origen de la aplicación mediante solicitudes **GET** estándar — estos inyectan el código de monitoreo de CSD en la página. El patrón de URL del script sigue el formato `https://<collection-domain>/__imp_apg__/js/<tenant-script>.js`, aunque la ruta exacta varía según el despliegue. Una vez inicializados, los scripts envían periódicamente telemetría de vuelta a F5 mediante solicitudes **POST** conocidas como **balizas**. Estas balizas se envían a los dominios de recopilación de señales operados por F5 (`*.zeronaught.com`), no al origen de la aplicación.
+La telemetría de CSD opera en dos fases. Primero, los scripts de instrumentación se cargan desde el origen de la aplicación mediante solicitudes **GET** estándar — estos inyectan el código de monitoreo de CSD en la página. El patrón de URL del script sigue el formato `https://<collection-domain>/__imp_apg__/js/<tenant-script>.js`, aunque la ruta exacta varía según el despliegue. Una vez inicializados, los scripts envían periódicamente telemetría de vuelta a F5 mediante solicitudes **POST** conocidas como **balizas**. Estas balizas se envían a dominios de recopilación de señales operados por F5 (`*.zeronaught.com`), no al origen de la aplicación.
 
 | Propiedad | Valor |
 | --- | --- |
 | Carga de scripts | Scripts de instrumentación de CSD cargados mediante solicitudes `GET` en el origen de la aplicación — filtre por `__imp_apg__` o `zeronaught` en DevTools para identificarlos |
-| Destinos de balizas | `POST` a la infraestructura de recopilación de señales de F5 (p. ej., `us.gimp.zeronaught.com`, `csd.zeronaught.com`) |
-| Formato de carga útil | Binario codificado — no es JSON legible por humanos |
-| Frecuencia | Periódica durante el tiempo de vida de la página; se envían balizas adicionales en eventos específicos (acceso a campos de formulario, carga de nuevos scripts) |
+| Destinos de balizas | `POST` a la infraestructura de recopilación de señales de F5 (por ejemplo, `us.gimp.zeronaught.com`, `csd.zeronaught.com`) |
+| Formato del payload | Binario codificado — no es JSON legible por humanos |
+| Frecuencia | Periódica durante el tiempo de vida de la página; se activan balizas adicionales en eventos específicos (acceso a campos de formulario, carga de nuevos scripts) |
 
 ## Qué reportan las balizas
 
-Las balizas de CSD transportan **metadatos de comportamiento de scripts**, no datos ingresados por el usuario:
+Las balizas de CSD transportan **metadatos de comportamiento de scripts**, no datos de entrada del usuario:
 
 - **Inventario de scripts** — qué scripts se cargaron en la página y desde qué dominios de origen
 - **Eventos de acceso a campos de formulario** — qué scripts leyeron o interactuaron con qué campos de entrada (nombres y tipos de campos)
 - **Metadatos de página** — URL actual, marcas de tiempo, eventos del ciclo de vida de la página
 
-CSD está diseñado para reportar metadatos de comportamiento de scripts — nombres de campos, tipos de entrada y patrones de acceso — en lugar de datos de formulario ingresados por el usuario. La [Declaración de privacidad de F5 CSD](https://www.f5.com/company/policies/f5-distributed-cloud-client-side-defense-privacy-statement) describe que CSD recopila "información sobre qué activos están accediendo a varios elementos de página o estructuras de datos", centrándose en el comportamiento de los scripts en lugar del contenido ingresado por el usuario.
+CSD está diseñado para reportar metadatos de comportamiento de scripts — nombres de campos, tipos de entrada y patrones de acceso — en lugar de datos de formulario ingresados por el usuario. La [Declaración de Privacidad de F5 CSD](https://www.f5.com/company/policies/f5-distributed-cloud-client-side-defense-privacy-statement) describe a CSD como un servicio que recopila "información sobre qué activos están accediendo a varios elementos de página o estructuras de datos", enfocándose en el comportamiento de scripts en lugar del contenido de entrada del usuario.
 
 ## Observar balizas en DevTools
 
@@ -37,14 +37,14 @@ CSD está diseñado para reportar metadatos de comportamiento de scripts — nom
 1. Abra Chrome DevTools (**F12**) y cambie a la pestaña **Network**
 2. Navegue por la aplicación o interactúe con campos de formulario para generar tráfico
 3. Escriba `zeronaught` en la barra de filtro para aislar el tráfico de CSD — verá la carga del script (`GET`) y las balizas de telemetría (`POST`) hacia `us.gimp.zeronaught.com`
-4. Observe la columna **Method**: las entradas `GET` son el código de instrumentación de CSD cargándose; las entradas `POST` denominadas `dip` son las balizas de telemetría que transportan datos de señales de vuelta a F5
-5. Haga clic en una baliza `dip` para inspeccionar sus encabezados y carga útil; tenga en cuenta que el cuerpo de la solicitud es binario codificado, no JSON legible por humanos
+4. Observe la columna **Method**: las entradas `GET` corresponden a la carga del código de instrumentación de CSD; las entradas `POST` con nombre `dip` son las balizas de telemetría que transportan datos de señales de vuelta a F5
+5. Haga clic en una baliza `dip` para inspeccionar sus encabezados y payload; observe que el cuerpo de la solicitud es binario codificado, no JSON legible por humanos
 </Steps>
 
 <Screenshot light="/images/devtools-beacons-light.png" dark="/images/devtools-beacons-dark.png" alt="Pestaña Network de DevTools filtrada por zeronaught mostrando la carga de script GET y las balizas de telemetría POST" />
 
 <Aside type="tip" title="Balizas de CSD vs exfiltración de ataques">
-Las balizas de telemetría de CSD son solicitudes POST enviadas a **infraestructura operada por F5** (dominios `*.zeronaught.com`). Un script malicioso de formjacking, por el contrario, exfiltra datos robados a un **dominio controlado por el atacante** — típicamente mediante `fetch()`, `XMLHttpRequest` o baliza de imagen (`new Image().src`).
+Las balizas de telemetría de CSD son solicitudes POST enviadas a **infraestructura operada por F5** (dominios `*.zeronaught.com`). Un script malicioso de formjacking, por el contrario, exfiltra datos robados hacia un **dominio controlado por el atacante** — típicamente mediante `fetch()`, `XMLHttpRequest`, o baliza de imagen (`new Image().src`).
 
-Tanto las balizas de CSD como la exfiltración de ataques son solicitudes de origen cruzado, pero las diferencias clave son **destino** y **contenido**: CSD envía **metadatos de comportamiento de scripts** a infraestructura conocida de F5, mientras que la exfiltración envía **datos ingresados por el usuario** (contraseñas, números de tarjeta) al servidor de un atacante. Esta distinción es central para cómo CSD detecta ataques — consulte [Capacidades de CSD — Límites de detección](/csd/overview/#detection-boundaries) para conocer qué puede y qué no puede observar CSD.
+Tanto las balizas de CSD como la exfiltración de ataques son solicitudes de origen cruzado, pero las diferencias clave son el **destino** y el **contenido**: CSD envía **metadatos de comportamiento de scripts** a infraestructura conocida de F5, mientras que la exfiltración envía **datos ingresados por el usuario** (contraseñas, números de tarjeta) al servidor de un atacante. Esta distinción es fundamental para cómo CSD detecta ataques — consulte [Capacidades de CSD — Límites de detección](/csd/overview/#detection-boundaries) para conocer qué puede y qué no puede observar CSD.
 </Aside>

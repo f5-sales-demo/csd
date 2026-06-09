@@ -13,7 +13,7 @@ i18n:
 
 import { Aside } from "@astrojs/starlight/components";
 
-O F5 Distributed Cloud Client-Side Defense (CSD) protege aplicações web contra ataques do lado do cliente monitorando o comportamento do JavaScript diretamente no navegador. O balanceador de carga do F5 XC pode ser configurado para injetar o script de telemetria do CSD nas páginas servidas ao cliente. Esse script observa toda a atividade JavaScript — quais scripts são carregados, quais campos de formulário eles leem e quais conexões de rede eles estabelecem. Os dados de telemetria são enviados à plataforma F5 XC, onde modelos de aprendizado de máquina analisam o comportamento dos scripts, atribuem pontuações de risco e sinalizam anomalias. As equipes de segurança revisam as detecções no console do CSD e tomam ações permitindo ou mitigando domínios de scripts.
+O F5 Distributed Cloud Client-Side Defense (CSD) protege aplicações web contra ataques do lado do cliente monitorando o comportamento do JavaScript diretamente no navegador. O load balancer do F5 XC pode ser configurado para injetar o script de telemetria do CSD nas páginas servidas ao cliente. Este script observa toda a atividade JavaScript — quais scripts são carregados, quais campos de formulário eles leem e quais conexões de rede eles realizam. Os dados de telemetria são enviados para a plataforma F5 XC, onde modelos de machine learning analisam o comportamento dos scripts, atribuem pontuações de risco e sinalizam anomalias. As equipes de segurança revisam as detecções no console do CSD e tomam ações permitindo ou mitigando domínios de scripts.
 
 ```mermaid
 flowchart LR
@@ -25,16 +25,16 @@ flowchart LR
 
 ## Sinais Principais de Detecção
 
-O CSD monitora três categorias de comportamento no lado do navegador:
+O CSD monitora três categorias de comportamento do lado do navegador:
 
-| Sinal | O Que o CSD Observa | Exemplo |
+| Sinal | O que o CSD Observa | Exemplo |
 | --- | --- | --- |
-| **Leitura de campos de formulário** | Quais scripts acessam quais campos `input` presentes no DOM da página no momento do carregamento | `main.js` lendo o campo `password` em `/login` |
-| **Inventário de scripts** | Todos os JavaScript próprios e de terceiros carregados em cada página, rastreados por domínio de origem | Uma nova tag `<script>` carregando de `cdn.jsdelivr.net` aparecendo na página de login |
+| **Leituras de campos de formulário** | Quais scripts acessam quais campos `input` presentes no DOM da página no momento do carregamento | `main.js` lendo o campo `password` em `/login` |
+| **Inventário de scripts** | Todos os JavaScripts próprios e de terceiros carregados em cada página, rastreados por domínio de origem | Uma nova tag `<script>` carregando de `cdn.jsdelivr.net` aparecendo na página de login |
 | **Interações de rede** | Domínios envolvidos na atividade de rede dos scripts — inclui tanto domínios de origem de carregamento de scripts quanto domínios de destino de fetch/XHR | Scripts originados de `esm.sh` e alvos de exfiltração de dados como `www.httpbin.org` aparecendo nos domínios detectados |
 
 <Aside type="caution">
-O sinal de Interações de rede do CSD rastreia principalmente **domínios de origem de carregamento de scripts**. No entanto, domínios de destino de fetch/XHR também aparecem na API `/detected_domains` e na tabela de domínios do Dashboard — o CSD detecta atividade de rede no nível de domínio, não apenas carregamentos de scripts. Consulte [Limites de Detecção](#limites-de-detecção) para a lista completa de limitações comportamentais.
+O sinal de Interações de rede do CSD rastreia principalmente **domínios de origem de carregamento de scripts**. No entanto, domínios de destino de fetch/XHR também aparecem na API `/detected_domains` e na tabela de domínios do Dashboard — o CSD detecta atividade de rede no nível do domínio, não apenas carregamentos de scripts. Consulte [Limites de Detecção](#limites-de-detecção) para a lista completa de limitações comportamentais.
 </Aside>
 
 ## Matriz de Funcionalidades
@@ -54,51 +54,51 @@ O sinal de Interações de rede do CSD rastreia principalmente **domínios de or
 
 ## Limites de Detecção
 
-Compreender o que o CSD **não** monitora é fundamental para definir expectativas precisas em demonstrações:
+Entender o que o CSD **não** monitora é essencial para definir expectativas precisas de demonstração:
 
 | Limitação | Detalhe | Verificado |
 | --- | --- | --- |
 | **Campos criados dinamicamente** | O CSD rastreia campos `input` presentes no DOM no carregamento da página. Campos injetados por JavaScript após o carregamento não são monitorados. Um `<input>` criado dinamicamente e lido por um script não aparece na visualização de Campos de Formulário. | Sim — campo ausente de `/formFields` após espera de 10 minutos |
 | **Ofuscação em nível de código** | O CSD não sinaliza técnicas de execução dinâmica de código ou padrões de ofuscação como sinais de detecção separados. Coletores ofuscados produzem o mesmo nível de risco que os não ofuscados — o CSD rastreia metadados comportamentais, não padrões de código-fonte. | Sim — "Risco Alto" idêntico para ambas as técnicas |
-| **Campos de formulário de sobreposição** | O CSD rastreia apenas campos de formulário presentes no DOM original no carregamento da página. Formulários de sobreposição injetados por JavaScript (uma técnica comum de skimming digital) não são rastreados — apenas leituras dos campos originais são detectadas. | Sim — campos de sobreposição ausentes de `/formFields` após espera de 10 minutos |
+| **Campos de formulário sobrepostos** | O CSD rastreia apenas campos de formulário presentes no DOM original no carregamento da página. Formulários sobrepostos injetados por JavaScript (uma técnica comum de skimming digital) não são rastreados — apenas leituras dos campos originais são detectadas. | Sim — campos sobrepostos ausentes de `/formFields` após espera de 10 minutos |
 | **Comportamento dos contadores do Dashboard** | Os contadores resumidos "Encontrados e Mitigados" e "Encontrados e Permitidos" só mudam após um administrador adicionar explicitamente um domínio à lista de mitigação ou permissão. Os contadores "Ação Necessária" e "Total Encontrado" são atualizados automaticamente quando novos domínios são detectados. | Sim — "Encontrados e Permitidos" mudou de 0 para 1 somente após POST para `/allowed_domains` |
 
 <Aside type="note" title="Visibilidade API vs Console">
-O endpoint da API `/detected_domains` retorna todos os domínios detectados, incluindo domínios de origem de scripts próprios e de terceiros. O domínio da aplicação própria (ex.: `csd.bankexample.com`) aparece na lista de domínios detectados junto com domínios CDN de terceiros. Tanto domínios próprios quanto de terceiros aparecem na tabela de domínios do Dashboard.
+O endpoint da API `/detected_domains` retorna todos os domínios detectados, incluindo domínios de origem de scripts próprios e de terceiros. O domínio da aplicação própria (ex.: `csd.bankexample.com`) aparece na lista de domínios detectados junto com domínios de CDN de terceiros. Tanto domínios próprios quanto de terceiros aparecem na tabela de domínios do Dashboard.
 
-Domínios de destino de fetch/XHR (ex.: `www.httpbin.org` contatado via `fetch()`) também aparecem na resposta de `/detected_domains`. A plataforma CSD rastreia esses domínios no nível de domínio, mesmo que não sejam domínios de origem de carregamento de scripts.
+Domínios de destino de fetch/XHR (ex.: `www.httpbin.org` contatado via `fetch()`) também aparecem na resposta de `/detected_domains`. A plataforma CSD rastreia esses domínios no nível do domínio, mesmo que não sejam domínios de origem de carregamento de scripts.
 </Aside>
 
 ## Mapeamento PCI DSS v4.0
 
-O CSD atende diretamente a dois requisitos do PCI DSS v4.0 para segurança de páginas de pagamento:
+O CSD aborda diretamente dois requisitos do PCI DSS v4.0 para segurança de páginas de pagamento:
 
-| Requisito PCI DSS | O Que Exige | Como o CSD Atende |
+| Requisito PCI DSS | O que Exige | Como o CSD Atende |
 | --- | --- | --- |
-| **6.4.3** — Gerenciamento de scripts em páginas de pagamento | Manter um inventário de todos os scripts, fornecer autorização e justificativa por escrito para cada um, verificar a integridade dos scripts | A Lista de Scripts fornece inventário completo; o campo Justificativa documenta a autorização; a linha do tempo de comportamento rastreia mudanças |
+| **6.4.3** — Gerenciamento de scripts em páginas de pagamento | Manter um inventário de todos os scripts, fornecer autorização e justificativa por escrito para cada um, verificar a integridade dos scripts | A Lista de Scripts fornece inventário completo; o campo Justificativa documenta a autorização; a linha do tempo de comportamento rastreia alterações |
 | **11.6.1** — Detecção de adulteração em páginas de pagamento | Detectar modificações não autorizadas em cabeçalhos HTTP e conteúdo de páginas de pagamento | A telemetria do CSD detecta novas injeções de scripts, leituras não autorizadas de campos de formulário e novos domínios de rede — alertando sobre mudanças no comportamento da página |
 
 <Aside type="tip">
-Use a funcionalidade de **Justificativa de scripts** para documentar por que cada script é autorizado em páginas de pagamento. Isso cria uma trilha de auditoria que mapeia diretamente para os requisitos de autorização do PCI DSS 6.4.3.
+Use a funcionalidade de **Justificativa de scripts** para documentar por que cada script é autorizado em páginas de pagamento. Isso cria uma trilha de auditoria que se mapeia diretamente aos requisitos de autorização do PCI DSS 6.4.3.
 </Aside>
 
 ## Matriz de Cobertura de Ameaças
 
-A tabela a seguir mapeia categorias comuns de ataques do lado do cliente para os sinais de detecção do CSD que seriam acionados durante cada tipo de ataque. Tipos de ataque marcados com **\*** são confirmados pela [documentação oficial da F5](https://www.f5.com/cloud/products/client-side-defense). Tipos não marcados são inferidos com base nas categorias de sinais de detecção do CSD e podem não ser explicitamente declarados pela F5.
+A tabela a seguir mapeia categorias comuns de ataques do lado do cliente aos sinais de detecção do CSD que seriam acionados durante cada tipo de ataque. Tipos de ataque marcados com **\*** são confirmados pela [documentação oficial da F5](https://www.f5.com/cloud/products/client-side-defense). Tipos não marcados são inferidos com base nas categorias de sinais de detecção do CSD e podem não ser explicitamente reivindicados pela F5.
 
-| Categoria de Ataque | Descrição | Leitura de Campos | Injeção de Script | Rede |
+| Categoria de Ataque | Descrição | Leituras de Campos | Injeção de Script | Rede |
 | --- | --- | --- | --- | --- |
 | **Formjacking** \* | Script malicioso lê valores de campos de formulário e os exfiltra | Sim | — | Sim |
-| **Skimming digital** \* | Injeta formulários de sobreposição ou scripts para capturar dados de pagamento | Sim | Sim | Sim |
+| **Skimming digital** \* | Injeta formulários sobrepostos ou scripts para capturar dados de pagamento | Sim | Sim | Sim |
 | **Ataque à cadeia de suprimentos** \* | Biblioteca de terceiros comprometida carrega código malicioso | — | Sim | Sim |
 | **Exfiltração de dados** \* | Lê dados sensíveis e os envia para domínios externos | Sim | — | Sim |
 | **Injeção de script** \* | Insere tags `<script>` não autorizadas na página | — | Sim | Sim |
 | **Cryptojacking** \* | Injeta scripts de mineração de criptomoedas | — | Sim | Sim |
-| **Manipulação de DOM** | Injeta ou modifica elementos da página para enganar usuários | — | Sim | — |
-| **Man-in-the-Browser** | Intercepta dados de formulários dentro da sessão do navegador — consulte [OWASP](https://owasp.org/www-community/attacks/Man-in-the-browser_attack) e [MITRE T1185](https://attack.mitre.org/techniques/T1185/) | Sim | — | Sim |
+| **Manipulação do DOM** | Injeta ou modifica elementos da página para enganar os usuários | — | Sim | — |
+| **Man-in-the-Browser** | Intercepta dados de formulário dentro da sessão do navegador — consulte [OWASP](https://owasp.org/www-community/attacks/Man-in-the-browser_attack) e [MITRE T1185](https://attack.mitre.org/techniques/T1185/) | Sim | — | Sim |
 | **Clickjacking** | Sobrepõe frames invisíveis para sequestrar cliques do usuário — consulte [OWASP](https://owasp.org/www-community/attacks/Clickjacking) | — | Sim | — |
-| **Persistência de web skimmer** | Reinjeta scripts de skimming entre navegações de página — consulte [Pesquisa Magecart da Sansec](https://sansec.io/what-is-magecart) | — | Sim | Sim |
+| **Persistência de web skimmer** | Reinjeta scripts de skimmer entre navegações de página — consulte [Pesquisa Magecart da Sansec](https://sansec.io/what-is-magecart) | — | Sim | Sim |
 
 <Aside type="note">
-A detecção de "Rede" cobre tanto domínios de origem de carregamento de scripts quanto domínios de destino de fetch/XHR — ambos aparecem na API `/detected_domains` do CSD e na tabela de domínios do Dashboard. No entanto, a mitigação do CSD tem como alvo o carregamento de scripts (o vetor de cadeia de suprimentos), não chamadas fetch/XHR. Mitigar um domínio bloqueia carregamentos de tags `<script>` desse domínio, mas não intercepta chamadas `fetch()` ou `XMLHttpRequest` para ele.
+A detecção de "Rede" abrange tanto domínios de origem de carregamento de scripts quanto domínios de destino de fetch/XHR — ambos aparecem na API `/detected_domains` do CSD e na tabela de domínios do Dashboard. No entanto, a mitigação do CSD tem como alvo o carregamento de scripts (o vetor de cadeia de suprimentos), não chamadas fetch/XHR. Mitigar um domínio bloqueia carregamentos de tags `<script>` daquele domínio, mas não intercepta chamadas `fetch()` ou `XMLHttpRequest` para ele.
 </Aside>

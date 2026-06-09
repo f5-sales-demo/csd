@@ -1,9 +1,11 @@
 ---
-title: Détection des déclencheurs
-description: 'Attack detection triggers, threshold tuning, and signal validation'
+title: Déclenchement de la détection
+description: >-
+  Déclencheurs de détection d'attaques, ajustement des seuils et validation des
+  signaux
 sidebar:
   order: 6
-  label: Détection des déclencheurs
+  label: Déclenchement de la détection
 i18n:
   sourceHash: 3c5915b65966
   translator: machine
@@ -86,16 +88,16 @@ export const combinedScript = `// CSD Demo — Combined Detection Script
     console.log('='.repeat(50));
 })();`;
 
-## Déclencher la détection
+## Déclenchement de la détection
 
-CSD surveille le comportement JavaScript à l'intérieur du navigateur. Contrairement au WAF ou à Bot Defense, vous ne pouvez pas déclencher la détection CSD avec des commandes curl — cela nécessite une activité de script réelle côté navigateur. Le script combiné suivant déclenche les trois signaux de détection CSD en une seule exécution : la collecte des champs de formulaire, l'injection de scripts tiers depuis plusieurs domaines CDN et l'exfiltration de données vers des points de terminaison externes.
+CSD surveille le comportement JavaScript à l'intérieur du navigateur. Contrairement au WAF ou à Bot Defense, vous ne pouvez pas déclencher la détection CSD avec des commandes curl — cela nécessite une véritable activité de script côté navigateur. Le script combiné suivant déclenche les trois signaux de détection CSD en une seule exécution : collecte des champs de formulaire, injection de scripts tiers depuis plusieurs domaines CDN et exfiltration de données vers des points de terminaison externes.
 
 ### Exécuter le script de simulation combiné
 
 <Steps>
-1. Accédez à la **page de connexion** de Juice Shop à l'adresse `https://botdemo.sales-demo.f5demos.com/#/login`
+1. Naviguez vers la **page de connexion** de Juice Shop à l'adresse `https://botdemo.sales-demo.f5demos.com/#/login`
 
-2. Saisissez des identifiants fictifs dans les champs du formulaire — tapez `test@example.com` dans le champ **Email** et `P@ssword123` dans le champ **Password** (ne soumettez pas le formulaire)
+2. Saisissez des identifiants fictifs dans les champs du formulaire — tapez `test@example.com` dans le champ **Email** et `P@ssword123` dans le champ **Mot de passe** (ne soumettez pas le formulaire)
 
 3. Ouvrez les DevTools (**F12** &rarr; onglet **Console**)
 
@@ -103,9 +105,9 @@ CSD surveille le comportement JavaScript à l'intérieur du navigateur. Contrair
 
 4. Collez le script suivant dans la console et appuyez sur **Entrée** — il s'exécute automatiquement en tant que fonction auto-exécutante
 
-   <Code code={combinedScript} lang="js" title="Combined Detection Script" />
+   <Code code={combinedScript} lang="js" title="Script de détection combiné" />
 
-5. Observez la sortie console par phases `[CSD Demo]` confirmant chaque étape : collecte des champs, injection de scripts depuis 4 domaines CDN et exfiltration de données. `esm.sh` sert une syntaxe de module ES (`export default …`) — lorsqu'il est chargé en tant que balise `<script>` classique, cela provoque `Uncaught SyntaxError: Cannot use import statement outside a module`. C'est attendu et n'affecte pas la détection CSD (la balise script est quand même injectée et la requête réseau est quand même effectuée)
+5. Observez la sortie console `[CSD Demo]` par phases confirmant chaque étape : collecte des champs, injection de scripts depuis 4 domaines CDN et exfiltration de données. `esm.sh` utilise la syntaxe de module ES (`export default …`) — lorsqu'il est chargé en tant que balise `<script>` classique, cela provoque `Uncaught SyntaxError: Cannot use import statement outside a module`. C'est attendu et n'affecte pas la détection CSD (la balise script est tout de même injectée et la requête réseau est tout de même effectuée)
 
    <Screenshot light="/images/devtools-console-output-light.png" dark="/images/devtools-console-output-dark.png" alt="Sortie console après exécution du script de simulation" />
 </Steps>
@@ -114,12 +116,12 @@ CSD surveille le comportement JavaScript à l'intérieur du navigateur. Contrair
 
 Les assistants IA dotés d'outils d'automatisation de navigateur (MCP Chrome DevTools, Playwright, Puppeteer) exécutent la simulation de manière programmatique au lieu de suivre les étapes manuelles ci-dessus :
 
-1. **Naviguer avec initScript** — naviguez d'abord vers `about:blank` pour garantir un contexte de document propre, puis `navigate_page` vers l'URL de la page de connexion (par ex., `http://$F5XC_DOMAINNAME/#/login`) avec un `initScript` qui sauvegarde les fonctions natives `setInterval`, `clearInterval`, `fetch` et `console.log` avant que zone.js ne les modifie, interroge les champs du formulaire de connexion, remplit les identifiants via le setter natif `HTMLInputElement.prototype.value`, et exécute immédiatement le script de détection combiné en ligne. Utilisez le initScript verbatim ci-dessous.
+1. **Naviguer avec initScript** — naviguez d'abord vers `about:blank` pour garantir un contexte de document propre, puis utilisez `navigate_page` vers l'URL de la page de connexion (par exemple, `http://$F5XC_DOMAINNAME/#/login`) avec un `initScript` qui sauvegarde les fonctions natives `setInterval`, `clearInterval`, `fetch` et `console.log` avant que zone.js ne les modifie, interroge les champs du formulaire de connexion, remplit les identifiants via le setter natif `HTMLInputElement.prototype.value`, et exécute immédiatement le script de détection combiné en ligne. Utilisez le initScript verbatim ci-dessous.
 2. **Fermer la bannière de bienvenue** — `press_key` avec `Escape` pour fermer la bannière de bienvenue. Lors des visites suivantes, la bannière peut ne pas apparaître (cookies persistants)
-3. **Attendre la fin de l'exécution** — attendez 10 secondes pour que tous les callbacks de chargement/erreur des scripts CDN et les résolutions de promesses fetch se terminent
-4. **Capturer les preuves** — `list_console_messages` pour vérifier la présence de `[CSD Demo] Simulation complete` ; `list_network_requests` filtré sur les types `script` et `fetch` pour vérifier les codes de statut HTTP
+3. **Attendre la fin** — attendez 10 secondes pour que tous les callbacks de chargement/erreur des scripts CDN et les résolutions de promesses fetch soient terminés
+4. **Capturer les preuves** — `list_console_messages` pour vérifier `[CSD Demo] Simulation complete` ; `list_network_requests` filtré par les types `script` et `fetch` pour vérifier les codes de statut HTTP
 
-**Harnais initScript (verbatim — encapsule le script de détection combiné pour l'exécution automatisée) :**
+**Harness initScript (verbatim — encapsule le script de détection combiné pour l'exécution automatisée) :**
 
 ```javascript
 // Save native references before zone.js patches them
@@ -196,10 +198,10 @@ var _poll = _si(function() {
 }, 300);
 ```
 
-**Remarque sur le `fetch` natif :** Ce harnais sauvegarde `window.fetch.bind(window)` pour éviter les erreurs zone.js. C'est le comportement correct pour toutes les phases de simulation d'attaque. La mitigation CSD bloque le chargement des scripts (en vidant les valeurs `src` des balises `&lt;script&gt;`), pas les appels `fetch()`, donc sauvegarder la référence native de fetch n'affecte pas le comportement de mitigation. Le même initScript est utilisé pour la Phase 2 et la Phase 3.
+**Note sur le `fetch` natif :** Ce harness sauvegarde `window.fetch.bind(window)` pour éviter les erreurs de zone.js. C'est le comportement correct pour toutes les phases de simulation d'attaque. La mitigation CSD bloque le chargement des scripts (en vidant les valeurs `src` des balises `&lt;script&gt;`), pas les appels `fetch()`, donc sauvegarder la référence native de fetch n'affecte pas le comportement de mitigation. Le même initScript est utilisé pour la Phase 2 et la Phase 3.
 
 <Aside type="caution">
-**Incompatibilité zone.js** — Juice Shop utilise le zone.js d'Angular, qui modifie `setTimeout`, `setInterval`, `fetch`, `XMLHttpRequest` et d'autres API du navigateur. Cela casse les outils MCP `evaluate_script`, `fill` et `click` avec `Cannot read properties of undefined (reading 'call')`. Utilisez `navigate_page` avec `initScript` à la place — `initScript` s'exécute avant le chargement de zone.js, ce qui vous permet de sauvegarder les références des API natives. Le initScript doit remplir les champs du formulaire en utilisant le setter natif `HTMLInputElement.prototype.value` (pas l'outil `fill`) et exécuter le script de détection en ligne dans le callback `setInterval`.
+**Incompatibilité zone.js** — Juice Shop utilise zone.js d'Angular, qui modifie `setTimeout`, `setInterval`, `fetch`, `XMLHttpRequest` et d'autres API du navigateur. Cela provoque des erreurs avec les outils MCP `evaluate_script`, `fill` et `click` : `Cannot read properties of undefined (reading 'call')`. Utilisez `navigate_page` avec `initScript` à la place — `initScript` s'exécute avant le chargement de zone.js, ce qui vous permet de sauvegarder les références API natives. Le initScript doit remplir les champs de formulaire en utilisant le setter natif `HTMLInputElement.prototype.value` (pas l'outil `fill`) et exécuter le script de détection en ligne dans le callback `setInterval`.
 </Aside>
 
 <Aside type="note">
@@ -209,7 +211,7 @@ var _poll = _si(function() {
 Les opérateurs sans outils d'automatisation de navigateur utilisent les étapes manuelles ci-dessus.
 
 <Aside type="tip">
-La détection prend **5 à 10 minutes** pour apparaître sur le tableau de bord CSD. Si les alertes ne sont pas encore visibles après l'exécution du script, continuez avec la [présentation de la console CSD](/csd/csd-console/) et vérifiez ultérieurement.
+La détection prend **5 à 10 minutes** pour apparaître sur le tableau de bord CSD. Si les alertes ne sont pas encore visibles après l'exécution du script, continuez avec la [procédure pas à pas de la console CSD](/csd/csd-console/) et vérifiez plus tard.
 </Aside>
 
 ### Ce que fait le script
@@ -218,14 +220,14 @@ La simulation combinée déclenche les trois signaux de détection CSD :
 
 | Comportement | Ce que fait le script | Ce que CSD détecte |
 | --- | --- | --- |
-| **Collecte des champs** | Lit les valeurs des éléments `input` existants (email, mot de passe) | Scripts lisant des champs de formulaire sensibles — signalé comme Risque Élevé |
+| **Collecte de champs** | Lit les valeurs des éléments `input` existants (email, mot de passe) | Scripts lisant des champs de formulaire sensibles — signalé comme Risque Élevé |
 | **Injection de scripts** | Ajoute 4 balises `<script>` chargeant depuis `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com` et `ga.jspm.io` | 4 nouveaux domaines de scripts tiers sur la page |
 | **Exfiltration de données** | Envoie les données collectées via `fetch` vers `www.httpbin.org` et `jsonplaceholder.typicode.com` | Appels réseau vers des domaines externes (note : les destinations fetch apparaissent comme des interactions réseau de scripts, pas dans la vue Réseau des domaines) |
 
 <Aside type="note">
-CSD a des limites de détection spécifiques — par exemple, seuls les champs DOM présents au chargement de la page sont suivis et la vue Réseau affiche uniquement les domaines de chargement de scripts. Consultez [Limites de détection](/csd/overview/#detection-boundaries) pour la liste complète.
+CSD a des périmètres de détection spécifiques — par exemple, seuls les champs DOM au chargement de page sont suivis et la vue Réseau affiche uniquement les domaines de chargement de scripts. Voir [Périmètres de détection](/csd/overview/#detection-boundaries) pour la liste complète.
 </Aside>
 
 ### Simulations avancées
 
-Le script combiné ci-dessus est une version simplifiée en 3 phases (collecte, injection, exfiltration) adaptée à la plupart des démonstrations. La [bibliothèque de scripts d'attaque](/csd/attack-scripts/) fournit 10 scripts ciblés organisés par type d'attaque, incluant un test de charge **Détection Maximale** qui ajoute la manipulation DOM, l'exfiltration de cookies et les canaux de balises image en plus de la couverture du script combiné. Utilisez les scripts individuels pour démontrer des catégories d'attaque spécifiques (formjacking, écrémage numérique, injection de chaîne d'approvisionnement, exfiltration de données, manipulation DOM) de manière isolée.
+Le script combiné ci-dessus est une version simplifiée en 3 phases (collecte, injection, exfiltration) adaptée à la plupart des démonstrations. La [bibliothèque de scripts d'attaque](/csd/attack-scripts/) fournit 10 scripts ciblés organisés par type d'attaque, incluant un test de charge **Détection Maximale** qui ajoute la manipulation DOM, l'exfiltration de cookies et les canaux de balise image en plus de la couverture du script combiné. Utilisez les scripts individuels pour démontrer des catégories d'attaque spécifiques (formjacking, skimming numérique, injection de chaîne d'approvisionnement, exfiltration de données, manipulation DOM) de manière isolée.

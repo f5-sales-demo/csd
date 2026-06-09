@@ -1,11 +1,11 @@
 ---
-title: Phase 1 — Build
+title: เฟส 1 — การสร้าง
 description: >-
   ติดตั้งโครงสร้างพื้นฐาน CSD ผ่าน F5 XC API — healthcheck, origin pool, load
   balancer, protected domain
 sidebar:
   order: 2
-  label: Phase 1 — Build
+  label: เฟส 1 — การสร้าง
 i18n:
   sourceHash: 6ecd8b98f257
   translator: machine
@@ -13,11 +13,11 @@ i18n:
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-Phase 1 ทำการติดตั้งและตรวจสอบโครงสร้างพื้นฐาน CSD ทั้งหมด ดำเนินการทุกขั้นตอนตามลำดับ — แต่ละขั้นตอนต้อง PASS ก่อนดำเนินการต่อ กลับไปที่ [index](/csd/demo/) เพื่อทำการตั้งค่าสภาพแวดล้อมและการแทนที่ตัวแปรก่อนรันคำสั่งเหล่านี้
+เฟส 1 ติดตั้งและตรวจสอบความถูกต้องของโครงสร้างพื้นฐาน CSD ทั้งหมด ให้ทำตามขั้นตอนทั้งหมดตามลำดับ — แต่ละขั้นตอนต้อง PASS ก่อนที่จะดำเนินการต่อ กลับไปที่ [หน้าหลัก](/csd/demo/) เพื่อทำการตั้งค่าสภาพแวดล้อมและแก้ไขตัวแปรก่อนรันคำสั่งเหล่านี้
 
-## ขั้นตอน 0: ตรวจสอบและสร้าง Namespace (ตามเงื่อนไข)
+## ขั้นตอนที่ 0: ตรวจสอบและสร้าง Namespace (แบบมีเงื่อนไข)
 
-ตรวจสอบว่า namespace เป้าหมายมีอยู่บน tenant แล้วหรือไม่ หากไม่มี ให้สร้างขึ้นมา บันทึกผลลัพธ์ลงในตัวแปร shell `NAMESPACE_CREATED` — Phase 4 teardown จะใช้ข้อมูลนี้เพื่อตัดสินใจว่าจะลบ namespace หรือไม่
+ตรวจสอบว่า namespace เป้าหมายมีอยู่แล้วบน tenant หรือไม่ หากยังไม่มีให้สร้างขึ้น ติดตามผลลัพธ์ในตัวแปรเชลล์ `NAMESPACE_CREATED` — การถอนการติดตั้งในเฟส 4 จะใช้ค่านี้เพื่อตัดสินใจว่าจะลบ namespace หรือไม่
 
 ```bash
 NS_CHECK=$(curl -s -o /dev/null -w '%\{http_code\}' \
@@ -36,12 +36,12 @@ fi
 ```
 
 <Aside type="note">
-**ฟิลด์ `spec` เป็นสิ่งจำเป็น** API namespace ของ F5 XC ต้องการฟิลด์ `spec` ในเนื้อหาคำร้องแม้ว่าจะไม่ต้องมีการตั้งค่าใดๆ — ส่ง object ว่าง `{}` การละเว้น `spec` จะส่งคืนรหัสข้อผิดพลาด `3` ("spec should not be empty in request")
+**ฟิลด์ `spec` เป็นสิ่งจำเป็น** API ของ namespace ใน F5 XC ต้องการฟิลด์ `spec` ในเนื้อหาของคำขอแม้ว่าจะไม่ต้องการการกำหนดค่าใดๆ — ส่งออบเจกต์ว่าง `{}` การไม่ใส่ `spec` จะส่งคืนรหัสข้อผิดพลาด `3` ("spec should not be empty in request")
 </Aside>
 
 ### หลักฐาน
 
-ยืนยันว่า namespace มีอยู่และบันทึกว่าถูกสร้างขึ้นมาใหม่หรือไม่:
+ยืนยันว่า namespace มีอยู่แล้วและบันทึกว่าถูกสร้างขึ้นหรือไม่:
 
 ```bash
 curl -s -o /dev/null -w '%\{http_code\}' \
@@ -52,17 +52,17 @@ echo "NAMESPACE_CREATED=$NAMESPACE_CREATED"
 
 | ฟิลด์ | ค่าที่คาดหวัง | สถานะ |
 | --- | --- | --- |
-| HTTP Status | `200` | PASS หากได้รับ, FAIL หาก `404` หรืออื่นๆ |
-| `NAMESPACE_CREATED` | `true` (สร้างใหม่) หรือ `false` (มีอยู่แล้ว) | เป็นข้อมูลอ้างอิง — ใช้โดย Phase 4 teardown |
+| HTTP Status | `200` | PASS หากส่งคืน, FAIL หากเป็น `404` หรืออื่นๆ |
+| `NAMESPACE_CREATED` | `true` (สร้างใหม่) หรือ `false` (มีอยู่แล้ว) | ข้อมูลประกอบ — ใช้โดยการถอนการติดตั้งในเฟส 4 |
 
-## ขั้นตอน 1: สร้าง Healthcheck (ไม่บังคับ)
+## ขั้นตอนที่ 1: สร้าง Healthcheck (ทางเลือก)
 
-สร้าง HTTP healthcheck ที่ origin pool สามารถใช้เพื่อตรวจสอบสถานะ backend
+สร้าง HTTP healthcheck ที่ origin pool สามารถใช้ตรวจสอบสุขภาพของ backend ได้
 
 <Aside type="note">
-**Healthcheck เป็นตัวเลือกสำหรับ CSD** ฟีเจอร์ Client-Side Defense ไม่ขึ้นอยู่กับการตรวจสอบสถานะ origin หาก tenant ของคุณใช้โควตา healthcheck object ครบแล้ว (รหัสข้อผิดพลาด `8` — ดูหัวข้อการจัดการข้อผิดพลาด) ให้ข้ามขั้นตอนนี้และสร้าง origin pool โดยไม่ต้องอ้างอิง healthcheck CSD จะทำงานได้ตามปกติ
+**Healthcheck เป็นทางเลือกสำหรับ CSD** ฟีเจอร์ Client-Side Defense ไม่ขึ้นอยู่กับการตรวจสอบสุขภาพของ origin หาก tenant ของคุณใช้โควตาออบเจกต์ healthcheck หมดแล้ว (รหัสข้อผิดพลาด `8` — ดูการจัดการข้อผิดพลาด) ให้ข้ามขั้นตอนนี้และสร้าง origin pool โดยไม่มีการอ้างอิง healthcheck CSD จะทำงานได้ตามปกติ
 
-หากคุณสร้าง healthcheck ให้สร้าง**ก่อน** origin pool Origin pool ต้องอ้างอิง healthcheck ที่มีอยู่ — หาก healthcheck ไม่มีอยู่เมื่อคุณสร้าง origin pool การอ้างอิงจะว่างเปล่าโดยไม่มีการแจ้งเตือน
+หากคุณสร้าง healthcheck ให้สร้างก่อน origin pool Origin pool ต้องอ้างอิง healthcheck ที่มีอยู่แล้ว — หาก healthcheck ยังไม่มีเมื่อคุณสร้าง origin pool การอ้างอิงจะเป็นค่าว่างโดยไม่มีแจ้งเตือน
 </Aside>
 
 ```bash
@@ -98,7 +98,7 @@ curl -s -X POST \
   | jq .
 ```
 
-การตอบกลับ `200` พร้อม object ที่สร้างขึ้นยืนยันว่า healthcheck ถูกสร้างแล้ว หากการตอบกลับมี `"code": 8` พร้อมข้อความเช่น `"Object kind healthcheck has exhausted limits(150)"` แสดงว่า tenant ถึงขีดจำกัด healthcheck แล้ว — ข้ามไปขั้นตอน 2 และละเว้นการอ้างอิง healthcheck CSD ไม่ขึ้นอยู่กับการตรวจสอบสถานะ
+การตอบกลับ `200` พร้อมออบเจกต์ที่สร้างยืนยันว่า healthcheck ถูกสร้างแล้ว หากการตอบกลับมี `"code": 8` พร้อมข้อความเช่น `"Object kind healthcheck has exhausted limits(150)"` แสดงว่า tenant ถึงขีดจำกัด healthcheck แล้ว — ข้ามไปขั้นตอนที่ 2 และไม่ต้องใส่การอ้างอิง healthcheck CSD ไม่ขึ้นอยู่กับการตรวจสอบสุขภาพ
 
 ### หลักฐาน
 
@@ -113,16 +113,16 @@ curl -s \
 
 | ฟิลด์ | ค่าที่คาดหวัง | สถานะ |
 | --- | --- | --- |
-| HTTP Status | `200` พร้อม object | PASS หากได้รับ, FAIL หาก `404` |
+| HTTP Status | `200` พร้อมออบเจกต์ | PASS หากส่งคืน, FAIL หากเป็น `404` |
 | `name` | ตรงกับ `F5XC_HC_NAME` | PASS |
 | `path` | `/` | PASS |
-| ข้ามขั้นตอน 1 (รหัสข้อผิดพลาด `8`, โควตาเต็ม) | — | PASS (healthcheck เป็นตัวเลือกสำหรับ CSD) |
+| ข้ามขั้นตอนที่ 1 (รหัสข้อผิดพลาด `8`, โควตาหมด) | — | PASS (healthcheck เป็นทางเลือกสำหรับ CSD) |
 
-## ขั้นตอน 2: สร้าง Origin Pool
+## ขั้นตอนที่ 2: สร้าง Origin Pool
 
-สร้าง origin pool ที่ชี้ไปยังเซิร์ฟเวอร์ backend ของคุณ หากคุณสร้าง healthcheck ในขั้นตอน 1 แล้ว ให้ใส่การอ้างอิง `healthcheck` หากข้ามขั้นตอน 1 ให้ใช้ array ว่าง
+สร้าง origin pool ที่ชี้ไปยัง backend server ของคุณ หากคุณสร้าง healthcheck ในขั้นตอนที่ 1 ให้ใส่การอ้างอิง `healthcheck` หากข้ามขั้นตอนที่ 1 ให้ใช้ array ว่าง
 
-**มี healthcheck** (ขั้นตอน 1 สำเร็จ):
+**พร้อม healthcheck** (ขั้นตอนที่ 1 สำเร็จ):
 
 ```bash
 curl -s -X POST \
@@ -158,7 +158,7 @@ curl -s -X POST \
   | jq .
 ```
 
-**ไม่มี healthcheck** (ข้ามขั้นตอน 1):
+**ไม่มี healthcheck** (ข้ามขั้นตอนที่ 1):
 
 ```bash
 curl -s -X POST \
@@ -193,12 +193,12 @@ curl -s -X POST \
 การตอบกลับ `200` ยืนยันว่า origin pool ถูกสร้างแล้ว
 
 <Aside type="caution">
-หากการตอบกลับมี `"code": 8` พร้อมข้อความเช่น `"Object kind endpoint has exhausted limits(500)"` หรือ `"Object kind origin_pool has exhausted limits"` แสดงว่า tenant ถึงโควตาแล้ว ต่างจาก healthcheck ตรงที่ origin pool เป็น**สิ่งจำเป็น**สำหรับเดโม — เดโมไม่สามารถดำเนินการต่อได้หากไม่มี ลบ origin pool ที่ไม่ได้ใช้จาก namespace อื่นเพื่อเพิ่มพื้นที่ว่าง (การลบ origin pool จะเพิ่มพื้นที่ของ endpoint sub-object ด้วย) จากนั้นลองใหม่ หากไม่สามารถแก้ไขปัญหาขีดจำกัดได้ ให้ติดต่อผู้ดูแลระบบ F5 Distributed Cloud (F5 XC) ของคุณเพื่อเพิ่มโควตา tenant
+หากการตอบกลับมี `"code": 8` พร้อมข้อความเช่น `"Object kind endpoint has exhausted limits(500)"` หรือ `"Object kind origin_pool has exhausted limits"` แสดงว่า tenant ถึงโควตาแล้ว ต่างจาก healthcheck ตรงที่ origin pool เป็น**สิ่งจำเป็น**สำหรับเดโม — เดโมไม่สามารถดำเนินต่อได้หากไม่มี ให้ลบ origin pool ที่ไม่ได้ใช้จาก namespace อื่นเพื่อเพิ่มความจุ (การลบ origin pool จะปลดปล่อยออบเจกต์ย่อย endpoint ด้วย) จากนั้นลองใหม่ หากไม่สามารถแก้ไขขีดจำกัดได้ ให้ติดต่อผู้ดูแลระบบ F5 Distributed Cloud (F5 XC) เพื่อเพิ่มโควตา tenant
 </Aside>
 
-### ตรวจสอบว่า Healthcheck ถูกเชื่อมต่อแล้ว
+### ตรวจสอบการเชื่อมต่อ Healthcheck
 
-หากคุณใส่การอ้างอิง healthcheck ให้ยืนยันว่าถูกเชื่อมต่อถูกต้อง:
+หากคุณใส่การอ้างอิง healthcheck ให้ยืนยันว่าเชื่อมต่อถูกต้อง:
 
 ```bash
 curl -s \
@@ -207,11 +207,11 @@ curl -s \
   | jq '.spec.healthcheck'
 ```
 
-array ที่มีข้อมูลยืนยันการเชื่อมต่อ array ว่าง `[]` เป็นสิ่งที่คาดหวังหากข้ามขั้นตอน 1 หรือหมายความว่าไม่พบ healthcheck หากคุณตั้งใจจะเชื่อมต่อ
+Array ที่มีข้อมูลยืนยันการเชื่อมต่อ Array ว่าง `[]` เป็นสิ่งที่คาดหวังหากข้ามขั้นตอนที่ 1 หรือหมายความว่าไม่พบ healthcheck หากคุณตั้งใจจะเชื่อมต่อ
 
 ### หลักฐาน
 
-ยืนยันว่า origin pool มีอยู่และมีการตั้งค่าที่ถูกต้อง:
+ยืนยันว่า origin pool มีอยู่และมีการกำหนดค่าที่ถูกต้อง:
 
 ```bash
 curl -s \
@@ -222,27 +222,27 @@ curl -s \
 
 | ฟิลด์ | ค่าที่คาดหวัง | สถานะ |
 | --- | --- | --- |
-| HTTP Status | `200` | PASS หากได้รับ, FAIL หาก `404` |
+| HTTP Status | `200` | PASS หากส่งคืน, FAIL หากเป็น `404` |
 | `name` | ตรงกับ `F5XC_ORIGIN_POOL` | PASS |
 | `origin_ip` | ตรงกับ `F5XC_ORIGIN_IP` | PASS |
 | `port` | ตรงกับ `F5XC_ORIGIN_PORT` | PASS |
 | `healthcheck_count` | `1` (มี HC) หรือ `0` (ไม่มี) | PASS ทั้งสองกรณี |
 
-## ขั้นตอน 3: สร้าง HTTP Load Balancer พร้อม CSD
+## ขั้นตอนที่ 3: สร้าง HTTP Load Balancer พร้อม CSD
 
-สร้าง load balancer **สองตัว** ที่เปิดใช้งาน Client-Side Defense — HTTP LB (หลัก, พอร์ต 80) และ HTTPS LB (รอง, พอร์ต 443 พร้อมการจัดการใบรับรองอัตโนมัติ) HTTP LB เป็นค่าเริ่มต้นสำหรับทราฟฟิกเดโมทั้งหมด HTTPS LB เป็นสิ่งที่ดีถ้ามี ซึ่งขึ้นอยู่กับการออกใบรับรอง Let's Encrypt ที่อาจถึงขีดจำกัด rate limit ในสภาพแวดล้อมเดโม
+สร้าง load balancer **สอง**ตัวพร้อมเปิดใช้งาน Client-Side Defense — HTTP LB (หลัก, พอร์ต 80) และ HTTPS LB (รอง, พอร์ต 443 พร้อมการจัดการใบรับรองอัตโนมัติ) HTTP LB เป็นค่าเริ่มต้นสำหรับ traffic ทั้งหมดของเดโม HTTPS LB เป็นตัวเสริมที่ขึ้นอยู่กับการออกใบรับรอง Let's Encrypt ซึ่งอาจถึงขีดจำกัดอัตราในสภาพแวดล้อมเดโม
 
 <Aside type="note">
-HTTP Load Balancer spec มีกลุ่มตัวเลือก `oneOf` มากกว่า 22 กลุ่ม ทุกกลุ่มต้องมีตัวเลือกที่ตั้งค่าไว้เพียงหนึ่งตัวเท่านั้น มิฉะนั้น API จะส่งคืนข้อผิดพลาด `422` การตั้งค่าด้านล่างปิดใช้งานฟีเจอร์ความปลอดภัยเสริมทั้งหมดยกเว้น CSD — แก้ไขตามความจำเป็นสำหรับสภาพแวดล้อมของคุณ LB ทั้งสองใช้ origin pool, การตั้งค่า CSD และโดเมนร่วมกัน — ต่างกันเพียงประเภท listener เท่านั้น
+สเปค HTTP Load Balancer มี 22+ กลุ่มตัวเลือก `oneOf` ทุกกลุ่มต้องมีตัวเลือกเพียงหนึ่งตัวที่ถูกกำหนดไว้ มิฉะนั้น API จะส่งคืนข้อผิดพลาด `422` การกำหนดค่าด้านล่างปิดใช้งานฟีเจอร์ความปลอดภัยเสริมทั้งหมดยกเว้น CSD — ปรับแต่งตามต้องการสำหรับสภาพแวดล้อมของคุณ LB ทั้งสองตัวใช้ origin pool, การตั้งค่า CSD, และโดเมนเดียวกัน — เฉพาะประเภท listener เท่านั้นที่แตกต่างกัน
 </Aside>
 
 <Aside type="tip">
-ชื่อ LB ทั้งสองมาจาก `F5XC_LB_NAME`: HTTP LB คือ `${F5XC_LB_NAME}-http` และ HTTPS LB คือ `${F5XC_LB_NAME}-https` ไม่ต้องใช้ตัวแปรสภาพแวดล้อมเพิ่มเติม
+ชื่อ LB ทั้งสองตัวมาจาก `F5XC_LB_NAME`: HTTP LB คือ `${F5XC_LB_NAME}-http` และ HTTPS LB คือ `${F5XC_LB_NAME}-https` ไม่ต้องการตัวแปรสภาพแวดล้อมเพิ่มเติม
 </Aside>
 
 ### HTTP Load Balancer (หลัก)
 
-นี่คือ load balancer **หลัก** สำหรับเดโม ใช้ listener `http` บนพอร์ต 80 พร้อม F5 XC managed DNS ไม่ขึ้นอยู่กับการออกใบรับรอง TLS ดังนั้นจะพร้อมใช้งานทันทีหลังจาก DNS แก้ชื่อสำเร็จ
+นี่คือ load balancer **หลัก**สำหรับเดโม ใช้ listener `http` บนพอร์ต 80 พร้อม DNS ที่จัดการโดย F5 XC ไม่ขึ้นอยู่กับการออกใบรับรอง TLS ดังนั้นจะพร้อมใช้งานทันทีหลังจาก DNS แก้ชื่อสำเร็จ
 
 ```bash
 curl -s -X POST \
@@ -307,15 +307,15 @@ curl -s -X POST \
   | jq .
 ```
 
-การตอบกลับ `200` ยืนยันว่า HTTP load balancer ถูกสร้างพร้อมเปิดใช้งาน CSD
+การตอบกลับ `200` ยืนยันว่า HTTP load balancer ถูกสร้างพร้อมเปิดใช้งาน CSD แล้ว
 
 <Aside type="caution">
-หากการตอบกลับมี `"code": 8` พร้อมข้อความเช่น `"Object kind http_loadbalancer has exhausted limits"` แสดงว่า tenant ถึงโควตา load balancer แล้ว Load balancer เป็น**สิ่งจำเป็น**สำหรับเดโม ลบ load balancer ที่ไม่ได้ใช้เพื่อเพิ่มพื้นที่ว่าง จากนั้นลองใหม่
+หากการตอบกลับมี `"code": 8` พร้อมข้อความเช่น `"Object kind http_loadbalancer has exhausted limits"` แสดงว่า tenant ถึงโควตา load balancer แล้ว Load balancer เป็น**สิ่งจำเป็น**สำหรับเดโม ให้ลบ load balancer ที่ไม่ได้ใช้เพื่อเพิ่มความจุ จากนั้นลองใหม่
 </Aside>
 
 ### HTTPS Load Balancer (รอง)
 
-นี่คือ load balancer **รอง** ใช้ `https_auto_cert` บนพอร์ต 443 พร้อมการออกใบรับรอง Let's Encrypt อัตโนมัติ ก่อนสร้าง ให้ตรวจสอบว่ามี **HTTPS LB โครงร่าง (skeleton)** อยู่จากการ teardown ก่อนหน้าหรือไม่ — หากมี ให้กู้คืนผ่าน PUT แทน POST เพื่อรักษาใบรับรอง Let's Encrypt ที่มีอยู่และหลีกเลี่ยง rate limit (ใบรับรองซ้ำ 5 ใบต่อชุดตัวระบุที่เหมือนกันต่อ 7 วัน)
+นี่คือ load balancer **รอง** ใช้ `https_auto_cert` บนพอร์ต 443 พร้อมการออกใบรับรอง Let's Encrypt อัตโนมัติ ก่อนสร้าง ให้ตรวจสอบว่ามี **HTTPS LB โครงร่าง (skeleton)** จากการถอนการติดตั้งครั้งก่อนหรือไม่ — หากมี ให้กู้คืนด้วย PUT แทน POST เพื่อรักษาใบรับรอง Let's Encrypt ที่มีอยู่และหลีกเลี่ยงขีดจำกัดอัตรา (5 ใบรับรองซ้ำต่อชุดตัวระบุที่ตรงกันต่อ 7 วัน)
 
 **ตรวจสอบว่า HTTPS LB มีอยู่แล้วหรือไม่:**
 
@@ -325,11 +325,11 @@ HTTPS_CHECK=$(curl -s -o /dev/null -w '%\{http_code\}' \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
 ```
 
-หาก `HTTPS_CHECK` เป็น `200` แสดงว่ามี HTTPS LB โครงร่างอยู่ — ใช้ **เส้นทาง A (PUT)** หากเป็น `404` ใช้ **เส้นทาง B (POST)**
+หาก `HTTPS_CHECK` เป็น `200` แสดงว่ามี skeleton HTTPS LB อยู่ — ใช้ **เส้นทาง A (PUT)** หากเป็น `404` ใช้ **เส้นทาง B (POST)**
 
-#### เส้นทาง A: กู้คืนโครงร่างผ่าน PUT (HTTPS LB มีอยู่)
+#### เส้นทาง A: กู้คืน Skeleton ด้วย PUT (HTTPS LB มีอยู่แล้ว)
 
-เมื่อมี HTTPS LB โครงร่างจากการ teardown ก่อนหน้า ให้กู้คืนการตั้งค่าเต็มรูปแบบผ่าน PUT วิธีนี้จะเชื่อมต่อ origin pool กลับและเปิดใช้งาน CSD อีกครั้ง **โดยไม่ต้องร้องขอใบรับรอง Let's Encrypt ใหม่** — ใบรับรองที่มีอยู่ยังคงใช้ได้
+เมื่อมี skeleton HTTPS LB จากการถอนการติดตั้งครั้งก่อน ให้กู้คืนการกำหนดค่าเต็มรูปแบบด้วย PUT นี่จะเชื่อมต่อ origin pool กลับและเปิดใช้งาน CSD อีกครั้ง **โดยไม่ต้องส่งคำขอใบรับรอง Let's Encrypt ใหม่** — ใบรับรองที่มีอยู่ยังคงใช้ได้
 
 ```bash
 curl -s -X PUT \
@@ -399,15 +399,15 @@ curl -s -X PUT \
   | jq .
 ```
 
-การตอบกลับ `200` ยืนยันว่าโครงร่างถูกกู้คืนพร้อมการตั้งค่าเต็มรูปแบบ สถานะใบรับรองควรคงอยู่ที่ `CertificateValid` — ไม่มีการออกใบรับรอง Let's Encrypt ใหม่
+การตอบกลับ `200` ยืนยันว่า skeleton ถูกกู้คืนพร้อมการกำหนดค่าเต็มรูปแบบแล้ว สถานะใบรับรองควรยังคงเป็น `CertificateValid` — ไม่มีการออกใบรับรอง Let's Encrypt ใหม่
 
 <Aside type="note">
-**การกู้คืนโครงร่าง** PUT จะแทนที่ object spec ทั้งหมด HTTPS LB โครงร่างยังคงรักษาการผูกโดเมนและใบรับรองไว้ระหว่าง teardown PUT นี้กู้คืนการอ้างอิง origin pool และเปิดใช้งาน Client-Side Defense อีกครั้งโดยไม่ต้องร้องขอใบรับรอง Let's Encrypt ใหม่ HTTPS พร้อมใช้งานทันที
+**การกู้คืน Skeleton** PUT จะแทนที่สเปคของออบเจกต์ทั้งหมด Skeleton HTTPS LB ยังคงรักษาการเชื่อมโยงโดเมนและใบรับรองไว้ระหว่างการถอนการติดตั้ง PUT นี้จะกู้คืนการอ้างอิง origin pool และเปิดใช้งาน Client-Side Defense อีกครั้งโดยไม่ต้องส่งคำขอใบรับรอง Let's Encrypt ใหม่ HTTPS พร้อมใช้งานทันที
 </Aside>
 
-#### เส้นทาง B: สร้างใหม่ผ่าน POST (HTTPS LB ไม่มีอยู่)
+#### เส้นทาง B: สร้างใหม่ด้วย POST (HTTPS LB ไม่มีอยู่)
 
-เมื่อไม่มี HTTPS LB (การรันครั้งแรกหรือหลังการ teardown เต็มรูปแบบ) ให้สร้างผ่าน POST วิธีนี้จะทริกเกอร์การออกใบรับรอง Let's Encrypt ซึ่งอาจใช้เวลา 5–10 นาที
+เมื่อไม่มี HTTPS LB อยู่ (รันครั้งแรกหรือหลังจากถอนการติดตั้งแบบเต็ม) ให้สร้างด้วย POST นี่จะเริ่มกระบวนการออกใบรับรอง Let's Encrypt ซึ่งอาจใช้เวลา 5–10 นาที
 
 ```bash
 curl -s -X POST \
@@ -477,19 +477,19 @@ curl -s -X POST \
   | jq .
 ```
 
-การตอบกลับ `200` ยืนยันว่า HTTPS load balancer ถูกสร้างแล้ว การออกใบรับรองจะเริ่มต้นโดยอัตโนมัติ
+การตอบกลับ `200` ยืนยันว่า HTTPS load balancer ถูกสร้างแล้ว กระบวนการออกใบรับรองจะเริ่มต้นโดยอัตโนมัติ
 
 <Aside type="caution">
-หากการตอบกลับมี `"code": 8` พร้อม "exhausted limits" แสดงว่า HTTPS LB ไม่สามารถสร้างได้ HTTPS LB เป็นตัวเลือก — เดโมดำเนินต่อโดยใช้ HTTP LB บันทึกข้อจำกัดโควตาใน Phase 1 Evidence Summary เป็น INFO
+หากการตอบกลับมี `"code": 8` พร้อม "exhausted limits" แสดงว่าไม่สามารถสร้าง HTTPS LB ได้ HTTPS LB เป็นทางเลือก — เดโมจะดำเนินต่อโดยใช้ HTTP LB บันทึกข้อจำกัดโควตาในสรุปหลักฐานเฟส 1 เป็น INFO
 </Aside>
 
 <Aside type="note">
-**Rate limit ของ Let's Encrypt** การสร้าง HTTPS LB ใหม่จะทริกเกอร์คำร้องขอใบรับรอง Let's Encrypt Let's Encrypt อนุญาตเพียง 5 ใบรับรองซ้ำต่อชุดตัวระบุที่เหมือนกันต่อ 7 วัน หาก `cert_state` แสดง `AutoCertDomainRateLimited` เดโมดำเนินต่อโดยใช้ HTTP LB เพื่อหลีกเลี่ยงการถึงขีดจำกัดนี้ การ teardown เริ่มต้นจะรักษา HTTPS LB เป็นโครงร่าง — ดู [Phase 4 — Teardown](/csd/demo/phase-4-teardown/)
+**ขีดจำกัดอัตราของ Let's Encrypt** การสร้าง HTTPS LB ใหม่จะส่งคำขอใบรับรอง Let's Encrypt Let's Encrypt อนุญาตเพียง 5 ใบรับรองซ้ำต่อชุดตัวระบุที่ตรงกันต่อ 7 วัน หาก `cert_state` แสดง `AutoCertDomainRateLimited` เดโมจะดำเนินต่อโดยใช้ HTTP LB เพื่อหลีกเลี่ยงการถึงขีดจำกัดนี้ การถอนการติดตั้งตามค่าเริ่มต้นจะรักษา HTTPS LB ไว้เป็น skeleton — ดู [เฟส 4 — การถอนการติดตั้ง](/csd/demo/phase-4-teardown/)
 </Aside>
 
 ### หลักฐาน
 
-ยืนยันว่า load balancer ทั้งสองมีอยู่พร้อมเปิดใช้งาน CSD ใช้ **GET** เสมอสำหรับหลักฐาน — การตอบกลับ POST จะส่งคืนค่าสถานะชั่วคราวที่อาจไม่สะท้อนการตั้งค่าที่เสถียร
+ยืนยันว่า load balancer ทั้งสองตัวมีอยู่พร้อมเปิดใช้งาน CSD ใช้ **GET** สำหรับหลักฐานเสมอ — การตอบกลับ POST จะส่งคืนค่าสถานะชั่วคราวที่อาจไม่สะท้อนการกำหนดค่าที่เสถียรแล้ว
 
 **HTTP LB (หลัก):**
 
@@ -502,11 +502,11 @@ curl -s \
 
 | ฟิลด์ | ค่าที่คาดหวัง | สถานะ |
 | --- | --- | --- |
-| HTTP Status | `200` | PASS หากได้รับ, FAIL หาก `404` |
+| HTTP Status | `200` | PASS หากส่งคืน, FAIL หากเป็น `404` |
 | `name` | `${F5XC_LB_NAME}-http` | PASS |
 | `domains` | มี `F5XC_DOMAINNAME` | PASS |
-| `csd_enabled` | `true` | PASS — CSD ถูกตั้งค่าบน LB นี้ |
-| `state` | `VIRTUAL_HOST_READY` หรือ `VIRTUAL_HOST_PENDING_A_RECORD` | คาดหวัง — HTTP LB จะเปลี่ยนเป็น READY เมื่อ DNS แก้ชื่อสำเร็จ สถานะอื่น (เช่น `VIRTUAL_HOST_FAILED`) เป็น FAIL — รายงานต่อผู้ดำเนินการและอย่าดำเนินการต่อ |
+| `csd_enabled` | `true` | PASS — CSD ถูกกำหนดค่าบน LB นี้ |
+| `state` | `VIRTUAL_HOST_READY` หรือ `VIRTUAL_HOST_PENDING_A_RECORD` | คาดหวัง — HTTP LB จะเปลี่ยนเป็น READY เมื่อ DNS แก้ชื่อสำเร็จ สถานะอื่นๆ (เช่น `VIRTUAL_HOST_FAILED`) เป็น FAIL — รายงานผู้ดำเนินการและอย่าดำเนินต่อ |
 
 **HTTPS LB (รอง):**
 
@@ -519,42 +519,42 @@ curl -s \
 
 | ฟิลด์ | ค่าที่คาดหวัง | สถานะ |
 | --- | --- | --- |
-| HTTP Status | `200` | PASS หากได้รับ, FAIL หาก `404` |
+| HTTP Status | `200` | PASS หากส่งคืน, FAIL หากเป็น `404` |
 | `name` | `${F5XC_LB_NAME}-https` | PASS |
 | `domains` | มี `F5XC_DOMAINNAME` | PASS |
-| `csd_enabled` | `true` | PASS — CSD ถูกตั้งค่าบน LB นี้ |
-| `creation_method` | PUT (กู้คืนโครงร่าง) หรือ POST (สร้างใหม่) | INFO — PUT รักษาใบรับรองที่มีอยู่ |
-| `state` | `VIRTUAL_HOST_READY` (PUT) หรือ `VIRTUAL_HOST_PENDING_A_RECORD` (POST) | คาดหวัง — เส้นทาง PUT อาจเป็น READY อยู่แล้วเนื่องจาก DNS ยังคงอยู่จากโครงร่าง |
-| `cert_state` | `CertificateValid` (PUT) หรือ `PreDomainChallengePending` (POST) | PUT รักษาใบรับรองที่มีอยู่; POST ทริกเกอร์การออกใบรับรองใหม่ |
+| `csd_enabled` | `true` | PASS — CSD ถูกกำหนดค่าบน LB นี้ |
+| `creation_method` | PUT (กู้คืน skeleton) หรือ POST (สร้างใหม่) | INFO — PUT จะรักษาใบรับรองที่มีอยู่ |
+| `state` | `VIRTUAL_HOST_READY` (PUT) หรือ `VIRTUAL_HOST_PENDING_A_RECORD` (POST) | คาดหวัง — เส้นทาง PUT อาจเป็น READY อยู่แล้วเนื่องจาก DNS ยังคงอยู่จาก skeleton |
+| `cert_state` | `CertificateValid` (PUT) หรือ `PreDomainChallengePending` (POST) | PUT รักษาใบรับรองที่มีอยู่; POST เริ่มกระบวนการออกใบรับรองใหม่ |
 
-## ขั้นตอน 4: ตั้งค่า DNS
+## ขั้นตอนที่ 4: กำหนดค่า DNS
 
-หลังจากสร้าง load balancer มันจะเข้าสู่สถานะ `VIRTUAL_HOST_PENDING_A_RECORD` และใบรับรองอัตโนมัติจะอยู่ใน `PreDomainChallengePending` ต้องมีระเบียน DNS สองรายการก่อนที่ LB จะทำงานได้เต็มรูปแบบ:
+หลังจากสร้าง load balancer แล้ว จะเข้าสู่สถานะ `VIRTUAL_HOST_PENDING_A_RECORD` และใบรับรองอัตโนมัติจะอยู่ใน `PreDomainChallengePending` ต้องมี DNS record สองรายการก่อนที่ LB จะทำงานได้เต็มรูปแบบ:
 
-1. **ระเบียน A** — `xF5XC_DOMAINNAMEx` ชี้ไปที่ VIP IP address (จาก `dns_info` ในการตอบกลับ LB)
-2. **ระเบียน ACME challenge** — `_acme-challenge.xF5XC_DOMAINNAMEx` สำหรับการตรวจสอบใบรับรอง TLS (จัดการอัตโนมัติเมื่อใช้ F5 XC DNS กับ managed records; ต้องสร้าง CNAME ด้วยตนเองสำหรับ DNS ภายนอก)
+1. **A record** — `xF5XC_DOMAINNAMEx` ชี้ไปยัง IP address ของ VIP (จาก `dns_info` ในการตอบกลับ LB)
+2. **ACME challenge record** — `_acme-challenge.xF5XC_DOMAINNAMEx` สำหรับการตรวจสอบใบรับรอง TLS (จัดการโดยอัตโนมัติเมื่อใช้ F5 XC DNS พร้อม managed records; ต้องกำหนด CNAME ด้วยตนเองสำหรับ DNS ภายนอก)
 
-วิธีการขึ้นอยู่กับว่า F5 XC เป็นผู้ให้บริการ DNS หลักสำหรับโดเมนของคุณหรือไม่
+วิธีการขึ้นอยู่กับว่า F5 XC เป็นผู้ให้บริการ DNS ที่มีอำนาจสำหรับโดเมนของคุณหรือไม่
 
 ### ตรวจจับอำนาจ DNS
 
-ตรวจสอบ nameserver สำหรับโดเมนรากของคุณ:
+ตรวจสอบ nameserver สำหรับ root domain ของคุณ:
 
 ```bash
 dig +short NS xF5XC_ROOT_DOMAINx
 ```
 
-หากการตอบกลับมี `ns1.f5clouddns.com` และ `ns2.f5clouddns.com` แสดงว่า F5 XC เป็นผู้ให้บริการ DNS หลัก — ทำตาม **ตัวเลือก A** มิฉะนั้น ทำตาม **ตัวเลือก B** สำหรับ DNS ภายนอก
+หากการตอบกลับมี `ns1.f5clouddns.com` และ `ns2.f5clouddns.com` แสดงว่า F5 XC เป็นผู้ให้บริการ DNS ที่มีอำนาจ — ทำตาม **ตัวเลือก A** มิฉะนั้น ทำตาม **ตัวเลือก B** สำหรับ DNS ภายนอก
 
 ### ตัวเลือก A: F5 XC Managed DNS
 
-เมื่อ F5 XC เป็นผู้ให้บริการ DNS หลัก แพลตฟอร์มสามารถสร้างทั้งระเบียน A และ ACME challenge CNAME ได้โดยอัตโนมัติ — แต่เฉพาะเมื่อ DNS zone มีการเปิดใช้งาน `allow_http_lb_managed_records`
+เมื่อ F5 XC เป็นผู้ให้บริการ DNS ที่มีอำนาจ แพลตฟอร์มสามารถสร้างทั้ง A record และ ACME challenge CNAME ได้โดยอัตโนมัติ — แต่เฉพาะเมื่อ DNS zone เปิดใช้งาน `allow_http_lb_managed_records` แล้ว
 
 <Aside type="note">
-DNS zone อยู่ใน namespace **system** ไม่ใช่ใน namespace ของผู้ใช้ ชื่อ zone ตรงกับโดเมนราก (เช่น `bankexample.com`)
+DNS zone อยู่ใน namespace **system** ไม่ใช่ใน namespace ของผู้ใช้ ชื่อ zone ตรงกับ root domain (เช่น `bankexample.com`)
 </Aside>
 
-**1. ตรวจสอบว่า managed records เปิดใช้งานอยู่หรือไม่:**
+**1. ตรวจสอบว่า managed records เปิดใช้งานหรือไม่:**
 
 ```bash
 curl -s \
@@ -563,15 +563,15 @@ curl -s \
   | jq '.spec.primary.allow_http_lb_managed_records'
 ```
 
-หากการตอบกลับเป็น `true` แพลตฟอร์มจะสร้างระเบียน DNS สำหรับ load balancer โดยอัตโนมัติ — ข้ามไปที่ **3. ตรวจสอบการแก้ชื่อ DNS** หากเป็น `false` หรือ `null` ให้ดำเนินการต่อในขั้นตอนถัดไป
+หากการตอบกลับเป็น `true` แพลตฟอร์มจะสร้าง DNS record สำหรับ load balancer โดยอัตโนมัติ — ข้ามไป **3. ตรวจสอบการแก้ชื่อ DNS** หากเป็น `false` หรือ `null` ให้ดำเนินการต่อในขั้นตอนถัดไป
 
 **2. เปิดใช้งาน managed records:**
 
 <Aside type="caution">
-payload `PUT` ต้องรวม **zone spec ทั้งหมด** — metadata และฟิลด์การตั้งค่าที่มีอยู่ทั้งหมด การละเว้นฟิลด์จะรีเซ็ตเป็นค่าเริ่มต้น ดึงการตั้งค่า zone ปัจจุบันก่อน จากนั้นแก้ไขเฉพาะฟิลด์ `allow_http_lb_managed_records`
+เนื้อหา `PUT` ต้องรวม **สเปค zone ทั้งหมด** — metadata และฟิลด์การกำหนดค่าที่มีอยู่ทั้งหมด การไม่ใส่ฟิลด์จะรีเซ็ตเป็นค่าเริ่มต้น ดึงการกำหนดค่า zone ปัจจุบันก่อน แล้วแก้ไขเฉพาะฟิลด์ `allow_http_lb_managed_records`
 </Aside>
 
-ดึงการตั้งค่า zone ปัจจุบัน เปิดใช้งาน managed records และอัปเดต:
+ดึงการกำหนดค่า zone ปัจจุบัน เปิดใช้งาน managed records และอัปเดต:
 
 ```bash
 # Get current zone config
@@ -591,10 +591,10 @@ echo "$ZONE_CONFIG" \
 ```
 
 <Aside type="caution">
-zone spec มี rr_set_group `x-ves-io-managed` ที่มีระเบียนที่จัดการโดยแพลตฟอร์ม payload `PUT` ของคุณ **ต้องรักษากลุ่มนี้ไว้** — การละเว้นจะทำให้เกิด HTTP 403 "reserved for internal purposes" ดึงการตั้งค่า zone ปัจจุบันด้วย `GET` ก่อนเสมอ แก้ไขเฉพาะฟิลด์ที่ต้องการ และส่ง spec ทั้งหมดกลับ
+สเปค zone มี rr_set_group ที่เป็น `x-ves-io-managed` พร้อม record ที่จัดการโดยแพลตฟอร์ม เนื้อหา `PUT` ของคุณ **ต้องรักษากลุ่มนี้ไว้** — การไม่ใส่จะทำให้เกิด HTTP 403 "reserved for internal purposes" ให้ดึงการกำหนดค่า zone ปัจจุบันด้วย `GET` ก่อนเสมอ แก้ไขเฉพาะฟิลด์ที่คุณต้องการ และส่งกลับสเปคทั้งหมด
 </Aside>
 
-การตอบกลับ `200` (ว่าง `\{\}`) ยืนยันว่า zone ถูกอัปเดตแล้ว F5 XC จะสร้างระเบียน A และระเบียน ACME challenge ในกลุ่มระเบียนที่จัดการอัตโนมัติของ zone หากระเบียนที่จัดการไม่ปรากฏภายใน 60 วินาที ให้ re-apply load balancer เพื่อทริกเกอร์การสร้างระเบียน:
+การตอบกลับ `200` (เป็น `\{\}` ว่าง) ยืนยันว่า zone ถูกอัปเดตแล้ว F5 XC จะสร้าง A record และ ACME challenge record ใน auto-managed record group ของ zone หาก managed record ไม่ปรากฏภายใน 60 วินาที ให้ re-apply load balancer เพื่อเริ่มการสร้าง record:
 
 ```bash
 LB_CONFIG=$(curl -s \
@@ -608,7 +608,7 @@ echo "$LB_CONFIG" | curl -s -X PUT \
   | jq .
 ```
 
-การ GET+PUT re-apply นี้ไม่ได้เปลี่ยนแปลงการตั้งค่า LB — เพียงทริกเกอร์ให้แพลตฟอร์มประเมิน DNS zone ใหม่และสร้าง managed records หากระเบียน A ยังไม่แก้ชื่อสำเร็จภายใน 60 วินาทีหลัง re-apply ให้หยุดและรายงานต่อผู้ดำเนินการ — อย่า re-apply ซ้ำมากกว่าหนึ่งครั้ง
+การ re-apply แบบ GET+PUT นี้ไม่เปลี่ยนการกำหนดค่า LB — เพียงแค่เริ่มให้แพลตฟอร์มประเมิน DNS zone อีกครั้งและสร้าง managed record หาก A record ยังไม่แก้ชื่อสำเร็จภายใน 60 วินาทีหลังจาก re-apply ให้หยุดและรายงานผู้ดำเนินการ — อย่า re-apply ซ้ำมากกว่าหนึ่งครั้ง
 
 **3. ตรวจสอบการแก้ชื่อ DNS:**
 
@@ -616,10 +616,10 @@ echo "$LB_CONFIG" | curl -s -X PUT \
 dig +short xF5XC_DOMAINNAMEx A
 ```
 
-การตอบกลับควรส่งคืน VIP IP address การแพร่กระจาย DNS มักจะทันทีสำหรับ F5 XC managed zone แต่ให้รอสูงสุด 60 วินาที
+การตอบกลับควรส่งคืน IP address ของ VIP การเผยแพร่ DNS โดยปกติจะเกิดขึ้นทันทีสำหรับ zone ที่จัดการโดย F5 XC แต่อนุญาตเวลาถึง 60 วินาที
 
 <Aside type="tip">
-**แคช DNS เชิงลบ:** หากคุณค้นหาโดเมนก่อนที่ระเบียนจะมีอยู่ recursive resolver ของคุณอาจแคชการตอบกลับ `NXDOMAIN` ไว้ ตรวจสอบกับ nameserver หลักหรือ public resolver เพื่อตัดปัญหาแคชเก่า:
+**Negative DNS cache:** หากคุณค้นหาโดเมนก่อนที่ record จะมีอยู่ recursive resolver ของคุณอาจแคช `NXDOMAIN` response ไว้ ตรวจสอบกับ authoritative nameserver หรือ public resolver เพื่อตัดปัญหาแคชเก่า:
 
 ```bash
 dig +short xF5XC_DOMAINNAMEx A @ns1.f5clouddns.com
@@ -629,7 +629,7 @@ dig +short xF5XC_DOMAINNAMEx A @8.8.8.8
 
 ### ตัวเลือก B: ผู้ให้บริการ DNS ภายนอก
 
-เมื่อโดเมนของคุณใช้ผู้ให้บริการ DNS ภายนอก คุณต้องสร้างระเบียนด้วยตนเอง ดึงค่าที่จำเป็นจาก load balancer:
+เมื่อโดเมนของคุณใช้ผู้ให้บริการ DNS ภายนอก คุณต้องสร้าง record ด้วยตนเอง ดึงค่าที่จำเป็นจาก load balancer:
 
 ```bash
 curl -s \
@@ -641,14 +641,14 @@ curl -s \
   }'
 ```
 
-สร้างระเบียนเหล่านี้ที่ผู้ให้บริการ DNS ของคุณ:
+สร้าง record เหล่านี้ที่ผู้ให้บริการ DNS ของคุณ:
 
 | ประเภท | ชื่อ | ค่า |
 | --- | --- | --- |
 | A | `xF5XC_DOMAINNAMEx` | VIP IP จาก `dns_info[0].ip_address` |
 | CNAME | `_acme-challenge.xF5XC_DOMAINNAMEx` | `*.autocerts.ves.volterra.io` |
 
-หลังจากสร้างระเบียนแล้ว ตรวจสอบการแก้ชื่อ:
+หลังจากสร้าง record แล้ว ตรวจสอบการแก้ชื่อ:
 
 ```bash
 dig +short xF5XC_DOMAINNAMEx A
@@ -656,22 +656,22 @@ dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
 ```
 
 <Aside type="tip">
-ระเบียน A จำเป็นเพื่อให้ LB เปลี่ยนจาก `VIRTUAL_HOST_PENDING_A_RECORD` เป็น `VIRTUAL_HOST_READY` ACME CNAME จำเป็นสำหรับการออกใบรับรอง TLS อัตโนมัติ หากไม่มีระเบียนทั้งสอง LB จะยังคงอยู่ในสถานะ pending
+A record จำเป็นเพื่อให้ LB เปลี่ยนจาก `VIRTUAL_HOST_PENDING_A_RECORD` เป็น `VIRTUAL_HOST_READY` ACME CNAME จำเป็นสำหรับการออกใบรับรอง TLS อัตโนมัติ หากไม่มี record ทั้งสอง LB จะยังคงอยู่ในสถานะรอดำเนินการ
 </Aside>
 
 ### หลักฐาน
 
 | การทดสอบ | คำสั่ง | ค่าที่คาดหวัง | สถานะ |
 | --- | --- | --- | --- |
-| DNS-1: ระเบียน A | `dig +short $F5XC_DOMAINNAME A` | VIP IP address ที่ส่งคืน | PASS หากได้ IP, FAIL หากว่าง |
-| DNS-2: ACME CNAME | `dig +short _acme-challenge.$F5XC_DOMAINNAME CNAME` | `*.autocerts.ves.volterra.io` | PASS หาก CNAME ส่งคืน |
-| อำนาจ DNS | `dig +short NS $F5XC_ROOT_DOMAIN` | F5 XC หรือ nameserver ภายนอก | เป็นข้อมูลอ้างอิง — กำหนดตัวเลือก A หรือ B |
+| DNS-1: A Record | `dig +short $F5XC_DOMAINNAME A` | ส่งคืน VIP IP address | PASS หากส่งคืน IP, FAIL หากว่าง |
+| DNS-2: ACME CNAME | `dig +short _acme-challenge.$F5XC_DOMAINNAME CNAME` | `*.autocerts.ves.volterra.io` | PASS หากส่งคืน CNAME |
+| อำนาจ DNS | `dig +short NS $F5XC_ROOT_DOMAIN` | nameserver ของ F5 XC หรือภายนอก | ข้อมูลประกอบ — กำหนดตัวเลือก A หรือ B |
 
-หาก DNS-1 ส่งคืนค่าว่างหลัง 60 วินาที ดู [การแก้ไขปัญหา &mdash; LB ติดอยู่ใน VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record)
+หาก DNS-1 ส่งคืนค่าว่างหลังจาก 60 วินาที ดู [การแก้ไขปัญหา &mdash; LB ค้างใน VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record)
 
-## ขั้นตอน 5: ตรวจสอบว่า CSD เปิดใช้งานแล้ว
+## ขั้นตอนที่ 5: ตรวจสอบว่า CSD เปิดใช้งานแล้ว
 
-ตรวจสอบว่า Client-Side Defense เปิดใช้งานสำหรับ tenant CSD ถูกตั้งค่าในระดับ tenant — หากยังไม่ได้เปิดใช้งาน ให้ติดต่อผู้ดูแลระบบ F5 XC ของคุณ
+ตรวจสอบว่า Client-Side Defense เปิดใช้งานสำหรับ tenant แล้ว CSD ถูกกำหนดค่าที่ระดับ tenant — หากยังไม่ได้เปิดใช้งาน ให้ติดต่อผู้ดูแลระบบ F5 XC ของคุณ
 
 ```bash
 curl -s \
@@ -695,19 +695,19 @@ curl -s \
 | --- | --- | --- |
 | `configured` | `true` | PASS |
 | `enabled` | `true` | PASS |
-| ค่าใดค่าหนึ่งเป็น `false` | — | FAIL — ติดต่อผู้ดูแลระบบ F5 XC เพื่อเปิดใช้งาน CSD ในระดับ tenant |
+| ค่าใดค่าหนึ่งเป็น `false` | — | FAIL — ติดต่อผู้ดูแลระบบ F5 XC เพื่อเปิดใช้งาน CSD ที่ระดับ tenant |
 
-## ขั้นตอน 6: ลงทะเบียน Protected Domain
+## ขั้นตอนที่ 6: ลงทะเบียน Protected Domain
 
-ลงทะเบียนโดเมนรากที่ CSD จะเฝ้าระวัง ฟิลด์ `protected_domain` ต้องเป็นโดเมนราก **eTLD+1** (เช่น `f5demos.com`) ไม่ใช่ FQDN เต็มรูปแบบ
+ลงทะเบียน root domain ที่ CSD จะตรวจสอบ ฟิลด์ `protected_domain` ต้องเป็น root domain แบบ **eTLD+1** (เช่น `f5demos.com`) ไม่ใช่ FQDN เต็มรูปแบบ
 
 <Aside type="caution">
-**Protected domain มีขอบเขตระดับ tenant ไม่ใช่ระดับ namespace** ต่างจาก healthcheck, origin pool และ load balancer ตรงที่ protected domain ถูกลงทะเบียนในระดับ global บน tenant — namespace ใน API URL เป็นพารามิเตอร์การ routing ไม่ใช่ขอบเขตความเป็นเจ้าของ อย่างไรก็ตาม protected domain เป็น CSD configuration object ที่เชื่อมโยงกับการติดตั้งนี้และ **ควรถูกลบระหว่าง teardown** เมื่อการติดตั้งถูกถอดออกทั้งหมด อย่าสับสนกับ DNS zone ซึ่งเป็นโครงสร้างพื้นฐานที่ใช้ร่วมกันและไม่ควรถูกลบ
+**Protected domain มีขอบเขตระดับ tenant ไม่ใช่ระดับ namespace** ต่างจาก healthcheck, origin pool, และ load balancer ตรงที่ protected domain ถูกลงทะเบียนแบบ global บน tenant — namespace ใน API URL เป็นพารามิเตอร์สำหรับการ routing ไม่ใช่ขอบเขตการเป็นเจ้าของ อย่างไรก็ตาม protected domain เป็นออบเจกต์การกำหนดค่า CSD ที่ผูกกับการติดตั้งนี้และ **ควรถูกลบระหว่างการถอนการติดตั้ง** เมื่อกำลังถอดถอนการติดตั้งทั้งหมด อย่าสับสนกับ DNS zone ซึ่งเป็นโครงสร้างพื้นฐานที่ใช้ร่วมกันและไม่ควรลบ
 </Aside>
 
 ### ตรวจสอบว่าลงทะเบียนแล้วหรือไม่
 
-ก่อนสร้าง ให้ตรวจสอบว่าโดเมนถูกลงทะเบียนบน tenant แล้วหรือไม่ การตอบกลับ `409` จาก POST หมายความว่าโดเมนมีอยู่แล้ว — นี่เป็นเงื่อนไขสำเร็จ ไม่ใช่ข้อผิดพลาด
+ก่อนสร้าง ให้ตรวจสอบว่าโดเมนถูกลงทะเบียนบน tenant แล้วหรือไม่ การตอบกลับ `409` จาก POST หมายความว่าโดเมนมีอยู่แล้ว — นี่คือเงื่อนไขสำเร็จ ไม่ใช่ข้อผิดพลาด
 
 ```bash
 curl -s -X POST \
@@ -728,13 +728,13 @@ curl -s -X POST \
 
 | การตอบกลับ | ความหมาย | การดำเนินการ |
 | --- | --- | --- |
-| `200` | ลงทะเบียนโดเมนสำเร็จ | ดำเนินต่อไปขั้นตอน 7 |
-| `409` (โดเมนมีอยู่แล้ว) | โดเมนถูกลงทะเบียนก่อนหน้านี้บน tenant นี้ | เสร็จแล้ว — ดำเนินต่อไปขั้นตอน 7 |
-| `"code": 8` (โควตาเต็ม) | โควตา protected domain เต็ม | **เป็นอุปสรรค** — protected domain จำเป็นสำหรับ CSD ลบ protected domain ที่ไม่ได้ใช้หรือติดต่อผู้ดูแลระบบของคุณ |
+| `200` | ลงทะเบียนโดเมนสำเร็จ | ดำเนินต่อไปขั้นตอนที่ 7 |
+| `409` (โดเมนมีอยู่แล้ว) | โดเมนถูกลงทะเบียนก่อนหน้านี้บน tenant นี้ | เสร็จแล้ว — ดำเนินต่อไปขั้นตอนที่ 7 |
+| `"code": 8` (โควตาหมด) | โควตา protected domain เต็ม | **บล็อก** — protected domain จำเป็นสำหรับ CSD ลบ protected domain ที่ไม่ได้ใช้หรือติดต่อผู้ดูแลระบบของคุณ |
 
 ### หลักฐาน
 
-การตอบกลับ POST เป็นหลักฐานหลัก — ส่งคืน registered domain object พร้อม `spec.protected_domain` ที่ตรงกับโดเมนรากของคุณ หรือแสดงรายการ protected domain ทั้งหมดเพื่อยืนยัน:
+การตอบกลับ POST เป็นหลักฐานหลัก — จะส่งคืนออบเจกต์โดเมนที่ลงทะเบียนพร้อม `spec.protected_domain` ตรงกับ root domain ของคุณ อีกทางเลือกหนึ่ง ให้แสดงรายการ protected domain ทั้งหมดเพื่อยืนยัน:
 
 ```bash
 curl -s \
@@ -746,31 +746,31 @@ curl -s \
 | ฟิลด์ | ค่าที่คาดหวัง | สถานะ |
 | --- | --- | --- |
 | POST ส่งคืน `protected_domain` | ตรงกับ `F5XC_ROOT_DOMAIN` | PASS |
-| POST ส่งคืน `200` หรือ `409` | โดเมนลงทะเบียนแล้วหรือมีอยู่แล้ว | PASS |
-| จำนวนรายการ | &gt; 0 | PASS |
+| POST ส่งคืน `200` หรือ `409` | โดเมนถูกลงทะเบียนหรือมีอยู่แล้ว | PASS |
+| จำนวน items ในรายการ | &gt; 0 | PASS |
 
 <Aside type="note">
-endpoint GET แบบรายบุคคล (`/protected_domains/\{name\}`) ไม่สามารถใช้ได้สำหรับ protected domain ใช้การตอบกลับ POST หรือ endpoint รายการสำหรับการตรวจสอบ
+GET endpoint แบบรายการเดียว (`/protected_domains/\{name\}`) ไม่พร้อมใช้งานสำหรับ protected domain ใช้การตอบกลับ POST หรือ list endpoint สำหรับการตรวจสอบ
 </Aside>
 
-## ขั้นตอน 7: ตรวจสอบ
+## ขั้นตอนที่ 7: ตรวจสอบ
 
 ### การแก้ชื่อ DNS
 
-ยืนยันว่าระเบียน A แก้ชื่อได้และ ACME challenge CNAME อยู่ในตำแหน่ง:
+ยืนยันว่า A record แก้ชื่อสำเร็จและ ACME challenge CNAME อยู่ในตำแหน่ง:
 
 ```bash
 dig +short xF5XC_DOMAINNAMEx A
 dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
 ```
 
-ระเบียน A ควรส่งคืน VIP IP address CNAME ควรชี้ไปที่ `*.autocerts.ves.volterra.io` (หรือเป้าหมาย autocerts ที่เกี่ยวข้อง)
+A record ควรส่งคืน VIP IP address CNAME ควรชี้ไปที่ `*.autocerts.ves.volterra.io` (หรือเป้าหมาย autocerts ที่เกี่ยวข้อง)
 
 ### สถานะ Load Balancer
 
-ตรวจสอบว่า load balancer ทั้งสองได้เปลี่ยนออกจากสถานะ pending แล้ว HTTP LB เป็นการตรวจสอบหลัก — ควรถึง `VIRTUAL_HOST_READY` เมื่อ DNS แก้ชื่อสำเร็จ โดยไม่ขึ้นอยู่กับใบรับรอง สถานะใบรับรองของ HTTPS LB เป็นข้อมูลอ้างอิงเท่านั้น
+ตรวจสอบว่า load balancer ทั้งสองตัวเปลี่ยนออกจากสถานะรอดำเนินการแล้ว HTTP LB เป็นการตรวจสอบหลัก — ควรถึง `VIRTUAL_HOST_READY` เมื่อ DNS แก้ชื่อสำเร็จ โดยไม่ขึ้นอยู่กับใบรับรอง สถานะใบรับรองของ HTTPS LB เป็นข้อมูลประกอบเท่านั้น
 
-**HTTP LB (หลัก — ต้อง READY เพื่อดำเนินการต่อ):**
+**HTTP LB (หลัก — ต้องเป็น READY เพื่อดำเนินต่อ):**
 
 ```bash
 curl -s \
@@ -779,11 +779,11 @@ curl -s \
   | jq '{state: .spec.state}'
 ```
 
-| ฟิลด์ | ค่าที่คาดหวัง | สถานะระหว่างทาง |
+| ฟิลด์ | ค่าที่คาดหวัง | สถานะระหว่างกลาง |
 | --- | --- | --- |
-| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS ยังไม่ได้ตั้งค่า (ดูขั้นตอน 4) |
+| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — ยังไม่ได้กำหนดค่า DNS (ดูขั้นตอนที่ 4) |
 
-**HTTPS LB (รอง — เป็นข้อมูลอ้างอิง ไม่บล็อกการดำเนินการต่อ):**
+**HTTPS LB (รอง — ข้อมูลประกอบ ไม่บล็อกการดำเนินต่อ):**
 
 ```bash
 curl -s \
@@ -792,16 +792,16 @@ curl -s \
   | jq '{state: .spec.state, cert_state: .spec.cert_state}'
 ```
 
-| ฟิลด์ | ค่าที่คาดหวัง | สถานะระหว่างทาง |
+| ฟิลด์ | ค่าที่คาดหวัง | สถานะระหว่างกลาง |
 | --- | --- | --- |
-| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS ยังไม่ได้ตั้งค่า; `VIRTUAL_HOST_DNS_A_RECORD_ADDED` — พบระเบียน A รอใบรับรอง |
-| `cert_state` | `CertificateValid` | `PreDomainChallengePending` — รอ ACME CNAME; `DomainChallengeStarted` — ACME challenge กำลังดำเนินการ; `AutoCertDomainRateLimited` — ถึง rate limit ของ Let's Encrypt (คาดหวังในสภาพแวดล้อมเดโม ไม่ส่งผลกระทบต่อ HTTP LB) |
+| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — ยังไม่ได้กำหนดค่า DNS; `VIRTUAL_HOST_DNS_A_RECORD_ADDED` — พบ A record รอใบรับรอง |
+| `cert_state` | `CertificateValid` | `PreDomainChallengePending` — รอ ACME CNAME; `DomainChallengeStarted` — กำลังดำเนินการ ACME challenge; `AutoCertDomainRateLimited` — ถึงขีดจำกัดอัตราของ Let's Encrypt (คาดหวังในสภาพแวดล้อมเดโม ไม่ส่งผลต่อ HTTP LB) |
 
 <Aside type="note">
-การออกใบรับรองอาจใช้เวลา **5–10 นาที** หลังจากสร้างระเบียน DNS หาก `cert_state` แสดง `AutoCertDomainRateLimited` นี่เป็นสิ่งที่คาดหวังในสภาพแวดล้อมเดโมที่โครงสร้างพื้นฐานถูกสร้างและทำลายบ่อยครั้ง HTTP LB ไม่ได้รับผลกระทบ — ดำเนินต่อเดโมโดยใช้ URL `http://`
+การออกใบรับรองอาจใช้เวลา **5–10 นาที** หลังจากสร้าง DNS record หาก `cert_state` แสดง `AutoCertDomainRateLimited` นี่เป็นสิ่งที่คาดหวังในสภาพแวดล้อมเดโมที่โครงสร้างพื้นฐานถูกสร้างและทำลายบ่อยครั้ง HTTP LB ไม่ได้รับผลกระทบ — ดำเนินเดโมต่อโดยใช้ URL แบบ `http://`
 </Aside>
 
-### การตั้งค่า JS
+### การกำหนดค่า JS
 
 ```bash
 curl -s \
@@ -810,7 +810,7 @@ curl -s \
   | jq .
 ```
 
-การตอบกลับมีฟิลด์ `scriptTag` พร้อมแท็ก HTML `<script>` เต็มรูปแบบที่ load balancer จะแทรกลงในหน้าเว็บที่ตอบกลับ
+การตอบกลับมีฟิลด์ `scriptTag` พร้อมแท็ก HTML `<script>` เต็มรูปแบบที่ load balancer แทรกเข้าไปในการตอบกลับของหน้าเว็บ
 
 ### โดเมนที่ตรวจพบ
 
@@ -823,7 +823,7 @@ curl -s \
 
 ### สคริปต์ที่ตรวจพบ
 
-endpoint สคริปต์ต้องการช่วงเวลาโดยใช้ epoch timestamps (วินาทีตั้งแต่ Unix epoch) ตัวอย่างด้านล่างค้นหาย้อนหลัง 7 วัน
+Scripts endpoint ต้องการช่วงเวลาโดยใช้ epoch timestamp (วินาทีนับจาก Unix epoch) ตัวอย่างด้านล่างค้นหาข้อมูล 7 วันล่าสุด
 
 ```bash
 NOW=$(date +%s)
@@ -838,7 +838,7 @@ curl -s -X POST \
 
 ### ฟิลด์ฟอร์ม
 
-endpoint ฟิลด์ฟอร์มต้องการช่วงเวลาโดยใช้ epoch timestamps ส่งเป็น query parameters
+Form fields endpoint ต้องการช่วงเวลาโดยใช้ epoch timestamp ส่งเป็น query parameter
 
 ```bash
 NOW=$(date +%s)
@@ -849,31 +849,31 @@ curl -s \
   | jq '.form_fields'
 ```
 
-### สรุปหลักฐาน Phase 1
+### สรุปหลักฐานเฟส 1
 
-หลังจากเสร็จสิ้นการตรวจสอบทั้งหมด AI assistant ควรนำเสนอตารางสถานะรวม:
+หลังจากตรวจสอบทั้งหมดเสร็จแล้ว ผู้ช่วย AI ควรแสดงตารางสถานะรวม:
 
-| รหัสทดสอบ | การตรวจสอบ | ค่าที่คาดหวัง | จำเป็น | สถานะ |
+| รหัสการทดสอบ | การตรวจสอบ | ค่าที่คาดหวัง | จำเป็น | สถานะ |
 | --- | --- | --- | --- | --- |
-| DNS-1 | ระเบียน A แก้ชื่อได้ | VIP IP ส่งคืน | **ใช่** | PASS / FAIL |
+| DNS-1 | A Record แก้ชื่อสำเร็จ | ส่งคืน VIP IP | **ใช่** | PASS / FAIL |
 | DNS-2 | ACME CNAME มีอยู่ | `*.autocerts.ves.volterra.io` | ไม่ | PASS / PENDING |
 | LB-1 | สถานะ HTTP LB | `VIRTUAL_HOST_READY` | **ใช่** | PASS / PENDING |
 | LB-2 | สถานะ HTTPS LB | `VIRTUAL_HOST_READY` | ไม่ | PASS / PENDING / INFO |
 | TLS-1 | สถานะใบรับรอง | `CertificateValid` | ไม่ | PASS / PENDING / INFO |
-| CSD-1 | การตั้งค่า JS | `scriptTag` มีอยู่ | **ใช่** | PASS / FAIL |
+| CSD-1 | การกำหนดค่า JS | มี `scriptTag` | **ใช่** | PASS / FAIL |
 | CSD-2 | สถานะ CSD | `isEnabled: true` | **ใช่** | PASS / FAIL |
 | CSD-3 | Protected domain | โดเมนลงทะเบียนแล้ว | **ใช่** | PASS / FAIL |
 
 <Aside type="note">
-**Phase 2 ใช้ HTTP LB** HTTPS เป็นตัวเลือก — หาก TLS-1 แสดง `AutoCertDomainRateLimited` หรือ LB-2 ยังคง PENDING เดโมดำเนินต่อได้ตามปกติโดยใช้ URL `http://` เฉพาะ DNS-1, LB-1, CSD-1, CSD-2 และ CSD-3 เท่านั้นที่ต้อง pass ก่อนดำเนินการต่อไป Phase 2
+**เฟส 2 ใช้ HTTP LB** HTTPS เป็นทางเลือก — หาก TLS-1 แสดง `AutoCertDomainRateLimited` หรือ LB-2 ยังคง PENDING เดโมจะดำเนินต่อตามปกติโดยใช้ URL แบบ `http://` เฉพาะ DNS-1, LB-1, CSD-1, CSD-2, และ CSD-3 เท่านั้นที่ต้อง pass ก่อนดำเนินต่อไปเฟส 2
 </Aside>
 
-หาก LB-1 แสดง PENDING ให้ poll ทุก 30 วินาทีสูงสุด 4 รอบ (รวม 2 นาที) หาก LB-1 ยังไม่เป็น `VIRTUAL_HOST_READY` หลัง 4 รอบ ให้ตรวจสอบการแก้ชื่อ DNS ด้วย `dig` และรายงานต่อผู้ดำเนินการ — อย่าดำเนินการต่อจนกว่า LB-1 จะถึง READY สำหรับ LB-2 และ TLS-1 ให้ poll ทุก 60 วินาทีสูงสุด 10 รอบ (10 นาที) หากยังอยู่ในสถานะระหว่างทางหลัง 10 รอบ ให้บันทึกสถานะปัจจุบันเป็น INFO และดำเนินต่อ — เหล่านี้เป็นข้อมูลอ้างอิงและไม่บล็อกการดำเนินเดโม
+หาก LB-1 แสดง PENDING ให้ poll ทุก 30 วินาทีสูงสุด 4 ครั้ง (รวม 2 นาที) หาก LB-1 ยังไม่เป็น `VIRTUAL_HOST_READY` หลังจาก 4 ครั้ง ให้ตรวจสอบการแก้ชื่อ DNS ด้วย `dig` และรายงานผู้ดำเนินการ — อย่าดำเนินต่อจนกว่า LB-1 จะถึง READY สำหรับ LB-2 และ TLS-1 ให้ poll ทุก 60 วินาทีสูงสุด 10 ครั้ง (10 นาที) หากยังอยู่ในสถานะระหว่างกลางหลังจาก 10 ครั้ง ให้บันทึกสถานะปัจจุบันเป็น INFO และดำเนินต่อ — สิ่งเหล่านี้เป็นข้อมูลประกอบและไม่บล็อกการดำเนินเดโม
 
 <Aside type="note">
-ฟิลด์ `dns_info` ในการตอบกลับ LB อาจว่างเปล่า (`[]`) แม้ว่า DNS จะแก้ชื่อได้ถูกต้อง — สิ่งนี้เกิดขึ้นหลังจากการสร้างใหม่ทั้งหมด ตรวจสอบการแก้ชื่อ DNS ด้วย `dig` เสมอ แทนที่จะพึ่งพา `dns_info` สำหรับ VIP address
+ฟิลด์ `dns_info` ในการตอบกลับ LB อาจเป็นค่าว่าง (`[]`) แม้ว่า DNS จะแก้ชื่อได้อย่างถูกต้อง — สิ่งนี้เกิดขึ้นหลังจากการสร้างใหม่ทั้งหมด ให้ตรวจสอบการแก้ชื่อ DNS ด้วย `dig` เสมอแทนที่จะพึ่งพา `dns_info` สำหรับ VIP address
 </Aside>
 
 ---
 
-**Phase 1 เสร็จสมบูรณ์** ดำเนินต่อไป [Phase 2 — Attack](/csd/demo/phase-2-attack/) เพื่อรันการจำลองการโจมตี
+**เฟส 1 เสร็จสมบูรณ์** ดำเนินต่อไป [เฟส 2 — การโจมตี](/csd/demo/phase-2-attack/) เพื่อรันการจำลองการโจมตี

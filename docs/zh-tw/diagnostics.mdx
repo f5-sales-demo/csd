@@ -1,6 +1,6 @@
 ---
 title: 診斷與驗證
-description: CSD 部署的健康檢查、連線測試和驗證程序
+description: CSD 部署的健康檢查、連線測試與驗證程序
 sidebar:
   order: 8
   label: 診斷與驗證
@@ -11,50 +11,50 @@ i18n:
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-本頁提供**分層 UAT 驗證矩陣**，用於端對端驗證您的 Client-Side Defense 部署。每個測試案例都遵循基礎設施相依鏈 — 從 DNS 解析到 CSD 遙測 — 讓您可以系統性地證明每個元件都正常運作。
+本頁面提供**分層 UAT 驗證矩陣**，用於端對端驗證您的 Client-Side Defense 部署。每個測試案例遵循基礎設施依賴鏈 — 從 DNS 解析到 CSD 遙測 — 讓您可以系統性地驗證每個元件是否正常運作。
 
-這些命令是 [CSD 控制台導覽](/csd/csd-console/)的 **API 對應版本** — 當您需要從終端機驗證、自動化監控或在沒有 UI 的情況下展示 CSD 功能時，請使用這些命令。
+這些指令是 [CSD 主控台導覽](/csd/csd-console/) 的 **API 對應版本** — 當您需要從終端機進行驗證、自動化監控，或在不使用 UI 的情況下展示 CSD 功能時，請使用這些指令。
 
 ## 先決條件
 
-按照 [API 自動化 — 環境設定](/csd/demo/#environment-setup) 中的說明設定您的環境變數：
+按照 [API 自動化 &mdash; 環境設定](/csd/demo/#environment-setup) 中的說明設定您的環境變數：
 
 ```bash
 set -a && source .env && set +a
 ```
 
-以下所有命令都使用 `xTOKENx` 佔位符格式。請用您的環境變數（`$F5XC_API_TOKEN`、`$F5XC_NAMESPACE` 等）替換，或使用頁面頂部的互動式表單。
+以下所有指令使用 `xTOKENx` 佔位符格式。請替換為您的環境變數（`$F5XC_API_TOKEN`、`$F5XC_NAMESPACE` 等），或使用頁面頂部的互動式表單。
 
 ## API 行為說明
 
 <Aside type="note">
-**PUT 和 DELETE 在 HTTP 200 時回傳空的 `\{\}`** — 這是預期的成功回應，不是錯誤。只有 **POST** 會回傳建立的物件。**列表端點**（例如 `/healthchecks`）和**個別 GET 端點**（例如 `/healthchecks/\{name\}`）回傳不同的回應結構 — 請參閱 [API 參考 — API 慣例](/csd/api-reference/#api-conventions) 以了解每個端點正確的 `jq` 路徑。
+**PUT 和 DELETE 在 HTTP 200 時回傳空的 `\{\}`** — 這是預期的成功回應，而非錯誤。只有 **POST** 會回傳已建立的物件。**列表端點**（例如 `/healthchecks`）和**個別 GET 端點**（例如 `/healthchecks/\{name\}`）回傳不同的回應結構 — 請參閱 [API 參考 &mdash; API 慣例](/csd/api-reference/#api-conventions) 以了解每種端點正確的 `jq` 路徑。
 </Aside>
 
 ## 時間範圍輔助工具
 
-許多 CSD 端點需要 epoch 時間戳記（自 Unix epoch 以來的秒數）。這些單行命令計算常見範圍的開始/結束時間。
+許多 CSD 端點需要 epoch 時間戳記（自 Unix epoch 以來的秒數）。以下單行指令可計算常見範圍的開始/結束時間。
 
 **跨平台**（macOS + Linux）：
 
 ```bash
-# 目前時間的 epoch 秒數
+# Current time as epoch seconds
 NOW=$(date +%s)
 
-# 1 小時前
+# 1 hour ago
 START_1H=$(( NOW - 3600 ))
 
-# 24 小時前
+# 24 hours ago
 START_24H=$(( NOW - 86400 ))
 
-# 7 天前
+# 7 days ago
 START_7D=$(( NOW - 604800 ))
 
-# 30 天前
+# 30 days ago
 START_30D=$(( NOW - 2592000 ))
 ```
 
-| 預設值 | 秒數 | Shell 表達式 |
+| 預設值 | 秒數 | Shell 運算式 |
 | --- | --- | --- |
 | 1 小時 | 3,600 | `$(( $(date +%s) - 3600 ))` |
 | 24 小時 | 86,400 | `$(( $(date +%s) - 86400 ))` |
@@ -62,30 +62,30 @@ START_30D=$(( NOW - 2592000 ))
 | 30 天 | 2,592,000 | `$(( $(date +%s) - 2592000 ))` |
 
 <Aside type="note">
-CSD 端點（`/api/shape/csd/`）使用 **epoch 秒數**（例如 `1710000000`）。存取日誌端點（`/api/data/`）使用 **ISO 8601** 時間戳記（例如 `2024-03-10T00:00:00Z`）。每個章節中的命令都使用該端點的正確格式。
+CSD 端點（`/api/shape/csd/`）使用 **epoch 秒數**（例如 `1710000000`）。存取日誌端點（`/api/data/`）使用 **ISO 8601** 時間戳記（例如 `2024-03-10T00:00:00Z`）。每個章節中的指令均使用該端點的正確格式。
 </Aside>
 
 ## 測試案例格式
 
-以下每個測試都遵循此結構：
+以下每個測試遵循此結構：
 
 | 欄位 | 說明 |
 | --- | --- |
-| **測試 ID** | 層級編號 + 序列 ID（例如 DNS-1、TLS-2） |
-| **驗證內容** | 正在驗證的特定基礎設施事實 |
-| **命令** | 可直接執行的 `curl` 或 `dig` 命令 |
-| **通過 / 失敗** | 健康與不健康狀態的預期輸出 |
-| **修復** | 相關設定或疑難排解章節的連結 |
+| **測試 ID** | 層級編號 + 序號（例如 DNS-1、TLS-2） |
+| **驗證目的** | 正在驗證的特定基礎設施事實 |
+| **指令** | 可直接執行的 `curl` 或 `dig` 指令 |
+| **通過 / 失敗** | 健康狀態與異常狀態的預期輸出 |
+| **修正** | 相關設定或疑難排解章節的連結 |
 
 ---
 
 ## 第 1 層：DNS 解析
 
-DNS 是基礎 — 如果網域無法解析到負載平衡器 VIP，其他一切都無法運作。
+DNS 是基礎 — 如果網域未解析到負載平衡器 VIP，其他一切都無法運作。
 
 ### DNS-1：A 記錄解析
 
-**驗證內容：** 網域解析到負載平衡器 VIP IP 位址。
+**驗證目的：** 網域解析到負載平衡器 VIP IP 位址。
 
 ```bash
 dig +short xF5XC_DOMAINNAMEx A
@@ -93,18 +93,18 @@ dig +short xF5XC_DOMAINNAMEx A
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — 回傳 VIP IP（例如 `72.19.3.185`） | 網域解析到 LB 虛擬 IP |
-| **失敗** — 空回應 | DNS A 記錄未設定 |
+| **通過** &mdash; 回傳 VIP IP（例如 `72.19.3.185`） | 網域解析到 LB 虛擬 IP |
+| **失敗** &mdash; 空回應 | DNS A 記錄未設定 |
 
-**修復：** [API 自動化 — 步驟 4：設定 DNS](/csd/demo/phase-1-build/#step-4-configure-dns)
+**修正：** [API 自動化 &mdash; 步驟 4：設定 DNS](/csd/demo/phase-1-build/#step-4-configure-dns)
 
 <Aside type="tip">
-**DNS 負向快取：** 如果網域先前回傳 `NXDOMAIN`，遞迴解析器可能會快取該結果。對權威名稱伺服器進行驗證以排除過時快取：`dig +short xF5XC_DOMAINNAMEx A @ns1.f5clouddns.com` 或使用公共解析器如 `@8.8.8.8`。
+**負面 DNS 快取：** 如果網域先前回傳 `NXDOMAIN`，遞迴解析器可能會快取該結果。請對權威名稱伺服器進行驗證以排除過期快取：`dig +short xF5XC_DOMAINNAMEx A @ns1.f5clouddns.com` 或使用公共解析器如 `@8.8.8.8`。
 </Aside>
 
-### DNS-2：ACME 挑戰記錄
+### DNS-2：ACME 驗證記錄
 
-**驗證內容：** 用於自動 TLS 憑證佈建的 ACME 挑戰記錄存在。
+**驗證目的：** 自動 TLS 憑證佈建所需的 ACME 驗證記錄存在。
 
 ```bash
 dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
@@ -113,19 +113,19 @@ dig +short _acme-challenge.xF5XC_DOMAINNAMEx TXT
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — CNAME 指向 `*.autocerts.ves.volterra.io.`（外部 DNS） | ACME 挑戰 CNAME 已就位 |
-| **通過** — 帶有網域值的 TXT 記錄（F5 Distributed Cloud (F5 XC) 管理的 DNS） | 平台透過 TXT 記錄管理 ACME 挑戰 |
-| **失敗** — 兩者皆為空 | ACME 記錄未設定；憑證將保持在 `PreDomainChallengePending` |
+| **通過** &mdash; CNAME 指向 `*.autocerts.ves.volterra.io.`（外部 DNS） | ACME 驗證 CNAME 已就位 |
+| **通過** &mdash; 含有網域值的 TXT 記錄（F5 Distributed Cloud (F5 XC) 託管 DNS） | 平台透過 TXT 記錄管理 ACME 驗證 |
+| **失敗** &mdash; 兩者皆為空 | ACME 記錄未設定；憑證將停留在 `PreDomainChallengePending` |
 
 <Aside type="note">
-當使用啟用 `allow_http_lb_managed_records` 的 F5 XC 管理 DNS 時，平台會在 `x-ves-io-managed` RR 集群組中自動建立 **TXT** 記錄（不是 CNAME）。此基於 TXT 的 ACME 驗證由內部處理。使用外部 DNS 時，您必須手動建立指向 `*.autocerts.ves.volterra.io` 的 CNAME。
+當使用啟用了 `allow_http_lb_managed_records` 的 F5 XC 託管 DNS 時，平台會在 `x-ves-io-managed` RR 集合群組中自動建立 **TXT** 記錄（而非 CNAME）。此基於 TXT 的 ACME 驗證由內部處理。當使用外部 DNS 時，您必須手動建立指向 `*.autocerts.ves.volterra.io` 的 CNAME。
 </Aside>
 
-**修復：** 對於外部 DNS，建立 CNAME：`_acme-challenge.xF5XC_DOMAINNAMEx` &rarr; `*.autocerts.ves.volterra.io`。對於 F5 XC 管理的 DNS，在 DNS 區域上啟用 `allow_http_lb_managed_records` — 請參閱 [DNS-4](#dns-4-f5-xc-managed-records-enabled)。請參閱 [API 自動化 — 步驟 4](/csd/demo/phase-1-build/#step-4-configure-dns)。
+**修正：** 對於外部 DNS，建立 CNAME：`_acme-challenge.xF5XC_DOMAINNAMEx` &rarr; `*.autocerts.ves.volterra.io`。對於 F5 XC 託管 DNS，在 DNS 區域上啟用 `allow_http_lb_managed_records` &mdash; 請參閱 [DNS-4](#dns-4-f5-xc-managed-records-enabled)。請參閱 [API 自動化 &mdash; 步驟 4](/csd/demo/phase-1-build/#step-4-configure-dns)。
 
-### DNS-3：名稱伺服器權限
+### DNS-3：名稱伺服器授權
 
-**驗證內容：** F5 XC 是否為根網域的權威 DNS 提供者。
+**驗證目的：** F5 XC 是否為根網域的權威 DNS 提供者。
 
 ```bash
 dig +short NS xF5XC_ROOT_DOMAINx
@@ -133,14 +133,14 @@ dig +short NS xF5XC_ROOT_DOMAINx
 
 | 結果 | 意義 |
 | --- | --- |
-| 包含 `ns1.f5clouddns.com` 和 `ns2.f5clouddns.com` | F5 XC 管理的 DNS — 可自動建立記錄 |
-| 其他名稱伺服器 | 外部 DNS — 必須手動建立記錄 |
+| 包含 `ns1.f5clouddns.com` 和 `ns2.f5clouddns.com` | F5 XC 託管 DNS &mdash; 記錄可自動建立 |
+| 其他名稱伺服器 | 外部 DNS &mdash; 記錄必須手動建立 |
 
-**修復：** [API 自動化 — 偵測 DNS 權限](/csd/demo/phase-1-build/#detect-dns-authority)
+**修正：** [API 自動化 &mdash; 偵測 DNS 授權](/csd/demo/phase-1-build/#detect-dns-authority)
 
-### DNS-4：F5 XC 管理記錄已啟用
+### DNS-4：F5 XC 託管記錄已啟用
 
-**驗證內容：** F5 XC DNS 區域允許為負載平衡器自動建立記錄（僅限 F5 XC 管理的 DNS）。
+**驗證目的：** F5 XC DNS 區域允許為負載平衡器自動建立記錄（僅限 F5 XC 託管 DNS）。
 
 ```bash
 curl -s \
@@ -151,28 +151,28 @@ curl -s \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — `true` | 平台將為 LB 自動建立 A 和 ACME 記錄 |
-| **失敗** — `false` 或 `null` | 管理記錄已停用；透過區域更新啟用 |
+| **通過** &mdash; `true` | 平台將為 LB 自動建立 A 和 ACME 記錄 |
+| **失敗** &mdash; `false` 或 `null` | 託管記錄已停用；透過區域更新啟用 |
 
 <Aside type="caution">
-使用 F5 XC 管理 DNS 時，`false` 結果是常見的錯誤設定。未啟用管理記錄時，平台無法自動建立 A 記錄（指向 VIP）或 ACME 挑戰 CNAME（TLS 憑證佈建所需）。這會導致負載平衡器停留在 `VIRTUAL_HOST_PENDING_A_RECORD`，憑證停留在 `PreDomainChallengePending`。請在 DNS 區域上啟用管理記錄或手動建立記錄。
+使用 F5 XC 託管 DNS 時，`false` 結果是常見的設定錯誤。未啟用託管記錄時，平台無法自動建立 A 記錄（指向 VIP）或 ACME 驗證 CNAME（TLS 憑證佈建所需）。這會導致負載平衡器停留在 `VIRTUAL_HOST_PENDING_A_RECORD` 且憑證停留在 `PreDomainChallengePending`。請在 DNS 區域上啟用託管記錄或手動建立記錄。
 </Aside>
 
-**修復：** [API 自動化 — 選項 A：F5 XC 管理的 DNS](/csd/demo/phase-1-build/#option-a-f5-xc-managed-dns)
+**修正：** [API 自動化 &mdash; 選項 A：F5 XC 託管 DNS](/csd/demo/phase-1-build/#option-a-f5-xc-managed-dns)
 
 ---
 
 ## 第 2 層：TLS 憑證
 
-DNS 解析後，負載平衡器必須具有有效的 TLS 憑證。
+DNS 解析後，負載平衡器必須擁有有效的 TLS 憑證。
 
 ### TLS-1：憑證狀態
 
 <Aside type="note">
-**此測試僅適用於 HTTPS LB（`${F5XC_LB_NAME}-https`）。** HTTP LB 沒有憑證。在示範環境中，TLS-1 是參考資訊 — 如果顯示 `AutoCertDomainRateLimited`，示範會正常進行，透過 HTTP LB 使用 `http://` URL。
+**此測試僅適用於 HTTPS LB（`${F5XC_LB_NAME}-https`）。** HTTP LB 沒有憑證。在示範環境中，TLS-1 為參考資訊 — 如果顯示 `AutoCertDomainRateLimited`，示範可透過 HTTP LB 使用 `http://` URL 正常進行。
 </Aside>
 
-**驗證內容：** 自動 TLS 憑證已在 HTTPS LB 上核發。
+**驗證目的：** 自動 TLS 憑證已在 HTTPS LB 上核發。
 
 ```bash
 curl -s \
@@ -183,16 +183,16 @@ curl -s \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — `"CertificateValid"` 或 `"AutoCertRenewing"` | 憑證有效且啟用中 |
-| **警告** — `"DomainChallengePending"` 或 `"DomainChallengeStarted"` | ACME 挑戰進行中 — 等待 5–10 分鐘 |
-| **資訊** — `"AutoCertDomainRateLimited"` | 達到 Let's Encrypt 速率限制 — 在示範環境中是預期的，不影響 HTTP LB |
-| **失敗** — `"PreDomainChallengePending"` | ACME 挑戰記錄遺失 — 請參閱 [DNS-2](#dns-2-acme-challenge-record) |
+| **通過** &mdash; `"CertificateValid"` 或 `"AutoCertRenewing"` | 憑證有效且處於啟用狀態 |
+| **警告** &mdash; `"DomainChallengePending"` 或 `"DomainChallengeStarted"` | ACME 驗證進行中 &mdash; 等待 5&ndash;10 分鐘 |
+| **資訊** &mdash; `"AutoCertDomainRateLimited"` | 達到 Let's Encrypt 速率限制 &mdash; 在示範環境中為預期行為，不影響 HTTP LB |
+| **失敗** &mdash; `"PreDomainChallengePending"` | ACME 驗證記錄缺失 &mdash; 請參閱 [DNS-2](#dns-2-acme-challenge-record) |
 
-**修復：** 確保 ACME 挑戰記錄已就位（外部 DNS 使用 CNAME，F5 XC DNS 則啟用管理記錄）。記錄設定後，憑證佈建需要 **5–10 分鐘**。如果超過 15 分鐘仍停滯，請參閱[憑證停滯 — 重新建立](/csd/demo/#certificate-stuck--clean-recreation-optional)。如果達到速率限制，HTTP LB 不受影響。
+**修正：** 確保 ACME 驗證記錄已就位（外部 DNS 使用 CNAME，或為 F5 XC DNS 啟用託管記錄）。記錄設定後，憑證佈建需要 **5&ndash;10 分鐘**。如果超過 15 分鐘仍卡住，請參閱[憑證卡住 &mdash; 清除重建](/csd/demo/#certificate-stuck--clean-recreation-optional)。如果受到速率限制，HTTP LB 不受影響。
 
 ### TLS-2：憑證詳細資訊
 
-**驗證內容：** 憑證涵蓋預期的網域並顯示到期資訊。僅適用於 HTTPS LB。
+**驗證目的：** 憑證涵蓋預期的網域並顯示到期資訊。僅適用於 HTTPS LB。
 
 ```bash
 curl -s \
@@ -206,15 +206,15 @@ curl -s \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — `auto_cert_info` 包含 `dns_records` 和憑證中繼資料 | 憑證佈建詳細資訊可用 |
-| **失敗** — `auto_cert_info` 為 `null` 或空 | 憑證尚未佈建 |
+| **通過** &mdash; `auto_cert_info` 包含 `dns_records` 和憑證中繼資料 | 憑證佈建詳細資訊可用 |
+| **失敗** &mdash; `auto_cert_info` 為 `null` 或空 | 憑證尚未佈建 |
 
-### TLS-3：即時 TLS 握手
+### TLS-3：即時 TLS 交握
 
-**驗證內容：** TLS 憑證有效且從用戶端完成握手。僅在 HTTPS LB 具有有效憑證時適用。
+**驗證目的：** TLS 憑證有效且從用戶端完成交握。僅在 HTTPS LB 擁有有效憑證時適用。
 
 <Aside type="note">
-在示範環境中，使用 `curl http://xF5XC_DOMAINNAMEx/`（HTTP，不是 HTTPS）作為主要驗證路徑。TLS 握手測試是選用的 — 只有在 HTTPS LB 憑證為 `CertificateValid` 時才有效。
+在示範環境中，使用 `curl http://xF5XC_DOMAINNAMEx/`（HTTP，非 HTTPS）作為主要驗證路徑。TLS 交握測試為選用 — 僅在 HTTPS LB 憑證為 `CertificateValid` 時才有效。
 </Aside>
 
 ```bash
@@ -224,12 +224,12 @@ curl -sv "https://xF5XC_DOMAINNAMEx/" 2>&1 \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — 顯示 `SSL connection using TLSv1.3`、有效的主體和到期日 | 端對端 TLS 正常運作 |
-| **失敗** — 連線被拒或憑證錯誤 | 檢查 DNS 解析和憑證狀態；如果達到速率限制，請改用 HTTP |
+| **通過** &mdash; 顯示 `SSL connection using TLSv1.3`、有效的 subject 和到期日 | 端對端 TLS 運作正常 |
+| **失敗** &mdash; 連線被拒或憑證錯誤 | 檢查 DNS 解析和憑證狀態；如果受到速率限制，請改用 HTTP |
 
-### TLS-4：來自 LB 的 ACME 記錄目標
+### TLS-4：LB 的 ACME 記錄目標
 
-**驗證內容：** HTTPS 負載平衡器回報正確的 ACME 目標以進行憑證驗證。
+**驗證目的：** HTTPS 負載平衡器報告正確的 ACME 目標以進行憑證驗證。
 
 ```bash
 curl -s \
@@ -243,21 +243,21 @@ curl -s \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — `vip_ip` 和 `acme_target` 已填入 | DNS 記錄可根據這些值進行驗證 |
-| **失敗** — `null` 值 | LB 可能未設定 `https_auto_cert` |
+| **通過** &mdash; `vip_ip` 和 `acme_target` 已填入 | DNS 記錄可依據這些值進行驗證 |
+| **失敗** &mdash; `null` 值 | LB 可能未設定 `https_auto_cert` |
 
 ---
 
 ## 第 3 層：HTTP 負載平衡器
 
-負載平衡器必須處於就緒狀態且正確設定。
+負載平衡器必須處於就緒狀態且設定正確。
 
 ### LB-1：運作狀態
 
-**驗證內容：** HTTP 負載平衡器（主要）完全運作且接受流量。
+**驗證目的：** HTTP 負載平衡器（主要）已完全運作並接受流量。
 
 <Aside type="note">
-**HTTP LB 是主要驗證目標。** 在示範環境中，先檢查 HTTP LB（`${F5XC_LB_NAME}-http`）— 它在 DNS 解析後立即達到 `VIRTUAL_HOST_READY`，不依賴憑證。使用 `curl http://xF5XC_DOMAINNAMEx/` 進行主要的 HTTP 驗證。
+**HTTP LB 為主要驗證目標。** 在示範環境中，請先檢查 HTTP LB（`${F5XC_LB_NAME}-http`）— 它在 DNS 解析後即可達到 `VIRTUAL_HOST_READY`，無需依賴憑證。使用 `curl http://xF5XC_DOMAINNAMEx/` 進行主要的 HTTP 驗證。
 </Aside>
 
 ```bash
@@ -269,14 +269,14 @@ curl -s \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — `"VIRTUAL_HOST_READY"` | LB 運作中 |
-| **失敗** — `"VIRTUAL_HOST_PENDING_A_RECORD"` | DNS A 記錄未設定 — 請參閱 [DNS-1](#dns-1-a-record-resolution) |
+| **通過** &mdash; `"VIRTUAL_HOST_READY"` | LB 已可運作 |
+| **失敗** &mdash; `"VIRTUAL_HOST_PENDING_A_RECORD"` | DNS A 記錄未設定 &mdash; 請參閱 [DNS-1](#dns-1-a-record-resolution) |
 
-**修復：** [LB 停滯在 VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record)
+**修正：** [LB 卡在 VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record)
 
 ### LB-2：網域設定
 
-**驗證內容：** HTTP 負載平衡器已設定正確的網域。
+**驗證目的：** HTTP 負載平衡器已設定正確的網域。
 
 ```bash
 curl -s \
@@ -287,12 +287,12 @@ curl -s \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — 陣列包含您的 FQDN（例如 `["app.example.com"]`） | LB 已設定預期的網域 |
-| **失敗** — 遺失或錯誤的網域 | 用正確的網域更新 LB 規格 |
+| **通過** &mdash; 陣列包含您的 FQDN（例如 `["app.example.com"]`） | LB 已設定預期的網域 |
+| **失敗** &mdash; 缺少或錯誤的網域 | 使用正確的網域更新 LB 規格 |
 
 ### LB-3：LB 上已啟用 CSD
 
-**驗證內容：** Client-Side Defense 已在負載平衡器上啟用，並具有正確的 JS 注入原則。
+**驗證目的：** 負載平衡器上已啟用 Client-Side Defense 並設定正確的 JS 注入策略。
 
 ```bash
 curl -s \
@@ -306,14 +306,14 @@ curl -s \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — `csd_enabled: true` 且原則中有 `js_insert_all_pages` | CSD 啟用中，在所有頁面注入 JS |
-| **失敗** — `csd_enabled: false` | LB 上未設定 CSD |
+| **通過** &mdash; `csd_enabled: true` 且策略中包含 `js_insert_all_pages` | CSD 啟用中，所有頁面皆進行 JS 注入 |
+| **失敗** &mdash; `csd_enabled: false` | LB 上未設定 CSD |
 
-**修復：** [API 參考 — 在負載平衡器上啟用 CSD](/csd/api-reference/#enable-csd-on-a-load-balancer)
+**修正：** [API 參考 &mdash; 在負載平衡器上啟用 CSD](/csd/api-reference/#enable-csd-on-a-load-balancer)
 
 ### LB-4：預設路由池
 
-**驗證內容：** 負載平衡器參照正確的原始伺服器池，具有預期的權重和優先順序。
+**驗證目的：** 負載平衡器參考正確的來源池，並具有預期的權重和優先順序。
 
 ```bash
 curl -s \
@@ -329,12 +329,12 @@ curl -s \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — 顯示您的原始伺服器池名稱及權重/優先順序 | LB 正在路由到正確的後端 |
-| **失敗** — 空或錯誤的池 | 更新 LB 的 `default_route_pools` 設定 |
+| **通過** &mdash; 顯示您的來源池名稱及權重/優先順序 | LB 正在路由到正確的後端 |
+| **失敗** &mdash; 空或錯誤的池 | 更新 LB 的 `default_route_pools` 設定 |
 
-### LB-5：部署狀態（每站點條件）
+### LB-5：部署狀態（各站點條件）
 
-**驗證內容：** 負載平衡器已部署並在所有站點回報健康狀態。
+**驗證目的：** 負載平衡器已部署且在所有站點報告健康狀態。
 
 ```bash
 curl -s \
@@ -349,11 +349,11 @@ curl -s \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — `state` 為 `VIRTUAL_HOST_READY`，`dns_info` 已填入 | LB 完全部署且已指派 VIP |
-| **失敗** — 待處理狀態或空的 `dns_info` | DNS 或憑證問題阻擋部署 |
+| **通過** &mdash; `state` 為 `VIRTUAL_HOST_READY`，`dns_info` 已填入 | LB 完全部署且已分配 VIP |
+| **失敗** &mdash; 待處理狀態或空的 `dns_info` | DNS 或憑證問題阻止部署 |
 
 <Aside type="tip">
-當 LB 不在 `VIRTUAL_HOST_READY` 狀態時，檢查 `.status[].virtual_host_status.error_description` 以取得與 F5 XC 控制台 UI 中顯示的相同錯誤詳細資訊：
+當 LB 不在 `VIRTUAL_HOST_READY` 狀態時，檢查 `.status[].virtual_host_status.error_description` 以取得與 F5 XC 主控台 UI 中顯示相同的錯誤詳細資訊：
 
 ```bash
 curl -s \
@@ -365,7 +365,7 @@ curl -s \
 
 ### LB-6：完整 LB 摘要
 
-**驗證內容：** 兩個 LB 設定的完整快照，用於除錯。
+**驗證目的：** 兩個 LB 設定的完整快照，用於除錯。
 
 **HTTP LB（主要）：**
 
@@ -401,13 +401,13 @@ curl -s \
 
 ---
 
-## 第 4 層：原始伺服器池
+## 第 4 層：來源池
 
-原始伺服器池定義負載平衡器將流量路由到的後端伺服器。
+來源池定義負載平衡器將流量路由到的後端伺服器。
 
-### OP-1：原始伺服器池設定
+### OP-1：來源池設定
 
-**驗證內容：** 原始伺服器池存在，具有正確的後端伺服器、連接埠和 LB 演算法。
+**驗證目的：** 來源池存在且具有正確的後端伺服器、連接埠和 LB 演算法。
 
 ```bash
 curl -s \
@@ -427,14 +427,14 @@ curl -s \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — 顯示正確的 IP、連接埠和演算法 | 原始伺服器池設定正確 |
-| **失敗** — `404` 或錯誤的值 | 原始伺服器池遺失或設定錯誤 |
+| **通過** &mdash; 顯示正確的 IP、連接埠和演算法 | 來源池設定正確 |
+| **失敗** &mdash; `404` 或錯誤的值 | 來源池缺失或設定錯誤 |
 
-**修復：** [API 自動化 — 步驟 2：建立原始伺服器池](/csd/demo/phase-1-build/#step-2-create-origin-pool)
+**修正：** [API 自動化 &mdash; 步驟 2：建立來源池](/csd/demo/phase-1-build/#step-2-create-origin-pool)
 
-### OP-2：到原始伺服器的 TLS
+### OP-2：到來源的 TLS
 
-**驗證內容：** LB 和原始伺服器之間的連線是否設定了 TLS。
+**驗證目的：** LB 與來源伺服器之間的連線是否設定了 TLS。
 
 ```bash
 curl -s \
@@ -447,12 +447,12 @@ curl -s \
 
 | 結果 | 意義 |
 | --- | --- |
-| `no_tls (plaintext)` | LB 透過 HTTP 連線到原始伺服器（Juice Shop 示範的預期狀況） |
-| `use_tls (encrypted)` | LB 透過 HTTPS 連線到原始伺服器 |
+| `no_tls (plaintext)` | LB 透過 HTTP 連線到來源（Juice Shop 示範的預期行為） |
+| `use_tls (encrypted)` | LB 透過 HTTPS 連線到來源 |
 
 ### OP-3：健康檢查關聯
 
-**驗證內容：** 原始伺服器池已連結正確的健康檢查（如適用）。
+**驗證目的：** 來源池已連結正確的健康檢查（如適用）。
 
 ```bash
 curl -s \
@@ -463,13 +463,13 @@ curl -s \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — 包含健康檢查參照（名稱、命名空間、種類）的陣列 | 健康檢查已連結 |
-| **正常** — 空陣列 `[]` | 沒有健康檢查（可接受 — CSD 不需要） |
-| **失敗** — 預期有健康檢查但陣列為空 | 建立時找不到健康檢查 — 請參閱[健康檢查未連結](/csd/demo/#healthcheck-not-linked-to-origin-pool) |
+| **通過** &mdash; 包含健康檢查參考的陣列（名稱、命名空間、種類） | 健康檢查已連結 |
+| **正常** &mdash; 空陣列 `[]` | 無健康檢查（可接受 — CSD 不要求） |
+| **失敗** &mdash; 預期有健康檢查但陣列為空 | 建立時未找到健康檢查 &mdash; 請參閱[健康檢查未連結到來源池](/csd/demo/#healthcheck-not-linked-to-origin-pool) |
 
-### OP-4：原始伺服器連線
+### OP-4：來源連線能力
 
-**驗證內容：** 原始伺服器可從用戶端到達（不測試 LB 到原始伺服器的路徑）。
+**驗證目的：** 從用戶端可連線到來源伺服器（不測試 LB 到來源的路徑）。
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}' \
@@ -478,22 +478,22 @@ curl -s -o /dev/null -w '%{http_code}' \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — `200`（或其他有效的 HTTP 代碼） | 原始伺服器正在回應 |
-| **失敗** — `000` 或連線被拒 | 從此網路無法連線到原始伺服器 |
+| **通過** &mdash; `200`（或其他有效 HTTP 代碼） | 來源伺服器正在回應 |
+| **失敗** &mdash; `000` 或連線被拒 | 從此網路無法連線到來源伺服器 |
 
 <Aside type="note">
-這測試直接的用戶端到原始伺服器連線。LB 到原始伺服器的路徑可能使用不同的網路路徑。此處失敗不一定表示 LB 無法連線到原始伺服器。
+此測試為直接的用戶端到來源連線。LB 到來源的路徑可能使用不同的網路路徑。此處的失敗不一定表示 LB 無法連線到來源。
 </Aside>
 
 ---
 
 ## 第 5 層：健康檢查
 
-健康檢查監控後端可用性。對 CSD 來說是選用的，但對生產部署很有用。
+健康檢查監控後端可用性。對 CSD 而言為選用，但對生產環境部署有用。
 
 ### HC-1：健康檢查設定
 
-**驗證內容：** 健康檢查存在，具有正確的類型、路徑、時間和閾值。
+**驗證目的：** 健康檢查存在且具有正確的類型、路徑、時間設定和閾值。
 
 ```bash
 curl -s \
@@ -513,12 +513,12 @@ curl -s \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — 顯示 HTTP 類型、路徑 `/` 和預期 `200` | 健康檢查設定正確 |
-| **失敗** — `404` 回應 | 健康檢查不存在（可能已跳過 — 請參閱[第 1 階段步驟 1](/csd/demo/phase-1-build/#step-1-create-healthcheck-optional)） |
+| **通過** &mdash; 顯示 HTTP 類型、路徑 `/` 和預期 `200` | 健康檢查設定正確 |
+| **失敗** &mdash; `404` 回應 | 健康檢查不存在（可能已跳過 &mdash; 請參閱[第 1 階段步驟 1](/csd/demo/phase-1-build/#step-1-create-healthcheck-optional)） |
 
 ### HC-2：列出所有健康檢查
 
-**驗證內容：** 列舉命名空間中的所有健康檢查以驗證命名和數量。
+**驗證目的：** 列舉命名空間中的所有健康檢查以驗證命名和數量。
 
 ```bash
 curl -s \
@@ -535,18 +535,18 @@ curl -s \
 ```
 
 <Aside type="note">
-列表端點僅回傳摘要資料（名稱、命名空間、說明）。若要查看完整設定詳細資訊（類型、路徑、間隔、逾時），請使用 [HC-1](#hc-1-healthcheck-configuration) 查詢個別健康檢查。
+列表端點僅回傳摘要資料（名稱、命名空間、描述）。若要查看完整設定詳情（類型、路徑、間隔、逾時），請使用 [HC-1](#hc-1-healthcheck-configuration) 查詢個別健康檢查。
 </Aside>
 
 ---
 
 ## 第 6 層：CSD 設定
 
-CSD 必須在租戶層級啟用，並設定 JavaScript 注入標籤。
+CSD 必須在租戶層級啟用，且已設定 JavaScript 注入標籤。
 
 ### CSD-1：租戶 CSD 狀態
 
-**驗證內容：** CSD 已為租戶設定和啟用。
+**驗證目的：** CSD 已為租戶設定並啟用。
 
 ```bash
 curl -s \
@@ -557,13 +557,13 @@ curl -s \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — 兩者皆為 `true` | CSD 對此租戶啟用中 |
-| **失敗** — `isConfigured: false` | CSD 未在租戶層級啟用 — 聯絡 F5 XC 管理員 |
-| **失敗** — `isEnabled: false` | CSD 已設定但未啟用 |
+| **通過** &mdash; 兩者皆為 `true` | CSD 在此租戶上已啟用 |
+| **失敗** &mdash; `isConfigured: false` | CSD 未在租戶層級啟用 &mdash; 請聯繫 F5 XC 管理員 |
+| **失敗** &mdash; `isEnabled: false` | CSD 已設定但未啟用 |
 
 ### CSD-2：JS 注入標籤
 
-**驗證內容：** CSD JavaScript 注入標籤已產生並準備好注入。
+**驗證目的：** CSD JavaScript 注入標籤已產生並準備好注入。
 
 ```bash
 curl -s \
@@ -574,12 +574,12 @@ curl -s \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — `has_script_tag: true` | JS 注入標籤已設定 |
-| **失敗** — `has_script_tag: false` | 沒有腳本標籤 — 驗證 CSD 已啟用且受保護網域已註冊 |
+| **通過** &mdash; `has_script_tag: true` | JS 注入標籤已設定 |
+| **失敗** &mdash; `has_script_tag: false` | 無腳本標籤 &mdash; 驗證 CSD 是否已啟用且受保護的網域已註冊 |
 
 ### CSD-3：JS 標籤內容
 
-**驗證內容：** 顯示完整的腳本標籤以進行驗證或手動注入。
+**驗證目的：** 顯示完整的腳本標籤以供驗證或手動注入。
 
 ```bash
 curl -s \
@@ -590,7 +590,7 @@ curl -s \
 
 ### CSD-4：受保護網域註冊
 
-**驗證內容：** 根網域已在租戶上註冊為 CSD 受保護網域。
+**驗證目的：** 根網域已在租戶上註冊為 CSD 受保護網域。
 
 ```bash
 curl -s \
@@ -601,16 +601,16 @@ curl -s \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — 顯示具有非空 `name` 的項目 | 網域已受保護 |
-| **失敗** — 項目的 `name` 和 `namespace` 欄位為空 | 未註冊受保護網域 — 請參閱[第 1 階段步驟 6](/csd/demo/phase-1-build/#step-6-register-protected-domain) |
+| **通過** &mdash; 顯示具有非空 `name` 的項目 | 網域受到保護 |
+| **失敗** &mdash; 項目的 `name` 和 `namespace` 欄位為空 | 未註冊受保護的網域 &mdash; 請參閱[第 1 階段步驟 6](/csd/demo/phase-1-build/#step-6-register-protected-domain) |
 
 <Aside type="note">
-受保護網域列表端點回傳摘要資料。所有欄位為空的項目表示未設定受保護網域。CSD JavaScript 標籤（[CSD-2](#csd-2-js-injection-tag)）是網域保護啟用的更可靠指標。
+受保護網域列表端點回傳摘要資料。所有欄位為空的項目表示未設定受保護的網域。CSD JavaScript 標籤（[CSD-2](#csd-2-js-injection-tag)）是更可靠的指標，可確認網域保護已啟用。
 </Aside>
 
 ### CSD-5：即時 JS 注入驗證
 
-**驗證內容：** CSD JavaScript 實際上正在注入到負載平衡器提供的頁面回應中。
+**驗證目的：** CSD JavaScript 實際上正被注入到負載平衡器提供的頁面回應中。
 
 ```bash
 curl -s "http://xF5XC_DOMAINNAMEx/" \
@@ -619,18 +619,18 @@ curl -s "http://xF5XC_DOMAINNAMEx/" \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — 回傳 `zeronaught.com` 或 `shape.com` URL 片段（例如 `zeronaught.com/__imp_apg__/js/...`） | CSD JavaScript 正在注入到頁面 |
-| **失敗** — 空輸出 | JS 未注入 — 檢查 [LB-3](#lb-3-csd-enabled-on-lb) 和 [CSD-1](#csd-1-tenant-csd-status) |
+| **通過** &mdash; 回傳 `zeronaught.com` 或 `shape.com` URL 片段（例如 `zeronaught.com/__imp_apg__/js/...`） | CSD JavaScript 正被注入到頁面中 |
+| **失敗** &mdash; 空輸出 | JS 未注入 &mdash; 檢查 [LB-3](#lb-3-csd-enabled-on-lb) 和 [CSD-1](#csd-1-tenant-csd-status) |
 
 ---
 
 ## 第 7 層：流量驗證
 
-驗證即時流量正在到達負載平衡器並被正確處理。
+驗證即時流量是否到達負載平衡器並被正確處理。
 
 ### TV-1：請求計數（過去 24 小時）
 
-**驗證內容：** 流量正在到達負載平衡器。零結果表示沒有流量到達。
+**驗證目的：** 流量正在到達負載平衡器。零結果表示沒有流量到達。
 
 ```bash
 curl -s -X POST \
@@ -646,16 +646,16 @@ curl -s -X POST \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — `total_requests` 是非零字串（例如 `"380"`） | 流量正在通過 LB |
-| **失敗** — `"0"` 或沒有資料 | 沒有流量到達 LB — 檢查 [DNS-1](#dns-1-a-record-resolution) 和 [LB-1](#lb-1-operational-state) |
+| **通過** &mdash; `total_requests` 為非零字串（例如 `"380"`） | 流量正流經 LB |
+| **失敗** &mdash; `"0"` 或無資料 | 沒有流量到達 LB &mdash; 檢查 [DNS-1](#dns-1-a-record-resolution) 和 [LB-1](#lb-1-operational-state) |
 
 <Aside type="note">
-`total_hits` 值以**字串**形式回傳（例如 `"380"`），不是整數。命名空間從 URL 路徑推斷 — 不要在請求主體中包含它。
+`total_hits` 值以**字串**回傳（例如 `"380"`），而非整數。命名空間從 URL 路徑推斷 &mdash; 請勿在請求主體中包含。
 </Aside>
 
 ### TV-2：狀態碼分佈
 
-**驗證內容：** 回應狀態碼的分佈揭示錯誤模式。
+**驗證目的：** 回應狀態碼的分佈揭示錯誤模式。
 
 ```bash
 curl -s -X POST \
@@ -677,10 +677,10 @@ curl -s -X POST \
 ```
 
 <Aside type="note">
-聚合端點不支援 `terms` 分桶 — `aggs` 始終回傳空。此命令擷取最近 100 筆日誌條目並在用戶端計算分佈。每個日誌條目是**JSON 字串**，必須使用 `fromjson` 解析。
+聚合端點不支援 `terms` 分桶 &mdash; `aggs` 始終回傳空。此指令擷取最近 100 筆日誌條目並在用戶端計算分佈。每筆日誌條目都是一個**JSON 字串**，必須使用 `fromjson` 解析。
 </Aside>
 
-健康網站的預期輸出：
+健康站點的預期輸出：
 
 ```
 STATUS_CLASS                  COUNT
@@ -690,15 +690,15 @@ downstream_remote_disconnect  18
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — 多數為 `2xx` | 網站正在提供成功回應 |
-| **警告** — 高 `4xx` 計數 | 用戶端錯誤（錯誤的 URL、遺失的資源） |
-| **失敗** — 高 `5xx` 計數 | 伺服器錯誤 — 檢查原始伺服器健康狀況 |
+| **通過** &mdash; 大多數為 `2xx` | 站點正提供成功的回應 |
+| **警告** &mdash; 大量 `4xx` | 用戶端錯誤（錯誤 URL、缺少資源） |
+| **失敗** &mdash; 大量 `5xx` | 伺服器錯誤 &mdash; 檢查來源伺服器健康狀況 |
 
 `downstream_remote_disconnect` 類別表示用戶端在回應完成前關閉了連線（常見於長輪詢或 WebSocket 升級請求）。
 
-### TV-3：最近請求樣本
+### TV-3：近期請求樣本
 
-**驗證內容：** 個別請求正在以正確的欄位記錄。
+**驗證目的：** 個別請求正以正確的欄位被記錄。
 
 ```bash
 curl -s -X POST \
@@ -718,12 +718,12 @@ curl -s -X POST \
 ```
 
 <Aside type="caution">
-`.logs[]` 陣列中的每個條目是**JSON 字串**，不是已解析的物件。您必須在 jq 中透過 `fromjson` 處理才能存取欄位（例如 `.logs[] | fromjson | .method`）。
+`.logs[]` 陣列中的每筆條目都是一個 **JSON 字串**，而非已解析的物件。您必須在 jq 中通過 `fromjson` 管線處理後才能存取欄位（例如 `.logs[] | fromjson | .method`）。
 </Aside>
 
 ### TV-4：存取日誌中的 CSD JS 注入
 
-**驗證內容：** 存取日誌確認 CSD JavaScript 正在注入到回應中。
+**驗證目的：** 存取日誌確認 CSD JavaScript 正被注入到回應中。
 
 ```bash
 curl -s -X POST \
@@ -742,16 +742,16 @@ curl -s -X POST \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — `injected_count` > 0 | CSD JS 正在注入到頁面回應 |
-| **失敗** — `injected_count: 0` | JS 未注入 — 檢查 [CSD-1](#csd-1-tenant-csd-status) 和 [LB-3](#lb-3-csd-enabled-on-lb) |
+| **通過** &mdash; `injected_count` > 0 | CSD JS 正被注入到頁面回應中 |
+| **失敗** &mdash; `injected_count: 0` | JS 未注入 &mdash; 檢查 [CSD-1](#csd-1-tenant-csd-status) 和 [LB-3](#lb-3-csd-enabled-on-lb) |
 
 <Aside type="note">
-`csd_js_injection` 欄位僅在注入發生的日誌條目中存在。在測試中，40% 的取樣日誌條目有 `csd_js_injection: "true"`（HTML 頁面請求），而 60% 沒有此欄位（靜態資產如 `.ico`、`.js`、`.css` 檔案和 WebSocket 連線）。HTML 頁面請求應顯示注入；API 呼叫和靜態資產請求通常不會。
+`csd_js_injection` 欄位僅存在於發生注入的日誌條目中。在測試中，40% 的取樣日誌條目有 `csd_js_injection: "true"`（HTML 頁面請求），而 60% 的條目沒有此欄位（靜態資源如 `.ico`、`.js`、`.css` 檔案和 WebSocket 連線）。HTML 頁面請求應該顯示注入；API 呼叫和靜態資源請求通常不會。
 </Aside>
 
 ### TV-5：端對端連線測試
 
-**驗證內容：** 完整請求從用戶端通過 DNS、LB 和原始伺服器並回傳有效回應。
+**驗證目的：** 完整的請求從用戶端經過 DNS、LB 和來源並回傳有效回應。
 
 ```bash
 curl -sv "http://xF5XC_DOMAINNAMEx/" 2>&1 \
@@ -760,22 +760,22 @@ curl -sv "http://xF5XC_DOMAINNAMEx/" 2>&1 \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — 顯示連線、HTTP 200 和 content-type | 完整堆疊運作中 |
-| **失敗** — 連線被拒或 DNS 錯誤 | 從[第 1 層：DNS](#layer-1-dns-resolution) 開始除錯 |
+| **通過** &mdash; 顯示連線、HTTP 200 和 content-type | 完整堆疊運作正常 |
+| **失敗** &mdash; 連線被拒或 DNS 錯誤 | 從[第 1 層：DNS](#layer-1-dns-resolution) 開始除錯 |
 
 <Aside type="tip">
-對於 HTTPS 端對端測試（僅在 HTTPS LB 憑證有效時），使用 `curl -sv "https://xF5XC_DOMAINNAMEx/"` 並檢查輸出中的 `SSL connection`。
+若要進行 HTTPS 端對端測試（僅在 HTTPS LB 憑證有效時），使用 `curl -sv "https://xF5XC_DOMAINNAMEx/"` 並在輸出中檢查 `SSL connection`。
 </Aside>
 
 ---
 
-## 第 8 層：CSD 遙測與網域原則
+## 第 8 層：CSD 遙測與網域策略
 
-這些命令查詢與 [CSD 控制台](/csd/csd-console/)儀表板、腳本列表、表單欄位和網路視圖中顯示的相同資料。
+這些指令查詢的資料與 [CSD 主控台](/csd/csd-console/) 儀表板、腳本清單、表單欄位和網路視圖中顯示的相同。
 
 ### TEL-1：腳本清單
 
-**驗證內容：** CSD 正在偵測和編錄在受保護網域上執行的腳本。
+**驗證目的：** CSD 正在偵測並編目受保護網域上執行的腳本。
 
 ```bash
 NOW=$(date +%s)
@@ -803,16 +803,16 @@ curl -s -X POST \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — 列出帶有風險等級的腳本 | CSD 正在主動監控腳本 |
-| **失敗** — 空陣列 | 請參閱[疑難排解：空腳本陣列](#empty-scripts-array) |
+| **通過** &mdash; 列出具有風險等級的腳本 | CSD 正在主動監控腳本 |
+| **失敗** &mdash; 空陣列 | 請參閱[疑難排解：空腳本陣列](#empty-scripts-array) |
 
 <Aside type="tip">
-腳本名稱是完整 URL，可能很長。上述命令將名稱截斷為 50 個字元以便於終端機閱讀。移除截斷篩選器以查看完整 URL。
+腳本名稱為完整 URL，可能非常長。上述指令將名稱截斷為 50 個字元以提高終端機可讀性。移除截斷篩選器即可查看完整 URL。
 </Aside>
 
 ### TEL-2：偵測到的網域
 
-**驗證內容：** CSD 已偵測到腳本來源網域並按狀態分類。
+**驗證目的：** CSD 已偵測到腳本來源網域並依狀態分類。
 
 ```bash
 curl -s \
@@ -837,13 +837,13 @@ curl -s \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — `total` > 0 且列出網域 | CSD 正在追蹤腳本網域 |
-| **警告** — `action_needed` > 0 | 某些網域需要審查 |
-| **失敗** — 空回應 | 沒有遙測資料 — 檢查 [CSD-5](#csd-5-live-js-injection-verification) |
+| **通過** &mdash; `total` > 0 且列出網域 | CSD 正在追蹤腳本網域 |
+| **警告** &mdash; `action_needed` > 0 | 部分網域需要檢視 |
+| **失敗** &mdash; 空回應 | 無遙測資料 &mdash; 檢查 [CSD-5](#csd-5-live-js-injection-verification) |
 
-### TEL-3：網域原則狀態
+### TEL-3：網域策略狀態
 
-**驗證內容：** 顯示允許與緩解網域的分佈以及原則是否一致。
+**驗證目的：** 顯示允許與緩解網域的分佈，以及策略是否一致。
 
 ```bash
 curl -s \
@@ -860,12 +860,12 @@ curl -s \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — `action_needed: 0` | 所有網域都已審查和分類 |
-| **警告** — `action_needed` > 0 | `domains_needing_action` 中列出的網域需要審查 |
+| **通過** &mdash; `action_needed: 0` | 所有網域已檢視並分類 |
+| **警告** &mdash; `action_needed` > 0 | `domains_needing_action` 中列出的網域需要檢視 |
 
 ### TEL-4：表單欄位清單
 
-**驗證內容：** CSD 已偵測到腳本正在讀取的表單欄位，並進行敏感性分類。
+**驗證目的：** CSD 已偵測到腳本正在讀取的表單欄位，並有敏感度分類。
 
 ```bash
 NOW=$(date +%s)
@@ -886,31 +886,31 @@ curl -s \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — 列出帶有敏感性的表單欄位 | CSD 正在追蹤表單欄位存取 |
-| **資訊** — 空陣列 | 未偵測到表單欄位（如果網站沒有表單則是預期的） |
+| **通過** &mdash; 列出具有敏感度的表單欄位 | CSD 正在追蹤表單欄位存取 |
+| **資訊** &mdash; 空陣列 | 未偵測到表單欄位（如果站點沒有表單則為預期行為） |
 
 ### TEL-5：腳本深入分析
 
-**驗證內容：** 特定腳本的詳細資訊，包括風險、行為和網路互動。
+**驗證目的：** 特定腳本的詳細資訊，包括風險、行為和網路互動。
 
 首先，從 [TEL-1](#tel-1-script-inventory) 取得腳本 ID，然後查詢其詳細資訊：
 
 ```bash
 SCRIPT_ID="your-script-id"
 
-# 概覽（風險等級、類型、來源網域）
+# Overview (risk level, type, source domain)
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/dashboard" \
   | jq '{script_name, risk_level, type, source_domain, status}'
 
-# 隨時間的行為
+# Behaviors over time
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/behaviors" \
   | jq '.behaviors'
 
-# 網路互動（腳本通訊的網域）
+# Network interactions (domains the script communicates with)
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/networkInteractions" \
@@ -919,7 +919,7 @@ curl -s \
 
 ### TEL-6：受影響使用者
 
-**驗證內容：** 列出受特定腳本影響的使用者，顯示暴露範圍。
+**驗證目的：** 列出受特定腳本影響的使用者，顯示暴露範圍。
 
 ```bash
 SCRIPT_ID="your-script-id"
@@ -946,9 +946,9 @@ curl -s -X POST \
     | @tsv' | column -t
 ```
 
-### TEL-7：依風險等級的腳本計數
+### TEL-7：依風險等級統計腳本數量
 
-**驗證內容：** 所有偵測到腳本的聚合風險分佈。
+**驗證目的：** 所有偵測到腳本的彙總風險分佈。
 
 ```bash
 NOW=$(date +%s)
@@ -967,12 +967,12 @@ curl -s -X POST \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — 全部為 `No Risk` | 未偵測到有風險的腳本 |
-| **警告** — 存在 `Low Risk` 或 `High Risk` | 在 [TEL-5](#tel-5-script-deep-dive) 中審查標記的腳本 |
+| **通過** &mdash; 全部為 `No Risk` | 未偵測到有風險的腳本 |
+| **警告** &mdash; 存在 `Low Risk` 或 `High Risk` | 在 [TEL-5](#tel-5-script-deep-dive) 中檢視被標記的腳本 |
 
-### TEL-8：遙測新鮮度
+### TEL-8：遙測資料新鮮度
 
-**驗證內容：** CSD 遙測資料是最近的，確認主動監控。
+**驗證目的：** CSD 遙測資料是最新的，確認監控處於活躍狀態。
 
 ```bash
 curl -s \
@@ -990,24 +990,24 @@ curl -s \
 
 | 結果 | 意義 |
 | --- | --- |
-| **通過** — `latest_seen` 在過去 24 小時內 | 遙測正在主動收集資料 |
-| **警告** — `latest_seen` 超過 24 小時 | 流量可能已停止或 CSD 處理延遲 |
+| **通過** &mdash; `latest_seen` 在過去 24 小時內 | 遙測正在主動收集資料 |
+| **警告** &mdash; `latest_seen` 超過 24 小時前 | 流量可能已停止或 CSD 處理延遲 |
 
 ---
 
-## 完整堆疊儀表板
+## 全堆疊儀表板
 
-執行單一命令檢查每個層級的所有關鍵健康指標並產生摘要表：
+執行單一指令檢查每個層級的所有關鍵健康指標，並產生摘要表格：
 
 ```bash
-echo "=== CSD 驗證儀表板 ==="
+echo "=== CSD Verification Dashboard ==="
 echo ""
 
-# 第 1 層：DNS
+# Layer 1: DNS
 DNS_A=$(dig +short xF5XC_DOMAINNAMEx A | head -1)
 DNS_ACME=$(dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME | head -1)
 
-# 第 2-3 層：LB + TLS
+# Layers 2-3: LB + TLS
 LB=$(curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http")
@@ -1021,7 +1021,7 @@ CSD_ON_LB=$(echo "$LB" | jq -r 'if .spec.client_side_defense then "ENABLED" else
 DOMAINS=$(echo "$LB" | jq -r '.spec.domains | join(", ")')
 ROUTE_POOL=$(echo "$LB" | jq -r '[.spec.default_route_pools[] | .pool.name] | join(", ")')
 
-# 第 6 層：CSD 狀態
+# Layer 6: CSD status
 CSD=$(curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status")
@@ -1029,13 +1029,13 @@ CSD=$(curl -s \
 CSD_CONFIGURED=$(echo "$CSD" | jq -r '.isConfigured // false')
 CSD_ENABLED=$(echo "$CSD" | jq -r '.isEnabled // false')
 
-# 第 6 層：JS 設定
+# Layer 6: JS config
 JS_TAG=$(curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
   | jq -r 'if (.scriptTag | length) > 0 then "PRESENT" else "MISSING" end')
 
-# 第 7 層：流量（過去 24 小時）
+# Layer 7: Traffic (last 24h)
 TRAFFIC=$(curl -s -X POST \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   -H "Content-Type: application/json" \
@@ -1046,19 +1046,19 @@ TRAFFIC=$(curl -s -X POST \
   "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs/aggregation" \
   | jq -r '.total_hits // "0"')
 
-printf "%-28s %s\n" "檢查項目" "狀態"
+printf "%-28s %s\n" "CHECK" "STATUS"
 printf "%-28s %s\n" "----------------------------" "----------------------------"
-printf "%-28s %s\n" "[DNS] A 記錄" "${DNS_A:-NOT_FOUND}"
+printf "%-28s %s\n" "[DNS] A Record" "${DNS_A:-NOT_FOUND}"
 printf "%-28s %s\n" "[DNS] ACME CNAME" "${DNS_ACME:-NOT_FOUND}"
-printf "%-28s %s\n" "[TLS] 憑證" "$CERT_STATE"
-printf "%-28s %s\n" "[LB] 狀態" "$LB_STATE"
-printf "%-28s %s\n" "[LB] 網域" "$DOMAINS"
-printf "%-28s %s\n" "[LB] 路由池" "$ROUTE_POOL"
-printf "%-28s %s\n" "[LB] LB 上的 CSD" "$CSD_ON_LB"
-printf "%-28s %s\n" "[CSD] 已設定（租戶）" "$CSD_CONFIGURED"
-printf "%-28s %s\n" "[CSD] 已啟用" "$CSD_ENABLED"
-printf "%-28s %s\n" "[CSD] JS 腳本標籤" "$JS_TAG"
-printf "%-28s %s\n" "[流量] 請求數（24 小時）" "$TRAFFIC"
+printf "%-28s %s\n" "[TLS] Certificate" "$CERT_STATE"
+printf "%-28s %s\n" "[LB] State" "$LB_STATE"
+printf "%-28s %s\n" "[LB] Domains" "$DOMAINS"
+printf "%-28s %s\n" "[LB] Route Pool" "$ROUTE_POOL"
+printf "%-28s %s\n" "[LB] CSD on LB" "$CSD_ON_LB"
+printf "%-28s %s\n" "[CSD] Configured (tenant)" "$CSD_CONFIGURED"
+printf "%-28s %s\n" "[CSD] Enabled" "$CSD_ENABLED"
+printf "%-28s %s\n" "[CSD] JS Script Tag" "$JS_TAG"
+printf "%-28s %s\n" "[Traffic] Requests (24h)" "$TRAFFIC"
 ```
 
 ---
@@ -1066,41 +1066,41 @@ printf "%-28s %s\n" "[流量] 請求數（24 小時）" "$TRAFFIC"
 ## 存取日誌欄位參考
 
 <Aside type="caution">
-`.logs[]` 陣列中的每個條目是**JSON 字串**，不是已解析的物件。您必須在 jq 中透過 `fromjson` 處理才能存取欄位（例如 `.logs[] | fromjson | .method`）。
+`.logs[]` 陣列中的每筆條目都是一個 **JSON 字串**，而非已解析的物件。您必須在 jq 中通過 `fromjson` 管線處理後才能存取欄位（例如 `.logs[] | fromjson | .method`）。
 </Aside>
 
 | 欄位 | 類型 | 說明 |
 | --- | --- | --- |
-| `@timestamp` | string | 請求時間戳記（ISO 8601）。注意 `@` 前綴 — 在 jq 中使用 `.["@timestamp"]` 存取 |
+| `@timestamp` | string | 請求時間戳記（ISO 8601）。注意 `@` 前綴 &mdash; 在 jq 中使用 `.["@timestamp"]` 存取 |
 | `method` | string | HTTP 方法（GET、POST 等） |
 | `req_path` | string | 請求 URI 路徑 |
-| `rsp_code` | string | HTTP 回應狀態碼，以字串形式（例如 `"200"`、`"404"`） |
+| `rsp_code` | string | HTTP 回應狀態碼，以字串表示（例如 `"200"`、`"404"`） |
 | `rsp_code_class` | string | 狀態碼類別（`2xx`、`3xx`、`4xx`、`5xx` 或 `downstream_remote_disconnect`） |
 | `src_ip` | string | 用戶端來源 IP 位址 |
 | `dst_ip` | string | 目的地（VIP）IP 位址 |
 | `domain` | string | 請求 Host 標頭值 |
 | `user_agent` | string | 用戶端 User-Agent 字串 |
-| `rsp_size` | string | 回應主體大小（位元組，以字串回傳） |
-| `req_size` | string | 請求主體大小（位元組，以字串回傳） |
-| `duration_with_data_tx_delay` | string | 總請求持續時間（秒，以字串回傳，例如 `"0.024219"`） |
+| `rsp_size` | string | 回應主體大小（位元組），以字串回傳 |
+| `req_size` | string | 請求主體大小（位元組），以字串回傳 |
+| `duration_with_data_tx_delay` | string | 請求總持續時間（秒），以字串回傳（例如 `"0.024219"`） |
 | `csd_js_injection` | string | 當 CSD JavaScript 被注入時為 `"true"`（僅在啟用時存在） |
 
 ## CSD 遙測欄位參考
 
 | 欄位 | 端點 | 說明 |
 | --- | --- | --- |
-| `isConfigured` | status | CSD 在租戶層級啟用 |
-| `isEnabled` | status | CSD 對此命名空間啟用 |
+| `isConfigured` | status | CSD 在租戶層級已啟用 |
+| `isEnabled` | status | CSD 在此命名空間已啟用 |
 | `scripts[]` | scripts | 偵測到的腳本物件陣列 |
 | `.script_name` | scripts | JavaScript 檔案的完整 URL |
 | `.risk_level` | scripts | 風險等級（No Risk、Low Risk、High Risk） |
-| `.status` | scripts | AN（需要動作）或 NA（不需要動作） |
+| `.status` | scripts | AN（需要行動）或 NA（不需要行動） |
 | `.form_fields_read` | scripts | 腳本讀取的表單欄位數量 |
 | `.affected_users_count` | scripts | 受影響的唯一使用者/工作階段數量 |
-| `domain_summary` | detected_domains | 依狀態計數：`.actionNeededCount.count`、`.mitigatedDomains.count`、`.allowedDomains.count`、`.totalDomains.count`（每個都有 `.count` 和 `.lastUpdated`） |
-| `domains_list[]` | detected_domains | 偵測到的網域物件陣列，包含 `.domain`、`.status`、`.category`、`.firstSeenDate`、`.latestSeenDate`（epoch 秒數，以字串形式） |
+| `domain_summary` | detected_domains | 依狀態統計：`.actionNeededCount.count`、`.mitigatedDomains.count`、`.allowedDomains.count`、`.totalDomains.count`（每個都有 `.count` 和 `.lastUpdated`） |
+| `domains_list[]` | detected_domains | 偵測到的網域物件陣列，包含 `.domain`、`.status`、`.category`、`.firstSeenDate`、`.latestSeenDate`（以字串表示的 epoch 秒數） |
 | `form_fields[]` | formFields | 偵測到的表單欄位物件陣列 |
-| `.analysis` | formFields | 敏感性分類（Sensitive、Not Sensitive） |
+| `.analysis` | formFields | 敏感度分類（Sensitive、Not Sensitive） |
 
 ## 疑難排解
 
@@ -1109,13 +1109,13 @@ printf "%-28s %s\n" "[流量] 請求數（24 小時）" "$TRAFFIC"
 如果 [TV-1](#tv-1-request-count-last-24-hours) 回傳 `0`：
 
 <Steps>
-1. **檢查 DNS 解析** — 驗證網域解析到 LB VIP：
+1. **檢查 DNS 解析** &mdash; 驗證網域解析到 LB VIP：
    ```bash
    dig +short xF5XC_DOMAINNAMEx A
    ```
-   如果為空，DNS 未設定。請參閱 [API 自動化 — 步驟 4](/csd/demo/phase-1-build/#step-4-configure-dns)。
+   如果為空，DNS 未設定。請參閱 [API 自動化 &mdash; 步驟 4](/csd/demo/phase-1-build/#step-4-configure-dns)。
 
-2. **檢查 LB 狀態** — 負載平衡器必須為 `VIRTUAL_HOST_READY`：
+2. **檢查 LB 狀態** &mdash; 負載平衡器必須為 `VIRTUAL_HOST_READY`：
    ```bash
    curl -s \
      -H "Authorization: APIToken xF5XC_API_TOKENx" \
@@ -1123,28 +1123,28 @@ printf "%-28s %s\n" "[流量] 請求數（24 小時）" "$TRAFFIC"
      | jq '.spec.state'
    ```
 
-3. **發送測試請求** — 產生流量以確認端對端連線：
+3. **發送測試請求** &mdash; 產生流量以確認端對端連線：
    ```bash
    curl -sv "http://xF5XC_DOMAINNAMEx/" 2>&1 | head -20
    ```
-   尋找成功的 HTTP 回應。只有在 HTTPS LB 憑證有效時才使用 `https://`。
+   尋找成功的 HTTP 回應。僅在 HTTPS LB 憑證有效時使用 `https://`。
 </Steps>
 
-### DNS 區域上管理記錄已停用
+### DNS 區域上的託管記錄已停用
 
-如果 [DNS-4](#dns-4-f5-xc-managed-records-enabled) 回傳 `false`，即使 F5 XC 是權威 DNS 提供者，自動記錄建立也已停用。這是常見的錯誤設定，導致 A 記錄和 ACME CNAME 都遺失，阻擋負載平衡器達到 `VIRTUAL_HOST_READY` 和憑證核發。
+如果 [DNS-4](#dns-4-f5-xc-managed-records-enabled) 回傳 `false`，即使 F5 XC 是權威 DNS 提供者，自動記錄建立也已停用。這是常見的設定錯誤，會導致 A 記錄和 ACME CNAME 都缺失，阻止負載平衡器達到 `VIRTUAL_HOST_READY` 以及憑證的核發。
 
-若要啟用管理記錄，請更新 DNS 區域設定以設定 `allow_http_lb_managed_records: true`。請參閱 [API 自動化 — 選項 A：F5 XC 管理的 DNS](/csd/demo/phase-1-build/#option-a-f5-xc-managed-dns) 以取得 API 呼叫。
+若要啟用託管記錄，請更新 DNS 區域設定以設定 `allow_http_lb_managed_records: true`。請參閱 [API 自動化 &mdash; 選項 A：F5 XC 託管 DNS](/csd/demo/phase-1-build/#option-a-f5-xc-managed-dns) 瞭解 API 呼叫。
 
-### LB 停滯在 VIRTUAL_HOST_PENDING_A_RECORD
+### LB 卡在 VIRTUAL_HOST_PENDING_A_RECORD
 
-負載平衡器正在等待指向其 VIP 的 DNS A 記錄。請參閱 [LB 停滯在 VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record) 以取得詳細的解決步驟。
+負載平衡器正在等待指向其 VIP 的 DNS A 記錄。請參閱 [LB 卡在 VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record) 以取得詳細的解決步驟。
 
-### 憑證停滯在 PreDomainChallengePending
+### 憑證卡在 PreDomainChallengePending
 
-自動 TLS 憑證需要 ACME 挑戰記錄。方法取決於您的 DNS 提供者：
+自動 TLS 憑證需要 ACME 驗證記錄。方法取決於您的 DNS 提供者：
 
-**F5 XC 管理的 DNS：** 在 DNS 區域上啟用 `allow_http_lb_managed_records`（[DNS-4](#dns-4-f5-xc-managed-records-enabled)）。平台會在 `x-ves-io-managed` RR 集群組中自動建立基於 TXT 的 ACME 挑戰記錄。如果啟用管理記錄後憑證仍然停滯，請刪除並重新建立負載平衡器以觸發新的憑證請求。
+**F5 XC 託管 DNS：** 在 DNS 區域上啟用 `allow_http_lb_managed_records`（[DNS-4](#dns-4-f5-xc-managed-records-enabled)）。平台會在 `x-ves-io-managed` RR 集合群組中自動建立基於 TXT 的 ACME 驗證記錄。如果啟用託管記錄後憑證仍然卡住，請刪除並重新建立負載平衡器以觸發新的憑證請求。
 
 **外部 DNS：** 在您的 DNS 提供者處建立 CNAME 記錄：
 
@@ -1159,7 +1159,7 @@ dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
 dig +short _acme-challenge.xF5XC_DOMAINNAMEx TXT
 ```
 
-如果兩者都為空，ACME 記錄未設定。記錄就位後，憑證佈建需要 5–10 分鐘。檢查 LB 錯誤狀態以取得特定的 ACME 驗證錯誤：
+如果兩者皆為空，ACME 記錄未設定。記錄就位後，憑證佈建需要 5&ndash;10 分鐘。檢查 LB 錯誤狀態以取得特定的 ACME 驗證錯誤：
 
 ```bash
 curl -s \
@@ -1170,14 +1170,14 @@ curl -s \
 
 ### CSD isConfigured 為 false
 
-CSD 必須由 F5 XC 管理員在租戶層級啟用。這是租戶範圍的設定，無法透過命名空間 API 設定。請聯絡您的管理員以啟用 Client-Side Defense。
+CSD 必須由 F5 XC 管理員在租戶層級啟用。這是一個租戶範圍的設定，無法透過命名空間 API 設定。請聯繫您的管理員以啟用 Client-Side Defense。
 
 ### 空腳本陣列
 
 如果 [TEL-1](#tel-1-script-inventory) 回傳空陣列：
 
 <Steps>
-1. **檢查受保護網域** — CSD 只監控已註冊網域上的腳本：
+1. **檢查受保護的網域** &mdash; CSD 僅監控已註冊網域上的腳本：
    ```bash
    curl -s \
      -H "Authorization: APIToken xF5XC_API_TOKENx" \
@@ -1185,20 +1185,20 @@ CSD 必須由 F5 XC 管理員在租戶層級啟用。這是租戶範圍的設定
      | jq '.items[] | {name, namespace}'
    ```
 
-2. **驗證 JS 注入** — 確認 CSD 腳本標籤正在注入到頁面：
+2. **驗證 JS 注入** &mdash; 確認 CSD 腳本標籤正被注入到頁面中：
    ```bash
    curl -s "http://xF5XC_DOMAINNAMEx/" | grep -oE '(zeronaught|shape)\.com[^"]*' | head -1
    ```
    如果沒有匹配，CSD JavaScript 未被注入。檢查 LB 是否已啟用 `client_side_defense`。
 
-3. **等待處理時間** — 首次啟用 CSD 或註冊新的受保護網域後，腳本偵測可能需要 5–15 分鐘。產生網站流量並等待後再重新檢查。
+3. **等待處理時間** &mdash; 首次啟用 CSD 或註冊新的受保護網域後，腳本偵測可能需要 5&ndash;15 分鐘。向站點產生流量並等待後再重新檢查。
 </Steps>
 
 ## 快速參考
 
 ### 時間範圍預設值
 
-| 期間 | Epoch 偏移 | ISO 8601（Linux） | ISO 8601（macOS） |
+| 期間 | Epoch 偏移量 | ISO 8601（Linux） | ISO 8601（macOS） |
 | --- | --- | --- | --- |
 | 1 小時 | `$(( $(date +%s) - 3600 ))` | `date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ` | `date -u -v-1H +%Y-%m-%dT%H:%M:%SZ` |
 | 24 小時 | `$(( $(date +%s) - 86400 ))` | `date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ` | `date -u -v-24H +%Y-%m-%dT%H:%M:%SZ` |
@@ -1207,32 +1207,32 @@ CSD 必須由 F5 XC 管理員在租戶層級啟用。這是租戶範圍的設定
 
 ### 驗證層級摘要
 
-| 層級 | 測試 | 涵蓋內容 |
+| 層級 | 測試 | 涵蓋範圍 |
 | --- | --- | --- |
-| [1. DNS 解析](#layer-1-dns-resolution) | DNS-1 到 DNS-4 | A 記錄、ACME CNAME、名稱伺服器權限、管理記錄 |
-| [2. TLS 憑證](#layer-2-tls-certificate) | TLS-1 到 TLS-4 | 憑證狀態、憑證詳細資訊、即時握手、ACME 目標 |
-| [3. HTTP 負載平衡器](#layer-3-http-load-balancer) | LB-1 到 LB-6 | 狀態、網域、CSD 旗標、路由池、部署、摘要 |
-| [4. 原始伺服器池](#layer-4-origin-pool) | OP-1 到 OP-4 | 設定、TLS 模式、HC 關聯、原始伺服器連線 |
-| [5. 健康檢查](#layer-5-health-check) | HC-1 到 HC-2 | HC 設定、列出所有 HC |
-| [6. CSD 設定](#layer-6-csd-configuration) | CSD-1 到 CSD-5 | 租戶狀態、JS 標籤、受保護網域、即時注入 |
-| [7. 流量驗證](#layer-7-traffic-verification) | TV-1 到 TV-5 | 請求計數、狀態碼、樣本、日誌中的 JS、E2E 測試 |
-| [8. CSD 遙測](#layer-8-csd-telemetry-amp-domain-policy) | TEL-1 到 TEL-8 | 腳本、網域、原則、表單欄位、深入分析、使用者、風險、新鮮度 |
+| [1. DNS 解析](#layer-1-dns-resolution) | DNS-1 至 DNS-4 | A 記錄、ACME CNAME、名稱伺服器授權、託管記錄 |
+| [2. TLS 憑證](#layer-2-tls-certificate) | TLS-1 至 TLS-4 | 憑證狀態、憑證詳細資訊、即時交握、ACME 目標 |
+| [3. HTTP 負載平衡器](#layer-3-http-load-balancer) | LB-1 至 LB-6 | 狀態、網域、CSD 標記、路由池、部署、摘要 |
+| [4. 來源池](#layer-4-origin-pool) | OP-1 至 OP-4 | 設定、TLS 模式、HC 關聯、來源連線能力 |
+| [5. 健康檢查](#layer-5-health-check) | HC-1 至 HC-2 | HC 設定、列出所有 HC |
+| [6. CSD 設定](#layer-6-csd-configuration) | CSD-1 至 CSD-5 | 租戶狀態、JS 標籤、受保護網域、即時注入 |
+| [7. 流量驗證](#layer-7-traffic-verification) | TV-1 至 TV-5 | 請求計數、狀態碼、樣本、日誌中的 JS、端對端測試 |
+| [8. CSD 遙測](#layer-8-csd-telemetry-amp-domain-policy) | TEL-1 至 TEL-8 | 腳本、網域、策略、表單欄位、深入分析、使用者、風險、新鮮度 |
 
 ### 端點摘要
 
-| 診斷 | 端點 | 方法 | 時間格式 |
+| 診斷項目 | 端點 | 方法 | 時間格式 |
 | --- | --- | --- | --- |
 | 請求計數 | `/api/data/namespaces/\{ns\}/access_logs/aggregation` | POST | ISO 8601 |
 | 狀態碼 | `/api/data/namespaces/\{ns\}/access_logs` | POST | ISO 8601 |
-| 最近請求 | `/api/data/namespaces/\{ns\}/access_logs` | POST | ISO 8601 |
+| 近期請求 | `/api/data/namespaces/\{ns\}/access_logs` | POST | ISO 8601 |
 | LB 狀態 | `/api/config/namespaces/\{ns\}/http_loadbalancers/\{name\}` | GET | 無 |
-| 原始伺服器池 | `/api/config/namespaces/\{ns\}/origin_pools/\{name\}` | GET | 無 |
+| 來源池 | `/api/config/namespaces/\{ns\}/origin_pools/\{name\}` | GET | 無 |
 | 健康檢查 | `/api/config/namespaces/\{ns\}/healthchecks/\{name\}` | GET | 無 |
 | DNS 區域 | `/api/config/dns/namespaces/system/dns_zones/\{zone\}` | GET | 無 |
 | CSD 狀態 | `/api/shape/csd/namespaces/\{ns\}/status` | GET | 無 |
 | JS 設定 | `/api/shape/csd/namespaces/\{ns\}/js_configuration` | GET | 無 |
 | 受保護網域 | `/api/shape/csd/namespaces/\{ns\}/protected_domains` | GET | 無 |
-| 腳本列表 | `/api/shape/csd/namespaces/\{ns\}/scripts` | POST | Epoch 秒數 |
+| 腳本清單 | `/api/shape/csd/namespaces/\{ns\}/scripts` | POST | Epoch 秒數 |
 | 偵測到的網域 | `/api/shape/csd/namespaces/\{ns\}/detected_domains` | GET | 無 |
 | 表單欄位 | `/api/shape/csd/namespaces/\{ns\}/formFields` | GET | Epoch 秒數（查詢參數） |
 | 腳本詳細資訊 | `/api/shape/csd/namespaces/\{ns\}/scripts/\{id\}/dashboard` | GET | 無 |

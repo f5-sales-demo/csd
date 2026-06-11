@@ -1,8 +1,8 @@
 ---
 title: Fase 1 — Construcción
 description: >-
-  Desplegar la infraestructura CSD mediante la API de F5 XC — healthcheck,
-  origin pool, balanceador de carga, dominio protegido
+  Despliegue de infraestructura CSD mediante la API F5 XC — healthcheck, grupo
+  de origen, balanceador de carga, dominio protegido
 sidebar:
   order: 2
   label: Fase 1 — Construcción
@@ -13,11 +13,11 @@ i18n:
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-La Fase 1 despliega y valida la infraestructura completa de CSD. Complete todos los pasos en orden — cada paso debe ser APROBADO antes de continuar. Regrese al [índice](/csd/demo/) para completar la Configuración del Entorno y la resolución de variables antes de ejecutar estos comandos.
+La Fase 1 despliega y valida la infraestructura completa de CSD. Complete todos los pasos en orden — cada paso debe superar la verificación (PASS) antes de continuar. Regrese al [índice](/csd/demo/) para completar la configuración del entorno y la resolución de variables antes de ejecutar estos comandos.
 
-## Paso 0: Verificar y Crear Namespace (Condicional)
+## Paso 0: Verificar y crear el namespace (condicional)
 
-Verifique si el namespace de destino ya existe en el tenant. Si no existe, créelo. Registre el resultado en la variable de shell `NAMESPACE_CREATED` — la Fase 4 de limpieza utiliza esta variable para decidir si eliminar el namespace.
+Compruebe si el namespace de destino ya existe en el tenant. Si no existe, créelo. Registre el resultado en la variable de shell `NAMESPACE_CREATED` — el proceso de desmontaje de la Fase 4 utiliza este valor para decidir si eliminar el namespace.
 
 ```bash
 NS_CHECK=$(curl -s -o /dev/null -w '%\{http_code\}' \
@@ -36,7 +36,7 @@ fi
 ```
 
 <Aside type="note">
-**El campo `spec` es obligatorio.** La API de namespace de F5 XC requiere un campo `spec` en el cuerpo de la solicitud incluso cuando no se necesita configuración — pase un objeto vacío `{}`. Omitir `spec` devuelve el código de error `3` ("spec should not be empty in request").
+**El campo `spec` es obligatorio.** La API de namespaces de F5 XC requiere un campo `spec` en el cuerpo de la solicitud incluso cuando no se necesita ninguna configuración — pase un objeto vacío `{}`. Omitir `spec` devuelve el código de error `3` ("spec should not be empty in request").
 </Aside>
 
 ### Evidencia
@@ -52,17 +52,17 @@ echo "NAMESPACE_CREATED=$NAMESPACE_CREATED"
 
 | Campo | Esperado | Estado |
 | --- | --- | --- |
-| Estado HTTP | `200` | APROBADO si se obtiene, FALLO si `404` u otro |
-| `NAMESPACE_CREATED` | `true` (creado) o `false` (preexistente) | Informativo — utilizado por la limpieza de la Fase 4 |
+| Estado HTTP | `200` | PASS si se devuelve, FAIL si `404` u otro |
+| `NAMESPACE_CREATED` | `true` (creado) o `false` (preexistente) | Informativo — utilizado por el desmontaje de la Fase 4 |
 
-## Paso 1: Crear Healthcheck (Opcional)
+## Paso 1: Crear el Healthcheck (opcional)
 
-Cree un healthcheck HTTP que el origin pool pueda usar para monitorear la salud del backend.
+Cree un healthcheck HTTP que el grupo de origen pueda utilizar para supervisar el estado del backend.
 
 <Aside type="note">
-**Los healthchecks son opcionales para CSD.** La funcionalidad Client-Side Defense no depende del monitoreo de salud del origen. Si su tenant ha agotado el límite de objetos healthcheck (código de error `8` — consulte Manejo de Errores), omita este paso y cree el origin pool sin una referencia de healthcheck. CSD funcionará normalmente.
+**Los healthchecks son opcionales para CSD.** La función Defensa del lado del cliente no depende de la supervisión del estado del origen. Si su tenant ha agotado el límite de objetos de healthcheck (código de error `8` — consulte la sección de Gestión de errores), omita este paso y cree el grupo de origen sin referencia a un healthcheck. CSD funcionará con normalidad.
 
-Si crea un healthcheck, créelo ANTES del origin pool. El origin pool debe hacer referencia a un healthcheck existente — si el healthcheck no existe cuando crea el origin pool, la referencia quedará silenciosamente vacía.
+Si crea un healthcheck, créelo ANTES del grupo de origen. El grupo de origen debe hacer referencia a un healthcheck existente — si el healthcheck no existe al crear el grupo de origen, la referencia quedará silenciosamente vacía.
 </Aside>
 
 ```bash
@@ -98,7 +98,7 @@ curl -s -X POST \
   | jq .
 ```
 
-Una respuesta `200` con el objeto creado confirma que el healthcheck fue creado. Si la respuesta contiene `"code": 8` con un mensaje como `"Object kind healthcheck has exhausted limits(150)"`, el tenant ha alcanzado su límite de healthchecks — pase al Paso 2 y omita la referencia de healthcheck. CSD no depende del monitoreo de salud.
+Una respuesta `200` con el objeto creado confirma que el healthcheck fue creado. Si la respuesta contiene `"code": 8` con un mensaje como `"Object kind healthcheck has exhausted limits(150)"`, el tenant ha alcanzado su límite de healthchecks — continúe con el Paso 2 y omita la referencia al healthcheck. CSD no depende de la supervisión del estado.
 
 ### Evidencia
 
@@ -113,14 +113,14 @@ curl -s \
 
 | Campo | Esperado | Estado |
 | --- | --- | --- |
-| Estado HTTP | `200` con objeto | APROBADO si se obtiene, FALLO si `404` |
-| `name` | Coincide con `F5XC_HC_NAME` | APROBADO |
-| `path` | `/` | APROBADO |
-| Paso 1 omitido (código de error `8`, límite agotado) | — | APROBADO (el healthcheck es opcional para CSD) |
+| Estado HTTP | `200` con objeto | PASS si se devuelve, FAIL si `404` |
+| `name` | Coincide con `F5XC_HC_NAME` | PASS |
+| `path` | `/` | PASS |
+| Paso 1 omitido (código de error `8`, límite agotado) | — | PASS (el healthcheck es opcional para CSD) |
 
-## Paso 2: Crear Origin Pool
+## Paso 2: Crear el grupo de origen
 
-Cree un origin pool apuntando a su servidor backend. Si creó un healthcheck en el Paso 1, incluya la referencia `healthcheck`. Si el Paso 1 fue omitido, use un array vacío.
+Cree un grupo de origen que apunte a su servidor backend. Si creó un healthcheck en el Paso 1, incluya la referencia `healthcheck`. Si se omitió el Paso 1, utilice un array vacío.
 
 **Con healthcheck** (Paso 1 exitoso):
 
@@ -190,15 +190,15 @@ curl -s -X POST \
   | jq .
 ```
 
-Una respuesta `200` confirma que el origin pool fue creado.
+Una respuesta `200` confirma que el grupo de origen fue creado.
 
 <Aside type="caution">
-Si la respuesta contiene `"code": 8` con un mensaje como `"Object kind endpoint has exhausted limits(500)"` u `"Object kind origin_pool has exhausted limits"`, el tenant ha alcanzado su cuota. A diferencia de los healthchecks, los origin pools son **obligatorios** para la demo — la demo no puede continuar sin uno. Elimine origin pools no utilizados de otros namespaces para liberar capacidad (eliminar un origin pool también libera sus sub-objetos endpoint), luego reintente. Si no se puede resolver el límite, contacte a su administrador de F5 Distributed Cloud (F5 XC) para aumentar la cuota del tenant.
+Si la respuesta contiene `"code": 8` con un mensaje como `"Object kind endpoint has exhausted limits(500)"` o `"Object kind origin_pool has exhausted limits"`, el tenant ha alcanzado su cuota. A diferencia de los healthchecks, los grupos de origen son **obligatorios** para la demostración — la demostración no puede continuar sin uno. Elimine los grupos de origen no utilizados de otros namespaces para liberar capacidad (eliminar un grupo de origen también libera sus sub-objetos de endpoint) y reintente. Si el límite no puede resolverse, contacte a su administrador de F5 Distributed Cloud (F5 XC) para aumentar la cuota del tenant.
 </Aside>
 
-### Verificar que el Healthcheck está Vinculado
+### Verificar que el healthcheck está vinculado
 
-Si incluyó una referencia de healthcheck, confirme que está correctamente vinculado:
+Si incluyó una referencia al healthcheck, confirme que está correctamente vinculado:
 
 ```bash
 curl -s \
@@ -207,11 +207,11 @@ curl -s \
   | jq '.spec.healthcheck'
 ```
 
-Un array poblado confirma el vínculo. Un array vacío `[]` es esperado si el Paso 1 fue omitido, o significa que el healthcheck no fue encontrado si tenía la intención de vincularlo.
+Un array con contenido confirma el vínculo. Un array vacío `[]` es el resultado esperado si se omitió el Paso 1, o indica que el healthcheck no fue encontrado si tenía intención de vincularlo.
 
 ### Evidencia
 
-Confirme que el origin pool existe y tiene la configuración correcta:
+Confirme que el grupo de origen existe y tiene la configuración correcta:
 
 ```bash
 curl -s \
@@ -222,27 +222,27 @@ curl -s \
 
 | Campo | Esperado | Estado |
 | --- | --- | --- |
-| Estado HTTP | `200` | APROBADO si se obtiene, FALLO si `404` |
-| `name` | Coincide con `F5XC_ORIGIN_POOL` | APROBADO |
-| `origin_ip` | Coincide con `F5XC_ORIGIN_IP` | APROBADO |
-| `port` | Coincide con `F5XC_ORIGIN_PORT` | APROBADO |
-| `healthcheck_count` | `1` (con HC) o `0` (sin HC) | APROBADO en ambos casos |
+| Estado HTTP | `200` | PASS si se devuelve, FAIL si `404` |
+| `name` | Coincide con `F5XC_ORIGIN_POOL` | PASS |
+| `origin_ip` | Coincide con `F5XC_ORIGIN_IP` | PASS |
+| `port` | Coincide con `F5XC_ORIGIN_PORT` | PASS |
+| `healthcheck_count` | `1` (con HC) o `0` (sin HC) | PASS en ambos casos |
 
-## Paso 3: Crear Balanceadores de Carga HTTP con CSD
+## Paso 3: Crear balanceadores de carga HTTP con CSD
 
-Cree **dos** balanceadores de carga con Client-Side Defense habilitado — un LB HTTP (primario, puerto 80) y un LB HTTPS (secundario, puerto 443 con gestión automática de certificados). El LB HTTP es el predeterminado para todo el tráfico de la demo. El LB HTTPS es un complemento deseable que depende del aprovisionamiento de certificados Let's Encrypt, el cual puede alcanzar límites de tasa en entornos de demostración.
+Cree **dos** balanceadores de carga con Defensa del lado del cliente habilitada — un LB HTTP (primario, puerto 80) y un LB HTTPS (secundario, puerto 443 con gestión automática de certificados). El LB HTTP es el predeterminado para todo el tráfico de la demostración. El LB HTTPS es complementario y depende del aprovisionamiento de certificados Let's Encrypt, que puede alcanzar límites de frecuencia en entornos de demostración.
 
 <Aside type="note">
-La especificación del HTTP Load Balancer tiene más de 22 grupos de elección `oneOf`. Cada grupo debe tener exactamente una opción configurada o la API devuelve un error `422`. Las configuraciones a continuación deshabilitan todas las funcionalidades de seguridad opcionales excepto CSD — modifique según sea necesario para su entorno. Ambos LBs comparten el mismo origin pool, configuración de CSD y dominio — solo difiere el tipo de listener.
+La especificación del balanceador de carga HTTP tiene más de 22 grupos de elección `oneOf`. Cada grupo debe tener exactamente una opción configurada, de lo contrario la API devuelve un error `422`. Las configuraciones siguientes deshabilitan todas las funciones de seguridad opcionales excepto CSD — modifíquelas según sea necesario para su entorno. Ambos LBs comparten el mismo grupo de origen, configuración de CSD y dominio — solo difiere el tipo de listener.
 </Aside>
 
 <Aside type="tip">
-Ambos nombres de LB derivan de `F5XC_LB_NAME`: el LB HTTP es `${F5XC_LB_NAME}-http` y el LB HTTPS es `${F5XC_LB_NAME}-https`. No se necesitan variables de entorno adicionales.
+Ambos nombres de LB se derivan de `F5XC_LB_NAME`: el LB HTTP es `${F5XC_LB_NAME}-http` y el LB HTTPS es `${F5XC_LB_NAME}-https`. No se necesitan variables de entorno adicionales.
 </Aside>
 
-### Balanceador de Carga HTTP (Primario)
+### Balanceador de carga HTTP (primario)
 
-Este es el balanceador de carga **primario** para las demos. Utiliza un listener `http` en el puerto 80 con DNS gestionado por F5 XC. No depende del aprovisionamiento de certificados TLS, por lo que queda listo inmediatamente después de que el DNS resuelva.
+Este es el balanceador de carga **primario** para las demostraciones. Utiliza un listener `http` en el puerto 80 con DNS gestionado por F5 XC. No depende del aprovisionamiento de certificados TLS, por lo que queda listo inmediatamente después de que el DNS se resuelva.
 
 ```bash
 curl -s -X POST \
@@ -310,12 +310,12 @@ curl -s -X POST \
 Una respuesta `200` confirma que el balanceador de carga HTTP fue creado con CSD habilitado.
 
 <Aside type="caution">
-Si la respuesta contiene `"code": 8` con un mensaje como `"Object kind http_loadbalancer has exhausted limits"`, el tenant ha alcanzado su cuota de balanceadores de carga. Los balanceadores de carga son **obligatorios** para la demo. Elimine balanceadores de carga no utilizados para liberar capacidad, luego reintente.
+Si la respuesta contiene `"code": 8` con un mensaje como `"Object kind http_loadbalancer has exhausted limits"`, el tenant ha alcanzado su cuota de balanceadores de carga. Los balanceadores de carga son **obligatorios** para la demostración. Elimine los balanceadores de carga no utilizados para liberar capacidad y reintente.
 </Aside>
 
-### Balanceador de Carga HTTPS (Secundario)
+### Balanceador de carga HTTPS (secundario)
 
-Este es el balanceador de carga **secundario**. Utiliza `https_auto_cert` en el puerto 443 con aprovisionamiento automático de certificados Let's Encrypt. Antes de crearlo, verifique si existe un **LB HTTPS esqueleto** de una limpieza anterior — si es así, restáurelo mediante PUT en lugar de POST para preservar el certificado Let's Encrypt existente y evitar límites de tasa (5 certificados duplicados por conjunto exacto de identificadores por cada 7 días).
+Este es el balanceador de carga **secundario**. Utiliza `https_auto_cert` en el puerto 443 con aprovisionamiento automático de certificados Let's Encrypt. Antes de crearlo, verifique si existe un **LB HTTPS esqueleto** de un desmontaje anterior — si es así, restáurelo mediante PUT en lugar de POST para preservar el certificado Let's Encrypt existente y evitar los límites de frecuencia (5 certificados duplicados por conjunto exacto de identificadores cada 7 días).
 
 **Verificar si el LB HTTPS ya existe:**
 
@@ -325,11 +325,11 @@ HTTPS_CHECK=$(curl -s -o /dev/null -w '%\{http_code\}' \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
 ```
 
-Si `HTTPS_CHECK` es `200`, existe un LB HTTPS esqueleto — use la **Ruta A (PUT)**. Si es `404`, use la **Ruta B (POST)**.
+Si `HTTPS_CHECK` es `200`, existe un LB HTTPS esqueleto — utilice la **Ruta A (PUT)**. Si es `404`, utilice la **Ruta B (POST)**.
 
-#### Ruta A: Restaurar Esqueleto mediante PUT (el LB HTTPS existe)
+#### Ruta A: Restaurar esqueleto mediante PUT (el LB HTTPS existe)
 
-Cuando existe un LB HTTPS esqueleto de una limpieza anterior, restaure la configuración completa mediante PUT. Esto re-adjunta el origin pool y re-habilita CSD **sin activar una nueva solicitud de certificado Let's Encrypt** — el certificado existente permanece válido.
+Cuando existe un LB HTTPS esqueleto de un desmontaje anterior, restaure la configuración completa mediante PUT. Esto vuelve a conectar el grupo de origen y re-habilita CSD **sin activar una nueva solicitud de certificado Let's Encrypt** — el certificado existente permanece válido.
 
 ```bash
 curl -s -X PUT \
@@ -399,15 +399,15 @@ curl -s -X PUT \
   | jq .
 ```
 
-Una respuesta `200` confirma que el esqueleto fue restaurado con la configuración completa. El estado del certificado debería permanecer en `CertificateValid` — no se activa un nuevo aprovisionamiento de Let's Encrypt.
+Una respuesta `200` confirma que el esqueleto fue restaurado con la configuración completa. El estado del certificado debería permanecer en `CertificateValid` — no se activa ningún nuevo aprovisionamiento de Let's Encrypt.
 
 <Aside type="note">
-**Restauración del esqueleto.** PUT reemplaza toda la especificación del objeto. El LB HTTPS esqueleto conservó su vinculación de dominio y certificado durante la limpieza. Este PUT restaura la referencia del origin pool y re-habilita Client-Side Defense sin activar una nueva solicitud de certificado Let's Encrypt. HTTPS está disponible inmediatamente.
+**Restauración del esqueleto.** PUT reemplaza toda la especificación del objeto. El LB HTTPS esqueleto conservó su vinculación de dominio y certificado durante el desmontaje. Este PUT restaura la referencia al grupo de origen y re-habilita la Defensa del lado del cliente sin activar una nueva solicitud de certificado Let's Encrypt. HTTPS queda disponible inmediatamente.
 </Aside>
 
-#### Ruta B: Crear Nuevo mediante POST (el LB HTTPS no existe)
+#### Ruta B: Crear nuevo mediante POST (el LB HTTPS no existe)
 
-Cuando no existe un LB HTTPS (primera ejecución o después de una limpieza completa), créelo mediante POST. Esto activa el aprovisionamiento de certificados Let's Encrypt, que puede tomar de 5 a 10 minutos.
+Cuando no existe un LB HTTPS (primera ejecución o tras un desmontaje completo), créelo mediante POST. Esto activa el aprovisionamiento del certificado Let's Encrypt, que puede tardar entre 5 y 10 minutos.
 
 ```bash
 curl -s -X POST \
@@ -480,16 +480,16 @@ curl -s -X POST \
 Una respuesta `200` confirma que el balanceador de carga HTTPS fue creado. El aprovisionamiento del certificado comienza automáticamente.
 
 <Aside type="caution">
-Si la respuesta contiene `"code": 8` con "exhausted limits", el LB HTTPS no puede ser creado. El LB HTTPS es opcional — la demo continúa usando el LB HTTP. Registre la limitación de cuota en el Resumen de Evidencia de la Fase 1 como INFO.
+Si la respuesta contiene `"code": 8` con "exhausted limits", el LB HTTPS no puede crearse. El LB HTTPS es opcional — la demostración continúa utilizando el LB HTTP. Registre la limitación de cuota en el Resumen de evidencias de la Fase 1 como INFO.
 </Aside>
 
 <Aside type="note">
-**Límites de tasa de Let's Encrypt.** Crear un nuevo LB HTTPS activa una solicitud de certificado Let's Encrypt. Let's Encrypt permite solo 5 certificados duplicados por conjunto exacto de identificadores por cada 7 días. Si `cert_state` muestra `AutoCertDomainRateLimited`, la demo continúa usando el LB HTTP. Para evitar alcanzar este límite, la limpieza predeterminada preserva el LB HTTPS como esqueleto — consulte [Fase 4 — Limpieza](/csd/demo/phase-4-teardown/).
+**Límites de frecuencia de Let's Encrypt.** Crear un nuevo LB HTTPS activa una solicitud de certificado Let's Encrypt. Let's Encrypt permite solo 5 certificados duplicados por conjunto exacto de identificadores cada 7 días. Si `cert_state` muestra `AutoCertDomainRateLimited`, la demostración continúa utilizando el LB HTTP. Para evitar alcanzar este límite, el desmontaje predeterminado preserva el LB HTTPS como esqueleto — consulte [Fase 4 — Desmontaje](/csd/demo/phase-4-teardown/).
 </Aside>
 
 ### Evidencia
 
-Confirme que ambos balanceadores de carga existen con CSD habilitado. Siempre use un **GET** para la evidencia — la respuesta POST devuelve valores de estado transitorios que pueden no reflejar la configuración estabilizada.
+Confirme que ambos balanceadores de carga existen con CSD habilitado. Utilice siempre un **GET** para la evidencia — la respuesta del POST devuelve valores de estado transitorios que pueden no reflejar la configuración establecida.
 
 **LB HTTP (primario):**
 
@@ -502,11 +502,11 @@ curl -s \
 
 | Campo | Esperado | Estado |
 | --- | --- | --- |
-| Estado HTTP | `200` | APROBADO si se obtiene, FALLO si `404` |
-| `name` | `${F5XC_LB_NAME}-http` | APROBADO |
-| `domains` | Contiene `F5XC_DOMAINNAME` | APROBADO |
-| `csd_enabled` | `true` | APROBADO — CSD está configurado en este LB |
-| `state` | `VIRTUAL_HOST_READY` o `VIRTUAL_HOST_PENDING_A_RECORD` | Esperado — el LB HTTP transiciona a READY una vez que el DNS resuelve. Cualquier otro estado (ej. `VIRTUAL_HOST_FAILED`) es un FALLO — reporte al operador y no continúe |
+| Estado HTTP | `200` | PASS si se devuelve, FAIL si `404` |
+| `name` | `${F5XC_LB_NAME}-http` | PASS |
+| `domains` | Contiene `F5XC_DOMAINNAME` | PASS |
+| `csd_enabled` | `true` | PASS — CSD está configurado en este LB |
+| `state` | `VIRTUAL_HOST_READY` o `VIRTUAL_HOST_PENDING_A_RECORD` | Esperado — el LB HTTP pasa a READY una vez que el DNS se resuelve. Cualquier otro estado (por ejemplo, `VIRTUAL_HOST_FAILED`) es un FAIL — informe al operador y no continúe |
 
 **LB HTTPS (secundario):**
 
@@ -519,26 +519,26 @@ curl -s \
 
 | Campo | Esperado | Estado |
 | --- | --- | --- |
-| Estado HTTP | `200` | APROBADO si se obtiene, FALLO si `404` |
-| `name` | `${F5XC_LB_NAME}-https` | APROBADO |
-| `domains` | Contiene `F5XC_DOMAINNAME` | APROBADO |
-| `csd_enabled` | `true` | APROBADO — CSD está configurado en este LB |
+| Estado HTTP | `200` | PASS si se devuelve, FAIL si `404` |
+| `name` | `${F5XC_LB_NAME}-https` | PASS |
+| `domains` | Contiene `F5XC_DOMAINNAME` | PASS |
+| `csd_enabled` | `true` | PASS — CSD está configurado en este LB |
 | `creation_method` | PUT (esqueleto restaurado) o POST (nuevo) | INFO — PUT preserva el certificado existente |
-| `state` | `VIRTUAL_HOST_READY` (PUT) o `VIRTUAL_HOST_PENDING_A_RECORD` (POST) | Esperado — la ruta PUT puede ya estar en READY ya que el DNS persistió del esqueleto |
+| `state` | `VIRTUAL_HOST_READY` (PUT) o `VIRTUAL_HOST_PENDING_A_RECORD` (POST) | Esperado — la ruta PUT puede ya estar en READY dado que el DNS persistió desde el esqueleto |
 | `cert_state` | `CertificateValid` (PUT) o `PreDomainChallengePending` (POST) | PUT preserva el certificado existente; POST activa nuevo aprovisionamiento |
 
 ## Paso 4: Configurar DNS
 
-Después de crear el balanceador de carga, este entra en estado `VIRTUAL_HOST_PENDING_A_RECORD` y el certificado automático permanece en `PreDomainChallengePending`. Deben existir dos registros DNS antes de que el LB sea completamente operativo:
+Después de crear el balanceador de carga, este pasa al estado `VIRTUAL_HOST_PENDING_A_RECORD` y el certificado automático permanece en `PreDomainChallengePending`. Deben existir dos registros DNS antes de que el LB quede completamente operativo:
 
-1. **Registro A** — `xF5XC_DOMAINNAMEx` apuntando a la dirección IP VIP (desde `dns_info` en la respuesta del LB)
-2. **Registro de desafío ACME** — `_acme-challenge.xF5XC_DOMAINNAMEx` para la validación del certificado TLS (gestionado automáticamente al usar DNS de F5 XC con registros gestionados; se requiere CNAME manual para DNS externo)
+1. **Registro A** — `xF5XC_DOMAINNAMEx` apuntando a la dirección IP VIP (obtenida de `dns_info` en la respuesta del LB)
+2. **Registro de desafío ACME** — `_acme-challenge.xF5XC_DOMAINNAMEx` para la validación del certificado TLS (gestionado automáticamente cuando se utiliza DNS de F5 XC con registros gestionados; se requiere CNAME manual para DNS externo)
 
 El enfoque depende de si F5 XC es el proveedor DNS autoritativo para su dominio.
 
-### Detectar Autoridad DNS
+### Detectar la autoridad DNS
 
-Verifique los servidores de nombres de su dominio raíz:
+Compruebe los servidores de nombres para su dominio raíz:
 
 ```bash
 dig +short NS xF5XC_ROOT_DOMAINx
@@ -546,12 +546,12 @@ dig +short NS xF5XC_ROOT_DOMAINx
 
 Si la respuesta incluye `ns1.f5clouddns.com` y `ns2.f5clouddns.com`, F5 XC es el proveedor DNS autoritativo — siga la **Opción A**. De lo contrario, siga la **Opción B** para DNS externo.
 
-### Opción A: DNS Gestionado por F5 XC
+### Opción A: DNS gestionado por F5 XC
 
-Cuando F5 XC es el proveedor DNS autoritativo, la plataforma puede crear automáticamente tanto el registro A como el CNAME de desafío ACME — pero solo cuando la zona DNS tiene `allow_http_lb_managed_records` habilitado.
+Cuando F5 XC es el proveedor DNS autoritativo, la plataforma puede crear automáticamente tanto el registro A como el CNAME del desafío ACME — pero solo cuando la zona DNS tiene habilitado `allow_http_lb_managed_records`.
 
 <Aside type="note">
-Las zonas DNS residen en el namespace **system**, no en namespaces de usuario. El nombre de la zona coincide con el dominio raíz (ej., `bankexample.com`).
+Las zonas DNS se encuentran en el namespace **system**, no en los namespaces de usuario. El nombre de la zona coincide con el dominio raíz (por ejemplo, `bankexample.com`).
 </Aside>
 
 **1. Verificar si los registros gestionados están habilitados:**
@@ -563,12 +563,12 @@ curl -s \
   | jq '.spec.primary.allow_http_lb_managed_records'
 ```
 
-Si la respuesta es `true`, la plataforma auto-creará registros DNS para los balanceadores de carga — pase a **3. Verificar resolución DNS**. Si es `false` o `null`, continúe al siguiente paso.
+Si la respuesta es `true`, la plataforma creará automáticamente los registros DNS para los balanceadores de carga — continúe en **3. Verificar la resolución DNS**. Si es `false` o `null`, continúe con el paso siguiente.
 
-**2. Habilitar registros gestionados:**
+**2. Habilitar los registros gestionados:**
 
 <Aside type="caution">
-El payload del `PUT` debe incluir la **especificación completa de la zona** — metadatos y todos los campos de configuración existentes. Omitir campos los restablecerá a los valores predeterminados. Primero recupere la configuración actual de la zona, luego modifique solo el campo `allow_http_lb_managed_records`.
+El payload del `PUT` debe incluir la **especificación completa de la zona** — metadatos y todos los campos de configuración existentes. Omitir campos los restablecerá a sus valores predeterminados. Recupere primero la configuración actual de la zona y luego modifique únicamente el campo `allow_http_lb_managed_records`.
 </Aside>
 
 Recupere la configuración actual de la zona, habilite los registros gestionados y actualice:
@@ -591,10 +591,10 @@ echo "$ZONE_CONFIG" \
 ```
 
 <Aside type="caution">
-La especificación de la zona contiene un rr_set_group `x-ves-io-managed` con registros gestionados por la plataforma. Su payload `PUT` **debe preservar este grupo** — omitirlo causa HTTP 403 "reserved for internal purposes". Siempre recupere la configuración actual de la zona con `GET` primero, modifique solo los campos que necesita, y envíe de vuelta la especificación completa.
+La especificación de la zona contiene un rr_set_group `x-ves-io-managed` con registros gestionados por la plataforma. Su payload del `PUT` **debe preservar este grupo** — omitirlo provoca el error HTTP 403 "reserved for internal purposes". Recupere siempre la configuración actual de la zona con `GET`, modifique únicamente los campos necesarios y envíe de vuelta la especificación completa.
 </Aside>
 
-Una respuesta `200` (vacía `\{\}`) confirma que la zona fue actualizada. F5 XC creará el registro A y el registro de desafío ACME en el grupo de registros auto-gestionados de la zona. Si los registros gestionados no aparecen dentro de 60 segundos, re-aplique el balanceador de carga para activar la creación de registros:
+Una respuesta `200` (vacía `\{\}`) confirma que la zona fue actualizada. F5 XC creará el registro A y el registro del desafío ACME en el grupo de registros gestionados automáticamente de la zona. Si los registros gestionados no aparecen en 60 segundos, vuelva a aplicar el balanceador de carga para activar la creación de registros:
 
 ```bash
 LB_CONFIG=$(curl -s \
@@ -608,18 +608,18 @@ echo "$LB_CONFIG" | curl -s -X PUT \
   | jq .
 ```
 
-Esta re-aplicación GET+PUT no cambia la configuración del LB — simplemente activa a la plataforma para que re-evalúe la zona DNS y cree los registros gestionados. Si el registro A aún no resuelve dentro de 60 segundos después de la re-aplicación, deténgase y reporte al operador — no reintente la re-aplicación más de una vez.
+Esta reaplicación GET+PUT no modifica la configuración del LB — simplemente indica a la plataforma que vuelva a evaluar la zona DNS y cree los registros gestionados. Si el registro A aún no se resuelve en los 60 segundos posteriores a la reaplicación, deténgase e informe al operador — no reintente la reaplicación más de una vez.
 
-**3. Verificar resolución DNS:**
+**3. Verificar la resolución DNS:**
 
 ```bash
 dig +short xF5XC_DOMAINNAMEx A
 ```
 
-La respuesta debería devolver la dirección IP VIP. La propagación DNS es típicamente inmediata para las zonas gestionadas por F5 XC, pero permita hasta 60 segundos.
+La respuesta debería devolver la dirección IP VIP. La propagación DNS suele ser inmediata para las zonas gestionadas por F5 XC, pero espere hasta 60 segundos.
 
 <Aside type="tip">
-**Caché DNS negativa:** Si consultó el dominio antes de que el registro existiera, su resolver recursivo puede haber almacenado en caché la respuesta `NXDOMAIN`. Verifique contra el servidor de nombres autoritativo o un resolver público para descartar caché obsoleta:
+**Caché DNS negativa:** Si consultó el dominio antes de que existiera el registro, su resolver recursivo puede haber almacenado en caché la respuesta `NXDOMAIN`. Verifique contra el servidor de nombres autoritativo o un resolver público para descartar caché obsoleta:
 
 ```bash
 dig +short xF5XC_DOMAINNAMEx A @ns1.f5clouddns.com
@@ -627,9 +627,9 @@ dig +short xF5XC_DOMAINNAMEx A @8.8.8.8
 ```
 </Aside>
 
-### Opción B: Proveedor DNS Externo
+### Opción B: Proveedor DNS externo
 
-Cuando su dominio usa un proveedor DNS externo, debe crear los registros manualmente. Extraiga los valores requeridos del balanceador de carga:
+Cuando su dominio utiliza un proveedor DNS externo, debe crear los registros manualmente. Extraiga los valores requeridos del balanceador de carga:
 
 ```bash
 curl -s \
@@ -656,22 +656,22 @@ dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
 ```
 
 <Aside type="tip">
-El registro A es necesario para que el LB transite de `VIRTUAL_HOST_PENDING_A_RECORD` a `VIRTUAL_HOST_READY`. El CNAME de ACME es necesario para el aprovisionamiento automático de certificados TLS. Sin ambos registros, el LB permanecerá en estado pendiente.
+El registro A es necesario para que el LB pase de `VIRTUAL_HOST_PENDING_A_RECORD` a `VIRTUAL_HOST_READY`. El CNAME de ACME es necesario para el aprovisionamiento automático del certificado TLS. Sin ambos registros, el LB permanecerá en estado pendiente.
 </Aside>
 
 ### Evidencia
 
 | Prueba | Comando | Esperado | Estado |
 | --- | --- | --- | --- |
-| DNS-1: Registro A | `dig +short $F5XC_DOMAINNAME A` | Dirección IP VIP retornada | APROBADO si se retorna IP, FALLO si vacío |
-| DNS-2: CNAME ACME | `dig +short _acme-challenge.$F5XC_DOMAINNAME CNAME` | `*.autocerts.ves.volterra.io` | APROBADO si se retorna CNAME |
-| Autoridad DNS | `dig +short NS $F5XC_ROOT_DOMAIN` | Servidores de nombres F5 XC o externos | Informativo — determina Opción A vs B |
+| DNS-1: Registro A | `dig +short $F5XC_DOMAINNAME A` | Dirección IP VIP devuelta | PASS si se devuelve IP, FAIL si está vacío |
+| DNS-2: CNAME ACME | `dig +short _acme-challenge.$F5XC_DOMAINNAME CNAME` | `*.autocerts.ves.volterra.io` | PASS si se devuelve CNAME |
+| Autoridad DNS | `dig +short NS $F5XC_ROOT_DOMAIN` | Servidores de nombres de F5 XC o externos | Informativo — determina Opción A vs B |
 
-Si DNS-1 retorna vacío después de 60 segundos, consulte [Solución de Problemas &mdash; LB Atascado en VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record).
+Si DNS-1 devuelve vacío después de 60 segundos, consulte [Solución de problemas &mdash; LB bloqueado en VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record).
 
-## Paso 5: Verificar que CSD está Habilitado
+## Paso 5: Verificar que CSD está habilitado
 
-Verifique que Client-Side Defense está habilitado para el tenant. CSD se configura a nivel de tenant — si aún no ha sido habilitado, contacte a su administrador de F5 XC.
+Compruebe que la Defensa del lado del cliente está habilitada para el tenant. CSD se configura a nivel de tenant — si aún no se ha habilitado, contacte a su administrador de F5 XC.
 
 ```bash
 curl -s \
@@ -680,7 +680,7 @@ curl -s \
   | jq .
 ```
 
-Una respuesta que contenga `"isConfigured": true` e `"isEnabled": true` confirma que CSD está activo.
+Una respuesta que contiene `"isConfigured": true` e `"isEnabled": true` confirma que CSD está activo.
 
 ### Evidencia
 
@@ -693,21 +693,21 @@ curl -s \
 
 | Campo | Esperado | Estado |
 | --- | --- | --- |
-| `configured` | `true` | APROBADO |
-| `enabled` | `true` | APROBADO |
-| Cualquiera es `false` | — | FALLO — contacte al administrador de F5 XC para habilitar CSD a nivel de tenant |
+| `configured` | `true` | PASS |
+| `enabled` | `true` | PASS |
+| Alguno es `false` | — | FAIL — contacte al administrador de F5 XC para habilitar CSD a nivel de tenant |
 
-## Paso 6: Registrar Dominio Protegido
+## Paso 6: Registrar el dominio protegido
 
-Registre el dominio raíz que CSD monitoreará. El campo `protected_domain` debe ser el dominio raíz **eTLD+1** (ej., `f5demos.com`), no el FQDN completo.
+Registre el dominio raíz que CSD supervisará. El campo `protected_domain` debe ser el dominio raíz **eTLD+1** (por ejemplo, `f5demos.com`), no el FQDN completo.
 
 <Aside type="caution">
-**Los dominios protegidos tienen alcance de tenant, no de namespace.** A diferencia de los healthchecks, origin pools y balanceadores de carga, los dominios protegidos se registran globalmente en el tenant — el namespace en la URL de la API es un parámetro de enrutamiento, no un límite de propiedad. Sin embargo, el dominio protegido es un objeto de configuración CSD vinculado a este despliegue y **debe eliminarse durante la limpieza** cuando el despliegue se elimine completamente. No confunda esto con la zona DNS, que es infraestructura compartida y nunca debe eliminarse.
+**Los dominios protegidos tienen alcance de tenant, no de namespace.** A diferencia de los healthchecks, grupos de origen y balanceadores de carga, los dominios protegidos se registran globalmente en el tenant — el namespace en la URL de la API es un parámetro de enrutamiento, no un límite de propiedad. Sin embargo, el dominio protegido es un objeto de configuración de CSD vinculado a este despliegue y **debe eliminarse durante el desmontaje** cuando el despliegue se elimina por completo. No lo confunda con la zona DNS, que es infraestructura compartida y nunca debe eliminarse.
 </Aside>
 
-### Verificar si Ya Está Registrado
+### Verificar si ya está registrado
 
-Antes de crear, verifique si el dominio ya está registrado en el tenant. Una respuesta `409` al POST significa que el dominio ya existe — esta es una condición de éxito, no un error.
+Antes de crear, compruebe si el dominio ya está registrado en el tenant. Una respuesta `409` al POST significa que el dominio ya existe — esta es una condición de éxito, no un error.
 
 ```bash
 curl -s -X POST \
@@ -728,13 +728,13 @@ curl -s -X POST \
 
 | Respuesta | Significado | Acción |
 | --- | --- | --- |
-| `200` | Dominio registrado exitosamente | Continúe al Paso 7 |
-| `409` (dominio ya existe) | El dominio fue previamente registrado en este tenant | Ya completado — continúe al Paso 7 |
-| `"code": 8` (límites agotados) | Cuota de dominios protegidos llena | **Bloqueante** — los dominios protegidos son obligatorios para CSD. Elimine dominios protegidos no utilizados o contacte a su administrador. |
+| `200` | Dominio registrado correctamente | Continúe con el Paso 7 |
+| `409` (el dominio ya existe) | El dominio fue registrado anteriormente en este tenant | Ya realizado — continúe con el Paso 7 |
+| `"code": 8` (límite agotado) | Cuota de dominios protegidos llena | **Bloqueante** — los dominios protegidos son obligatorios para CSD. Elimine dominios protegidos no utilizados o contacte a su administrador. |
 
 ### Evidencia
 
-La respuesta POST es la evidencia principal — devuelve el objeto de dominio registrado con `spec.protected_domain` coincidiendo con su dominio raíz. Alternativamente, liste todos los dominios protegidos para confirmar:
+La respuesta del POST en sí es la evidencia principal — devuelve el objeto del dominio registrado con `spec.protected_domain` coincidiendo con su dominio raíz. Alternativamente, liste todos los dominios protegidos para confirmar:
 
 ```bash
 curl -s \
@@ -745,30 +745,30 @@ curl -s \
 
 | Campo | Esperado | Estado |
 | --- | --- | --- |
-| POST retornó `protected_domain` | Coincide con `F5XC_ROOT_DOMAIN` | APROBADO |
-| POST retornó `200` o `409` | Dominio registrado o ya existe | APROBADO |
-| Conteo de elementos en lista | &gt; 0 | APROBADO |
+| POST devolvió `protected_domain` | Coincide con `F5XC_ROOT_DOMAIN` | PASS |
+| POST devolvió `200` o `409` | Dominio registrado o ya existe | PASS |
+| Recuento de elementos en la lista | &gt; 0 | PASS |
 
 <Aside type="note">
-El endpoint GET individual (`/protected_domains/\{name\}`) no está disponible para dominios protegidos. Use la respuesta POST o el endpoint de listado para la verificación.
+El endpoint GET individual (`/protected_domains/\{name\}`) no está disponible para dominios protegidos. Utilice la respuesta del POST o el endpoint de lista para la verificación.
 </Aside>
 
 ## Paso 7: Verificar
 
 ### Resolución DNS
 
-Confirme que el registro A está resolviendo y el CNAME de desafío ACME está en su lugar:
+Confirme que el registro A se está resolviendo y que el CNAME del desafío ACME está en su lugar:
 
 ```bash
 dig +short xF5XC_DOMAINNAMEx A
 dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
 ```
 
-El registro A debería retornar la dirección IP VIP. El CNAME debería apuntar a `*.autocerts.ves.volterra.io` (o un destino autocerts relacionado).
+El registro A debería devolver la dirección IP VIP. El CNAME debería apuntar a `*.autocerts.ves.volterra.io` (o un destino autocerts relacionado).
 
-### Estado del Balanceador de Carga
+### Estado del balanceador de carga
 
-Verifique que ambos balanceadores de carga han salido de sus estados pendientes. El LB HTTP es la verificación principal — debería alcanzar `VIRTUAL_HOST_READY` una vez que el DNS resuelva, sin dependencia de certificados. El estado del certificado del LB HTTPS es solo informativo.
+Compruebe que ambos balanceadores de carga han salido de sus estados pendientes. El LB HTTP es la verificación principal — debería alcanzar `VIRTUAL_HOST_READY` una vez que el DNS se resuelva, sin dependencia de certificados. El estado del certificado del LB HTTPS es solo informativo.
 
 **LB HTTP (primario — debe estar en READY para continuar):**
 
@@ -779,9 +779,9 @@ curl -s \
   | jq '{state: .spec.state}'
 ```
 
-| Campo | Esperado | Estados Intermedios |
+| Campo | Esperado | Estados intermedios |
 | --- | --- | --- |
-| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS no configurado (ver Paso 4) |
+| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS no configurado (consulte el Paso 4) |
 
 **LB HTTPS (secundario — informativo, no bloquea la progresión):**
 
@@ -792,16 +792,16 @@ curl -s \
   | jq '{state: .spec.state, cert_state: .spec.cert_state}'
 ```
 
-| Campo | Esperado | Estados Intermedios |
+| Campo | Esperado | Estados intermedios |
 | --- | --- | --- |
-| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS no configurado; `VIRTUAL_HOST_DNS_A_RECORD_ADDED` — Registro A encontrado, esperando certificado |
-| `cert_state` | `CertificateValid` | `PreDomainChallengePending` — esperando CNAME ACME; `DomainChallengeStarted` — desafío ACME en progreso; `AutoCertDomainRateLimited` — límite de tasa de Let's Encrypt alcanzado (esperado en entornos de demo, no afecta al LB HTTP) |
+| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS no configurado; `VIRTUAL_HOST_DNS_A_RECORD_ADDED` — registro A encontrado, esperando certificado |
+| `cert_state` | `CertificateValid` | `PreDomainChallengePending` — esperando CNAME ACME; `DomainChallengeStarted` — desafío ACME en progreso; `AutoCertDomainRateLimited` — límite de frecuencia de Let's Encrypt alcanzado (esperado en entornos de demostración, no afecta al LB HTTP) |
 
 <Aside type="note">
-El aprovisionamiento de certificados puede tomar **5–10 minutos** después de que se crean los registros DNS. Si `cert_state` muestra `AutoCertDomainRateLimited`, esto es esperado en entornos de demostración donde la infraestructura se crea y destruye frecuentemente. El LB HTTP no se ve afectado — continúe con la demo usando URLs `http://`.
+El aprovisionamiento del certificado puede tardar **5–10 minutos** después de que se creen los registros DNS. Si `cert_state` muestra `AutoCertDomainRateLimited`, esto es esperado en entornos de demostración donde la infraestructura se crea y destruye con frecuencia. El LB HTTP no se ve afectado — continúe con la demostración utilizando URLs `http://`.
 </Aside>
 
-### Configuración JS
+### Configuración de JS
 
 ```bash
 curl -s \
@@ -810,9 +810,9 @@ curl -s \
   | jq .
 ```
 
-La respuesta contiene un campo `scriptTag` con la etiqueta HTML `<script>` completa que el balanceador de carga inyecta en las respuestas de las páginas.
+La respuesta contiene un campo `scriptTag` con la etiqueta HTML `<script>` completa que el balanceador de carga inyecta en las respuestas de página.
 
-### Dominios Detectados
+### Dominios detectados
 
 ```bash
 curl -s \
@@ -821,9 +821,9 @@ curl -s \
   | jq '{summary: .domain_summary, domains: .domains_list}'
 ```
 
-### Scripts Detectados
+### Scripts detectados
 
-El endpoint de scripts requiere un rango de tiempo usando marcas de tiempo epoch (segundos desde la época Unix). El ejemplo a continuación consulta los últimos 7 días.
+El endpoint de scripts requiere un rango de tiempo usando marcas de tiempo epoch (segundos desde el epoch Unix). El ejemplo siguiente consulta los últimos 7 días.
 
 ```bash
 NOW=$(date +%s)
@@ -836,7 +836,7 @@ curl -s -X POST \
   | jq '[.scripts[]? | {script_name: .script_name, risk_level: .risk_level}]'
 ```
 
-### Campos de Formulario
+### Campos de formulario
 
 El endpoint de campos de formulario requiere un rango de tiempo usando marcas de tiempo epoch, pasadas como parámetros de consulta.
 
@@ -849,31 +849,31 @@ curl -s \
   | jq '.form_fields'
 ```
 
-### Resumen de Evidencia de la Fase 1
+### Resumen de evidencias de la Fase 1
 
 Después de completar todas las verificaciones, el asistente de IA debe presentar una tabla de estado consolidada:
 
-| ID de Prueba | Verificación | Esperado | Obligatorio | Estado |
+| ID de prueba | Verificación | Esperado | Obligatorio | Estado |
 | --- | --- | --- | --- | --- |
-| DNS-1 | Registro A resuelve | IP VIP retornada | **Sí** | APROBADO / FALLO |
-| DNS-2 | CNAME ACME existe | `*.autocerts.ves.volterra.io` | No | APROBADO / PENDIENTE |
-| LB-1 | Estado del LB HTTP | `VIRTUAL_HOST_READY` | **Sí** | APROBADO / PENDIENTE |
-| LB-2 | Estado del LB HTTPS | `VIRTUAL_HOST_READY` | No | APROBADO / PENDIENTE / INFO |
-| TLS-1 | Estado del certificado | `CertificateValid` | No | APROBADO / PENDIENTE / INFO |
-| CSD-1 | Configuración JS | `scriptTag` presente | **Sí** | APROBADO / FALLO |
-| CSD-2 | Estado de CSD | `isEnabled: true` | **Sí** | APROBADO / FALLO |
-| CSD-3 | Dominio protegido | Dominio registrado | **Sí** | APROBADO / FALLO |
+| DNS-1 | Registro A resuelve | IP VIP devuelta | **Sí** | PASS / FAIL |
+| DNS-2 | CNAME ACME existe | `*.autocerts.ves.volterra.io` | No | PASS / PENDING |
+| LB-1 | Estado del LB HTTP | `VIRTUAL_HOST_READY` | **Sí** | PASS / PENDING |
+| LB-2 | Estado del LB HTTPS | `VIRTUAL_HOST_READY` | No | PASS / PENDING / INFO |
+| TLS-1 | Estado del certificado | `CertificateValid` | No | PASS / PENDING / INFO |
+| CSD-1 | Configuración de JS | `scriptTag` presente | **Sí** | PASS / FAIL |
+| CSD-2 | Estado de CSD | `isEnabled: true` | **Sí** | PASS / FAIL |
+| CSD-3 | Dominio protegido | Dominio registrado | **Sí** | PASS / FAIL |
 
 <Aside type="note">
-**La Fase 2 utiliza el LB HTTP.** HTTPS es opcional — si TLS-1 muestra `AutoCertDomainRateLimited` o LB-2 permanece PENDIENTE, la demo procede normalmente usando URLs `http://`. Solo DNS-1, LB-1, CSD-1, CSD-2 y CSD-3 deben aprobarse antes de continuar a la Fase 2.
+**La Fase 2 utiliza el LB HTTP.** HTTPS es opcional — si TLS-1 muestra `AutoCertDomainRateLimited` o LB-2 permanece en PENDING, la demostración continúa normalmente utilizando URLs `http://`. Solo DNS-1, LB-1, CSD-1, CSD-2 y CSD-3 deben superarse antes de continuar con la Fase 2.
 </Aside>
 
-Si LB-1 muestra PENDIENTE, consulte cada 30 segundos hasta un máximo de 4 iteraciones (2 minutos en total). Si LB-1 aún no está en `VIRTUAL_HOST_READY` después de 4 iteraciones, verifique la resolución DNS con `dig` y reporte al operador — no continúe hasta que LB-1 alcance READY. Para LB-2 y TLS-1, consulte cada 60 segundos hasta un máximo de 10 iteraciones (10 minutos). Si aún están en un estado intermedio después de 10 iteraciones, registre el estado actual como INFO y continúe — estos son informativos y no bloquean la progresión de la demo.
+Si LB-1 muestra PENDING, sondee cada 30 segundos hasta 4 iteraciones (2 minutos en total). Si LB-1 sigue sin estar en `VIRTUAL_HOST_READY` después de 4 iteraciones, verifique la resolución DNS con `dig` e informe al operador — no continúe hasta que LB-1 alcance READY. Para LB-2 y TLS-1, sondee cada 60 segundos hasta 10 iteraciones (10 minutos). Si aún se encuentra en un estado intermedio después de 10 iteraciones, registre el estado actual como INFO y continúe — estos son informativos y no bloquean la progresión de la demostración.
 
 <Aside type="note">
-El campo `dns_info` en la respuesta del LB puede estar vacío (`[]`) incluso cuando el DNS resuelve correctamente — esto sucede después de una recreación limpia. Siempre verifique la resolución DNS con `dig` en lugar de depender de `dns_info` para la dirección VIP.
+El campo `dns_info` en la respuesta del LB puede estar vacío (`[]`) incluso cuando el DNS se resuelve correctamente — esto ocurre después de una recreación limpia. Verifique siempre la resolución DNS con `dig` en lugar de depender de `dns_info` para la dirección IP VIP.
 </Aside>
 
 ---
 
-**Fase 1 completa.** Continúe a [Fase 2 — Ataque](/csd/demo/phase-2-attack/) para ejecutar la simulación de ataque.
+**Fase 1 completada.** Continúe con la [Fase 2 — Ataque](/csd/demo/phase-2-attack/) para ejecutar la simulación de ataque.

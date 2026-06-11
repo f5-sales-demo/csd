@@ -1,11 +1,11 @@
 ---
-title: Diagnósticos y verificación
+title: Diagnóstico y verificación
 description: >-
   Comprobaciones de estado, pruebas de conectividad y procedimientos de
   verificación para el despliegue de CSD
 sidebar:
   order: 8
-  label: Diagnósticos y verificación
+  label: Diagnóstico y verificación
 i18n:
   sourceHash: 754ac3ee6525
   translator: machine
@@ -13,50 +13,50 @@ i18n:
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-Esta página proporciona una **matriz de verificación UAT por capas** para validar su despliegue de Client-Side Defense de extremo a extremo. Cada caso de prueba sigue la cadena de dependencias de infraestructura — desde la resolución DNS hasta la telemetría de CSD — para que pueda demostrar sistemáticamente que cada componente funciona correctamente.
+Esta página proporciona una **matriz de verificación UAT por capas** para validar el despliegue de Defensa del lado del cliente de extremo a extremo. Cada caso de prueba sigue la cadena de dependencias de infraestructura — desde la resolución DNS hasta la telemetría de CSD — para que pueda demostrar sistemáticamente que cada componente funciona correctamente.
 
-Estos comandos son el **equivalente por API** del [Recorrido por la consola CSD](/csd/csd-console/) — utilícelos cuando necesite verificar desde la terminal, automatizar el monitoreo o demostrar las capacidades de CSD sin la interfaz de usuario.
+Estos comandos son el **equivalente de API** del [Recorrido por la consola de CSD](/csd/csd-console/) — utilícelos cuando necesite verificar desde el terminal, automatizar la supervisión o demostrar las capacidades de CSD sin la interfaz de usuario.
 
-## Requisitos previos
+## Prerrequisitos
 
-Configure sus variables de entorno como se describe en [Automatización API &mdash; Configuración del entorno](/csd/demo/#environment-setup):
+Configure las variables de entorno tal como se describe en [Automatización de API &mdash; Configuración del entorno](/csd/demo/#environment-setup):
 
 ```bash
 set -a && source .env && set +a
 ```
 
-Todos los comandos a continuación utilizan el formato de marcador de posición `xTOKENx`. Sustitúyalos con sus variables de entorno (`$F5XC_API_TOKEN`, `$F5XC_NAMESPACE`, etc.) o utilice el formulario interactivo en la parte superior de la página.
+Todos los comandos a continuación utilizan el formato de marcador de posición `xTOKENx`. Sustitúyalo con sus variables de entorno (`$F5XC_API_TOKEN`, `$F5XC_NAMESPACE`, etc.) o use el formulario interactivo en la parte superior de la página.
 
 ## Notas sobre el comportamiento de la API
 
 <Aside type="note">
-**PUT y DELETE devuelven `\{\}` vacío** con HTTP 200 — esta es la respuesta de éxito esperada, no un error. Solo **POST** devuelve el objeto creado. Los **endpoints de listado** (p. ej., `/healthchecks`) y los **endpoints GET individuales** (p. ej., `/healthchecks/\{name\}`) devuelven estructuras de respuesta diferentes — consulte [Referencia de API &mdash; Convenciones de API](/csd/api-reference/#api-conventions) para conocer las rutas `jq` correctas para cada uno.
+**PUT y DELETE devuelven `\{\}` vacío** con HTTP 200 — esta es la respuesta de éxito esperada, no un error. Solo **POST** devuelve el objeto creado. Los **endpoints de listado** (p. ej., `/healthchecks`) y los **endpoints GET individuales** (p. ej., `/healthchecks/\{name\}`) devuelven estructuras de respuesta diferentes — consulte [Referencia de API &mdash; Convenciones de API](/csd/api-reference/#api-conventions) para obtener detalles sobre las rutas `jq` correctas para cada uno.
 </Aside>
 
-## Utilidades de rango temporal
+## Auxiliares de rango de tiempo
 
-Muchos endpoints de CSD requieren marcas de tiempo epoch (segundos desde la época Unix). Estos comandos de una línea calculan los tiempos de inicio/fin para rangos comunes.
+Muchos endpoints de CSD requieren marcas de tiempo en formato epoch (segundos desde el epoch Unix). Estas instrucciones de una línea calculan los tiempos de inicio/fin para rangos comunes.
 
 **Multiplataforma** (macOS + Linux):
 
 ```bash
-# Current time as epoch seconds
+# Hora actual como segundos epoch
 NOW=$(date +%s)
 
-# 1 hour ago
+# Hace 1 hora
 START_1H=$(( NOW - 3600 ))
 
-# 24 hours ago
+# Hace 24 horas
 START_24H=$(( NOW - 86400 ))
 
-# 7 days ago
+# Hace 7 días
 START_7D=$(( NOW - 604800 ))
 
-# 30 days ago
+# Hace 30 días
 START_30D=$(( NOW - 2592000 ))
 ```
 
-| Preconfiguración | Segundos | Expresión shell |
+| Preajuste | Segundos | Expresión en shell |
 | --- | --- | --- |
 | 1 hora | 3.600 | `$(( $(date +%s) - 3600 ))` |
 | 24 horas | 86.400 | `$(( $(date +%s) - 86400 ))` |
@@ -64,10 +64,10 @@ START_30D=$(( NOW - 2592000 ))
 | 30 días | 2.592.000 | `$(( $(date +%s) - 2592000 ))` |
 
 <Aside type="note">
-Los endpoints de CSD (`/api/shape/csd/`) utilizan **segundos epoch** (p. ej., `1710000000`). Los endpoints de logs de acceso (`/api/data/`) utilizan marcas de tiempo **ISO 8601** (p. ej., `2024-03-10T00:00:00Z`). Los comandos en cada sección usan el formato correcto para ese endpoint.
+Los endpoints de CSD (`/api/shape/csd/`) utilizan **segundos epoch** (p. ej., `1710000000`). Los endpoints de registros de acceso (`/api/data/`) utilizan marcas de tiempo en **ISO 8601** (p. ej., `2024-03-10T00:00:00Z`). Los comandos de cada sección utilizan el formato correcto para ese endpoint.
 </Aside>
 
-## Formato de los casos de prueba
+## Formato de caso de prueba
 
 Cada prueba a continuación sigue esta estructura:
 
@@ -76,14 +76,14 @@ Cada prueba a continuación sigue esta estructura:
 | **ID de prueba** | Número de capa + ID secuencial (p. ej., DNS-1, TLS-2) |
 | **Qué demuestra** | El hecho específico de infraestructura que se verifica |
 | **Comando** | Comando `curl` o `dig` listo para ejecutar |
-| **APROBADO / FALLIDO** | Salida esperada para estado saludable vs. no saludable |
-| **Corrección** | Enlace a la sección de configuración o solución de problemas correspondiente |
+| **CORRECTO / INCORRECTO** | Salida esperada para estado saludable vs. no saludable |
+| **Solución** | Enlace a la sección de configuración o resolución de problemas correspondiente |
 
 ---
 
 ## Capa 1: Resolución DNS
 
-El DNS es la base — si el dominio no resuelve a la VIP del balanceador de carga, nada más funciona.
+El DNS es la base — si el dominio no resuelve a la VIP del balanceador de carga, nada más funcionará.
 
 ### DNS-1: Resolución de registro A
 
@@ -95,13 +95,13 @@ dig +short xF5XC_DOMAINNAMEx A
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; IP VIP devuelta (p. ej., `72.19.3.185`) | El dominio resuelve a la IP virtual del LB |
-| **FALLIDO** &mdash; respuesta vacía | El registro A de DNS no está configurado |
+| **CORRECTO** &mdash; IP VIP devuelta (p. ej., `72.19.3.185`) | El dominio resuelve a la IP virtual del LB |
+| **INCORRECTO** &mdash; respuesta vacía | Registro A de DNS no configurado |
 
-**Corrección:** [Automatización API &mdash; Paso 4: Configurar DNS](/csd/demo/phase-1-build/#step-4-configure-dns)
+**Solución:** [Automatización de API &mdash; Paso 4: Configurar DNS](/csd/demo/phase-1-build/#step-4-configure-dns)
 
 <Aside type="tip">
-**Caché DNS negativa:** Si el dominio previamente devolvió `NXDOMAIN`, los resolvers recursivos pueden almacenar ese resultado en caché. Verifique contra el servidor de nombres autoritativo para descartar caché obsoleta: `dig +short xF5XC_DOMAINNAMEx A @ns1.f5clouddns.com` o use un resolver público como `@8.8.8.8`.
+**Caché DNS negativa:** Si el dominio devolvió previamente `NXDOMAIN`, los resolvedores recursivos pueden almacenar en caché ese resultado. Verifique contra el servidor de nombres autoritativo para descartar caché obsoleta: `dig +short xF5XC_DOMAINNAMEx A @ns1.f5clouddns.com` o use un resolvedor público como `@8.8.8.8`.
 </Aside>
 
 ### DNS-2: Registro de desafío ACME
@@ -115,17 +115,17 @@ dig +short _acme-challenge.xF5XC_DOMAINNAMEx TXT
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; CNAME hacia `*.autocerts.ves.volterra.io.` (DNS externo) | El CNAME del desafío ACME está configurado |
-| **APROBADO** &mdash; Registro TXT con valor del dominio (DNS gestionado por F5 Distributed Cloud (F5 XC)) | Desafío ACME gestionado por la plataforma mediante registro TXT |
-| **FALLIDO** &mdash; ambos vacíos | Registro ACME no configurado; el certificado permanecerá en `PreDomainChallengePending` |
+| **CORRECTO** &mdash; CNAME a `*.autocerts.ves.volterra.io.` (DNS externo) | El CNAME de desafío ACME está en su lugar |
+| **CORRECTO** &mdash; registro TXT con valor de dominio (DNS administrado por F5 Distributed Cloud (F5 XC)) | Desafío ACME gestionado por la plataforma mediante registro TXT |
+| **INCORRECTO** &mdash; ambos vacíos | Registro ACME no configurado; el certificado permanecerá en `PreDomainChallengePending` |
 
 <Aside type="note">
-Cuando se utiliza DNS gestionado por F5 XC con `allow_http_lb_managed_records` habilitado, la plataforma crea automáticamente un registro **TXT** (no un CNAME) en el grupo de conjuntos de registros RR `x-ves-io-managed`. Esta validación ACME basada en TXT se gestiona internamente. Cuando se utiliza DNS externo, debe crear manualmente un CNAME hacia `*.autocerts.ves.volterra.io`.
+Al usar DNS administrado por F5 XC con `allow_http_lb_managed_records` habilitado, la plataforma crea automáticamente un registro **TXT** (no un CNAME) en el grupo de conjuntos de registros (RR set group) `x-ves-io-managed`. Esta validación ACME basada en TXT se gestiona internamente. Al usar DNS externo, debe crear manualmente un CNAME a `*.autocerts.ves.volterra.io`.
 </Aside>
 
-**Corrección:** Para DNS externo, cree el CNAME: `_acme-challenge.xF5XC_DOMAINNAMEx` &rarr; `*.autocerts.ves.volterra.io`. Para DNS gestionado por F5 XC, habilite `allow_http_lb_managed_records` en la zona DNS &mdash; consulte [DNS-4](#dns-4-registros-gestionados-de-f5-xc-habilitados). Consulte [Automatización API &mdash; Paso 4](/csd/demo/phase-1-build/#step-4-configure-dns).
+**Solución:** Para DNS externo, cree el CNAME: `_acme-challenge.xF5XC_DOMAINNAMEx` &rarr; `*.autocerts.ves.volterra.io`. Para DNS administrado por F5 XC, habilite `allow_http_lb_managed_records` en la zona DNS &mdash; consulte [DNS-4](#dns-4-f5-xc-managed-records-enabled). Consulte [Automatización de API &mdash; Paso 4](/csd/demo/phase-1-build/#step-4-configure-dns).
 
-### DNS-3: Autoridad del servidor de nombres
+### DNS-3: Autoridad de servidores de nombres
 
 **Qué demuestra:** Si F5 XC es el proveedor DNS autoritativo para el dominio raíz.
 
@@ -135,14 +135,14 @@ dig +short NS xF5XC_ROOT_DOMAINx
 
 | Resultado | Significado |
 | --- | --- |
-| Incluye `ns1.f5clouddns.com` y `ns2.f5clouddns.com` | DNS gestionado por F5 XC &mdash; los registros pueden crearse automáticamente |
-| Otros servidores de nombres | DNS externo &mdash; los registros deben crearse manualmente |
+| Incluye `ns1.f5clouddns.com` y `ns2.f5clouddns.com` | DNS administrado por F5 XC — los registros pueden crearse automáticamente |
+| Otros servidores de nombres | DNS externo — los registros deben crearse manualmente |
 
-**Corrección:** [Automatización API &mdash; Detectar autoridad DNS](/csd/demo/phase-1-build/#detect-dns-authority)
+**Solución:** [Automatización de API &mdash; Detectar autoridad DNS](/csd/demo/phase-1-build/#detect-dns-authority)
 
-### DNS-4: Registros gestionados de F5 XC habilitados
+### DNS-4: Registros administrados por F5 XC habilitados
 
-**Qué demuestra:** La zona DNS de F5 XC permite la creación automática de registros para balanceadores de carga (solo DNS gestionado por F5 XC).
+**Qué demuestra:** La zona DNS de F5 XC permite la creación automática de registros para balanceadores de carga (solo para DNS administrado por F5 XC).
 
 ```bash
 curl -s \
@@ -153,25 +153,25 @@ curl -s \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; `true` | La plataforma creará automáticamente registros A y ACME para los LBs |
-| **FALLIDO** &mdash; `false` o `null` | Registros gestionados deshabilitados; habilítelos mediante actualización de la zona |
+| **CORRECTO** &mdash; `true` | La plataforma creará automáticamente registros A y ACME para los LB |
+| **INCORRECTO** &mdash; `false` o `null` | Registros administrados deshabilitados; habilítelos mediante actualización de la zona |
 
 <Aside type="caution">
-Un resultado `false` es una configuración errónea común cuando se utiliza DNS gestionado por F5 XC. Sin los registros gestionados habilitados, la plataforma no puede crear automáticamente el registro A (apuntando a la VIP) ni el CNAME del desafío ACME (requerido para el aprovisionamiento de certificados TLS). Esto causa que el balanceador de carga permanezca atascado en `VIRTUAL_HOST_PENDING_A_RECORD` y el certificado se quede en `PreDomainChallengePending`. Habilite los registros gestionados en la zona DNS o cree los registros manualmente.
+Un resultado `false` es una mala configuración común al usar DNS administrado por F5 XC. Sin los registros administrados habilitados, la plataforma no puede crear automáticamente el registro A (que apunta a la VIP) ni el CNAME de desafío ACME (requerido para el aprovisionamiento del certificado TLS). Esto provoca que el balanceador de carga permanezca bloqueado en `VIRTUAL_HOST_PENDING_A_RECORD` y el certificado en `PreDomainChallengePending`. Habilite los registros administrados en la zona DNS o créelos manualmente.
 </Aside>
 
-**Corrección:** [Automatización API &mdash; Opción A: DNS gestionado por F5 XC](/csd/demo/phase-1-build/#option-a-f5-xc-managed-dns)
+**Solución:** [Automatización de API &mdash; Opción A: DNS administrado por F5 XC](/csd/demo/phase-1-build/#option-a-f5-xc-managed-dns)
 
 ---
 
 ## Capa 2: Certificado TLS
 
-Después de que el DNS resuelve, el balanceador de carga debe tener un certificado TLS válido.
+Una vez que el DNS resuelve, el balanceador de carga debe tener un certificado TLS válido.
 
 ### TLS-1: Estado del certificado
 
 <Aside type="note">
-**Esta prueba aplica únicamente al LB HTTPS (`${F5XC_LB_NAME}-https`).** El LB HTTP no tiene certificado. En entornos de demostración, TLS-1 es informativo — si muestra `AutoCertDomainRateLimited`, la demostración procede normalmente utilizando URLs `http://` a través del LB HTTP.
+**Esta prueba aplica únicamente al LB HTTPS (`${F5XC_LB_NAME}-https`).** El LB HTTP no tiene certificado. En entornos de demostración, TLS-1 es informativo — si muestra `AutoCertDomainRateLimited`, la demostración continúa normalmente usando URLs `http://` a través del LB HTTP.
 </Aside>
 
 **Qué demuestra:** El certificado TLS automático ha sido emitido en el LB HTTPS.
@@ -185,16 +185,16 @@ curl -s \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; `"CertificateValid"` o `"AutoCertRenewing"` | El certificado es válido y está activo |
-| **ADVERTENCIA** &mdash; `"DomainChallengePending"` o `"DomainChallengeStarted"` | Desafío ACME en progreso &mdash; espere 5&ndash;10 minutos |
-| **INFO** &mdash; `"AutoCertDomainRateLimited"` | Límite de velocidad de Let's Encrypt alcanzado &mdash; esperado en entornos de demostración, no afecta al LB HTTP |
-| **FALLIDO** &mdash; `"PreDomainChallengePending"` | Registro de desafío ACME faltante &mdash; consulte [DNS-2](#dns-2-registro-de-desafío-acme) |
+| **CORRECTO** &mdash; `"CertificateValid"` o `"AutoCertRenewing"` | El certificado es válido y está activo |
+| **ADVERTENCIA** &mdash; `"DomainChallengePending"` o `"DomainChallengeStarted"` | Desafío ACME en curso &mdash; espere entre 5 y 10 minutos |
+| **INFO** &mdash; `"AutoCertDomainRateLimited"` | Límite de tasa de Let's Encrypt alcanzado &mdash; esperado en entornos de demostración, no afecta al LB HTTP |
+| **INCORRECTO** &mdash; `"PreDomainChallengePending"` | Registro de desafío ACME faltante &mdash; consulte [DNS-2](#dns-2-acme-challenge-record) |
 
-**Corrección:** Asegúrese de que el registro de desafío ACME esté configurado (CNAME para DNS externo, o habilite registros gestionados para DNS F5 XC). El aprovisionamiento del certificado toma **5&ndash;10 minutos** después de configurar el registro. Si permanece atascado más de 15 minutos, consulte [Certificado atascado &mdash; Recreación limpia](/csd/demo/#certificate-stuck--clean-recreation-optional). Si está limitado por velocidad, el LB HTTP no se ve afectado.
+**Solución:** Asegúrese de que el registro de desafío ACME esté en su lugar (CNAME para DNS externo, o habilite los registros administrados para DNS de F5 XC). El aprovisionamiento del certificado tarda **5 a 10 minutos** después de configurar el registro. Si sigue bloqueado después de 15 minutos, consulte [Certificado bloqueado &mdash; Recreación limpia](/csd/demo/#certificate-stuck--clean-recreation-optional). Si se alcanzó el límite de tasa, el LB HTTP no se ve afectado.
 
 ### TLS-2: Detalles del certificado
 
-**Qué demuestra:** El certificado cubre el dominio esperado y muestra información de expiración. Solo aplica al LB HTTPS.
+**Qué demuestra:** El certificado cubre el dominio esperado y muestra información de vencimiento. Solo aplica al LB HTTPS.
 
 ```bash
 curl -s \
@@ -208,15 +208,15 @@ curl -s \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; `auto_cert_info` contiene `dns_records` y metadatos del certificado | Detalles de aprovisionamiento del certificado disponibles |
-| **FALLIDO** &mdash; `auto_cert_info` es `null` o está vacío | Certificado aún no aprovisionado |
+| **CORRECTO** &mdash; `auto_cert_info` contiene `dns_records` y metadatos del certificado | Detalles de aprovisionamiento del certificado disponibles |
+| **INCORRECTO** &mdash; `auto_cert_info` es `null` o está vacío | Certificado aún no aprovisionado |
 
-### TLS-3: Handshake TLS en vivo
+### TLS-3: Conexión TLS en vivo
 
-**Qué demuestra:** El certificado TLS es válido y el handshake se completa desde el lado del cliente. Solo aplica cuando el LB HTTPS tiene un certificado válido.
+**Qué demuestra:** El certificado TLS es válido y el protocolo de enlace (handshake) se completa desde el lado del cliente. Solo aplica cuando el LB HTTPS tiene un certificado válido.
 
 <Aside type="note">
-En entornos de demostración, use `curl http://xF5XC_DOMAINNAMEx/` (HTTP, no HTTPS) como la ruta de verificación principal. La prueba de handshake TLS es opcional — solo funciona cuando el certificado del LB HTTPS está en `CertificateValid`.
+En entornos de demostración, use `curl http://xF5XC_DOMAINNAMEx/` (HTTP, no HTTPS) como ruta de verificación principal. La prueba del protocolo de enlace TLS es opcional — solo funciona cuando el certificado del LB HTTPS es `CertificateValid`.
 </Aside>
 
 ```bash
@@ -226,8 +226,8 @@ curl -sv "https://xF5XC_DOMAINNAMEx/" 2>&1 \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; muestra `SSL connection using TLSv1.3`, sujeto y expiración válidos | TLS de extremo a extremo está funcionando |
-| **FALLIDO** &mdash; conexión rechazada o error de certificado | Verifique la resolución DNS y el estado del certificado; si está limitado por velocidad, use HTTP en su lugar |
+| **CORRECTO** &mdash; muestra `SSL connection using TLSv1.3`, asunto y fecha de vencimiento válidos | TLS de extremo a extremo funciona correctamente |
+| **INCORRECTO** &mdash; conexión rechazada o error de certificado | Compruebe la resolución DNS y el estado del certificado; si se alcanzó el límite de tasa, use HTTP |
 
 ### TLS-4: Destino del registro ACME desde el LB
 
@@ -245,21 +245,21 @@ curl -s \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; `vip_ip` y `acme_target` poblados | Los registros DNS pueden verificarse contra estos valores |
-| **FALLIDO** &mdash; valores `null` | El LB podría no tener configurado `https_auto_cert` |
+| **CORRECTO** &mdash; `vip_ip` y `acme_target` con valores | Los registros DNS pueden verificarse contra estos valores |
+| **INCORRECTO** &mdash; valores `null` | Es posible que el LB no tenga configurado `https_auto_cert` |
 
 ---
 
 ## Capa 3: Balanceador de carga HTTP
 
-El balanceador de carga debe estar en estado listo y correctamente configurado.
+El balanceador de carga debe estar en un estado listo y correctamente configurado.
 
 ### LB-1: Estado operacional
 
-**Qué demuestra:** El balanceador de carga HTTP (principal) está completamente operativo y aceptando tráfico.
+**Qué demuestra:** El balanceador de carga HTTP (principal) está completamente operativo y acepta tráfico.
 
 <Aside type="note">
-**El LB HTTP es el objetivo de verificación principal.** En entornos de demostración, verifique primero el LB HTTP (`${F5XC_LB_NAME}-http`) — alcanza `VIRTUAL_HOST_READY` tan pronto como el DNS resuelve, sin dependencia de certificado. Use `curl http://xF5XC_DOMAINNAMEx/` para la verificación principal basada en HTTP.
+**El LB HTTP es el objetivo principal de verificación.** En entornos de demostración, compruebe primero el LB HTTP (`${F5XC_LB_NAME}-http`) — alcanza `VIRTUAL_HOST_READY` tan pronto como el DNS resuelve, sin dependencia de certificados. Use `curl http://xF5XC_DOMAINNAMEx/` para la verificación primaria basada en HTTP.
 </Aside>
 
 ```bash
@@ -271,14 +271,14 @@ curl -s \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; `"VIRTUAL_HOST_READY"` | El LB está operativo |
-| **FALLIDO** &mdash; `"VIRTUAL_HOST_PENDING_A_RECORD"` | Registro A de DNS no configurado &mdash; consulte [DNS-1](#dns-1-resolución-de-registro-a) |
+| **CORRECTO** &mdash; `"VIRTUAL_HOST_READY"` | El LB está operativo |
+| **INCORRECTO** &mdash; `"VIRTUAL_HOST_PENDING_A_RECORD"` | Registro A de DNS no configurado &mdash; consulte [DNS-1](#dns-1-a-record-resolution) |
 
-**Corrección:** [LB atascado en VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record)
+**Solución:** [LB bloqueado en VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record)
 
 ### LB-2: Configuración de dominio
 
-**Qué demuestra:** El balanceador de carga HTTP está configurado para el/los dominio(s) correcto(s).
+**Qué demuestra:** El balanceador de carga HTTP está configurado para el dominio (o dominios) correcto.
 
 ```bash
 curl -s \
@@ -289,12 +289,12 @@ curl -s \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; el array contiene su FQDN (p. ej., `["app.example.com"]`) | El LB está configurado para el dominio esperado |
-| **FALLIDO** &mdash; dominio faltante o incorrecto | Actualice la especificación del LB con el dominio correcto |
+| **CORRECTO** &mdash; el array contiene su FQDN (p. ej., `["app.example.com"]`) | El LB está configurado para el dominio esperado |
+| **INCORRECTO** &mdash; dominio ausente o incorrecto | Actualice la especificación del LB con el dominio correcto |
 
 ### LB-3: CSD habilitado en el LB
 
-**Qué demuestra:** Client-Side Defense está habilitado en el balanceador de carga con la política de inyección JS correcta.
+**Qué demuestra:** La Defensa del lado del cliente está habilitada en el balanceador de carga con la política de inyección de JS correcta.
 
 ```bash
 curl -s \
@@ -308,14 +308,14 @@ curl -s \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; `csd_enabled: true` con `js_insert_all_pages` en la política | CSD activo con inyección JS en todas las páginas |
-| **FALLIDO** &mdash; `csd_enabled: false` | CSD no configurado en el LB |
+| **CORRECTO** &mdash; `csd_enabled: true` con `js_insert_all_pages` en la política | CSD activo con inyección de JS en todas las páginas |
+| **INCORRECTO** &mdash; `csd_enabled: false` | CSD no configurado en el LB |
 
-**Corrección:** [Referencia de API &mdash; Habilitar CSD en un balanceador de carga](/csd/api-reference/#enable-csd-on-a-load-balancer)
+**Solución:** [Referencia de API &mdash; Habilitar CSD en un balanceador de carga](/csd/api-reference/#enable-csd-on-a-load-balancer)
 
-### LB-4: Pool de rutas predeterminado
+### LB-4: Pool de ruta predeterminada
 
-**Qué demuestra:** El balanceador de carga hace referencia al pool de origen correcto con el peso y prioridad esperados.
+**Qué demuestra:** El balanceador de carga referencia el pool de origen correcto con el peso y la prioridad esperados.
 
 ```bash
 curl -s \
@@ -331,12 +331,12 @@ curl -s \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; muestra el nombre de su pool de origen con peso/prioridad | El LB está enrutando al backend correcto |
-| **FALLIDO** &mdash; vacío o pool incorrecto | Actualice la configuración de `default_route_pools` del LB |
+| **CORRECTO** &mdash; muestra el nombre del pool de origen con peso/prioridad | El LB está enrutando al backend correcto |
+| **INCORRECTO** &mdash; pool vacío o incorrecto | Actualice la configuración `default_route_pools` del LB |
 
 ### LB-5: Estado de despliegue (condiciones por sitio)
 
-**Qué demuestra:** El balanceador de carga está desplegado y reporta condiciones saludables en todos los sitios.
+**Qué demuestra:** El balanceador de carga está desplegado e informa condiciones saludables en todos los sitios.
 
 ```bash
 curl -s \
@@ -351,11 +351,11 @@ curl -s \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; `state` es `VIRTUAL_HOST_READY`, `dns_info` poblado | LB completamente desplegado con VIP asignada |
-| **FALLIDO** &mdash; estado pendiente o `dns_info` vacío | Problema de DNS o certificado bloqueando el despliegue |
+| **CORRECTO** &mdash; `state` es `VIRTUAL_HOST_READY`, `dns_info` con valores | LB completamente desplegado con VIP asignada |
+| **INCORRECTO** &mdash; estado pendiente o `dns_info` vacío | Problema de DNS o certificado bloqueando el despliegue |
 
 <Aside type="tip">
-Cuando el LB no está en estado `VIRTUAL_HOST_READY`, verifique `.status[].virtual_host_status.error_description` para los mismos detalles de error que se muestran en la interfaz de la consola F5 XC:
+Cuando el LB no está en estado `VIRTUAL_HOST_READY`, compruebe `.status[].virtual_host_status.error_description` para obtener los mismos detalles de error que se muestran en la interfaz de la consola de F5 XC:
 
 ```bash
 curl -s \
@@ -405,11 +405,11 @@ curl -s \
 
 ## Capa 4: Pool de origen
 
-El pool de origen define los servidores backend a los que el balanceador de carga enruta el tráfico.
+El pool de origen define los servidores backend a los que el balanceador de carga dirige el tráfico.
 
 ### OP-1: Configuración del pool de origen
 
-**Qué demuestra:** El pool de origen existe con el servidor backend, puerto y algoritmo de balanceo correctos.
+**Qué demuestra:** El pool de origen existe con el servidor backend correcto, el puerto y el algoritmo de LB.
 
 ```bash
 curl -s \
@@ -429,14 +429,14 @@ curl -s \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; muestra IP, puerto y algoritmo correctos | Pool de origen configurado correctamente |
-| **FALLIDO** &mdash; `404` o valores incorrectos | Pool de origen faltante o mal configurado |
+| **CORRECTO** &mdash; muestra la IP, el puerto y el algoritmo correctos | Pool de origen configurado correctamente |
+| **INCORRECTO** &mdash; `404` o valores incorrectos | Pool de origen faltante o mal configurado |
 
-**Corrección:** [Automatización API &mdash; Paso 2: Crear pool de origen](/csd/demo/phase-1-build/#step-2-create-origin-pool)
+**Solución:** [Automatización de API &mdash; Paso 2: Crear pool de origen](/csd/demo/phase-1-build/#step-2-create-origin-pool)
 
 ### OP-2: TLS hacia el origen
 
-**Qué demuestra:** Si TLS está configurado para la conexión entre el LB y el servidor de origen.
+**Qué demuestra:** Si TLS está configurado para la conexión entre el LB y el Servidor de origen.
 
 ```bash
 curl -s \
@@ -452,9 +452,9 @@ curl -s \
 | `no_tls (plaintext)` | El LB se conecta al origen por HTTP (esperado para la demo de Juice Shop) |
 | `use_tls (encrypted)` | El LB se conecta al origen por HTTPS |
 
-### OP-3: Asociación de healthcheck
+### OP-3: Asociación de comprobación de estado
 
-**Qué demuestra:** El pool de origen tiene el healthcheck correcto vinculado (si aplica).
+**Qué demuestra:** El pool de origen tiene la comprobación de estado correcta vinculada (si aplica).
 
 ```bash
 curl -s \
@@ -465,13 +465,13 @@ curl -s \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; array con referencia al healthcheck (nombre, namespace, tipo) | El healthcheck está vinculado |
-| **OK** &mdash; array vacío `[]` | Sin healthcheck (aceptable &mdash; CSD no requiere uno) |
-| **FALLIDO** &mdash; se esperaba un healthcheck pero el array está vacío | El healthcheck no se encontró al momento de la creación &mdash; consulte [Healthcheck no vinculado](/csd/demo/#healthcheck-not-linked-to-origin-pool) |
+| **CORRECTO** &mdash; array con referencia de comprobación de estado (name, namespace, kind) | La comprobación de estado está vinculada |
+| **ACEPTABLE** &mdash; array vacío `[]` | Sin comprobación de estado (aceptable — CSD no requiere una) |
+| **INCORRECTO** &mdash; se esperaba una comprobación de estado pero el array está vacío | La comprobación de estado no se encontró en el momento de la creación &mdash; consulte [Comprobación de estado no vinculada](/csd/demo/#healthcheck-not-linked-to-origin-pool) |
 
-### OP-4: Conectividad del origen
+### OP-4: Conectividad al origen
 
-**Qué demuestra:** El servidor de origen es accesible desde el lado del cliente (no prueba la ruta LB-a-origen).
+**Qué demuestra:** El servidor de origen es accesible desde el lado del cliente (no prueba la ruta del LB al origen).
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}' \
@@ -480,22 +480,22 @@ curl -s -o /dev/null -w '%{http_code}' \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; `200` (u otro código HTTP válido) | El servidor de origen está respondiendo |
-| **FALLIDO** &mdash; `000` o conexión rechazada | Servidor de origen inaccesible desde esta red |
+| **CORRECTO** &mdash; `200` (u otro código HTTP válido) | El servidor de origen está respondiendo |
+| **INCORRECTO** &mdash; `000` o conexión rechazada | Servidor de origen inaccesible desde esta red |
 
 <Aside type="note">
-Esto prueba la conectividad directa cliente-a-origen. La ruta LB-a-origen puede usar una ruta de red diferente. Un fallo aquí no necesariamente significa que el LB no pueda alcanzar el origen.
+Esto prueba la conectividad directa del cliente al origen. La ruta del LB al origen puede utilizar una ruta de red diferente. Un fallo aquí no necesariamente significa que el LB no pueda alcanzar el origen.
 </Aside>
 
 ---
 
 ## Capa 5: Comprobación de estado
 
-Las comprobaciones de estado monitorean la disponibilidad del backend. Son opcionales para CSD pero útiles para despliegues en producción.
+Las comprobaciones de estado supervisan la disponibilidad del backend. Son opcionales para CSD pero útiles para despliegues en producción.
 
-### HC-1: Configuración del healthcheck
+### HC-1: Configuración de comprobación de estado
 
-**Qué demuestra:** El healthcheck existe con el tipo, ruta, temporización y umbrales correctos.
+**Qué demuestra:** La comprobación de estado existe con el tipo, la ruta, los tiempos y los umbrales correctos.
 
 ```bash
 curl -s \
@@ -515,12 +515,12 @@ curl -s \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; muestra tipo HTTP con ruta `/` y esperado `200` | Healthcheck configurado correctamente |
-| **FALLIDO** &mdash; respuesta `404` | El healthcheck no existe (puede haberse omitido &mdash; consulte [Fase 1 Paso 1](/csd/demo/phase-1-build/#step-1-create-healthcheck-optional)) |
+| **CORRECTO** &mdash; muestra tipo HTTP con ruta `/` y código esperado `200` | Comprobación de estado configurada correctamente |
+| **INCORRECTO** &mdash; respuesta `404` | La comprobación de estado no existe (puede haberse omitido &mdash; consulte [Fase 1 Paso 1](/csd/demo/phase-1-build/#step-1-create-healthcheck-optional)) |
 
-### HC-2: Listar todos los healthchecks
+### HC-2: Listar todas las comprobaciones de estado
 
-**Qué demuestra:** Enumera todos los healthchecks en el namespace para verificar nombres y cantidad.
+**Qué demuestra:** Enumera todas las comprobaciones de estado en el namespace para verificar la nomenclatura y la cantidad.
 
 ```bash
 curl -s \
@@ -537,16 +537,16 @@ curl -s \
 ```
 
 <Aside type="note">
-El endpoint de listado devuelve solo datos resumidos (nombre, namespace, descripción). Para ver los detalles completos de configuración (tipo, ruta, intervalo, timeout), consulte un healthcheck individual usando [HC-1](#hc-1-configuración-del-healthcheck).
+El endpoint de listado devuelve solo datos de resumen (nombre, namespace, descripción). Para ver los detalles completos de configuración (tipo, ruta, intervalo, tiempo de espera), consulte una comprobación de estado individual usando [HC-1](#hc-1-healthcheck-configuration).
 </Aside>
 
 ---
 
-## Capa 6: Configuración CSD
+## Capa 6: Configuración de CSD
 
-CSD debe estar habilitado a nivel de tenant y tener configurada la etiqueta de inyección JavaScript.
+CSD debe estar habilitado a nivel de tenant y tener configurada la etiqueta de inyección de JavaScript.
 
-### CSD-1: Estado CSD del tenant
+### CSD-1: Estado de CSD del tenant
 
 **Qué demuestra:** CSD está configurado y habilitado para el tenant.
 
@@ -559,13 +559,13 @@ curl -s \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; ambos `true` | CSD está activo para este tenant |
-| **FALLIDO** &mdash; `isConfigured: false` | CSD no habilitado a nivel de tenant &mdash; contacte al administrador de F5 XC |
-| **FALLIDO** &mdash; `isEnabled: false` | CSD configurado pero no activo |
+| **CORRECTO** &mdash; ambos `true` | CSD está activo para este tenant |
+| **INCORRECTO** &mdash; `isConfigured: false` | CSD no habilitado a nivel de tenant &mdash; contacte al administrador de F5 XC |
+| **INCORRECTO** &mdash; `isEnabled: false` | CSD configurado pero no activo |
 
-### CSD-2: Etiqueta de inyección JS
+### CSD-2: Etiqueta de inyección de JS
 
-**Qué demuestra:** La etiqueta de inyección JavaScript de CSD está generada y lista para inyección.
+**Qué demuestra:** La etiqueta de inyección de JavaScript de CSD está generada y lista para la inyección.
 
 ```bash
 curl -s \
@@ -576,8 +576,8 @@ curl -s \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; `has_script_tag: true` | La etiqueta de inyección JS está configurada |
-| **FALLIDO** &mdash; `has_script_tag: false` | Sin etiqueta de script &mdash; verifique que CSD esté habilitado y que haya un dominio protegido registrado |
+| **CORRECTO** &mdash; `has_script_tag: true` | La etiqueta de inyección de JS está configurada |
+| **INCORRECTO** &mdash; `has_script_tag: false` | Sin etiqueta de script &mdash; verifique que CSD esté habilitado y que haya un dominio protegido registrado |
 
 ### CSD-3: Contenido de la etiqueta JS
 
@@ -603,16 +603,16 @@ curl -s \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; muestra un elemento con un `name` no vacío | El dominio está protegido |
-| **FALLIDO** &mdash; los elementos tienen campos `name` y `namespace` vacíos | No hay dominios protegidos registrados &mdash; consulte [Fase 1 Paso 6](/csd/demo/phase-1-build/#step-6-register-protected-domain) |
+| **CORRECTO** &mdash; muestra un elemento con `name` no vacío | El dominio está protegido |
+| **INCORRECTO** &mdash; los elementos tienen campos `name` y `namespace` vacíos | No hay dominios protegidos registrados &mdash; consulte [Fase 1 Paso 6](/csd/demo/phase-1-build/#step-6-register-protected-domain) |
 
 <Aside type="note">
-El endpoint de listado de dominios protegidos devuelve datos resumidos. Los elementos con todos los campos vacíos indican que no hay dominios protegidos configurados. La etiqueta JavaScript de CSD ([CSD-2](#csd-2-etiqueta-de-inyección-js)) es un indicador más fiable de que la protección del dominio está activa.
+El endpoint de listado de dominios protegidos devuelve datos de resumen. Los elementos con todos los campos vacíos indican que no hay dominios protegidos configurados. La etiqueta de JavaScript de CSD ([CSD-2](#csd-2-js-injection-tag)) es un indicador más confiable de que la protección del dominio está activa.
 </Aside>
 
-### CSD-5: Verificación de inyección JS en vivo
+### CSD-5: Verificación de inyección de JS en vivo
 
-**Qué demuestra:** El JavaScript de CSD está siendo inyectado efectivamente en las respuestas de página servidas por el balanceador de carga.
+**Qué demuestra:** El JavaScript de CSD se está inyectando efectivamente en las respuestas de página servidas por el balanceador de carga.
 
 ```bash
 curl -s "http://xF5XC_DOMAINNAMEx/" \
@@ -621,18 +621,18 @@ curl -s "http://xF5XC_DOMAINNAMEx/" \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; devuelve un fragmento de URL de `zeronaught.com` o `shape.com` (p. ej., `zeronaught.com/__imp_apg__/js/...`) | El JavaScript de CSD está siendo inyectado en las páginas |
-| **FALLIDO** &mdash; salida vacía | JS no inyectado &mdash; verifique [LB-3](#lb-3-csd-habilitado-en-el-lb) y [CSD-1](#csd-1-estado-csd-del-tenant) |
+| **CORRECTO** &mdash; devuelve un fragmento de URL de `zeronaught.com` o `shape.com` (p. ej., `zeronaught.com/__imp_apg__/js/...`) | El JavaScript de CSD se está inyectando en las páginas |
+| **INCORRECTO** &mdash; salida vacía | JS no inyectado &mdash; compruebe [LB-3](#lb-3-csd-enabled-on-lb) y [CSD-1](#csd-1-tenant-csd-status) |
 
 ---
 
 ## Capa 7: Verificación de tráfico
 
-Verifique que el tráfico en vivo está llegando al balanceador de carga y se está procesando correctamente.
+Verifique que el tráfico en vivo está llegando al balanceador de carga y siendo procesado correctamente.
 
 ### TV-1: Recuento de solicitudes (últimas 24 horas)
 
-**Qué demuestra:** El tráfico está llegando al balanceador de carga. Cero resultados significa que no llega tráfico.
+**Qué demuestra:** El tráfico está llegando al balanceador de carga. Un resultado de cero significa que no llega ningún tráfico.
 
 ```bash
 curl -s -X POST \
@@ -648,16 +648,16 @@ curl -s -X POST \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; `total_requests` es una cadena distinta de cero (p. ej., `"380"`) | El tráfico está fluyendo a través del LB |
-| **FALLIDO** &mdash; `"0"` o sin datos | No llega tráfico al LB &mdash; verifique [DNS-1](#dns-1-resolución-de-registro-a) y [LB-1](#lb-1-estado-operacional) |
+| **CORRECTO** &mdash; `total_requests` es una cadena no nula (p. ej., `"380"`) | El tráfico fluye a través del LB |
+| **INCORRECTO** &mdash; `"0"` o sin datos | Sin tráfico llegando al LB &mdash; compruebe [DNS-1](#dns-1-a-record-resolution) y [LB-1](#lb-1-operational-state) |
 
 <Aside type="note">
-El valor de `total_hits` se devuelve como una **cadena** (p. ej., `"380"`), no como un entero. El namespace se infiere de la ruta de la URL &mdash; no lo incluya en el cuerpo de la solicitud.
+El valor `total_hits` se devuelve como una **cadena** (p. ej., `"380"`), no como un entero. El namespace se infiere de la ruta de URL — no lo incluya en el cuerpo de la solicitud.
 </Aside>
 
 ### TV-2: Distribución de códigos de estado
 
-**Qué demuestra:** El desglose de códigos de estado de respuesta revela patrones de errores.
+**Qué demuestra:** El desglose de códigos de estado de respuesta revela patrones de error.
 
 ```bash
 curl -s -X POST \
@@ -679,7 +679,7 @@ curl -s -X POST \
 ```
 
 <Aside type="note">
-El endpoint de agregación no soporta agrupación por `terms` &mdash; `aggs` siempre devuelve vacío. Este comando obtiene las 100 entradas de log más recientes y calcula la distribución del lado del cliente. Cada entrada de log es una **cadena JSON** que debe ser procesada con `fromjson`.
+El endpoint de agregación no admite agrupación por `terms` — `aggs` siempre devuelve vacío. Este comando obtiene las 100 entradas de registro más recientes y calcula la distribución en el lado del cliente. Cada entrada de registro es una **cadena JSON** que debe analizarse con `fromjson`.
 </Aside>
 
 Salida esperada para un sitio saludable:
@@ -692,11 +692,11 @@ downstream_remote_disconnect  18
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; mayoría `2xx` | El sitio está sirviendo respuestas exitosas |
-| **ADVERTENCIA** &mdash; alto número de `4xx` | Errores del cliente (URLs incorrectas, recursos faltantes) |
-| **FALLIDO** &mdash; alto número de `5xx` | Errores del servidor &mdash; verifique la salud del servidor de origen |
+| **CORRECTO** &mdash; mayoría `2xx` | El sitio está sirviendo respuestas exitosas |
+| **ADVERTENCIA** &mdash; alto recuento de `4xx` | Errores del cliente (URLs incorrectas, recursos faltantes) |
+| **INCORRECTO** &mdash; alto recuento de `5xx` | Errores del servidor &mdash; compruebe el estado del servidor de origen |
 
-La clase `downstream_remote_disconnect` indica que el cliente cerró la conexión antes de que la respuesta se completara (común para solicitudes de long-polling o actualización de WebSocket).
+La clase `downstream_remote_disconnect` indica que el cliente cerró la conexión antes de que la respuesta se completara (común para solicitudes de long-polling o de actualización WebSocket).
 
 ### TV-3: Muestras de solicitudes recientes
 
@@ -720,12 +720,12 @@ curl -s -X POST \
 ```
 
 <Aside type="caution">
-Cada entrada en el array `.logs[]` es una **cadena JSON**, no un objeto procesado. Debe pasar por `fromjson` en jq antes de acceder a los campos (p. ej., `.logs[] | fromjson | .method`).
+Cada entrada en el array `.logs[]` es una **cadena JSON**, no un objeto analizado. Debe pasar por `fromjson` en jq antes de acceder a los campos (p. ej., `.logs[] | fromjson | .method`).
 </Aside>
 
-### TV-4: Inyección JS de CSD en logs de acceso
+### TV-4: Inyección de JS de CSD en los registros de acceso
 
-**Qué demuestra:** Los logs de acceso confirman que el JavaScript de CSD está siendo inyectado en las respuestas.
+**Qué demuestra:** Los registros de acceso confirman que el JavaScript de CSD se está inyectando en las respuestas.
 
 ```bash
 curl -s -X POST \
@@ -744,16 +744,16 @@ curl -s -X POST \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; `injected_count` > 0 | El JS de CSD está siendo inyectado en las respuestas de página |
-| **FALLIDO** &mdash; `injected_count: 0` | JS no inyectado &mdash; verifique [CSD-1](#csd-1-estado-csd-del-tenant) y [LB-3](#lb-3-csd-habilitado-en-el-lb) |
+| **CORRECTO** &mdash; `injected_count` > 0 | El JS de CSD se está inyectando en las respuestas de página |
+| **INCORRECTO** &mdash; `injected_count: 0` | JS no inyectado &mdash; compruebe [CSD-1](#csd-1-tenant-csd-status) y [LB-3](#lb-3-csd-enabled-on-lb) |
 
 <Aside type="note">
-El campo `csd_js_injection` solo está presente en las entradas de log donde ocurrió la inyección. En pruebas, el 40% de las entradas de log muestreadas tenían `csd_js_injection: "true"` (solicitudes de páginas HTML), mientras que el 60% no tenían el campo (activos estáticos como archivos `.ico`, `.js`, `.css` y conexiones WebSocket). Las solicitudes de páginas HTML deberían mostrar inyección; las llamadas API y solicitudes de activos estáticos típicamente no lo harán.
+El campo `csd_js_injection` solo está presente en las entradas de registro donde ocurrió la inyección. En pruebas, el 40% de las entradas de registro muestreadas tenían `csd_js_injection: "true"` (solicitudes de páginas HTML), mientras que el 60% no tenía el campo (archivos estáticos como `.ico`, `.js`, `.css` y conexiones WebSocket). Las solicitudes de páginas HTML deberían mostrar inyección; las llamadas a API y las solicitudes de recursos estáticos típicamente no lo harán.
 </Aside>
 
 ### TV-5: Prueba de conectividad de extremo a extremo
 
-**Qué demuestra:** Una solicitud completa fluye desde el cliente a través de DNS, LB y origen y devuelve una respuesta válida.
+**Qué demuestra:** Una solicitud completa fluye desde el cliente a través del DNS, el LB y el origen, y devuelve una respuesta válida.
 
 ```bash
 curl -sv "http://xF5XC_DOMAINNAMEx/" 2>&1 \
@@ -762,8 +762,8 @@ curl -sv "http://xF5XC_DOMAINNAMEx/" 2>&1 \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; muestra conexión, HTTP 200 y content-type | Todo el stack está operativo |
-| **FALLIDO** &mdash; conexión rechazada o error DNS | Comience la depuración en [Capa 1: DNS](#capa-1-resolución-dns) |
+| **CORRECTO** &mdash; muestra conexión, HTTP 200 y content-type | La pila completa está operativa |
+| **INCORRECTO** &mdash; conexión rechazada o error de DNS | Comience la depuración en [Capa 1: DNS](#layer-1-dns-resolution) |
 
 <Aside type="tip">
 Para pruebas HTTPS de extremo a extremo (solo cuando el certificado del LB HTTPS es válido), use `curl -sv "https://xF5XC_DOMAINNAMEx/"` y verifique que aparezca `SSL connection` en la salida.
@@ -771,13 +771,13 @@ Para pruebas HTTPS de extremo a extremo (solo cuando el certificado del LB HTTPS
 
 ---
 
-## Capa 8: Telemetría CSD y política de dominios
+## Capa 8: Telemetría de CSD y política de dominio
 
-Estos comandos consultan los mismos datos que se muestran en el panel de la [Consola CSD](/csd/csd-console/), la lista de scripts, los campos de formulario y las vistas de red.
+Estos comandos consultan los mismos datos que se muestran en el panel de control de la [consola CSD](/csd/csd-console/), la lista de scripts, los campos de formulario y las vistas de red.
 
 ### TEL-1: Inventario de scripts
 
-**Qué demuestra:** CSD está detectando y catalogando scripts que se ejecutan en el dominio protegido.
+**Qué demuestra:** CSD está detectando y catalogando los scripts que se ejecutan en el dominio protegido.
 
 ```bash
 NOW=$(date +%s)
@@ -805,11 +805,11 @@ curl -s -X POST \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; scripts listados con niveles de riesgo | CSD está monitoreando activamente los scripts |
-| **FALLIDO** &mdash; array vacío | Consulte [Solución de problemas: Array de scripts vacío](#array-de-scripts-vacío) |
+| **CORRECTO** &mdash; scripts listados con niveles de riesgo | CSD está supervisando activamente los scripts |
+| **INCORRECTO** &mdash; array vacío | Consulte [Resolución de problemas: Array de scripts vacío](#empty-scripts-array) |
 
 <Aside type="tip">
-Los nombres de scripts son URLs completas y pueden ser muy largos. El comando anterior trunca los nombres a 50 caracteres para legibilidad en la terminal. Elimine el filtro de truncamiento para ver las URLs completas.
+Los nombres de los scripts son URLs completas y pueden ser muy largas. El comando anterior trunca los nombres a 50 caracteres para mejorar la legibilidad en el terminal. Elimine el filtro de truncamiento para ver las URLs completas.
 </Aside>
 
 ### TEL-2: Dominios detectados
@@ -839,11 +839,11 @@ curl -s \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; `total` > 0 con dominios listados | CSD está rastreando dominios de scripts |
+| **CORRECTO** &mdash; `total` > 0 con dominios listados | CSD está rastreando dominios de scripts |
 | **ADVERTENCIA** &mdash; `action_needed` > 0 | Algunos dominios necesitan revisión |
-| **FALLIDO** &mdash; respuesta vacía | Sin datos de telemetría &mdash; verifique [CSD-5](#csd-5-verificación-de-inyección-js-en-vivo) |
+| **INCORRECTO** &mdash; respuesta vacía | Sin datos de telemetría &mdash; compruebe [CSD-5](#csd-5-live-js-injection-verification) |
 
-### TEL-3: Estado de la política de dominios
+### TEL-3: Estado de la política de dominio
 
 **Qué demuestra:** Muestra la distribución de dominios permitidos vs. mitigados y si la política es consistente.
 
@@ -862,7 +862,7 @@ curl -s \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; `action_needed: 0` | Todos los dominios han sido revisados y clasificados |
+| **CORRECTO** &mdash; `action_needed: 0` | Todos los dominios han sido revisados y clasificados |
 | **ADVERTENCIA** &mdash; `action_needed` > 0 | Los dominios listados en `domains_needing_action` requieren revisión |
 
 ### TEL-4: Inventario de campos de formulario
@@ -888,31 +888,31 @@ curl -s \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; campos de formulario listados con sensibilidad | CSD está rastreando el acceso a campos de formulario |
-| **INFO** &mdash; array vacío | No se detectaron campos de formulario (esperado si no hay formularios en el sitio) |
+| **CORRECTO** &mdash; campos de formulario listados con sensibilidad | CSD está rastreando el acceso a campos de formulario |
+| **INFO** &mdash; array vacío | No se detectaron campos de formulario (esperado si el sitio no tiene formularios) |
 
-### TEL-5: Análisis detallado de script
+### TEL-5: Análisis detallado de un script
 
-**Qué demuestra:** Información detallada sobre un script específico incluyendo riesgo, comportamientos e interacciones de red.
+**Qué demuestra:** Información detallada sobre un script específico, incluyendo riesgo, comportamientos e interacciones de red.
 
-Primero, obtenga un ID de script de [TEL-1](#tel-1-inventario-de-scripts), luego consulte sus detalles:
+Primero, obtenga un ID de script de [TEL-1](#tel-1-script-inventory) y luego consulte sus detalles:
 
 ```bash
 SCRIPT_ID="your-script-id"
 
-# Overview (risk level, type, source domain)
+# Resumen (nivel de riesgo, tipo, dominio de origen)
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/dashboard" \
   | jq '{script_name, risk_level, type, source_domain, status}'
 
-# Behaviors over time
+# Comportamientos a lo largo del tiempo
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/behaviors" \
   | jq '.behaviors'
 
-# Network interactions (domains the script communicates with)
+# Interacciones de red (dominios con los que se comunica el script)
 curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts/${SCRIPT_ID}/networkInteractions" \
@@ -950,7 +950,7 @@ curl -s -X POST \
 
 ### TEL-7: Recuento de scripts por nivel de riesgo
 
-**Qué demuestra:** Distribución agregada de riesgo en todos los scripts detectados.
+**Qué demuestra:** Distribución de riesgo agregada en todos los scripts detectados.
 
 ```bash
 NOW=$(date +%s)
@@ -969,12 +969,12 @@ curl -s -X POST \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; todos `No Risk` | No se detectaron scripts riesgosos |
-| **ADVERTENCIA** &mdash; `Low Risk` o `High Risk` presentes | Revise los scripts marcados en [TEL-5](#tel-5-análisis-detallado-de-script) |
+| **CORRECTO** &mdash; todo `No Risk` | No se detectaron scripts de riesgo |
+| **ADVERTENCIA** &mdash; `Low Risk` o `High Risk` presentes | Revise los scripts marcados en [TEL-5](#tel-5-script-deep-dive) |
 
-### TEL-8: Frescura de la telemetría
+### TEL-8: Actualidad de la telemetría
 
-**Qué demuestra:** Los datos de telemetría de CSD son recientes, confirmando monitoreo activo.
+**Qué demuestra:** Los datos de telemetría de CSD son recientes, confirmando que la supervisión está activa.
 
 ```bash
 curl -s \
@@ -992,24 +992,24 @@ curl -s \
 
 | Resultado | Significado |
 | --- | --- |
-| **APROBADO** &mdash; `latest_seen` está dentro de las últimas 24 horas | La telemetría está recopilando datos activamente |
-| **ADVERTENCIA** &mdash; `latest_seen` es anterior a 24 horas | El tráfico puede haberse detenido o el procesamiento de CSD está retrasado |
+| **CORRECTO** &mdash; `latest_seen` es dentro de las últimas 24 horas | La telemetría está recopilando datos activamente |
+| **ADVERTENCIA** &mdash; `latest_seen` tiene más de 24 horas | El tráfico puede haberse detenido o el procesamiento de CSD tiene retraso |
 
 ---
 
-## Panel de control del stack completo
+## Panel de control de pila completa
 
-Ejecute un solo comando que verifica todos los indicadores de salud críticos en cada capa y produce una tabla resumen:
+Ejecute un único comando que comprueba todos los indicadores de estado críticos en cada capa y produce una tabla de resumen:
 
 ```bash
-echo "=== CSD Verification Dashboard ==="
+echo "=== Panel de verificación de CSD ==="
 echo ""
 
-# Layer 1: DNS
+# Capa 1: DNS
 DNS_A=$(dig +short xF5XC_DOMAINNAMEx A | head -1)
 DNS_ACME=$(dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME | head -1)
 
-# Layers 2-3: LB + TLS
+# Capas 2-3: LB + TLS
 LB=$(curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http")
@@ -1023,7 +1023,7 @@ CSD_ON_LB=$(echo "$LB" | jq -r 'if .spec.client_side_defense then "ENABLED" else
 DOMAINS=$(echo "$LB" | jq -r '.spec.domains | join(", ")')
 ROUTE_POOL=$(echo "$LB" | jq -r '[.spec.default_route_pools[] | .pool.name] | join(", ")')
 
-# Layer 6: CSD status
+# Capa 6: Estado de CSD
 CSD=$(curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status")
@@ -1031,13 +1031,13 @@ CSD=$(curl -s \
 CSD_CONFIGURED=$(echo "$CSD" | jq -r '.isConfigured // false')
 CSD_ENABLED=$(echo "$CSD" | jq -r '.isEnabled // false')
 
-# Layer 6: JS config
+# Capa 6: Configuración de JS
 JS_TAG=$(curl -s \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
   | jq -r 'if (.scriptTag | length) > 0 then "PRESENT" else "MISSING" end')
 
-# Layer 7: Traffic (last 24h)
+# Capa 7: Tráfico (últimas 24h)
 TRAFFIC=$(curl -s -X POST \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   -H "Content-Type: application/json" \
@@ -1048,36 +1048,36 @@ TRAFFIC=$(curl -s -X POST \
   "xF5XC_API_URLx/api/data/namespaces/xF5XC_NAMESPACEx/access_logs/aggregation" \
   | jq -r '.total_hits // "0"')
 
-printf "%-28s %s\n" "CHECK" "STATUS"
+printf "%-28s %s\n" "COMPROBACIÓN" "ESTADO"
 printf "%-28s %s\n" "----------------------------" "----------------------------"
-printf "%-28s %s\n" "[DNS] A Record" "${DNS_A:-NOT_FOUND}"
-printf "%-28s %s\n" "[DNS] ACME CNAME" "${DNS_ACME:-NOT_FOUND}"
-printf "%-28s %s\n" "[TLS] Certificate" "$CERT_STATE"
-printf "%-28s %s\n" "[LB] State" "$LB_STATE"
-printf "%-28s %s\n" "[LB] Domains" "$DOMAINS"
-printf "%-28s %s\n" "[LB] Route Pool" "$ROUTE_POOL"
-printf "%-28s %s\n" "[LB] CSD on LB" "$CSD_ON_LB"
-printf "%-28s %s\n" "[CSD] Configured (tenant)" "$CSD_CONFIGURED"
-printf "%-28s %s\n" "[CSD] Enabled" "$CSD_ENABLED"
-printf "%-28s %s\n" "[CSD] JS Script Tag" "$JS_TAG"
-printf "%-28s %s\n" "[Traffic] Requests (24h)" "$TRAFFIC"
+printf "%-28s %s\n" "[DNS] Registro A" "${DNS_A:-NOT_FOUND}"
+printf "%-28s %s\n" "[DNS] CNAME ACME" "${DNS_ACME:-NOT_FOUND}"
+printf "%-28s %s\n" "[TLS] Certificado" "$CERT_STATE"
+printf "%-28s %s\n" "[LB] Estado" "$LB_STATE"
+printf "%-28s %s\n" "[LB] Dominios" "$DOMAINS"
+printf "%-28s %s\n" "[LB] Pool de ruta" "$ROUTE_POOL"
+printf "%-28s %s\n" "[LB] CSD en LB" "$CSD_ON_LB"
+printf "%-28s %s\n" "[CSD] Configurado (tenant)" "$CSD_CONFIGURED"
+printf "%-28s %s\n" "[CSD] Habilitado" "$CSD_ENABLED"
+printf "%-28s %s\n" "[CSD] Etiqueta script JS" "$JS_TAG"
+printf "%-28s %s\n" "[Tráfico] Solicitudes (24h)" "$TRAFFIC"
 ```
 
 ---
 
-## Referencia de campos de logs de acceso
+## Referencia de campos de registros de acceso
 
 <Aside type="caution">
-Cada entrada en el array `.logs[]` es una **cadena JSON**, no un objeto procesado. Debe pasar por `fromjson` en jq antes de acceder a los campos (p. ej., `.logs[] | fromjson | .method`).
+Cada entrada en el array `.logs[]` es una **cadena JSON**, no un objeto analizado. Debe pasar por `fromjson` en jq antes de acceder a los campos (p. ej., `.logs[] | fromjson | .method`).
 </Aside>
 
 | Campo | Tipo | Descripción |
 | --- | --- | --- |
-| `@timestamp` | string | Marca de tiempo de la solicitud (ISO 8601). Note el prefijo `@` &mdash; acceda con `.["@timestamp"]` en jq |
+| `@timestamp` | string | Marca de tiempo de la solicitud (ISO 8601). Tenga en cuenta el prefijo `@` — acceda con `.["@timestamp"]` en jq |
 | `method` | string | Método HTTP (GET, POST, etc.) |
 | `req_path` | string | Ruta URI de la solicitud |
-| `rsp_code` | string | Código de estado de respuesta HTTP como cadena (p. ej., `"200"`, `"404"`) |
-| `rsp_code_class` | string | Clase de código de estado (`2xx`, `3xx`, `4xx`, `5xx`, o `downstream_remote_disconnect`) |
+| `rsp_code` | string | Código de estado HTTP de la respuesta como cadena (p. ej., `"200"`, `"404"`) |
+| `rsp_code_class` | string | Clase del código de estado (`2xx`, `3xx`, `4xx`, `5xx` o `downstream_remote_disconnect`) |
 | `src_ip` | string | Dirección IP de origen del cliente |
 | `dst_ip` | string | Dirección IP de destino (VIP) |
 | `domain` | string | Valor del encabezado Host de la solicitud |
@@ -1085,9 +1085,9 @@ Cada entrada en el array `.logs[]` es una **cadena JSON**, no un objeto procesad
 | `rsp_size` | string | Tamaño del cuerpo de la respuesta en bytes (devuelto como cadena) |
 | `req_size` | string | Tamaño del cuerpo de la solicitud en bytes (devuelto como cadena) |
 | `duration_with_data_tx_delay` | string | Duración total de la solicitud en segundos (devuelto como cadena, p. ej., `"0.024219"`) |
-| `csd_js_injection` | string | `"true"` cuando el JavaScript de CSD fue inyectado (solo presente cuando está activo) |
+| `csd_js_injection` | string | `"true"` cuando se inyectó JavaScript de CSD (solo presente cuando está activo) |
 
-## Referencia de campos de telemetría CSD
+## Referencia de campos de telemetría de CSD
 
 | Campo | Endpoint | Descripción |
 | --- | --- | --- |
@@ -1096,28 +1096,28 @@ Cada entrada en el array `.logs[]` es una **cadena JSON**, no un objeto procesad
 | `scripts[]` | scripts | Array de objetos de scripts detectados |
 | `.script_name` | scripts | URL completa del archivo JavaScript |
 | `.risk_level` | scripts | Nivel de riesgo (No Risk, Low Risk, High Risk) |
-| `.status` | scripts | AN (Acción necesaria) o NA (Sin acción necesaria) |
-| `.form_fields_read` | scripts | Número de campos de formulario que el script lee |
-| `.affected_users_count` | scripts | Número de usuarios/sesiones únicos afectados |
+| `.status` | scripts | AN (Action Needed) o NA (No Action Needed) |
+| `.form_fields_read` | scripts | Número de campos de formulario que lee el script |
+| `.affected_users_count` | scripts | Número de usuarios/sesiones únicas afectadas |
 | `domain_summary` | detected_domains | Recuentos por estado: `.actionNeededCount.count`, `.mitigatedDomains.count`, `.allowedDomains.count`, `.totalDomains.count` (cada uno tiene `.count` y `.lastUpdated`) |
-| `domains_list[]` | detected_domains | Array de objetos de dominios detectados con `.domain`, `.status`, `.category`, `.firstSeenDate`, `.latestSeenDate` (segundos epoch como cadenas) |
+| `domains_list[]` | detected_domains | Array de objetos de dominio detectados con `.domain`, `.status`, `.category`, `.firstSeenDate`, `.latestSeenDate` (segundos epoch como cadenas) |
 | `form_fields[]` | formFields | Array de objetos de campos de formulario detectados |
 | `.analysis` | formFields | Clasificación de sensibilidad (Sensitive, Not Sensitive) |
 
-## Solución de problemas
+## Resolución de problemas
 
-### Cero logs de acceso
+### Sin registros de acceso
 
-Si [TV-1](#tv-1-recuento-de-solicitudes-últimas-24-horas) devuelve `0`:
+Si [TV-1](#tv-1-request-count-last-24-hours) devuelve `0`:
 
 <Steps>
-1. **Verifique la resolución DNS** &mdash; confirme que el dominio resuelve a la VIP del LB:
+1. **Compruebe la resolución DNS** &mdash; verifique que el dominio resuelve a la VIP del LB:
    ```bash
    dig +short xF5XC_DOMAINNAMEx A
    ```
-   Si está vacío, el DNS no está configurado. Consulte [Automatización API &mdash; Paso 4](/csd/demo/phase-1-build/#step-4-configure-dns).
+   Si está vacío, el DNS no está configurado. Consulte [Automatización de API &mdash; Paso 4](/csd/demo/phase-1-build/#step-4-configure-dns).
 
-2. **Verifique el estado del LB** &mdash; el balanceador de carga debe estar en `VIRTUAL_HOST_READY`:
+2. **Compruebe el estado del LB** &mdash; el balanceador de carga debe estar en `VIRTUAL_HOST_READY`:
    ```bash
    curl -s \
      -H "Authorization: APIToken xF5XC_API_TOKENx" \
@@ -1132,21 +1132,21 @@ Si [TV-1](#tv-1-recuento-de-solicitudes-últimas-24-horas) devuelve `0`:
    Busque una respuesta HTTP exitosa. Use `https://` solo si el certificado del LB HTTPS es válido.
 </Steps>
 
-### Registros gestionados deshabilitados en la zona DNS
+### Registros administrados deshabilitados en la zona DNS
 
-Si [DNS-4](#dns-4-registros-gestionados-de-f5-xc-habilitados) devuelve `false`, la creación automática de registros está deshabilitada aunque F5 XC sea el proveedor DNS autoritativo. Esta es una configuración errónea común que causa que tanto el registro A como el CNAME ACME estén ausentes, lo que bloquea al balanceador de carga para alcanzar `VIRTUAL_HOST_READY` y la emisión del certificado.
+Si [DNS-4](#dns-4-f5-xc-managed-records-enabled) devuelve `false`, la creación automática de registros está deshabilitada aunque F5 XC sea el proveedor DNS autoritativo. Esta es una mala configuración común que provoca que falten tanto el registro A como el CNAME ACME, lo que impide que el balanceador de carga alcance `VIRTUAL_HOST_READY` y que se emita el certificado.
 
-Para habilitar los registros gestionados, actualice la configuración de la zona DNS para establecer `allow_http_lb_managed_records: true`. Consulte [Automatización API &mdash; Opción A: DNS gestionado por F5 XC](/csd/demo/phase-1-build/#option-a-f5-xc-managed-dns) para la llamada API.
+Para habilitar los registros administrados, actualice la configuración de la zona DNS para establecer `allow_http_lb_managed_records: true`. Consulte [Automatización de API &mdash; Opción A: DNS administrado por F5 XC](/csd/demo/phase-1-build/#option-a-f5-xc-managed-dns) para la llamada de API.
 
-### LB atascado en VIRTUAL_HOST_PENDING_A_RECORD
+### LB bloqueado en VIRTUAL_HOST_PENDING_A_RECORD
 
-El balanceador de carga está esperando un registro A de DNS que apunte a su VIP. Consulte [LB atascado en VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record) para los pasos detallados de resolución.
+El balanceador de carga está esperando un registro A de DNS que apunte a su VIP. Consulte [LB bloqueado en VIRTUAL_HOST_PENDING_A_RECORD](/csd/demo/#lb-stuck-in-virtual_host_pending_a_record) para ver los pasos detallados de resolución.
 
-### Certificado atascado en PreDomainChallengePending
+### Certificado bloqueado en PreDomainChallengePending
 
 El certificado TLS automático requiere un registro de desafío ACME. El método depende de su proveedor DNS:
 
-**DNS gestionado por F5 XC:** Habilite `allow_http_lb_managed_records` en la zona DNS ([DNS-4](#dns-4-registros-gestionados-de-f5-xc-habilitados)). La plataforma crea automáticamente un registro de desafío ACME basado en TXT en el grupo de conjuntos de registros RR `x-ves-io-managed`. Si el certificado permanece atascado después de habilitar los registros gestionados, elimine y vuelva a crear el balanceador de carga para activar una nueva solicitud de certificado.
+**DNS administrado por F5 XC:** Habilite `allow_http_lb_managed_records` en la zona DNS ([DNS-4](#dns-4-f5-xc-managed-records-enabled)). La plataforma crea automáticamente un registro de desafío ACME basado en TXT en el grupo de conjuntos de registros `x-ves-io-managed`. Si el certificado permanece bloqueado después de habilitar los registros administrados, elimine y vuelva a crear el balanceador de carga para activar una nueva solicitud de certificado.
 
 **DNS externo:** Cree un registro CNAME en su proveedor DNS:
 
@@ -1154,14 +1154,14 @@ El certificado TLS automático requiere un registro de desafío ACME. El método
 _acme-challenge.xF5XC_DOMAINNAMEx  CNAME  *.autocerts.ves.volterra.io
 ```
 
-Verifique que el registro exista:
+Verifique que el registro existe:
 
 ```bash
 dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
 dig +short _acme-challenge.xF5XC_DOMAINNAMEx TXT
 ```
 
-Si ambos están vacíos, el registro ACME no está configurado. El aprovisionamiento del certificado toma 5&ndash;10 minutos después de que el registro esté en su lugar. Verifique el estado de error del LB para errores específicos de validación ACME:
+Si ambos están vacíos, el registro ACME no está configurado. El aprovisionamiento del certificado tarda entre 5 y 10 minutos después de que el registro esté en su lugar. Compruebe el estado de error del LB para ver errores de validación ACME específicos:
 
 ```bash
 curl -s \
@@ -1172,14 +1172,14 @@ curl -s \
 
 ### CSD isConfigured es false
 
-CSD debe ser habilitado a nivel de tenant por un administrador de F5 XC. Esta es una configuración a nivel de tenant que no puede configurarse a través de la API del namespace. Contacte a su administrador para habilitar Client-Side Defense.
+CSD debe ser habilitado a nivel de tenant por un administrador de F5 XC. Esta es una configuración de todo el tenant que no puede configurarse a través de la API del namespace. Contacte a su administrador para habilitar la Defensa del lado del cliente.
 
 ### Array de scripts vacío
 
-Si [TEL-1](#tel-1-inventario-de-scripts) devuelve un array vacío:
+Si [TEL-1](#tel-1-script-inventory) devuelve un array vacío:
 
 <Steps>
-1. **Verifique el dominio protegido** &mdash; CSD monitorea scripts solo en dominios registrados:
+1. **Compruebe el dominio protegido** &mdash; CSD supervisa los scripts solo en los dominios registrados:
    ```bash
    curl -s \
      -H "Authorization: APIToken xF5XC_API_TOKENx" \
@@ -1187,18 +1187,18 @@ Si [TEL-1](#tel-1-inventario-de-scripts) devuelve un array vacío:
      | jq '.items[] | {name, namespace}'
    ```
 
-2. **Verifique la inyección JS** &mdash; confirme que la etiqueta de script CSD se está inyectando en las páginas:
+2. **Verifique la inyección de JS** &mdash; confirme que la etiqueta de script de CSD se está inyectando en las páginas:
    ```bash
    curl -s "http://xF5XC_DOMAINNAMEx/" | grep -oE '(zeronaught|shape)\.com[^"]*' | head -1
    ```
-   Si no hay coincidencia, el JavaScript de CSD no se está inyectando. Verifique que el LB tenga habilitado `client_side_defense`.
+   Si no hay coincidencia, el JavaScript de CSD no se está inyectando. Compruebe que el LB tenga `client_side_defense` habilitado.
 
-3. **Permita tiempo de procesamiento** &mdash; después de habilitar CSD por primera vez o registrar un nuevo dominio protegido, la detección de scripts puede tomar 5&ndash;15 minutos. Genere tráfico al sitio y espere antes de volver a verificar.
+3. **Espere el tiempo de procesamiento** &mdash; después de habilitar CSD por primera vez o registrar un nuevo dominio protegido, la detección de scripts puede tardar entre 5 y 15 minutos. Genere tráfico hacia el sitio y espere antes de volver a comprobar.
 </Steps>
 
 ## Referencia rápida
 
-### Preconfiguración de rangos temporales
+### Preajustes de rango de tiempo
 
 | Período | Desplazamiento epoch | ISO 8601 (Linux) | ISO 8601 (macOS) |
 | --- | --- | --- | --- |
@@ -1211,14 +1211,14 @@ Si [TEL-1](#tel-1-inventario-de-scripts) devuelve un array vacío:
 
 | Capa | Pruebas | Qué cubre |
 | --- | --- | --- |
-| [1. Resolución DNS](#capa-1-resolución-dns) | DNS-1 a DNS-4 | Registro A, CNAME ACME, autoridad del servidor de nombres, registros gestionados |
-| [2. Certificado TLS](#capa-2-certificado-tls) | TLS-1 a TLS-4 | Estado del certificado, detalles del certificado, handshake en vivo, destino ACME |
-| [3. Balanceador de carga HTTP](#capa-3-balanceador-de-carga-http) | LB-1 a LB-6 | Estado, dominios, indicador CSD, pools de rutas, despliegue, resumen |
-| [4. Pool de origen](#capa-4-pool-de-origen) | OP-1 a OP-4 | Configuración, modo TLS, asociación HC, conectividad del origen |
-| [5. Comprobación de estado](#capa-5-comprobación-de-estado) | HC-1 a HC-2 | Configuración HC, listar todos los HCs |
-| [6. Configuración CSD](#capa-6-configuración-csd) | CSD-1 a CSD-5 | Estado del tenant, etiqueta JS, dominios protegidos, inyección en vivo |
-| [7. Verificación de tráfico](#capa-7-verificación-de-tráfico) | TV-1 a TV-5 | Recuento de solicitudes, códigos de estado, muestras, JS en logs, prueba E2E |
-| [8. Telemetría CSD](#capa-8-telemetría-csd-y-política-de-dominios) | TEL-1 a TEL-8 | Scripts, dominios, política, campos de formulario, análisis detallado, usuarios, riesgo, frescura |
+| [1. Resolución DNS](#layer-1-dns-resolution) | DNS-1 a DNS-4 | Registro A, CNAME ACME, autoridad de servidores de nombres, registros administrados |
+| [2. Certificado TLS](#layer-2-tls-certificate) | TLS-1 a TLS-4 | Estado del certificado, detalles, handshake en vivo, destino ACME |
+| [3. Balanceador de carga HTTP](#layer-3-http-load-balancer) | LB-1 a LB-6 | Estado, dominios, indicador CSD, pools de rutas, despliegue, resumen |
+| [4. Pool de origen](#layer-4-origin-pool) | OP-1 a OP-4 | Configuración, modo TLS, asociación de HC, conectividad al origen |
+| [5. Comprobación de estado](#layer-5-health-check) | HC-1 a HC-2 | Configuración de HC, listar todos los HC |
+| [6. Configuración de CSD](#layer-6-csd-configuration) | CSD-1 a CSD-5 | Estado del tenant, etiqueta JS, dominios protegidos, inyección en vivo |
+| [7. Verificación de tráfico](#layer-7-traffic-verification) | TV-1 a TV-5 | Recuento de solicitudes, códigos de estado, muestras, JS en registros, prueba E2E |
+| [8. Telemetría de CSD](#layer-8-csd-telemetry-amp-domain-policy) | TEL-1 a TEL-8 | Scripts, dominios, política, campos de formulario, análisis detallado, usuarios, riesgo, actualidad |
 
 ### Resumen de endpoints
 
@@ -1229,10 +1229,10 @@ Si [TEL-1](#tel-1-inventario-de-scripts) devuelve un array vacío:
 | Solicitudes recientes | `/api/data/namespaces/\{ns\}/access_logs` | POST | ISO 8601 |
 | Estado del LB | `/api/config/namespaces/\{ns\}/http_loadbalancers/\{name\}` | GET | Ninguno |
 | Pool de origen | `/api/config/namespaces/\{ns\}/origin_pools/\{name\}` | GET | Ninguno |
-| Healthcheck | `/api/config/namespaces/\{ns\}/healthchecks/\{name\}` | GET | Ninguno |
+| Comprobación de estado | `/api/config/namespaces/\{ns\}/healthchecks/\{name\}` | GET | Ninguno |
 | Zona DNS | `/api/config/dns/namespaces/system/dns_zones/\{zone\}` | GET | Ninguno |
-| Estado CSD | `/api/shape/csd/namespaces/\{ns\}/status` | GET | Ninguno |
-| Configuración JS | `/api/shape/csd/namespaces/\{ns\}/js_configuration` | GET | Ninguno |
+| Estado de CSD | `/api/shape/csd/namespaces/\{ns\}/status` | GET | Ninguno |
+| Configuración de JS | `/api/shape/csd/namespaces/\{ns\}/js_configuration` | GET | Ninguno |
 | Dominios protegidos | `/api/shape/csd/namespaces/\{ns\}/protected_domains` | GET | Ninguno |
 | Lista de scripts | `/api/shape/csd/namespaces/\{ns\}/scripts` | POST | Segundos epoch |
 | Dominios detectados | `/api/shape/csd/namespaces/\{ns\}/detected_domains` | GET | Ninguno |

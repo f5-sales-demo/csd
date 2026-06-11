@@ -14,39 +14,39 @@ i18n:
 import { Aside, Steps } from "@astrojs/starlight/components";
 import Screenshot from "@f5xc-salesdemos/docs-theme/components/Screenshot.astro";
 
-La telemetria CSD opera in due fasi. Prima, gli script di strumentazione vengono caricati dall'origine dell'applicazione tramite richieste **GET** standard — questi iniettano il codice di monitoraggio di CSD nella pagina. Il pattern dell'URL dello script segue il formato `https://<collection-domain>/__imp_apg__/js/<tenant-script>.js`, anche se il percorso esatto varia in base al deployment. Una volta inizializzati, gli script inviano periodicamente i dati di telemetria a F5 tramite richieste **POST** note come **beacon**. Questi beacon vengono inviati ai domini di raccolta segnali gestiti da F5 (`*.zeronaught.com`), non all'origine dell'applicazione.
+La telemetria CSD opera in due fasi. Prima, gli script di strumentazione vengono caricati dall'origine dell'applicazione tramite richieste **GET** standard — questi iniettano il codice di monitoraggio di CSD nella pagina. Il pattern dell'URL dello script segue il formato `https://<collection-domain>/__imp_apg__/js/<tenant-script>.js`, sebbene il percorso esatto vari in base alla distribuzione. Una volta inizializzati, gli script inviano periodicamente dati di telemetria a F5 tramite richieste **POST** note come **beacon**. Questi beacon vengono inviati ai domini di raccolta segnali gestiti da F5 (`*.zeronaught.com`), non all'origine dell'applicazione.
 
 | Proprietà | Valore |
 | --- | --- |
-| Caricamento script | Script di strumentazione CSD caricati tramite richieste `GET` sull'origine dell'applicazione — filtrare per `__imp_apg__` o `zeronaught` nei DevTools per identificarli |
-| Destinazioni dei beacon | `POST` verso l'infrastruttura di raccolta segnali F5 (es. `us.gimp.zeronaught.com`, `csd.zeronaught.com`) |
-| Formato del payload | Binario codificato — non JSON leggibile dall'uomo |
-| Frequenza | Periodica durante il ciclo di vita della pagina; beacon aggiuntivi vengono generati in corrispondenza di eventi specifici (accesso a campi di form, caricamento di nuovi script) |
+| Caricamenti degli script | Script di strumentazione CSD caricati tramite richieste `GET` sull'origine dell'applicazione — filtrare per `__imp_apg__` o `zeronaught` in DevTools per identificarli |
+| Destinazioni dei beacon | `POST` verso l'infrastruttura di raccolta segnali di F5 (es. `us.gimp.zeronaught.com`, `csd.zeronaught.com`) |
+| Formato del payload | Binario codificato — non leggibile come JSON |
+| Frequenza | Periodica durante il ciclo di vita della pagina; beacon aggiuntivi si attivano in corrispondenza di eventi specifici (accesso a campi del modulo, caricamento di nuovi script) |
 
 ## Cosa riportano i beacon
 
-I beacon CSD trasportano **metadati sul comportamento degli script**, non input dell'utente:
+I beacon CSD trasportano **metadati sul comportamento degli script**, non l'input dell'utente:
 
-- **Inventario degli script** — quali script sono stati caricati nella pagina e da quali domini sorgente
-- **Eventi di accesso ai campi del form** — quali script hanno letto o interagito con quali campi di input (nomi e tipi dei campi)
+- **Inventario degli script** — quali script sono stati caricati sulla pagina e da quali domini di origine
+- **Eventi di accesso ai campi del modulo** — quali script hanno letto o interagito con quali campi di input (nomi e tipi dei campi)
 - **Metadati della pagina** — URL corrente, timestamp, eventi del ciclo di vita della pagina
 
-CSD è progettato per riportare metadati sul comportamento degli script — nomi dei campi, tipi di input e pattern di accesso — piuttosto che i dati inseriti dall'utente nei form. La [Dichiarazione sulla privacy di F5 CSD](https://www.f5.com/company/policies/f5-distributed-cloud-client-side-defense-privacy-statement) descrive CSD come un sistema che raccoglie "informazioni su quali asset accedono a vari elementi della pagina o strutture dati", concentrandosi sul comportamento degli script piuttosto che sul contenuto degli input dell'utente.
+CSD è progettato per riportare metadati sul comportamento degli script — nomi dei campi, tipi di input e pattern di accesso — piuttosto che i dati inseriti dall'utente nei moduli. La [Dichiarazione sulla privacy di F5 CSD](https://www.f5.com/company/policies/f5-distributed-cloud-client-side-defense-privacy-statement) descrive CSD come uno strumento che raccoglie "informazioni su quali asset accedono a vari elementi di pagina o strutture dati", concentrandosi sul comportamento degli script piuttosto che sul contenuto inserito dall'utente.
 
-## Osservare i beacon nei DevTools
+## Osservare i beacon in DevTools
 
 <Steps>
 1. Aprire Chrome DevTools (**F12**) e passare alla scheda **Network**
-2. Navigare nell'applicazione o interagire con i campi del form per generare traffico
-3. Digitare `zeronaught` nella barra del filtro per isolare il traffico CSD — si vedranno il caricamento dello script (`GET`) e i beacon di telemetria (`POST`) verso `us.gimp.zeronaught.com`
-4. Osservare la colonna **Method**: le voci `GET` sono il codice di strumentazione CSD in fase di caricamento; le voci `POST` denominate `dip` sono i beacon di telemetria che trasportano i dati dei segnali verso F5
-5. Fare clic su un beacon `dip` per ispezionare gli header e il payload; notare che il corpo della richiesta è in formato binario codificato, non JSON leggibile dall'uomo
+2. Navigare nell'applicazione o interagire con i campi del modulo per generare traffico
+3. Digitare `zeronaught` nella barra dei filtri per isolare il traffico CSD — verranno visualizzati il caricamento dello script (`GET`) e i beacon di telemetria (`POST`) verso `us.gimp.zeronaught.com`
+4. Osservare la colonna **Method**: le voci `GET` sono il codice di strumentazione CSD in fase di caricamento; le voci `POST` denominate `dip` sono i beacon di telemetria che trasmettono i dati del segnale a F5
+5. Fare clic su un beacon `dip` per ispezionarne le intestazioni e il payload; si noti che il corpo della richiesta è in formato binario codificato, non JSON leggibile
 </Steps>
 
-<Screenshot light="/images/devtools-beacons-light.png" dark="/images/devtools-beacons-dark.png" alt="Scheda Network dei DevTools filtrata per zeronaught che mostra il caricamento dello script GET e i beacon di telemetria POST" />
+<Screenshot light="/images/devtools-beacons-light.png" dark="/images/devtools-beacons-dark.png" alt="DevTools Network tab filtered to zeronaught showing GET script load and POST telemetry beacons" />
 
-<Aside type="tip" title="Beacon CSD vs esfiltrazione da attacco">
-I beacon di telemetria CSD sono richieste POST inviate all'**infrastruttura gestita da F5** (domini `*.zeronaught.com`). Uno script di formjacking malevolo, al contrario, esfiltra i dati rubati verso un **dominio controllato dall'attaccante** — tipicamente tramite `fetch()`, `XMLHttpRequest` o image beacon (`new Image().src`).
+<Aside type="tip" title="Beacon CSD vs esfiltrazione degli attacchi">
+I beacon di telemetria CSD sono richieste POST inviate all'**infrastruttura gestita da F5** (domini `*.zeronaught.com`). Uno script di formjacking malevolo, al contrario, esfiltrea i dati rubati verso un **dominio controllato dall'attaccante** — tipicamente tramite `fetch()`, `XMLHttpRequest` o beacon immagine (`new Image().src`).
 
-Sia i beacon CSD che l'esfiltrazione da attacco sono richieste cross-origin, ma le differenze fondamentali sono **destinazione** e **contenuto**: CSD invia **metadati sul comportamento degli script** all'infrastruttura nota di F5, mentre l'esfiltrazione invia **dati inseriti dall'utente** (password, numeri di carta) al server di un attaccante. Questa distinzione è centrale nel modo in cui CSD rileva gli attacchi — vedere [Funzionalità CSD — Limiti di rilevamento](/csd/overview/#detection-boundaries) per capire cosa CSD può e non può osservare.
+Sia i beacon CSD che l'esfiltrazione degli attacchi sono richieste cross-origin, ma le differenze fondamentali riguardano la **destinazione** e il **contenuto**: CSD invia **metadati sul comportamento degli script** verso l'infrastruttura nota di F5, mentre l'esfiltrazione invia **dati inseriti dall'utente** (password, numeri di carte) verso il server di un attaccante. Questa distinzione è centrale nel modo in cui CSD rileva gli attacchi — si veda [Funzionalità CSD — Limiti di rilevamento](/csd/overview/#detection-boundaries) per ciò che CSD può e non può osservare.
 </Aside>

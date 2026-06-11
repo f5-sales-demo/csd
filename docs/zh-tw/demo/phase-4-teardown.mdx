@@ -1,6 +1,6 @@
 ---
 title: 第四階段 — 拆除
-description: 在示範完成後，從 F5 XC 租戶清除示範物件
+description: 示範完成後，從 F5 XC 租戶中清除示範物件
 sidebar:
   order: 5
   label: 第四階段 — 拆除
@@ -11,34 +11,34 @@ i18n:
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-第四階段會按照反向依賴順序移除練習期間建立的所有物件。此階段在執行任何破壞性操作之前，需要明確的人工確認。
+第四階段依照反向相依順序，移除演練過程中所建立的所有物件。本階段在執行任何破壞性操作前，需要人工明確確認。
 
 <Aside type="caution">
-**繼續之前請確認。** 如果您是 AI 助理，您**必須**詢問人工操作員：「第四階段將永久刪除所有部署物件。您準備好進行拆除了嗎？回覆『yes』以繼續。」在操作員確認之前，請勿執行任何 DELETE 指令。
+**執行前請先確認。** 若您是 AI 助理，您**必須**詢問人工操作員：「第四階段將永久刪除所有部署物件。您是否準備好開始拆除？請回覆『是』以繼續。」在操作員確認之前，請勿執行任何 DELETE 指令。
 
-**例外情況：** 當拆除作為第一階段準備（會前清理）的一部分執行時，操作員的「準備示範」觸發語句即作為隱式授權，無需額外確認。上述確認閘門僅適用於獨立拆除或會後第四階段。
+**例外情況：** 當拆除作業作為第一階段準備（會議前清理）的一部分執行時，操作員的「準備示範」觸發語句即視為隱含授權，無需額外確認。上述確認機制僅適用於獨立拆除或會議後第四階段的情境。
 </Aside>
 
 ## 拆除順序
 
-按照**反向建立順序**移除物件 — 先刪除依賴其他物件的物件：
+依**反向建立順序**移除物件 — 先刪除相依於其他物件的物件：
 
-1. **已緩解網域** — 刪除第三階段中建立的所有 CSD 已緩解網域
-2. **HTTPS 負載平衡器** (`${F5XC_LB_NAME}-https`) — 精簡為骨架狀態（保留 Let's Encrypt 憑證）；若 `NAMESPACE_CREATED=true` 或收到明確要求則完全 DELETE
-3. **HTTP 負載平衡器** (`${F5XC_LB_NAME}-http`) — 依賴 Origin Pool
-4. **Origin Pool** — 依賴 Healthcheck（若已建立）
-5. **DNS 區域清理** — HTTPS LB 骨架保留其受管理的 A 記錄和 ACME 記錄（這是預期行為 — 可維持憑證有效性）。HTTP LB 的受管理記錄會在刪除時自動清理。`default_rr_set_group` 中的手動記錄需要透過 `PUT` 手動清理
-6. **Healthcheck** — 僅在第一階段步驟 1 中建立時刪除
-7. **受保護網域** — 刪除 CSD 受保護網域註冊
-8. **命名空間** — 僅在第一階段步驟 0 建立時刪除（`NAMESPACE_CREATED=true`）
+1. **已緩解網域** — 刪除第三階段所建立的所有 CSD 已緩解網域
+2. **HTTPS 負載平衡器** (`${F5XC_LB_NAME}-https`) — 縮減為骨架狀態（保留 Let's Encrypt 憑證）；若 `NAMESPACE_CREATED=true` 或明確要求時，執行完整 DELETE
+3. **HTTP 負載平衡器** (`${F5XC_LB_NAME}-http`) — 相依於來源集區
+4. **來源集區** — 相依於健康檢查（若已建立）
+5. **DNS 區域清理** — HTTPS LB 骨架會保留其受管理的 A 記錄與 ACME 記錄（此為預期行為 — 可保持憑證有效）。HTTP LB 受管理的記錄會於刪除時自動清理。`default_rr_set_group` 中的手動記錄需透過 `PUT` 進行手動清理
+6. **健康檢查** — 僅限第一階段步驟 1 中已建立者
+7. **受保護網域** — 刪除 CSD 受保護網域登錄
+8. **命名空間** — 僅限第一階段步驟 0 期間所建立者（`NAMESPACE_CREATED=true`）
 
 <Aside type="caution">
-**請勿刪除 DNS 區域。** DNS 區域是支援平台上許多其他 DNS 記錄的共享基礎架構，永遠不應被刪除。僅清理您手動新增到 `default_rr_set_group` 的記錄。然而，受保護網域是與此部署綁定的 CSD 設定物件，在完全拆除時**應該**被刪除。
+**請勿刪除 DNS 區域。** DNS 區域為共用基礎架構，支援平台上許多其他 DNS 記錄，絕對不應被刪除。僅需清理您手動新增至 `default_rr_set_group` 的記錄。然而，受保護網域是與本次部署綁定的 CSD 設定物件，在完整拆除時**應**予以刪除。
 </Aside>
 
 ## 刪除已緩解網域
 
-如果已執行第三階段，請在移除基礎架構物件之前刪除所有已緩解網域。標準模擬會建立 6 個已緩解網域：
+若已執行第三階段，請在移除基礎架構物件之前先刪除所有已緩解網域。標準模擬會建立 6 個已緩解網域：
 
 ```bash
 for domain in cdn.jsdelivr.net esm.sh unpkg.com ga.jspm.io httpbin.org jsonplaceholder.typicode.com; do
@@ -48,7 +48,7 @@ for domain in cdn.jsdelivr.net esm.sh unpkg.com ga.jspm.io httpbin.org jsonplace
 done
 ```
 
-驗證：列出已緩解網域以確認數量為 0（或 1 — 請參閱以下附註）：
+驗證：列出已緩解網域，確認數量為 0（或 1，請參閱以下備註）：
 
 ```bash
 curl -s \
@@ -58,21 +58,21 @@ curl -s \
 ```
 
 <Aside type="note">
-在刪除所有已緩解網域後，已緩解網域清單可能會返回一個幽靈條目（count = 1），其中繼資料為 null。這是當 CSD 服務狀態處於設定切換之間時出現的後端產物 — 它不代表真正的緩解措施，可以忽略。嘗試刪除此幽靈條目會返回 `"Delete list when service not configured"`。
+所有已緩解網域刪除後，已緩解網域清單可能會回傳一個幽靈項目（count = 1），其中繼資料為 null。此為後端產生的假象，出現於 CSD 服務狀態在設定之間切換時 — 並非真正的緩解項目，可予以忽略。嘗試刪除此幽靈項目將回傳 `"Delete list when service not configured"`。
 </Aside>
 
 ## HTTPS 負載平衡器
 
-HTTPS LB 的拆除行為取決於命名空間是否在此次示範期間建立（來自第一階段步驟 0 的 `NAMESPACE_CREATED` 變數）：
+HTTPS LB 的拆除行為取決於命名空間是否於本次示範工作階段期間建立（來自第一階段步驟 0 的 `NAMESPACE_CREATED` 變數）：
 
-- **`NAMESPACE_CREATED=false`**（預先存在的命名空間）— 精簡為**骨架**狀態，保留 Let's Encrypt 憑證以供重複使用
-- **`NAMESPACE_CREATED=true`**（示範期間建立的命名空間）— **完全 DELETE**，因為命名空間本身將被刪除，憑證無法保留
+- **`NAMESPACE_CREATED=false`**（預先存在的命名空間）— 縮減為**骨架**狀態，保留 Let's Encrypt 憑證以供重複使用
+- **`NAMESPACE_CREATED=true`**（示範期間建立的命名空間）— 執行**完整 DELETE**，因為命名空間本身將被刪除，憑證無法保留
 
-### 路徑 A：精簡為骨架（預先存在的命名空間）
+### 路徑 A：縮減為骨架（預先存在的命名空間）
 
-當命名空間為預先存在時，將 HTTPS LB 精簡為**骨架**狀態 — 移除 origin pool 參考和 CSD 設定，同時保留網域綁定、`https_auto_cert` 設定和 Let's Encrypt 憑證。這可避免在下次示範執行時觸發新的憑證請求（Let's Encrypt 強制每組完全相同的識別碼集合在 7 天內最多 5 張重複憑證的限制）。
+當命名空間為預先存在時，將 HTTPS LB 縮減為**骨架**狀態 — 移除來源集區參考與 CSD 設定，同時保留網域繫結、`https_auto_cert` 設定及 Let's Encrypt 憑證。此舉可避免在下次示範執行時觸發新的憑證申請（Let's Encrypt 對每個精確識別符集合在 7 天內強制執行最多 5 份重複憑證的限制）。
 
-**步驟 1 — GET 當前 HTTPS LB 設定：**
+**步驟 1 — 取得目前的 HTTPS LB 設定：**
 
 ```bash
 HTTPS_LB_JSON=$(curl -s \
@@ -80,7 +80,7 @@ HTTPS_LB_JSON=$(curl -s \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
 ```
 
-**步驟 2 — 透過 jq 精簡為骨架並 PUT 回去：**
+**步驟 2 — 透過 jq 縮減為骨架並 PUT 回去：**
 
 ```bash
 echo "$HTTPS_LB_JSON" | jq '{
@@ -94,9 +94,9 @@ echo "$HTTPS_LB_JSON" | jq '{
   | jq .
 ```
 
-此 jq 過濾器保留整個 spec（domains、`https_auto_cert`、`advertise_on_public_default_vip` 及所有停用的功能旗標），同時移除 `client_side_defense`（替換為 `disable_client_side_defense: {}`）並將 `default_route_pools` 清空為空陣列。憑證和 DNS 綁定保持不變。
+此 jq 過濾器會保留完整規格（網域、`https_auto_cert`、`advertise_on_public_default_vip` 及所有已停用的功能旗標），同時移除 `client_side_defense`（以 `disable_client_side_defense: {}` 取代），並將 `default_route_pools` 清空為空陣列。憑證與 DNS 繫結維持不變。
 
-**驗證** HTTPS LB 現在是骨架狀態：
+**驗證** HTTPS LB 現已為骨架狀態：
 
 ```bash
 curl -s \
@@ -113,9 +113,9 @@ curl -s \
 
 預期結果：`has_origin_pools: false`、`has_csd: false`、`domains` 仍有資料、`cert_state` 不變（例如 `CertificateValid`）。
 
-### 路徑 B：完全刪除（示範期間建立的命名空間）
+### 路徑 B：完整刪除（示範期間建立的命名空間）
 
-當命名空間是在此次示範期間建立時，HTTPS LB 必須完全刪除 — 無需保留骨架，因為命名空間本身將在拆除結束時被移除，憑證無法保留。
+當命名空間於本次示範工作階段期間建立時，必須完整刪除 HTTPS LB — 由於命名空間本身將於拆除結束時移除，保留骨架已無必要。
 
 ```bash
 curl -s -X DELETE \
@@ -123,15 +123,15 @@ curl -s -X DELETE \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https"
 ```
 
-驗證：`GET /api/config/namespaces/\{namespace\}/http_loadbalancers` 不應包含 `${F5XC_LB_NAME}-https`。
+驗證：`GET /api/config/namespaces/\{namespace\}/http_loadbalancers` 的結果中不應包含 `${F5XC_LB_NAME}-https`。
 
 <Aside type="tip">
-**完全拆除選項（預先存在的命名空間）。** 即使命名空間為預先存在，如果要永久停用示範網域，或操作員明確要求「完全拆除」或「強制刪除」，您也可以完全刪除 HTTPS LB。僅在網域不會在 7 天內重複使用時才使用完全 DELETE。刪除 HTTPS LB 會在下次示範執行時觸發新的 Let's Encrypt 憑證請求。
+**完整拆除選項（預先存在的命名空間）。** 即使命名空間為預先存在，若要永久停用示範網域，或操作員明確要求「完整拆除」或「強制刪除」，亦可完整刪除 HTTPS LB。僅在網域 7 天內不會重複使用的情況下，方可執行完整 DELETE。刪除 HTTPS LB 將在下次示範執行時觸發新的 Let's Encrypt 憑證申請。
 </Aside>
 
 ## 刪除 HTTP 負載平衡器
 
-刪除主要的 HTTP LB：
+刪除主要 HTTP LB：
 
 ```bash
 curl -s -X DELETE \
@@ -139,9 +139,9 @@ curl -s -X DELETE \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http"
 ```
 
-驗證：`GET /api/config/namespaces/\{namespace\}/http_loadbalancers` 不應包含 `${F5XC_LB_NAME}-http`。如果 DELETE 返回 `200` 後物件仍出現在清單中，請等待 30 秒後重新檢查一次。如果第二次檢查後仍然存在，請回報給操作員 — 請勿繼續。
+驗證：`GET /api/config/namespaces/\{namespace\}/http_loadbalancers` 的結果中不應包含 `${F5XC_LB_NAME}-http`。若 DELETE 回傳 `200` 後，物件仍出現於清單中，請等待 30 秒後再確認一次。若第二次確認後仍存在，請回報給操作員 — 請勿繼續進行。
 
-## 刪除 Origin Pool
+## 刪除來源集區
 
 ```bash
 curl -s -X DELETE \
@@ -149,9 +149,9 @@ curl -s -X DELETE \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx"
 ```
 
-驗證：`GET /api/config/namespaces/\{namespace\}/origin_pools` 不應包含該 pool 名稱。如果 DELETE 返回 `200` 後物件仍出現在清單中，請等待 30 秒後重新檢查一次。如果第二次檢查後仍然存在，請回報給操作員。
+驗證：`GET /api/config/namespaces/\{namespace\}/origin_pools` 的結果中不應包含該集區名稱。若 DELETE 回傳 `200` 後，物件仍出現於清單中，請等待 30 秒後再確認一次。若第二次確認後仍存在，請回報給操作員。
 
-## 刪除 Healthcheck
+## 刪除健康檢查
 
 ```bash
 curl -s -X DELETE \
@@ -159,11 +159,11 @@ curl -s -X DELETE \
   "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx"
 ```
 
-驗證：`GET /api/config/namespaces/\{namespace\}/healthchecks` 不應包含該 healthcheck 名稱。如果 DELETE 返回 `200` 後物件仍出現在清單中，請等待 30 秒後重新檢查一次。如果第二次檢查後仍然存在，請回報給操作員。
+驗證：`GET /api/config/namespaces/\{namespace\}/healthchecks` 的結果中不應包含該健康檢查名稱。若 DELETE 回傳 `200` 後，物件仍出現於清單中，請等待 30 秒後再確認一次。若第二次確認後仍存在，請回報給操作員。
 
 ## 刪除受保護網域
 
-刪除 CSD 受保護網域註冊。受保護網域的範圍為租戶層級（非命名空間層級），但它是與此部署綁定的 CSD 設定物件 — 不像 DNS 區域那樣是共享基礎架構。
+刪除 CSD 受保護網域登錄。受保護網域屬於租戶範圍（非命名空間範圍），但它是與本次部署綁定的 CSD 設定物件 — 並非像 DNS 區域那樣的共用基礎架構。
 
 ```bash
 curl -s -X DELETE \
@@ -171,7 +171,7 @@ curl -s -X DELETE \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/xF5XC_ROOT_DOMAINx"
 ```
 
-驗證：列出受保護網域以確認該網域已不再註冊：
+驗證：列出受保護網域，確認該網域已不再登錄：
 
 ```bash
 curl -s -X GET \
@@ -181,15 +181,15 @@ curl -s -X GET \
 ```
 
 <Aside type="note">
-個別 GET 端點（`/protected_domains/\{name\}`）可能會返回「API Group could not be determined.」。如果 DELETE 端點返回相同錯誤，請使用清單端點驗證該網域已不再出現，或改為透過 F5 Distributed Cloud (F5 XC) Console UI 刪除受保護網域。
+個別 GET 端點（`/protected_domains/\{name\}`）可能回傳「API Group could not be determined.」若 DELETE 端點回傳相同錯誤，請使用清單端點確認該網域已不再出現，或改為透過 F5 Distributed Cloud（F5 XC）主控台 UI 刪除受保護網域。
 </Aside>
 
-## 刪除命名空間（條件式）
+## 刪除命名空間（條件性）
 
-此步驟**僅在**第一階段步驟 0 建立了命名空間時執行（`NAMESPACE_CREATED=true`）。如果命名空間為預先存在（`NAMESPACE_CREATED=false`），請完全跳過此步驟 — 該命名空間是不可刪除的共享基礎架構。
+此步驟**僅**在命名空間於第一階段步驟 0 期間建立（`NAMESPACE_CREATED=true`）時執行。若命名空間為預先存在（`NAMESPACE_CREATED=false`），請完全跳過此步驟 — 命名空間屬於共用基礎架構，不得刪除。
 
 <Aside type="caution">
-**串聯刪除會移除所有命名空間範圍的物件。** 串聯刪除端點會移除命名空間及其中的所有物件。所有基礎架構物件（負載平衡器、origin pool、healthcheck）應該在前面的拆除步驟中已被刪除。串聯刪除作為最終清理，用於捕獲任何剩餘物件並移除命名空間本身。
+**串聯刪除會移除所有命名空間範圍的物件。** 串聯刪除端點會移除命名空間及其中的所有物件。所有基礎架構物件（負載平衡器、來源集區、健康檢查）應已於先前的拆除步驟中刪除。串聯刪除作為最終清理，用於捕捉任何剩餘物件並移除命名空間本身。
 </Aside>
 
 ```bash
@@ -203,7 +203,7 @@ fi
 ```
 
 <Aside type="note">
-標準的 `DELETE /api/web/namespaces/{name}` 端點會返回 `"Not Implemented"`（錯誤代碼 `12`）。您**必須**使用串聯刪除端點（`POST .../cascade_delete`）來刪除命名空間。
+標準的 `DELETE /api/web/namespaces/{name}` 端點會回傳 `"Not Implemented"`（錯誤代碼 `12`）。您**必須**使用串聯刪除端點（`POST .../cascade_delete`）來刪除命名空間。
 </Aside>
 
 驗證：確認命名空間已不存在：
@@ -214,21 +214,21 @@ curl -s -o /dev/null -w '%\{http_code\}' \
   "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx"
 ```
 
-預期結果：若 `NAMESPACE_CREATED=true` 則為 `404`，若 `NAMESPACE_CREATED=false` 則為 `200`。
+預期結果：若 `NAMESPACE_CREATED=true` 則回傳 `404`，若 `NAMESPACE_CREATED=false` 則回傳 `200`。
 
 ## 第四階段證據摘要
 
 | 物件 | 刪除狀態 | 驗證狀態 |
 | --- | --- | --- |
-| 已緩解網域 (6) | 全部 `200`（空的 `\{\}`）或若未執行第三階段則跳過 | 數量 0（或 1 幽靈條目）— 通過 |
-| HTTPS 負載平衡器 (`-https`) | `200`（骨架 PUT）或 `200`（若 `NAMESPACE_CREATED=true` 則完全 DELETE） | 骨架已驗證或不在清單中 — 通過 |
-| HTTP 負載平衡器 (`-http`) | `200`（空的 `\{\}`） | 不在清單中 — 通過 |
-| Origin Pool | `200`（空的 `\{\}`） | 不在清單中 — 通過 |
-| Healthcheck | `200`（空的 `\{\}`）或跳過 | 不在清單中 — 通過 |
-| 受保護網域 | `200`（空的 `\{\}`） | 不在清單中 — 通過 |
-| DNS 區域 | 未刪除（共享基礎架構） | 區域仍然存在 — 通過 |
-| 命名空間 | 若 `NAMESPACE_CREATED=true` 則 `200`（串聯刪除），否則跳過 | 若已刪除則 `404`，若保留則 `200` — 通過 |
+| 已緩解網域（6 個） | 全部 `200`（空 `\{\}`）或若第三階段未執行則跳過 | 數量為 0（或 1 個幽靈）— 通過 |
+| HTTPS 負載平衡器（`-https`） | `200`（骨架 PUT）或 `200`（若 `NAMESPACE_CREATED=true` 則完整 DELETE） | 骨架已驗證或不在清單中 — 通過 |
+| HTTP 負載平衡器（`-http`） | `200`（空 `\{\}`） | 不在清單中 — 通過 |
+| 來源集區 | `200`（空 `\{\}`） | 不在清單中 — 通過 |
+| 健康檢查 | `200`（空 `\{\}`）或跳過 | 不在清單中 — 通過 |
+| 受保護網域 | `200`（空 `\{\}`） | 不在清單中 — 通過 |
+| DNS 區域 | 未刪除（共用基礎架構） | 區域仍存在 — 通過 |
+| 命名空間 | 若 `NAMESPACE_CREATED=true` 則 `200`（串聯刪除），否則跳過 | 若已刪除則 `404`，若已保留則 `200` — 通過 |
 
 ---
 
-**拆除完成。** 當命名空間為預先存在時（`NAMESPACE_CREATED=false`），所有部署物件已被移除，僅保留 HTTPS LB 骨架，以便為下次示範執行保留 Let's Encrypt 憑證和網域綁定。當命名空間是在示範期間建立時（`NAMESPACE_CREATED=true`），所有物件（包括 HTTPS LB 和命名空間）已被完全刪除。在兩種情況下，DNS 區域及其非受管理記錄均保持不變。
+**拆除完成。** 當命名空間為預先存在（`NAMESPACE_CREATED=false`）時，除 HTTPS LB 骨架外，所有部署物件均已移除；骨架保留 Let's Encrypt 憑證與網域繫結，供下次示範執行使用。當命名空間於示範期間建立（`NAMESPACE_CREATED=true`）時，包含 HTTPS LB 與命名空間在內的所有物件均已完整刪除。兩種情況下，DNS 區域及其非受管理記錄均維持完整。

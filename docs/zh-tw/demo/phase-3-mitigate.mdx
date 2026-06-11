@@ -11,19 +11,19 @@ i18n:
 
 import { Aside, Steps } from "@astrojs/starlight/components";
 
-第三階段建立 CSD 緩解的**前後對比證明**。您在未啟用任何緩解措施的情況下重新執行攻擊以建立基準線，然後套用緩解措施，接著重新執行相同的攻擊以證明 CSD 封鎖了網路呼叫。第二階段必須完成 — 所有 DET 檢查均為 PASS — 才能繼續進行。
+第三階段建立 CSD 緩解的**前後對比證明**。您先在不啟用任何緩解措施的情況下重新執行攻擊以建立基準線，套用緩解措施後，再重新執行相同的攻擊，以證明 CSD 能夠封鎖網路呼叫。繼續之前，第二階段必須已完成——所有 DET 檢查均須通過。
 
 <Aside type="note">
-**CSD 緩解會封鎖來自已緩解網域的腳本載入。** 當網域在緩解清單中時，CSD JavaScript 會攔截 `&lt;script&gt;` 標籤的來源 URL 並阻止腳本載入 — 從源頭阻止供應鏈攻擊。CSD 不會攔截 `fetch()` 或 `XMLHttpRequest` 呼叫。此階段透過在緩解前後執行相同的攻擊來擷取腳本封鎖的證明。
+**CSD 緩解會封鎖從已緩解網域載入腳本的行為。** 當某個網域被列入緩解清單時，CSD JavaScript 會攔截 `&lt;script&gt;` 標籤的來源 URL，阻止腳本載入——從根源阻止供應鏈攻擊。CSD 不攔截 `fetch()` 或 `XMLHttpRequest` 呼叫。本階段透過在緩解前後執行相同攻擊來擷取腳本封鎖的證明。
 </Aside>
 
 <Aside type="caution">
-**即時測試注意事項：** 緩解 POST/DELETE 端點已在開發環境中驗證，但行為細節（回應時間、對腳本偵測狀態的影響）可能因租戶設定而異。如果您觀察到非預期的回應，請查閱 [API 參考](/csd/api-reference/#mitigated-domains) 以取得標準端點定義。
+**實際測試注意事項：** 緩解的 POST/DELETE 端點已在開發環境中驗證，但行為細節（回應時序、對腳本偵測狀態的影響）可能因租戶設定而有所不同。如果您觀察到非預期的回應，請參閱 [API 參考文件](/csd/api-reference/#mitigated-domains) 以了解端點的規範定義。
 </Aside>
 
-## 步驟 1：確認無啟用中的緩解措施（基準線）
+## 步驟 1：確認無作用中的緩解措施（基準線）
 
-在擷取「之前」快照之前，驗證環境是乾淨的 — 不應有任何啟用中的緩解措施。這確保基準線攻擊在沒有任何 CSD 封鎖的情況下執行。
+在擷取「前」的快照之前，請確認環境是乾淨的——不應有任何作用中的緩解措施。這可確保基準線攻擊在沒有任何 CSD 封鎖的情況下執行。
 
 ### 檢查已緩解網域數量
 
@@ -34,19 +34,19 @@ curl -s \
   | jq '{count: (.items | length)}'
 ```
 
-如果數量**不是** `0`，表示先前執行的緩解措施仍然存在。在繼續之前逐一刪除：
+如果數量**不是** `0`，表示有緩解措施遺留自先前的執行。請在繼續之前將其逐一刪除：
 
 ```bash
-# Delete a mitigated domain (repeat for each domain name)
+# 刪除已緩解的網域（對每個網域名稱重複執行）
 curl -s -X DELETE \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/<domain-name>" \
   | jq .
 ```
 
-將 `<domain-name>` 替換為緩解網域時使用的 `metadata.name`（例如 `cdn.jsdelivr.net`、`esm.sh`、`unpkg.com`、`ga.jspm.io`、`httpbin.org`、`jsonplaceholder.typicode.com`）。如果清除 `httpbin.org` 後仍有剩餘項目，請嘗試刪除 `www.httpbin.org` — 某些先前的執行可能使用了該名稱作為中繼資料名稱。
+將 `<domain-name>` 替換為緩解該網域時所使用的 `metadata.name`（例如 `cdn.jsdelivr.net`、`esm.sh`、`unpkg.com`、`ga.jspm.io`、`httpbin.org`、`jsonplaceholder.typicode.com`）。如果清理 `httpbin.org` 後仍有剩餘項目，也請嘗試刪除 `www.httpbin.org`——部分先前的執行可能以此作為 metadata name。
 
-### 確認第二階段偵測結果存在
+### 確認第二階段的偵測結果存在
 
 ```bash
 curl -s \
@@ -59,67 +59,67 @@ curl -s \
 
 | 檢查項目 | 預期結果 | 狀態 |
 | --- | --- | --- |
-| 已緩解網域數量 | `0`（乾淨基準線） | 若為 0 則 PASS，若 &gt; 0 則需清理 |
+| 已緩解網域數量 | `0`（乾淨的基準線） | 若為 0 則 PASS，若 &gt; 0 則需清理 |
 | 已偵測網域數量 | &gt; 0（第二階段偵測結果存在） | 若 &gt; 0 則 PASS |
-| 資料外洩網域存在 | `www.httpbin.org`、`jsonplaceholder.typicode.com` | 若至少出現一個則 PASS |
+| 外洩網域存在 | `www.httpbin.org`、`jsonplaceholder.typicode.com` | 若至少出現一個則 PASS |
 
-## 步驟 2：執行攻擊 — 緩解前
+## 步驟 2：執行攻擊——緩解前
 
-在**未啟用任何緩解措施**的情況下重新執行組合模擬，以擷取新的基準線。這是**「之前」快照** — 證明在未套用 CSD 緩解時攻擊會成功。
+在**沒有作用中緩解措施**的情況下重新執行合併模擬，以擷取新鮮的基準線。這是**「前」的快照**——證明在未套用 CSD 緩解時攻擊能夠成功的證明。
 
 <Aside type="note">
-此步驟需要瀏覽器端 JavaScript 執行 — `curl` 無法觸發 CSD 偵測。具有瀏覽器自動化工具（MCP Chrome DevTools、Playwright、Puppeteer）的 AI 助手使用下方的**AI 自動化執行**序列直接執行這些步驟。沒有瀏覽器自動化的操作人員執行手動步驟。
+此步驟需要瀏覽器端的 JavaScript 執行——`curl` 無法觸發 CSD 偵測。具備瀏覽器自動化工具的 AI 助理（MCP Chrome DevTools、Playwright、Puppeteer）可使用下方的**AI 自動化執行**序列直接執行這些步驟。不具備瀏覽器自動化工具的操作人員則執行手動步驟。
 </Aside>
 
 ### AI 自動化執行
 
-具有瀏覽器自動化工具的 AI 助手使用與第二階段相同的 initScript（儲存原生 `fetch`）以程式方式執行攻擊模擬：
+具備瀏覽器自動化工具的 AI 助理可使用與第二階段相同的 initScript（儲存原生 `fetch`）以程式方式執行攻擊模擬：
 
-1. **使用 initScript 導航** — 首先導航至 `about:blank` 以確保乾淨的文件上下文（避免先前導航的過時 initScripts），然後使用 `navigate_page` 導航至 `http://$F5XC_DOMAINNAME/#/login` 並載入**第二階段 initScript**（完整程式碼在[第二階段 — AI 自動化執行](/csd/demo/phase-2-attack/#ai-automated-execution)中）。此 initScript 儲存原生 `setInterval`、`clearInterval`、`fetch` 和 `console.log` — 此處的原生 `fetch` 參考是正確的，因為沒有啟用任何緩解措施
-2. **關閉歡迎橫幅** — 使用 `press_key` 按下 `Escape` 關閉歡迎橫幅。在後續造訪中，橫幅可能不會出現（Cookie 已保留）。Cookie 同意對話框會被 Escape 鍵自動關閉
-3. **等待完成** — 等待 10 秒讓所有 CDN 腳本載入/錯誤回呼和 fetch Promise 解析完成
-4. **擷取證據** — 使用 `list_console_messages` 檢查 `[CSD Demo] Simulation complete` 和 CDN 載入結果；使用 `list_network_requests` 篩選 `script` 和 `fetch` 類型以驗證 HTTP 狀態碼（成功為 `200`/`201`）
+1. **以 initScript 導覽** — 先導覽至 `about:blank` 以確保乾淨的文件內容（避免先前導覽遺留的舊 initScript），然後使用**第二階段 initScript**（逐字複製自[第二階段 — AI 自動化執行](/csd/demo/phase-2-attack/#ai-automated-execution)中的程式碼）以 `navigate_page` 導覽至 `http://$F5XC_DOMAINNAME/#/login`。此 initScript 儲存原生的 `setInterval`、`clearInterval`、`fetch` 和 `console.log`——由於此時尚無作用中的緩解措施，原生 `fetch` 參考是正確的
+2. **關閉歡迎橫幅** — 以 `press_key` 按下 `Escape` 關閉歡迎橫幅。後續訪問時橫幅可能不會出現（Cookie 已持久化）。Cookie 同意對話框會由 Escape 鍵自動關閉
+3. **等待完成** — 等待 10 秒，讓所有 CDN 腳本載入/錯誤回呼及 fetch promise 解析完成
+4. **擷取證據** — 以 `list_console_messages` 檢查是否有 `[CSD Demo] Simulation complete` 及 CDN 載入結果；以 `list_network_requests` 過濾 `script` 和 `fetch` 類型，驗證 HTTP 狀態碼（`200`/`201` 表示成功）
 
 <Aside type="caution">
-**zone.js 不相容性** — Juice Shop 使用 Angular 的 zone.js，它會修補 `setTimeout`、`setInterval`、`fetch`、`XMLHttpRequest` 和其他瀏覽器 API。這會導致 MCP `evaluate_script`、`fill` 和 `click` 工具出現 `Cannot read properties of undefined (reading 'call')` 錯誤。請改用 `navigate_page` 搭配 `initScript` — `initScript` 在 zone.js 載入之前執行，因此您可以儲存原生 API 參考並在輪詢回呼中使用它們。initScript 必須使用原生 `HTMLInputElement.prototype.value` setter（而非 `fill`）填寫表單欄位，並內聯執行偵測腳本（而非透過 `setTimeout`，zone.js 可能在頁面載入後攔截它）。詳情請參閱[觸發偵測 — AI 自動化執行](/csd/trigger-detection/#ai-automated-execution)。
+**zone.js 不相容性** — Juice Shop 使用 Angular 的 zone.js，它會修補 `setTimeout`、`setInterval`、`fetch`、`XMLHttpRequest` 及其他瀏覽器 API。這會導致 MCP 的 `evaluate_script`、`fill` 和 `click` 工具出現 `Cannot read properties of undefined (reading 'call')` 的錯誤。請改用帶有 `initScript` 的 `navigate_page`——`initScript` 在 zone.js 載入之前執行，因此您可以儲存原生 API 參考並在輪詢回呼中使用。initScript 必須使用原生 `HTMLInputElement.prototype.value` setter（而非 `fill`）填寫表單欄位，並以內聯方式執行偵測腳本（而非透過 zone.js 在頁面載入後可能攔截的 `setTimeout`）。詳情請參閱[觸發偵測 — AI 自動化執行](/csd/trigger-detection/#ai-automated-execution)。
 </Aside>
 
 <Aside type="note">
-**initScript 累積** — 每次帶有 `initScript` 參數的 `navigate_page` 呼叫都會將腳本新增到持久化清單中，該清單會在每次後續文件載入時執行。為避免過時腳本干擾，可以在兩次執行之間導航至 `about:blank`，或使用帶有 `isolatedContext` 的 `new_page` 以取得乾淨的瀏覽器上下文。
+**initScript 累積** — 每次帶有 `initScript` 參數的 `navigate_page` 呼叫都會將腳本加入一個持久清單，在每次後續文件載入時執行。為避免舊腳本造成干擾，請在執行之間導覽至 `about:blank`，或使用帶有 `isolatedContext` 的 `new_page` 以取得乾淨的瀏覽器內容。
 </Aside>
 
 ### 手動執行
 
-沒有瀏覽器自動化工具的操作人員使用與[第二階段 — 步驟 8：攻擊模擬](/csd/demo/phase-2-attack/#step-8-attack-simulation)相同的程序手動執行模擬：
+不具備瀏覽器自動化工具的操作人員可依照與[第二階段 — 步驟 8：攻擊模擬](/csd/demo/phase-2-attack/#step-8-attack-simulation)相同的程序手動執行模擬：
 
-1. 導航至 `http://xF5XC_DOMAINNAMEx/#/login`
-2. 在電子郵件和密碼欄位中輸入虛擬憑證（不要提交）
-3. 開啟 DevTools — 按 **F12** 並切換至 **Console** 標籤
-4. 貼上並執行來自[觸發偵測](/csd/trigger-detection/#run-the-combined-simulation-script)的組合偵測腳本
-5. 觀察主控台輸出 — 所有 CDN 腳本應成功載入，資料外洩呼叫應以 `200`/`201` 回應成功
+1. 導覽至 `http://xF5XC_DOMAINNAMEx/#/login`
+2. 在電子郵件和密碼欄位中輸入虛擬憑證（勿提交）
+3. 開啟 DevTools——按 **F12** 並切換至 **Console** 分頁
+4. 貼上並執行來自[觸發偵測](/csd/trigger-detection/#run-the-combined-simulation-script)的合併偵測腳本
+5. 觀察主控台輸出——所有 CDN 腳本應能載入，且外洩呼叫應以 `200`/`201` 回應成功
 
-### 證據 — 緩解前
+### 證據——緩解前
 
 | 檢查項目 | 預期結果（緩解前） | 狀態 |
 | --- | --- | --- |
-| CDN 腳本注入 | 所有 4 個腳本標籤載入 — 出現 `[Supply Chain] Loaded from` 訊息，網路標籤顯示 `200` | PASS |
-| 資料外洩 fetch 至 `www.httpbin.org` | 網路標籤顯示 `200` — 資料已傳送 | PASS |
-| 資料外洩 fetch 至 jsonplaceholder.typicode.com | 網路標籤顯示 `201` — 資料已傳送 | PASS |
+| CDN 腳本已注入 | 所有 4 個腳本標籤載入——出現 `[Supply Chain] Loaded from` 訊息，網路分頁顯示 `200` | PASS |
+| 外洩 fetch 至 `www.httpbin.org` | 網路分頁顯示 `200`——資料已傳送 | PASS |
+| 外洩 fetch 至 jsonplaceholder.typicode.com | 網路分頁顯示 `201`——資料已傳送 | PASS |
 | 主控台輸出 | `[CSD Demo] Simulation complete` | PASS |
 
 <Aside type="note">
-**使用網路請求驗證：** 最可靠的證據是**網路標籤**（或 AI 助手的 `list_network_requests`），而非主控台回呼。Juice Shop 中的 zone.js 可能會中斷 promise `.then()` 回呼和腳本 `onload` 處理程式，導致即使網路請求成功，主控台訊息也可能不完整。請始終將主控台輸出與網路請求狀態碼交叉比對。
+**以網路請求進行驗證：** 最可靠的證據是**網路分頁**（或 AI 助理的 `list_network_requests`），而非主控台回呼。Juice Shop 中的 zone.js 可能會破壞 promise `.then()` 回呼及腳本 `onload` 處理器，即使網路請求成功，也可能導致主控台訊息不完整。請務必以網路請求狀態碼交叉比對主控台輸出。
 </Aside>
 
 <Aside type="tip">
-這是基準線證明：在未啟用緩解措施的情況下，攻擊者的腳本可自由載入且資料外洩成功。儲存或截圖此證據 — 您將在步驟 5 中直接與「之後」的結果進行比較。
+這是基準線的證明：在沒有任何緩解措施的情況下，攻擊者的腳本可以自由載入，資料外洩也能成功。請儲存或截圖此證據——您將在步驟 5 中將其與「後」的結果直接比較。
 </Aside>
 
 ## 步驟 3：套用緩解措施
 
-對每個偵測到的網域，POST 至已緩解網域端點。第二階段模擬的主要目標是 4 個 CDN 注入網域和任何偵測到的資料外洩網域。
+針對每個已偵測到的網域，向已緩解網域端點發送 POST 請求。第二階段模擬的主要目標是 4 個 CDN 注入網域及任何已偵測到的資料外洩網域。
 
-**主要緩解目標**（來自組合模擬腳本）：
+**主要緩解目標**（來自合併模擬腳本）：
 
 | 網域 | 角色 |
 | --- | --- |
@@ -131,7 +131,7 @@ curl -s \
 | `jsonplaceholder.typicode.com` | 資料外洩端點 |
 
 <Aside type="note">
-POST 主體需要**同時設定** `metadata.name`（物件的識別碼）和 `spec.mitigated_domain`（CSD 將分類的網域字串）。兩者都必須設定 — `spec: {}` 會導致 `400` 錯誤。對於大多數網域，兩個欄位使用相同的值（例如 `cdn.jsdelivr.net`）。請參閱下方的 `httpbin.org` 例外情況。
+POST 請求主體需要**同時**包含 `metadata.name`（物件的識別碼）和 `spec.mitigated_domain`（CSD 將分類的網域字串）。兩個欄位都必須設定——`spec: {}` 會導致 `400` 錯誤。對於大多數網域，兩個欄位使用相同的值（例如 `cdn.jsdelivr.net`）。請參閱下方的 `httpbin.org` 例外情況。
 </Aside>
 
 **緩解網域**（每個網域執行一次）：
@@ -180,7 +180,7 @@ curl -s -X POST \
   "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
   | jq .
 
-# httpbin.org — use www.httpbin.org as mitigated_domain (see note below)
+# httpbin.org — 使用 www.httpbin.org 作為 mitigated_domain（詳見下方說明）
 curl -s -X POST \
   -H "Authorization: APIToken xF5XC_API_TOKENx" \
   -H "Content-Type: application/json" \
@@ -198,14 +198,14 @@ curl -s -X POST \
 ```
 
 <Aside type="note">
-**`httpbin.org` eTLD+1 限制：** API 會以 `"Invalid root domain: cannot derive eTLD+1"` 拒絕裸 eTLD+1 網域作為 `mitigated_domain` 值。使用 `www.httpbin.org` 作為 `spec.mitigated_domain` 值，同時保持 `httpbin.org` 作為 `metadata.name`。緩解措施已正確套用 — `name` 識別碼是出現在已緩解網域清單中的內容。任何在自訂模擬腳本中用作資料外洩目標的裸網域（無子網域）都會有相同的限制。
+**`httpbin.org` eTLD+1 限制：** API 會以 `"Invalid root domain: cannot derive eTLD+1"` 拒絕裸 eTLD+1 網域作為 `mitigated_domain` 值。請使用 `www.httpbin.org` 作為 `spec.mitigated_domain` 的值，同時保留 `httpbin.org` 作為 `metadata.name`。緩解措施會正確套用——`name` 識別碼是出現在已緩解網域清單中的值。在自訂模擬腳本中用作外洩目標的任何裸網域（無子網域）都有相同的限制。
 </Aside>
 
-`200` 回應會返回已建立的緩解網域物件。`409` 回應表示該網域已在緩解清單中 — 這是成功狀態。
+`200` 回應會返回已建立的緩解網域物件。`409` 回應表示該網域已在緩解清單中——這是成功條件。
 
-## 步驟 4：驗證緩解措施已套用
+## 步驟 4：確認緩解措施已套用
 
-列出所有已緩解網域並確認數量與剛提交的網域數量相符：
+列出所有已緩解的網域，並確認數量與剛才提交的網域數量相符：
 
 ```bash
 curl -s \
@@ -215,7 +215,7 @@ curl -s \
 ```
 
 <Aside type="note">
-已緩解網域清單端點對所有項目返回 null `metadata.name` — 個別網域名稱在清單回應中不可見。透過檢查項目數量是否等於 POST 請求數量（標準模擬為 6）來驗證。步驟 3 中每個個別 POST 的 `200` 回應是每個緩解措施已建立的權威證據。如果數量為 1 且具有 null 名稱的項目且未套用任何緩解措施，請將數量視為 0 — 這是後端產物（請參閱[飛行前檢查](/csd/demo/#pre-flight-check)了解判斷規則）。
+已緩解網域清單端點針對**所有**項目都返回 null 的 `metadata.name`——個別網域名稱在清單回應中不可見。請透過確認項目數量等於步驟 3 中發送的 POST 請求數量（標準模擬為 6）來進行驗證。步驟 3 中每個個別 POST 的 `200` 回應是每個緩解措施已建立的權威性證據。如果數量為 1 且有一個 null name 的項目，且沒有套用任何緩解措施，請將數量視為 0——這是後端的假象（決策規則請參閱[預先檢查](/csd/demo/#pre-flight-check)）。
 </Aside>
 
 ### 證據
@@ -223,76 +223,76 @@ curl -s \
 | 檢查項目 | 預期結果 | 狀態 |
 | --- | --- | --- |
 | 已緩解網域數量 | 6（與 POST 數量相符） | 若數量相符則 PASS |
-| 所有步驟 3 的 POST 返回 `200` 或 `409` | 每個網域已接受 | PASS |
+| 步驟 3 的所有 POST 均返回 `200` 或 `409` | 每個網域均已接受 | PASS |
 
-如果數量低於預期，請從步驟 3 重新執行缺失網域的 POST 命令。
+如果數量低於預期，請從步驟 3 重新執行遺失網域的 POST 命令。
 
-## 步驟 5：執行攻擊 — 緩解後
+## 步驟 5：執行攻擊——緩解後
 
-重新執行**完全相同的**組合模擬以擷取**「之後」快照**。模擬腳本完全相同 — 只有 CSD 的緩解狀態已改變。來自已緩解網域的腳本載入現在被 CSD JavaScript 封鎖（`&lt;script&gt;` 標籤的 `src` 被清除為空字串）。
+重新執行**完全相同的**合併模擬以擷取**「後」的快照**。模擬腳本完全相同——只有 CSD 的緩解狀態發生了變化。來自已緩解網域的腳本載入現在會被 CSD JavaScript 封鎖（`&lt;script&gt;` 標籤的 `src` 被清空為空字串）。
 
 <Aside type="note">
-此步驟使用與步驟 2 相同的瀏覽器自動化序列。差異不在於您執行了什麼 — 而在於您觀察到什麼。在緩解措施啟用的情況下，CSD 會封鎖來自已緩解網域的 `&lt;script&gt;` 標籤載入。對已緩解資料外洩網域的 Fetch API 呼叫仍會完成 — CSD 緩解針對的是腳本載入，而非 fetch/XHR。
+此步驟使用與步驟 2 相同的瀏覽器自動化序列。差異不在於您執行的內容——而在於您所觀察到的結果。在緩解措施生效後，CSD 會透過攔截 `&lt;script&gt;` 標籤的 `src` setter 來封鎖從已緩解網域載入腳本。向已緩解外洩網域發出的 Fetch API 呼叫仍會完成——CSD 緩解針對的是腳本載入，而非 fetch/XHR。
 </Aside>
 
 ### AI 自動化執行
 
-具有瀏覽器自動化工具的 AI 助手使用**相同的第二階段 initScript**（完整程式碼在[第二階段 — AI 自動化執行](/csd/demo/phase-2-attack/#ai-automated-execution)中）以程式方式重新執行攻擊模擬。initScript 儲存原生 `fetch` 以避免 zone.js 錯誤 — 這不影響 CSD 緩解，因為 CSD 不會攔截 `fetch()` 呼叫。
+具備瀏覽器自動化工具的 AI 助理可使用**相同的第二階段 initScript**（逐字複製自[第二階段 — AI 自動化執行](/csd/demo/phase-2-attack/#ai-automated-execution)）以程式方式重新執行攻擊模擬。initScript 儲存原生 `fetch` 以避免 zone.js 錯誤——這不影響 CSD 緩解，因為 CSD 不攔截 `fetch()` 呼叫。
 
-1. **使用 initScript 導航** — 使用帶有 `isolatedContext` 的 `new_page` 以取得乾淨的瀏覽器上下文（避免來自步驟 2 的過時 initScripts），然後導航至 `about:blank`，再使用**第二階段 initScript** 導航至登入頁面
-2. **關閉歡迎橫幅** — 使用 `press_key` 按下 `Escape`
+1. **以 initScript 導覽** — 使用帶有 `isolatedContext` 的 `new_page` 以取得乾淨的瀏覽器內容（避免步驟 2 遺留的舊 initScript），然後導覽至 `about:blank`，再以**第二階段 initScript** 導覽至登入頁面
+2. **關閉歡迎橫幅** — 以 `press_key` 按下 `Escape`
 3. **等待完成** — 等待 10 秒讓所有非同步回呼完成
-4. **擷取證據** — 使用 `list_console_messages` 檢查 `[CSD Demo] Simulation complete`；使用 `list_network_requests` 篩選 `script` 和 `fetch` 類型，觀察 CDN 腳本載入**不存在**（CSD 已清除腳本 src），而對資料外洩網域的 fetch 呼叫仍正常完成
+4. **擷取證據** — 以 `list_console_messages` 檢查是否有 `[CSD Demo] Simulation complete`；以 `list_network_requests` 過濾 `script` 和 `fetch` 類型，觀察 CDN 腳本載入**不存在**（CSD 清空了腳本 src），而對外洩網域的 fetch 呼叫仍正常完成
 
 ### 手動執行
 
-沒有瀏覽器自動化工具的操作人員使用與[第二階段 — 步驟 8：攻擊模擬](/csd/demo/phase-2-attack/#step-8-attack-simulation)相同的程序手動重新執行模擬：
+不具備瀏覽器自動化工具的操作人員可依照與[第二階段 — 步驟 8：攻擊模擬](/csd/demo/phase-2-attack/#step-8-attack-simulation)相同的程序手動重新執行模擬：
 
-1. 導航至 `http://xF5XC_DOMAINNAMEx/#/login`
-2. 在電子郵件和密碼欄位中輸入虛擬憑證（不要提交）
-3. 開啟 DevTools — 按 **F12** 並切換至 **Console** 標籤
-4. 貼上並執行來自[觸發偵測](/csd/trigger-detection/#run-the-combined-simulation-script)的組合偵測腳本
-5. 觀察主控台和網路輸出 — 已緩解網域的 CDN 腳本 `onload` 和 `onerror` 回呼不會觸發（CSD 將腳本 `src` 清除為空字串，完全阻止了網路請求）。對資料外洩網域（www.httpbin.org、jsonplaceholder.typicode.com）的 Fetch 呼叫**仍會完成**，回應為 `200`/`201` — CSD 緩解封鎖的是腳本載入，而非 fetch/XHR 呼叫
+1. 導覽至 `http://xF5XC_DOMAINNAMEx/#/login`
+2. 在電子郵件和密碼欄位中輸入虛擬憑證（勿提交）
+3. 開啟 DevTools——按 **F12** 並切換至 **Console** 分頁
+4. 貼上並執行來自[觸發偵測](/csd/trigger-detection/#run-the-combined-simulation-script)的合併偵測腳本
+5. 觀察主控台和網路輸出——已緩解網域的 CDN 腳本 `onload` 和 `onerror` 回呼不會觸發（CSD 將腳本 `src` 清空為空字串，完全阻止了網路請求）。向外洩網域（www.httpbin.org、jsonplaceholder.typicode.com）發出的 Fetch 呼叫**仍會完成**，返回 `200`/`201`——CSD 緩解封鎖的是腳本載入，而非 fetch/XHR 呼叫
 
-<Aside type="caution" title="緩解傳播時間">
-CSD JavaScript 預期會透過攔截 `&lt;script&gt;` 標籤的 `src` setter 來封鎖來自已緩解網域的腳本載入。然而，在透過 HTTP（連接埠 80）測試時，在套用緩解措施後 5 分鐘內未觀察到腳本 `src` 清除 — 所有 CDN 腳本繼續正常載入。這可能表示緩解傳播需要超過 5 分鐘，或者該機制在 HTTP 與 HTTPS 之間的行為不同。如果未觀察到緩解封鎖，請給予額外的傳播時間並驗證 CSD 遙測腳本已重新整理其設定。
+<Aside type="caution" title="緩解措施傳播時序">
+CSD JavaScript 預期會透過攔截 `&lt;script&gt;` 標籤的 `src` setter 來封鎖從已緩解網域載入腳本。然而，在 HTTP（連接埠 80）的測試中，套用緩解措施後 5 分鐘內並未觀察到腳本 `src` 被清空——所有 CDN 腳本仍繼續正常載入。這可能表示緩解措施的傳播需要超過 5 分鐘，或該機制在 HTTP 與 HTTPS 下的行為有所不同。如果未觀察到緩解封鎖，請等待更多傳播時間，並確認 CSD 遙測腳本已重新整理其設定。
 
-**Fetch 呼叫不會被 CSD 緩解攔截**（已驗證）。對已緩解網域（www.httpbin.org、jsonplaceholder.typicode.com）的資料外洩 fetch 呼叫在緩解前後仍正常完成，回應為 `200`/`201`。CSD 緩解針對的是供應鏈向量（惡意腳本載入），而非透過 fetch/XHR 的資料外洩。步驟 2 和步驟 5 均使用相同的第二階段 initScript（已儲存原生 `fetch`）。
+**Fetch 呼叫不被 CSD 緩解攔截**（已驗證）。向已緩解網域（www.httpbin.org、jsonplaceholder.typicode.com）發出的外洩 fetch 呼叫在緩解前後仍正常完成，返回 `200`/`201` 回應。CSD 緩解針對的是供應鏈向量（惡意腳本載入），而非透過 fetch/XHR 進行的資料外洩。步驟 2 和步驟 5 請使用相同的第二階段 initScript（已儲存原生 `fetch`）。
 </Aside>
 
-### 證據 — 緩解後
+### 證據——緩解後
 
 | 檢查項目 | 預期結果（緩解後） | 狀態 |
 | --- | --- | --- |
-| CDN 腳本載入 | **已封鎖** — 腳本不出現在網路標籤中（CSD 已將 `src` 清除為空字串） | PASS |
-| CDN 腳本回呼 | 已緩解網域的 `onload` 和 `onerror` 均不觸發 | PASS |
-| 資料外洩 fetch 至 `www.httpbin.org` | `200` — fetch 仍然完成（CSD 不攔截 fetch） | INFO |
-| 資料外洩 fetch 至 jsonplaceholder.typicode.com | `201` — fetch 仍然完成（CSD 不攔截 fetch） | INFO |
+| CDN 腳本載入 | **已封鎖** — 腳本不出現在網路分頁（CSD 將 `src` 清空為空字串） | PASS |
+| CDN 腳本回呼 | 已緩解網域的 `onload` 和 `onerror` 均未觸發 | PASS |
+| 外洩 fetch 至 `www.httpbin.org` | `200` — fetch 仍完成（CSD 不攔截 fetch） | INFO |
+| 外洩 fetch 至 jsonplaceholder.typicode.com | `201` — fetch 仍完成（CSD 不攔截 fetch） | INFO |
 | 主控台輸出 | `[CSD Demo] Simulation complete` | PASS |
 
 <Aside type="tip">
-**後端驗證是最可靠的證明。** 如果在示範時間範圍內未觀察到瀏覽器可見的腳本封鎖，請使用 `/detected_domains` API 回應作為主要證據。網域摘要中的 `mitigatedDomains` 數量和減少的 `actionNeededCount` 確認緩解措施在後端處於啟用狀態 — 即使瀏覽器中的 CSD JavaScript 尚未重新整理其設定以執行封鎖。
+**後端驗證是最可靠的證明。** 如果在示範時間內未觀察到瀏覽器端的腳本封鎖，請使用 `/detected_domains` API 回應作為主要證據。網域摘要中的 `mitigatedDomains` 數量及降低的 `actionNeededCount` 確認了緩解措施在後端是作用中的——即使瀏覽器中的 CSD JavaScript 尚未重新整理其設定以執行封鎖。
 </Aside>
 
-## 步驟 6：前後對比
+## 步驟 6：前後比較
 
-這是示範的成果展示 — 並排證據證明相同的攻擊、在相同的頁面上、使用相同的腳本，現在產生了完全不同的結果。
+這是示範的核心成果——並排比較的證據，證明在相同頁面、使用相同腳本執行的相同攻擊，現在產生了截然不同的結果。
 
-### 對比表
+### 比較表
 
-| 訊號 | 緩解前（步驟 2） | 緩解後（步驟 5） |
+| 信號 | 緩解前（步驟 2） | 緩解後（步驟 5） |
 | --- | --- | --- |
-| CDN 腳本載入 | `200` — 所有 4 個 CDN 腳本正常載入 | **已封鎖** — 腳本不出現在網路標籤中（CSD 已將 `src` 清除為空字串） |
+| CDN 腳本載入 | `200` — 所有 4 個 CDN 腳本正常載入 | **已封鎖** — 腳本不出現在網路分頁（CSD 將 `src` 清空為空字串） |
 | CDN `onload` 回呼 | 出現 `[Supply Chain] Loaded from` 訊息 | 無回呼觸發（未發出網路請求） |
-| 資料外洩至 `www.httpbin.org` | `200` — 資料已外洩 | `200` — fetch 仍然完成（CSD 不攔截 fetch） |
-| 資料外洩至 jsonplaceholder.typicode.com | `201` — 資料已外洩 | `201` — fetch 仍然完成（CSD 不攔截 fetch） |
+| 外洩至 `www.httpbin.org` | `200` — 資料已外洩 | `200` — fetch 仍完成（CSD 不攔截 fetch） |
+| 外洩至 jsonplaceholder.typicode.com | `201` — 資料已外洩 | `201` — fetch 仍完成（CSD 不攔截 fetch） |
 | CSD 已緩解網域 API | 0 個已緩解 | 6 個已緩解 |
 
-### 在後端資料中驗證緩解
+### 在後端資料中驗證緩解措施
 
-每 60 秒查詢 `/detected_domains` 一次，最多 10 次迭代（10 分鐘）。查詢返回後或達到 10 分鐘上限後，繼續進行對比表 — 這些檢查為資訊性質，不會阻擋第四階段。
+每隔 60 秒查詢 `/detected_domains`，最多查詢 10 次（10 分鐘）。查詢返回結果後或達到 10 分鐘上限後，請繼續進行比較表——這些檢查僅供參考，不阻擋第四階段。
 
-**檢查緩解後的偵測網域：**
+**查詢緩解後的已偵測網域：**
 
 ```bash
 curl -s \
@@ -301,7 +301,7 @@ curl -s \
   | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
 ```
 
-**檢查腳本的緩解狀態：**
+**查詢腳本的已緩解狀態：**
 
 ```bash
 NOW=$(date +%s)
@@ -318,15 +318,15 @@ curl -s -X POST \
 
 | 檢查項目 | 預期結果 | 狀態 |
 | --- | --- | --- |
-| 基準線乾淨（步驟 1） | 起始時 0 個已緩解網域 | PASS / FAIL |
-| 之前 — 攻擊成功（步驟 2） | 腳本載入，資料外洩返回 200/201 | PASS / FAIL |
-| 已套用緩解措施（步驟 3） | 所有 6 個網域已透過 POST 接受（200 或 409） | PASS / FAIL |
-| 已確認緩解數量（步驟 4） | 清單中有 6 個項目 | PASS / FAIL |
-| 之後 — 腳本載入已封鎖（步驟 5） | CDN 腳本不出現在網路標籤中，fetch 呼叫仍然完成 | PASS / FAIL |
-| 前後對比（步驟 6） | 步驟 2 和步驟 5 的證據有明顯差異 | PASS / FAIL |
+| 基準線乾淨（步驟 1） | 開始時 0 個已緩解網域 | PASS / FAIL |
+| 前——攻擊成功（步驟 2） | 腳本載入，外洩返回 200/201 | PASS / FAIL |
+| 緩解措施已套用（步驟 3） | 所有 6 個網域均透過 POST 接受（200 或 409） | PASS / FAIL |
+| 緩解數量已確認（步驟 4） | 清單中有 6 個項目 | PASS / FAIL |
+| 後——腳本載入已封鎖（步驟 5） | CDN 腳本不出現在網路分頁，fetch 呼叫仍完成 | PASS / FAIL |
+| 前後比較（步驟 6） | 步驟 2 與步驟 5 的證據有明顯差異 | PASS / FAIL |
 
 <Aside type="note">
-緩解後的偵測狀態更新可能需要一些時間才會出現在 API 回應中。如果網域在緩解後立即仍顯示「Action Needed」，請每 60 秒查詢 `/detected_domains` 一次，最多 10 次迭代（10 分鐘）。如果 10 次迭代後仍未更新，將當前狀態記錄為 INFO — 這不會阻擋第四階段。
+緩解後的偵測狀態更新可能需要時間才會出現在 API 回應中。如果網域在緩解後立即仍顯示「需要採取行動」，請每隔 60 秒查詢 `/detected_domains`，最多查詢 10 次（10 分鐘）。如果在 10 次查詢後仍未更新，請將目前狀態記錄為 INFO——這不阻擋第四階段。
 </Aside>
 
 ---

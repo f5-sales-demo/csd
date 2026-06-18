@@ -1,3 +1,17 @@
+🌐 English |
+[日本語](https://f5xc-salesdemos.github.io/csd/ja/) |
+[한국어](https://f5xc-salesdemos.github.io/csd/ko/) |
+[简体中文](https://f5xc-salesdemos.github.io/csd/zh-cn/) |
+[繁體中文](https://f5xc-salesdemos.github.io/csd/zh-tw/) |
+[Español](https://f5xc-salesdemos.github.io/csd/es/) |
+[Português](https://f5xc-salesdemos.github.io/csd/pt-br/) |
+[Français](https://f5xc-salesdemos.github.io/csd/fr/) |
+[Deutsch](https://f5xc-salesdemos.github.io/csd/de/) |
+[Italiano](https://f5xc-salesdemos.github.io/csd/it/) |
+[العربية](https://f5xc-salesdemos.github.io/csd/ar/) |
+[हिन्दी](https://f5xc-salesdemos.github.io/csd/hi/) |
+[ไทย](https://f5xc-salesdemos.github.io/csd/th/)
+
 # Client-Side Defense
 
 [![GitHub Pages Deploy](https://github.com/f5xc-salesdemos/csd/actions/workflows/github-pages-deploy.yml/badge.svg)](https://github.com/f5xc-salesdemos/csd/actions/workflows/github-pages-deploy.yml)

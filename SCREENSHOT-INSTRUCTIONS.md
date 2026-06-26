@@ -1559,7 +1559,7 @@ Both go in `docs/images/`. Example: `csd-dashboard-light.png`, `csd-dashboard-da
 Import the component and pass light/dark image paths:
 
 ```mdx
-import Screenshot from '@f5xc-salesdemos/docs-theme/components/Screenshot.astro';
+import Screenshot from '@f5-sales-demo/docs-theme/components/Screenshot.astro';
 
 {/* Both variants */}
 <Screenshot

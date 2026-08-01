@@ -750,23 +750,23 @@ IP श्रेणियां `192.0.2.0/24` (TEST-NET-1), `198.51.100.0/24`
 [RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) द्वारा
 दस्तावेज़ीकरण और उदाहरणों में उपयोग के लिए आरक्षित हैं। ये सार्वजनिक
 इंटरनेट पर **रूटेबल नहीं** हैं और कनेक्टिविटी परीक्षणों का कभी उत्तर नहीं देंगे।
-जब `F5XC_ORIGIN_IP` इनमें से किसी श्रेणी के पते पर सेट है, तो यह
-एक जानबूझकर किया गया दस्तावेज़ीकरण प्लेसहोल्डर है — गलत कॉन्फ़िगरेशन नहीं।
+इन श्रेणियों का `F5XC_ORIGIN_IP` दस्तावेज़ीकरण प्लेसहोल्डर है और आगे बढ़ने से
+पहले इसे अधिकृत लैब ऑरिजिन से बदलना आवश्यक है।
 </Aside>
 
-**स्किप कंडीशन जांच:** कनेक्टिविटी परीक्षण चलाने से पहले गणना करें कि ऑरिजिन IP एक RFC 5737 TEST-NET पता है या नहीं:
+**प्लेसहोल्डर गार्ड:** कनेक्टिविटी परीक्षण चलाने से पहले ऑरिजिन IP सत्यापित करें:
 
 ```bash
 echo "xF5XC_ORIGIN_IPx" | jq -Rs '{
-  check: "PF-T3-skip",
+  check: "PF-T3-origin-guard",
   origin_ip: (rtrimstr("\n")),
   is_test_net: (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")),
-  status: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "SKIP" else "CONTINUE" end),
-  detail: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "RFC 5737 TEST-NET address — not routable, connectivity testing skipped" else "Routable IP — proceed with connectivity tests" end)
+  status: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "FAIL" else "CONTINUE" end),
+  detail: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "RFC 5737 TEST-NET placeholder — set an authorized lab origin before continuing" else "Authorized origin candidate — proceed with connectivity tests" end)
 }'
 ```
 
-यदि `status` `SKIP` है, तो PF-T3-1 और PF-T3-2 को SKIP के रूप में रिकॉर्ड करें और T4 पर जाएं। अन्यथा, नीचे दी गई जांचें चलाएं।
+यदि `status` `FAIL` है, तो रुकें और प्लेसहोल्डर को अधिकृत लैब ऑरिजिन से बदलें। अन्यथा, नीचे दी गई जांचें चलाएं।
 
 #### PF-T3-1: ऑरिजिन सर्वर कनेक्टिविटी
 
@@ -787,7 +787,7 @@ echo "{\"http_code\": $HTTP_CODE}" | jq '{
 ```
 
 <Aside type="note">
-CSD डेमो के लिए डिफ़ॉल्ट ऑरिजिन `44.232.69.192:3000` पर Juice Shop एप्लिकेशन है। यदि आप कस्टम ऑरिजिन (`F5XC_ORIGIN_IP` / `F5XC_ORIGIN_PORT`) का उपयोग कर रहे हैं, तो सत्यापित करें कि यह फॉर्म फ़ील्ड वाला HTML पेज प्रदान करता है — CSD को डिटेक्शन क्षमताओं का प्रदर्शन करने के लिए फॉर्म तत्वों की आवश्यकता है।
+डिफ़ॉल्ट `.env.example` ऑरिजिन, `198.51.100.10:3000`, RFC 5737 का डॉक्यूमेंटेशन प्लेसहोल्डर है और रूट नहीं होता। पूरा डेमो चलाने से पहले `F5XC_ORIGIN_IP` और `F5XC_ORIGIN_PORT` को अपने अधिकृत लैब ऑरिजिन पर सेट करें, फिर सत्यापित करें कि यह फॉर्म फ़ील्ड वाला HTML पेज प्रदान करता है। CSD को डिटेक्शन क्षमताओं का प्रदर्शन करने के लिए फॉर्म तत्वों की आवश्यकता है।
 </Aside>
 
 #### PF-T3-2: ऑरिजिन HTML सामग्री प्रदान करता है
@@ -992,7 +992,7 @@ fi
 | `F5XC_LB_NAME` | **हां** | — | `example-lb-name`, `example-lb` |
 | `F5XC_EMAIL` | **हां** | — | `user@example.com` |
 | `F5XC_HC_NAME` | वैकल्पिक | `csd-hc` | — |
-| `F5XC_ORIGIN_IP` | वैकल्पिक | `44.232.69.192` | — |
+| `F5XC_ORIGIN_IP` | **हां** | — | `198.51.100.10` |
 | `F5XC_ORIGIN_POOL` | वैकल्पिक | `csd-origin` | — |
 | `F5XC_ORIGIN_PORT` | वैकल्पिक | `3000` | — |
 
@@ -1133,10 +1133,11 @@ F5XC_EMAIL=user@example.com
 F5XC_LB_NAME=example-lb-name
 F5XC_NAMESPACE=example-namespace
 F5XC_ROOT_DOMAIN=example.com
+F5XC_ORIGIN_IP=198.51.100.10
+# आवश्यक — ऊपर दिए गए non-routable documentation address को बदलें
 
-# Optional — Juice Shop demo defaults are used when not set
+# वैकल्पिक सेटिंग
 # F5XC_HC_NAME=csd-hc
-# F5XC_ORIGIN_IP=44.232.69.192
 # F5XC_ORIGIN_POOL=csd-origin
 # F5XC_ORIGIN_PORT=3000
 ```
@@ -1175,7 +1176,7 @@ curl कमांड में प्रत्येक `xTOKENx` प्ले�
 | `xF5XC_DOMAINNAMEx` | `app.example.com` | सुरक्षित करने के लिए FQDN |
 | `xF5XC_ROOT_DOMAINx` | `example.com` | CSD प्रोटेक्टेड डोमेन के लिए रूट डोमेन (eTLD+1) |
 | `xF5XC_ORIGIN_POOLx` | `csd-origin` | ऑरिजिन पूल नाम |
-| `xF5XC_ORIGIN_IPx` | `44.232.69.192` | ऑरिजिन सर्वर IP |
+| `xF5XC_ORIGIN_IPx` | `198.51.100.10` | ऑरिजिन सर्वर IP |
 | `xF5XC_ORIGIN_PORTx` | `3000` | ऑरिजिन सर्वर पोर्ट |
 | `xF5XC_HC_NAMEx` | `csd-hc` | हेल्थचेक नाम |
 
@@ -1226,7 +1227,7 @@ curl कमांड में प्रत्येक `xTOKENx` प्ले�
 | `xF5XC_DOMAINNAMEx` | सुरक्षित करने के लिए FQDN | `app.example.com` |
 | `xF5XC_ROOT_DOMAINx` | रूट डोमेन (eTLD+1) | `example.com` |
 | `xF5XC_ORIGIN_POOLx` | ऑरिजिन पूल नाम | `csd-origin` |
-| `xF5XC_ORIGIN_IPx` | ऑरिजिन सर्वर IP | `44.232.69.192` |
+| `xF5XC_ORIGIN_IPx` | ऑरिजिन सर्वर IP | `198.51.100.10` |
 | `xF5XC_ORIGIN_PORTx` | ऑरिजिन सर्वर पोर्ट | `3000` |
 | `xF5XC_HC_NAMEx` | हेल्थचेक नाम | `csd-hc` |
 

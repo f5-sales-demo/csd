@@ -33,19 +33,19 @@ if origin not in ipaddress.ip_network("198.51.100.0/24"):
     raise SystemExit("FAIL: F5XC_ORIGIN_IP is not in the origin-role TEST-NET-2 range")
 PY
 
-rg --quiet '^\| `F5XC_ORIGIN_IP` \| \*\*Yes\*\* \| — \| `198\.51\.100\.10` \|$' \
+grep -Eq '^\| `F5XC_ORIGIN_IP` \| \*\*Yes\*\* \| — \| `198\.51\.100\.10` \|$' \
   DEMO_READINESS_MATRIX.md || {
   echo "FAIL: TEST-NET origin is not treated as a required override" >&2
   exit 1
 }
 
-if rg --quiet 'PF-T3-skip|then "SKIP"' docs/*/demo/index.mdx; then
+if grep -Eq 'PF-T3-skip|then "SKIP"' docs/*/demo/index.mdx; then
   echo "FAIL: a TEST-NET origin can bypass readiness checks" >&2
   exit 1
 fi
 
 for file in docs/*/demo/index.mdx; do
-  rg --quiet 'check: "PF-T3-origin-guard"' "$file" || {
+  grep -Eq 'check: "PF-T3-origin-guard"' "$file" || {
     echo "FAIL: $file lacks the TEST-NET origin guard" >&2
     exit 1
   }

@@ -750,24 +750,23 @@ IP 範圍 `192.0.2.0/24`（TEST-NET-1）、`198.51.100.0/24`
 （TEST-NET-2）和 `203.0.113.0/24`（TEST-NET-3）由
 [RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) 保留，用於
 文件和範例。它們在公共網際網路上**不可路由**，
-永遠不會回應連線測試。當
-`F5XC_ORIGIN_IP` 設定為這些範圍之一的位址時，這是
-一個有意的文件佔位符 — 而非設定錯誤。
+永遠不會回應連線測試。這些範圍中的 `F5XC_ORIGIN_IP`
+是文件預留位址，必須在繼續之前替換為已授權的實驗室來源。
 </Aside>
 
-**跳過條件檢查：** 在執行連線測試之前，計算來源 IP 是否為 RFC 5737 TEST-NET 位址：
+**預留位址保護：** 在執行連線測試之前驗證來源 IP：
 
 ```bash
 echo "xF5XC_ORIGIN_IPx" | jq -Rs '{
-  check: "PF-T3-skip",
+  check: "PF-T3-origin-guard",
   origin_ip: (rtrimstr("\n")),
   is_test_net: (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")),
-  status: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "SKIP" else "CONTINUE" end),
-  detail: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "RFC 5737 TEST-NET address — not routable, connectivity testing skipped" else "Routable IP — proceed with connectivity tests" end)
+  status: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "FAIL" else "CONTINUE" end),
+  detail: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "RFC 5737 TEST-NET placeholder — set an authorized lab origin before continuing" else "Authorized origin candidate — proceed with connectivity tests" end)
 }'
 ```
 
-如果 `status` 為 `SKIP`，將 PF-T3-1 和 PF-T3-2 記錄為 SKIP 並移至 T4。否則，執行以下檢查。
+如果 `status` 為 `FAIL`，請停止並將預留位址替換為已授權的實驗室來源。否則，執行以下檢查。
 
 #### PF-T3-1：來源伺服器連線能力
 
@@ -788,7 +787,7 @@ echo "{\"http_code\": $HTTP_CODE}" | jq '{
 ```
 
 <Aside type="note">
-CSD 展示的預設來源是位於 `44.232.69.192:3000` 的 Juice Shop 應用程式。如果您使用自訂來源（`F5XC_ORIGIN_IP` / `F5XC_ORIGIN_PORT`），請驗證它提供帶有表單欄位的 HTML 頁面 — CSD 需要表單元素來展示偵測能力。
+`.env.example` 中的預設來源 `198.51.100.10:3000` 是 RFC 5737 文件預留位址，無法路由。在執行完整展示之前，請將 `F5XC_ORIGIN_IP` 和 `F5XC_ORIGIN_PORT` 設為已授權的實驗室來源，然後驗證它提供帶有表單欄位的 HTML 頁面。CSD 需要表單元素來展示偵測能力。
 </Aside>
 
 #### PF-T3-2：來源提供 HTML 內容
@@ -992,7 +991,7 @@ fi
 | `F5XC_LB_NAME` | **是** | — | `example-lb-name`、`example-lb` |
 | `F5XC_EMAIL` | **是** | — | `user@example.com` |
 | `F5XC_HC_NAME` | 選用 | `csd-hc` | — |
-| `F5XC_ORIGIN_IP` | 選用 | `44.232.69.192` | — |
+| `F5XC_ORIGIN_IP` | **是** | — | `198.51.100.10` |
 | `F5XC_ORIGIN_POOL` | 選用 | `csd-origin` | — |
 | `F5XC_ORIGIN_PORT` | 選用 | `3000` | — |
 
@@ -1112,10 +1111,11 @@ F5XC_EMAIL=user@example.com
 F5XC_LB_NAME=example-lb-name
 F5XC_NAMESPACE=example-namespace
 F5XC_ROOT_DOMAIN=example.com
+F5XC_ORIGIN_IP=198.51.100.10
+# 必填 — 替換上方無法路由的文件位址
 
-# Optional — Juice Shop demo defaults are used when not set
+# 選用設定
 # F5XC_HC_NAME=csd-hc
-# F5XC_ORIGIN_IP=44.232.69.192
 # F5XC_ORIGIN_POOL=csd-origin
 # F5XC_ORIGIN_PORT=3000
 ```
@@ -1154,7 +1154,7 @@ curl 命令中的每個 `xTOKENx` 佔位符直接對應到一個環境變數 —
 | `xF5XC_DOMAINNAMEx` | `app.example.com` | 要保護的 FQDN |
 | `xF5XC_ROOT_DOMAINx` | `example.com` | 根網域（eTLD+1），用於 CSD 受保護網域 |
 | `xF5XC_ORIGIN_POOLx` | `csd-origin` | 來源池名稱 |
-| `xF5XC_ORIGIN_IPx` | `44.232.69.192` | 來源伺服器 IP |
+| `xF5XC_ORIGIN_IPx` | `198.51.100.10` | 來源伺服器 IP |
 | `xF5XC_ORIGIN_PORTx` | `3000` | 來源伺服器連接埠 |
 | `xF5XC_HC_NAMEx` | `csd-hc` | 健康檢查名稱 |
 
@@ -1205,7 +1205,7 @@ curl 命令中的每個 `xTOKENx` 佔位符直接對應到一個環境變數 —
 | `xF5XC_DOMAINNAMEx` | 要保護的 FQDN | `app.example.com` |
 | `xF5XC_ROOT_DOMAINx` | 根網域（eTLD+1） | `example.com` |
 | `xF5XC_ORIGIN_POOLx` | 來源池名稱 | `csd-origin` |
-| `xF5XC_ORIGIN_IPx` | 來源伺服器 IP | `44.232.69.192` |
+| `xF5XC_ORIGIN_IPx` | 來源伺服器 IP | `198.51.100.10` |
 | `xF5XC_ORIGIN_PORTx` | 來源伺服器連接埠 | `3000` |
 | `xF5XC_HC_NAMEx` | 健康檢查名稱 | `csd-hc` |
 

@@ -753,24 +753,24 @@ As faixas de IP `192.0.2.0/24` (TEST-NET-1), `198.51.100.0/24`
 (TEST-NET-2) e `203.0.113.0/24` (TEST-NET-3) são reservadas pela
 [RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) para uso em
 documentação e exemplos. Elas **não são roteáveis** na internet pública
-e nunca responderão a testes de conectividade. Quando
-`F5XC_ORIGIN_IP` está definido como um endereço em uma dessas faixas, é
-um placeholder intencional de documentação — não uma configuração incorreta.
+e nunca responderão a testes de conectividade. Um endereço `F5XC_ORIGIN_IP`
+nessas faixas é um placeholder de documentação e deve ser substituído por uma
+origem de laboratório autorizada antes de continuar.
 </Aside>
 
-**Verificação de condição de pular:** Compute se o IP de origem é um endereço TEST-NET RFC 5737 antes de executar testes de conectividade:
+**Proteção contra placeholder:** Valide o IP de origem antes de executar testes de conectividade:
 
 ```bash
 echo "xF5XC_ORIGIN_IPx" | jq -Rs '{
-  check: "PF-T3-skip",
+  check: "PF-T3-origin-guard",
   origin_ip: (rtrimstr("\n")),
   is_test_net: (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")),
-  status: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "SKIP" else "CONTINUE" end),
-  detail: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "RFC 5737 TEST-NET address — not routable, connectivity testing skipped" else "Routable IP — proceed with connectivity tests" end)
+  status: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "FAIL" else "CONTINUE" end),
+  detail: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "RFC 5737 TEST-NET placeholder — set an authorized lab origin before continuing" else "Authorized origin candidate — proceed with connectivity tests" end)
 }'
 ```
 
-Se `status` for `SKIP`, registre PF-T3-1 e PF-T3-2 como SKIP e prossiga para T4. Caso contrário, execute as verificações abaixo.
+Se `status` for `FAIL`, pare e substitua o placeholder por uma origem de laboratório autorizada. Caso contrário, execute as verificações abaixo.
 
 #### PF-T3-1: Conectividade do Servidor de Origem
 
@@ -791,7 +791,7 @@ echo "{\"http_code\": $HTTP_CODE}" | jq '{
 ```
 
 <Aside type="note">
-A origem padrão para a demo do CSD é a aplicação Juice Shop em `44.232.69.192:3000`. Se você estiver usando uma origem personalizada (`F5XC_ORIGIN_IP` / `F5XC_ORIGIN_PORT`), verifique se ela serve uma página HTML com campos de formulário — o CSD precisa de elementos de formulário para demonstrar as capacidades de detecção.
+A origem padrão de `.env.example`, `198.51.100.10:3000`, é um espaço reservado para documentação da RFC 5737 e não é roteável. Configure `F5XC_ORIGIN_IP` e `F5XC_ORIGIN_PORT` com uma origem de laboratório autorizada antes de executar a demonstração completa e, em seguida, verifique se ela serve uma página HTML com campos de formulário. O CSD precisa de elementos de formulário para demonstrar as capacidades de detecção.
 </Aside>
 
 #### PF-T3-2: Origem Serve Conteúdo HTML
@@ -999,7 +999,7 @@ Resolva cada variável nesta ordem exata. Pare na primeira fonte que fornecer um
 | `F5XC_LB_NAME` | **Sim** | — | `example-lb-name`, `example-lb` |
 | `F5XC_EMAIL` | **Sim** | — | `user@example.com` |
 | `F5XC_HC_NAME` | Opcional | `csd-hc` | — |
-| `F5XC_ORIGIN_IP` | Opcional | `44.232.69.192` | — |
+| `F5XC_ORIGIN_IP` | **Sim** | — | `198.51.100.10` |
 | `F5XC_ORIGIN_POOL` | Opcional | `csd-origin` | — |
 | `F5XC_ORIGIN_PORT` | Opcional | `3000` | — |
 
@@ -1144,10 +1144,11 @@ F5XC_EMAIL=user@example.com
 F5XC_LB_NAME=example-lb-name
 F5XC_NAMESPACE=example-namespace
 F5XC_ROOT_DOMAIN=example.com
+F5XC_ORIGIN_IP=198.51.100.10
+# Obrigatório — substitua o endereço de documentação não roteável acima
 
-# Optional — Juice Shop demo defaults are used when not set
+# Configurações opcionais
 # F5XC_HC_NAME=csd-hc
-# F5XC_ORIGIN_IP=44.232.69.192
 # F5XC_ORIGIN_POOL=csd-origin
 # F5XC_ORIGIN_PORT=3000
 ```
@@ -1186,7 +1187,7 @@ Cada placeholder `xTOKENx` nos comandos curl mapeia diretamente para uma variáv
 | `xF5XC_DOMAINNAMEx` | `app.example.com` | FQDN a proteger |
 | `xF5XC_ROOT_DOMAINx` | `example.com` | Domínio raiz (eTLD+1) para domínio protegido CSD |
 | `xF5XC_ORIGIN_POOLx` | `csd-origin` | Nome do origin pool |
-| `xF5XC_ORIGIN_IPx` | `44.232.69.192` | IP do servidor de origem |
+| `xF5XC_ORIGIN_IPx` | `198.51.100.10` | IP do servidor de origem |
 | `xF5XC_ORIGIN_PORTx` | `3000` | Porta do servidor de origem |
 | `xF5XC_HC_NAMEx` | `csd-hc` | Nome do healthcheck |
 
@@ -1237,7 +1238,7 @@ Os valores são resolvidos usando o protocolo determinístico definido no [Proto
 | `xF5XC_DOMAINNAMEx` | FQDN a proteger | `app.example.com` |
 | `xF5XC_ROOT_DOMAINx` | Domínio raiz (eTLD+1) | `example.com` |
 | `xF5XC_ORIGIN_POOLx` | Nome do origin pool | `csd-origin` |
-| `xF5XC_ORIGIN_IPx` | IP do servidor de origem | `44.232.69.192` |
+| `xF5XC_ORIGIN_IPx` | IP do servidor de origem | `198.51.100.10` |
 | `xF5XC_ORIGIN_PORTx` | Porta do servidor de origem | `3000` |
 | `xF5XC_HC_NAMEx` | Nome do healthcheck | `csd-hc` |
 

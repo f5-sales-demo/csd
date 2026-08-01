@@ -128,10 +128,10 @@ async function sleep(ms) {
           return i.type === 'password' || (i.name && i.name.toLowerCase().indexOf('password') >= 0);
         });
         fillField(email, 'test@example.com');
-        fillField(pw, 'P@ssword123');
+        fillField(pw, '<DEMO_PASSWORD>');
         return 'inputs=' + info.join(' | ') +
-          ' => email=' + (email ? email.value : 'NOT FOUND') +
-          ' pw=' + (pw ? pw.value : 'NOT FOUND');
+          ' => email=' + (email ? 'SET' : 'NOT FOUND') +
+          ' pw=' + (pw ? 'SET' : 'NOT FOUND');
       })()`,
       returnByValue: true,
     });

@@ -11,13 +11,13 @@
 | `F5XC_ROOT_DOMAIN` | **Yes** | — | `example.com` |
 | `F5XC_LB_NAME` | **Yes** | — | `example-lb-name`, `example-lb` |
 | `F5XC_EMAIL` | **Yes** | — | `user@example.com` |
+| `F5XC_ORIGIN_IP` | **Yes** | — | `198.51.100.10` |
 
 ## Optional Variables
 
 | Variable | Default |
 | --- | --- |
 | `F5XC_HC_NAME` | `csd-hc` |
-| `F5XC_ORIGIN_IP` | `192.0.2.1` |
 | `F5XC_ORIGIN_POOL` | `csd-origin` |
 | `F5XC_ORIGIN_PORT` | `3000` |
 
@@ -155,15 +155,16 @@ deterministic `{check, status, detail}` object via jq.
 
 ### T3: Origin Health
 
-WARN only — does not block execution.
+The placeholder guard blocks execution. Connectivity and content checks warn
+only after an authorized origin passes the guard.
 
-**Skip condition:** A computed check (`PF-T3-skip`) pipes
+**Placeholder guard:** A computed check (`PF-T3-origin-guard`) pipes
 `F5XC_ORIGIN_IP` through `jq -Rs` to test against RFC 5737 TEST-NET
 ranges (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`). jq
 outputs `{check, origin_ip, is_test_net, status, detail}` where
-`status` is SKIP if the IP matches a TEST-NET range, CONTINUE
-otherwise. If SKIP, record PF-T3-1 and PF-T3-2 as SKIP and proceed
-to T4. These ranges are reserved for documentation per
+`status` is FAIL if the IP matches a TEST-NET range and CONTINUE
+otherwise. If FAIL, stop until the operator supplies an authorized lab origin.
+These ranges are reserved for documentation per
 [RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) and will
 never respond to connectivity tests.
 

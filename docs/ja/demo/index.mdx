@@ -744,24 +744,24 @@ IPレンジ`192.0.2.0/24`（TEST-NET-1）、`198.51.100.0/24`
 ドキュメントおよびサンプルでの使用のために
 [RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737)によって
 予約されています。これらはパブリックインターネット上では**ルーティング不可能**であり、
-接続テストに応答することはありません。
-`F5XC_ORIGIN_IP`がこれらのレンジのいずれかのアドレスに設定されている場合、
-それは意図的なドキュメントのプレースホルダーです — 設定ミスではありません。
+接続テストに応答することはありません。これらのレンジの
+`F5XC_ORIGIN_IP`は文書用プレースホルダーであり、続行する前に
+許可されたラボのオリジンに置き換える必要があります。
 </Aside>
 
-**スキップ条件のチェック:** 接続テストを実行する前に、オリジンIPがRFC 5737 TEST-NETアドレスかどうかを計算します:
+**プレースホルダーガード:** 接続テストを実行する前にオリジンIPを検証します:
 
 ```bash
 echo "xF5XC_ORIGIN_IPx" | jq -Rs '{
-  check: "PF-T3-skip",
+  check: "PF-T3-origin-guard",
   origin_ip: (rtrimstr("\n")),
   is_test_net: (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")),
-  status: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "SKIP" else "CONTINUE" end),
-  detail: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "RFC 5737 TEST-NET address — not routable, connectivity testing skipped" else "Routable IP — proceed with connectivity tests" end)
+  status: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "FAIL" else "CONTINUE" end),
+  detail: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "RFC 5737 TEST-NET placeholder — set an authorized lab origin before continuing" else "Authorized origin candidate — proceed with connectivity tests" end)
 }'
 ```
 
-`status`が`SKIP`の場合、PF-T3-1とPF-T3-2をSKIPとして記録し、T4に移動します。それ以外の場合は、以下のチェックを実行します。
+`status`が`FAIL`の場合は停止し、プレースホルダーを許可されたラボのオリジンに置き換えます。それ以外の場合は、以下のチェックを実行します。
 
 #### PF-T3-1: オリジンサーバーの接続性
 
@@ -782,7 +782,7 @@ echo "{\"http_code\": $HTTP_CODE}" | jq '{
 ```
 
 <Aside type="note">
-CSDデモのデフォルトオリジンは、`192.0.2.1:3000`のJuice Shopアプリケーションです。カスタムオリジン（`F5XC_ORIGIN_IP` / `F5XC_ORIGIN_PORT`）を使用している場合は、フォームフィールドを含むHTMLページを提供していることを確認してください — CSDは検出機能をデモするためにフォーム要素を必要とします。
+`.env.example` のデフォルトオリジン `198.51.100.10:3000` は RFC 5737 の文書用プレースホルダーであり、ルーティングされません。完全なデモを実行する前に、`F5XC_ORIGIN_IP` と `F5XC_ORIGIN_PORT` を許可されたラボのオリジンに設定し、フォームフィールドを含む HTML ページを提供していることを確認してください。CSD は検出機能をデモするためにフォーム要素を必要とします。
 </Aside>
 
 #### PF-T3-2: オリジンがHTMLコンテンツを提供しているか
@@ -984,7 +984,7 @@ fi
 | `F5XC_LB_NAME` | **はい** | — | `example-lb-name`、`example-lb` |
 | `F5XC_EMAIL` | **はい** | — | `user@example.com` |
 | `F5XC_HC_NAME` | オプション | `csd-hc` | — |
-| `F5XC_ORIGIN_IP` | オプション | `192.0.2.1` | — |
+| `F5XC_ORIGIN_IP` | **はい** | — | `198.51.100.10` |
 | `F5XC_ORIGIN_POOL` | オプション | `csd-origin` | — |
 | `F5XC_ORIGIN_PORT` | オプション | `3000` | — |
 
@@ -1103,10 +1103,11 @@ F5XC_EMAIL=user@example.com
 F5XC_LB_NAME=example-lb-name
 F5XC_NAMESPACE=example-namespace
 F5XC_ROOT_DOMAIN=example.com
+F5XC_ORIGIN_IP=198.51.100.10
+# 必須 — 上記のルーティングされない文書用アドレスを置き換える
 
-# オプション — 設定されていない場合はJuice Shopデモのデフォルトが使用される
+# オプション設定
 # F5XC_HC_NAME=csd-hc
-# F5XC_ORIGIN_IP=192.0.2.1
 # F5XC_ORIGIN_POOL=csd-origin
 # F5XC_ORIGIN_PORT=3000
 ```
@@ -1145,7 +1146,7 @@ curlコマンド内の各`xTOKENx`プレースホルダーは環境変数に直�
 | `xF5XC_DOMAINNAMEx` | `app.example.com` | 保護するFQDN |
 | `xF5XC_ROOT_DOMAINx` | `example.com` | CSD保護ドメインのルートドメイン（eTLD+1） |
 | `xF5XC_ORIGIN_POOLx` | `csd-origin` | オリジンプール名 |
-| `xF5XC_ORIGIN_IPx` | `192.0.2.1` | オリジンサーバーIP |
+| `xF5XC_ORIGIN_IPx` | `198.51.100.10` | オリジンサーバーIP |
 | `xF5XC_ORIGIN_PORTx` | `3000` | オリジンサーバーポート |
 | `xF5XC_HC_NAMEx` | `csd-hc` | ヘルスチェック名 |
 
@@ -1196,7 +1197,7 @@ curlコマンド内の各`xTOKENx`プレースホルダーは環境変数に直�
 | `xF5XC_DOMAINNAMEx` | 保護するFQDN | `app.example.com` |
 | `xF5XC_ROOT_DOMAINx` | ルートドメイン（eTLD+1） | `example.com` |
 | `xF5XC_ORIGIN_POOLx` | オリジンプール名 | `csd-origin` |
-| `xF5XC_ORIGIN_IPx` | オリジンサーバーIP | `192.0.2.1` |
+| `xF5XC_ORIGIN_IPx` | オリジンサーバーIP | `198.51.100.10` |
 | `xF5XC_ORIGIN_PORTx` | オリジンサーバーポート | `3000` |
 | `xF5XC_HC_NAMEx` | ヘルスチェック名 | `csd-hc` |
 

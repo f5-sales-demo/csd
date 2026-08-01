@@ -752,23 +752,23 @@ echo "$NS_RECORDS" | jq -Rs '{
 (TEST-NET-2) و`203.0.113.0/24` (TEST-NET-3) محجوزة بموجب
 [RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) للاستخدام في
 التوثيق والأمثلة. وهي **غير قابلة للتوجيه** على الإنترنت العام ولن ترد
-أبدًا على اختبارات الاتصالية. عندما يُعيَّن `F5XC_ORIGIN_IP` لعنوان
-في أحد هذه النطاقات، فهو عنصر توثيق نائب مقصود — وليس خطأ في التكوين.
+أبدًا على اختبارات الاتصالية. عنوان `F5XC_ORIGIN_IP` في هذه النطاقات
+هو عنصر توثيق نائب ويجب استبداله بمصدر مختبر مصرح به قبل المتابعة.
 </Aside>
 
-**فحص حالة التخطي:** احسب ما إذا كان عنوان IP المصدر هو عنوان TEST-NET وفق RFC 5737 قبل تشغيل اختبارات الاتصالية:
+**حاجز العنصر النائب:** تحقق من عنوان IP المصدر قبل تشغيل اختبارات الاتصالية:
 
 ```bash
 echo "xF5XC_ORIGIN_IPx" | jq -Rs '{
-  check: "PF-T3-skip",
+  check: "PF-T3-origin-guard",
   origin_ip: (rtrimstr("\n")),
   is_test_net: (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")),
-  status: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "SKIP" else "CONTINUE" end),
-  detail: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "RFC 5737 TEST-NET address — not routable, connectivity testing skipped" else "Routable IP — proceed with connectivity tests" end)
+  status: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "FAIL" else "CONTINUE" end),
+  detail: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "RFC 5737 TEST-NET placeholder — set an authorized lab origin before continuing" else "Authorized origin candidate — proceed with connectivity tests" end)
 }'
 ```
 
-إذا كانت `status` تساوي `SKIP`، سجّل PF-T3-1 وPF-T3-2 كـ SKIP وانتقل إلى T4. وإلا، قم بتشغيل الفحوصات أدناه.
+إذا كانت `status` تساوي `FAIL`، فتوقف واستبدل العنصر النائب بمصدر مختبر مصرح به. وإلا، قم بتشغيل الفحوصات أدناه.
 
 #### PF-T3-1: اتصالية خادم المصدر
 
@@ -789,7 +789,7 @@ echo "{\"http_code\": $HTTP_CODE}" | jq '{
 ```
 
 <Aside type="note">
-المصدر الافتراضي لعرض CSD التوضيحي هو تطبيق Juice Shop على `192.0.2.1:3000`. إذا كنت تستخدم مصدرًا مخصصًا (`F5XC_ORIGIN_IP` / `F5XC_ORIGIN_PORT`)، تحقق من أنه يقدم صفحة HTML تحتوي على حقول نموذج — يحتاج CSD إلى عناصر نموذج لإثبات قدرات الكشف.
+عنوان المصدر الافتراضي في `.env.example`، وهو `198.51.100.10:3000`، عنصر نائب للتوثيق وفق RFC 5737 ولا يمكن توجيهه. اضبط `F5XC_ORIGIN_IP` و`F5XC_ORIGIN_PORT` على مصدر مختبر مصرح به قبل تشغيل العرض التوضيحي الكامل، ثم تحقق من أنه يقدم صفحة HTML تحتوي على حقول نموذج. يحتاج CSD إلى عناصر نموذج لإثبات قدرات الكشف.
 </Aside>
 
 #### PF-T3-2: يقدم المصدر محتوى HTML
@@ -995,7 +995,7 @@ fi
 | `F5XC_LB_NAME` | **نعم** | — | `example-lb-name`، `example-lb` |
 | `F5XC_EMAIL` | **نعم** | — | `user@example.com` |
 | `F5XC_HC_NAME` | اختياري | `csd-hc` | — |
-| `F5XC_ORIGIN_IP` | اختياري | `192.0.2.1` | — |
+| `F5XC_ORIGIN_IP` | **نعم** | — | `198.51.100.10` |
 | `F5XC_ORIGIN_POOL` | اختياري | `csd-origin` | — |
 | `F5XC_ORIGIN_PORT` | اختياري | `3000` | — |
 
@@ -1116,10 +1116,11 @@ F5XC_EMAIL=user@example.com
 F5XC_LB_NAME=example-lb-name
 F5XC_NAMESPACE=example-namespace
 F5XC_ROOT_DOMAIN=example.com
+F5XC_ORIGIN_IP=198.51.100.10
+# مطلوب — استبدل عنوان التوثيق غير القابل للتوجيه أعلاه
 
-# اختياري — يُستخدم افتراضي عرض Juice Shop التوضيحي عند عدم التحديد
+# إعدادات اختيارية
 # F5XC_HC_NAME=csd-hc
-# F5XC_ORIGIN_IP=192.0.2.1
 # F5XC_ORIGIN_POOL=csd-origin
 # F5XC_ORIGIN_PORT=3000
 ```
@@ -1158,7 +1159,7 @@ export F5XC_API_TOKEN=$(echo "$F5XC_API_TOKEN" | tr -d "'")
 | `xF5XC_DOMAINNAMEx` | `app.example.com` | FQDN للحماية |
 | `xF5XC_ROOT_DOMAINx` | `example.com` | النطاق الجذري (eTLD+1) لنطاق CSD المحمي |
 | `xF5XC_ORIGIN_POOLx` | `csd-origin` | اسم مجمّع المصادر |
-| `xF5XC_ORIGIN_IPx` | `192.0.2.1` | عنوان IP لخادم المصدر |
+| `xF5XC_ORIGIN_IPx` | `198.51.100.10` | عنوان IP لخادم المصدر |
 | `xF5XC_ORIGIN_PORTx` | `3000` | منفذ خادم المصدر |
 | `xF5XC_HC_NAMEx` | `csd-hc` | اسم الفحص الصحي |
 
@@ -1209,7 +1210,7 @@ export F5XC_API_TOKEN=$(echo "$F5XC_API_TOKEN" | tr -d "'")
 | `xF5XC_DOMAINNAMEx` | FQDN للحماية | `app.example.com` |
 | `xF5XC_ROOT_DOMAINx` | النطاق الجذري (eTLD+1) | `example.com` |
 | `xF5XC_ORIGIN_POOLx` | اسم مجمّع المصادر | `csd-origin` |
-| `xF5XC_ORIGIN_IPx` | عنوان IP لخادم المصدر | `192.0.2.1` |
+| `xF5XC_ORIGIN_IPx` | عنوان IP لخادم المصدر | `198.51.100.10` |
 | `xF5XC_ORIGIN_PORTx` | منفذ خادم المصدر | `3000` |
 | `xF5XC_HC_NAMEx` | اسم الفحص الصحي | `csd-hc` |
 

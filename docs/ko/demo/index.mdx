@@ -749,24 +749,24 @@ IP 범위 `192.0.2.0/24`(TEST-NET-1), `198.51.100.0/24`(TEST-NET-2),
 `203.0.113.0/24`(TEST-NET-3)은
 [RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737)에 의해
 문서와 예제에서 사용하도록 예약되어 있습니다. 이들은 공용 인터넷에서
-**라우팅되지 않으며** 연결 테스트에 절대 응답하지 않습니다.
-`F5XC_ORIGIN_IP`가 이러한 범위의 주소로 설정된 경우, 이는
-의도적인 문서용 플레이스홀더이며 잘못된 구성이 아닙니다.
+**라우팅되지 않으며** 연결 테스트에 절대 응답하지 않습니다. 이러한 범위의
+`F5XC_ORIGIN_IP`는 문서용 자리 표시자이며 계속하기 전에 승인된 랩 오리진으로
+교체해야 합니다.
 </Aside>
 
-**건너뛰기 조건 검사:** 연결 테스트를 실행하기 전에 오리진 IP가 RFC 5737 TEST-NET 주소인지 계산합니다:
+**자리 표시자 가드:** 연결 테스트를 실행하기 전에 오리진 IP를 검증합니다:
 
 ```bash
 echo "xF5XC_ORIGIN_IPx" | jq -Rs '{
-  check: "PF-T3-skip",
+  check: "PF-T3-origin-guard",
   origin_ip: (rtrimstr("\n")),
   is_test_net: (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")),
-  status: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "SKIP" else "CONTINUE" end),
-  detail: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "RFC 5737 TEST-NET address — not routable, connectivity testing skipped" else "Routable IP — proceed with connectivity tests" end)
+  status: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "FAIL" else "CONTINUE" end),
+  detail: (if (rtrimstr("\n") | test("^192\\.0\\.2\\.|^198\\.51\\.100\\.|^203\\.0\\.113\\.")) then "RFC 5737 TEST-NET placeholder — set an authorized lab origin before continuing" else "Authorized origin candidate — proceed with connectivity tests" end)
 }'
 ```
 
-`status`가 `SKIP`이면 PF-T3-1과 PF-T3-2를 SKIP으로 기록하고 T4로 이동합니다. 그렇지 않으면 아래 검사를 실행합니다.
+`status`가 `FAIL`이면 중지하고 자리 표시자를 승인된 랩 오리진으로 교체합니다. 그렇지 않으면 아래 검사를 실행합니다.
 
 #### PF-T3-1: 오리진 서버 연결성
 
@@ -787,7 +787,7 @@ echo "{\"http_code\": $HTTP_CODE}" | jq '{
 ```
 
 <Aside type="note">
-CSD 데모의 기본 오리진은 `192.0.2.1:3000`의 Juice Shop 애플리케이션입니다. 사용자 정의 오리진(`F5XC_ORIGIN_IP` / `F5XC_ORIGIN_PORT`)을 사용하는 경우, 폼 필드가 있는 HTML 페이지를 제공하는지 확인하십시오 — CSD는 탐지 기능을 시연하기 위해 폼 요소가 필요합니다.
+기본 `.env.example` 오리진인 `198.51.100.10:3000`은 RFC 5737 문서용 자리 표시자이며 라우팅되지 않습니다. 전체 데모를 실행하기 전에 `F5XC_ORIGIN_IP`와 `F5XC_ORIGIN_PORT`를 승인된 랩 오리진으로 설정한 다음, 폼 필드가 있는 HTML 페이지를 제공하는지 확인하십시오. CSD는 탐지 기능을 시연하기 위해 폼 요소가 필요합니다.
 </Aside>
 
 #### PF-T3-2: 오리진 HTML 콘텐츠 제공 여부
@@ -993,7 +993,7 @@ fi
 | `F5XC_LB_NAME` | **예** | — | `example-lb-name`, `example-lb` |
 | `F5XC_EMAIL` | **예** | — | `user@example.com` |
 | `F5XC_HC_NAME` | 선택 | `csd-hc` | — |
-| `F5XC_ORIGIN_IP` | 선택 | `192.0.2.1` | — |
+| `F5XC_ORIGIN_IP` | **예** | — | `198.51.100.10` |
 | `F5XC_ORIGIN_POOL` | 선택 | `csd-origin` | — |
 | `F5XC_ORIGIN_PORT` | 선택 | `3000` | — |
 
@@ -1138,10 +1138,11 @@ F5XC_EMAIL=user@example.com
 F5XC_LB_NAME=example-lb-name
 F5XC_NAMESPACE=example-namespace
 F5XC_ROOT_DOMAIN=example.com
+F5XC_ORIGIN_IP=198.51.100.10
+# 필수 — 위의 라우팅되지 않는 문서용 주소를 교체해야 함
 
-# Optional — Juice Shop demo defaults are used when not set
+# 선택 설정
 # F5XC_HC_NAME=csd-hc
-# F5XC_ORIGIN_IP=192.0.2.1
 # F5XC_ORIGIN_POOL=csd-origin
 # F5XC_ORIGIN_PORT=3000
 ```
@@ -1180,7 +1181,7 @@ curl 명령의 각 `xTOKENx` 플레이스홀더는 환경 변수에 직접 매�
 | `xF5XC_DOMAINNAMEx` | `app.example.com` | 보호할 FQDN |
 | `xF5XC_ROOT_DOMAINx` | `example.com` | CSD 보호 도메인의 루트 도메인(eTLD+1) |
 | `xF5XC_ORIGIN_POOLx` | `csd-origin` | 오리진 풀 이름 |
-| `xF5XC_ORIGIN_IPx` | `192.0.2.1` | 오리진 서버 IP |
+| `xF5XC_ORIGIN_IPx` | `198.51.100.10` | 오리진 서버 IP |
 | `xF5XC_ORIGIN_PORTx` | `3000` | 오리진 서버 포트 |
 | `xF5XC_HC_NAMEx` | `csd-hc` | 헬스체크 이름 |
 
@@ -1231,7 +1232,7 @@ curl 명령의 각 `xTOKENx` 플레이스홀더는 환경 변수에 직접 매�
 | `xF5XC_DOMAINNAMEx` | 보호할 FQDN | `app.example.com` |
 | `xF5XC_ROOT_DOMAINx` | 루트 도메인(eTLD+1) | `example.com` |
 | `xF5XC_ORIGIN_POOLx` | 오리진 풀 이름 | `csd-origin` |
-| `xF5XC_ORIGIN_IPx` | 오리진 서버 IP | `192.0.2.1` |
+| `xF5XC_ORIGIN_IPx` | 오리진 서버 IP | `198.51.100.10` |
 | `xF5XC_ORIGIN_PORTx` | 오리진 서버 포트 | `3000` |
 | `xF5XC_HC_NAMEx` | 헬스체크 이름 | `csd-hc` |
 

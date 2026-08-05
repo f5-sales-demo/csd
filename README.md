@@ -22,7 +22,7 @@ F5 XC client-side defense
 
 ## Documentation
 
-Full documentation is available at **[https://f5-sales-demo.github.io/csd/](https://f5-sales-demo.github.io/csd/)**.
+Full documentation is available at __[https://f5-sales-demo.github.io/csd/](https://f5-sales-demo.github.io/csd/)__.
 
 ## Contributing
 

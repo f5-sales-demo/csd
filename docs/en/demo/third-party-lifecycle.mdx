@@ -1,0 +1,176 @@
+---
+title: "Third-party lifecycle"
+description: "Detect, mitigate, block, and restore a behaving third-party checkout script"
+sidebar:
+  order: 6
+  label: "Third-party lifecycle"
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+This repository-backed exercise proves the full Client-Side Defense lifecycle with one behaving
+third-party script. The
+[`webapp-api-protection`](https://github.com/f5-sales-demo/webapp-api-protection) checkout loads
+`/csd-demo/checkout.js` from a separately deployed
+[`cdn-simulator`](https://github.com/f5-sales-demo/cdn-simulator) edge. The script reads synthetic
+payment fields, so CSD inventories the edge host as a High Risk third-party domain.
+
+The `csd_cdn_simulator_host` Terraform value supplies both the page's script host and the mitigation
+target. This exact-host relationship makes the detect, mitigate, and block result deterministic.
+Use an FQDN, not a raw IP.
+
+<Aside type="note">
+This scenario uses synthetic values against the authorized F5 demo application. It complements the
+standalone API exercise in the other demo pages.
+</Aside>
+
+## Prerequisites
+
+- Deployed `webapp-api-protection` and `cdn-simulator` plans. The simulator must origin-pull the web
+  application's origin.
+- `csd_cdn_simulator_host` set to the simulator's `edge_fqdn` output.
+- A real-client workstation with Google Chrome, Node.js, and current checkouts of
+  `webapp-api-protection` and `traffic-generator`.
+- `XCSH_API_URL` and `XCSH_API_TOKEN` available through the approved credential store.
+- The web application Terraform backend and Azure authentication configured as described in its
+  [Terraform README](https://github.com/f5-sales-demo/webapp-api-protection/tree/main/terraform).
+
+Export paths and deployment-specific hostnames:
+
+```bash
+export LB_FQDN="<protected-application-fqdn>"
+export CSD_CDN_HOST="<cdn-simulator-edge-fqdn>"
+export WEBAPP_REPO="<path-to-webapp-api-protection-checkout>"
+export TRAFFIC_REPO="<path-to-traffic-generator-checkout>"
+```
+
+## Phase 1: Build and validate the topology
+
+Verify that the edge FQDN resolves, the edge serves the skimmer, and the checkout HTML references
+the exact same host:
+
+```bash
+dig +short "$CSD_CDN_HOST"
+curl --fail --silent --output /dev/null \
+  "http://$CSD_CDN_HOST/csd-demo/checkout.js"
+curl --fail --silent "http://$LB_FQDN/csd-demo/" \
+  | grep --fixed-strings "http://$CSD_CDN_HOST/csd-demo/checkout.js"
+```
+
+All three checks must succeed before generating traffic. A host mismatch prevents the CSD
+mitigated-domain object from controlling the script that the browser loads.
+
+## Phase 2: Drive the population and verify detection
+
+CSD requires multiple distinct real-browser fingerprints for this scenario. Prepare Playwright in
+a temporary directory, record the population epoch, and drive eight headed Chrome sessions:
+
+```bash
+PLAYWRIGHT_DIR=$(mktemp -d)
+npm install --prefix "$PLAYWRIGHT_DIR" playwright-core
+export SINCE_EPOCH=$(date +%s)
+
+HEADFUL=1 \
+SESSIONS=8 \
+EXPECT_SCRIPT=loaded \
+EXPECTED_SCRIPT_URL="http://$CSD_CDN_HOST/csd-demo/checkout.js" \
+NODE_PATH="$PLAYWRIGHT_DIR/node_modules" \
+node "$TRAFFIC_REPO/suites/csd-detection/02-population-detection.js" "$LB_FQDN"
+```
+
+Require `classification=loaded`, `passed=true`, `sensorCount=8`, and `eventBeaconCount=8`. Headless
+traffic or one reused browser context can exercise sensor liveness, but does not satisfy the
+population gate.
+
+Next, require fresh evidence for the exact edge FQDN:
+
+```bash
+EXPECTED_DOMAIN="$CSD_CDN_HOST" \
+SINCE_EPOCH="$SINCE_EPOCH" \
+VERIFY_PHASE=detection \
+POLL_MIN=30 \
+"$WEBAPP_REPO/scripts/csd-verify.sh"
+```
+
+Exit `0` proves that the domain appears in both domain and script telemetry, the script is High
+Risk, its timestamp is no older than this population, and at least one affected user exists. Exit
+`3` means aggregation is healthy but pending; do not mitigate yet. Exit `2` identifies a
+configuration, authentication, or dataplane failure that must be repaired before continuing.
+
+## Phase 3: Mitigate and prove blocking
+
+Continue only after the detection verifier exits `0`. In the `webapp-api-protection/terraform`
+directory, preview and apply only the demo mitigation resource:
+
+```bash
+terraform plan \
+  -target=module.http_lb.xcsh_mitigated_domain.this \
+  -var=csd_demo_mitigation_enabled=true
+terraform apply \
+  -target=module.http_lb.xcsh_mitigated_domain.this \
+  -var=csd_demo_mitigation_enabled=true
+```
+
+This creates `block-cdn-simulator` for the host supplied by `csd_cdn_simulator_host`; it does not
+maintain a second domain list. After propagation, run the same population with only the expected
+outcome changed:
+
+```bash
+HEADFUL=1 \
+SESSIONS=8 \
+EXPECT_SCRIPT=blocked \
+EXPECTED_SCRIPT_URL="http://$CSD_CDN_HOST/csd-demo/checkout.js" \
+NODE_PATH="$PLAYWRIGHT_DIR/node_modules" \
+node "$TRAFFIC_REPO/suites/csd-detection/02-population-detection.js" "$LB_FQDN"
+```
+
+Require `classification=blocked`, `passed=true`, and `blocked=8`. Retain the original detection
+epoch and verify the backend state:
+
+```bash
+EXPECTED_DOMAIN="$CSD_CDN_HOST" \
+SINCE_EPOCH="$SINCE_EPOCH" \
+VERIFY_PHASE=mitigation \
+POLL_MIN=30 \
+"$WEBAPP_REPO/scripts/csd-verify.sh"
+```
+
+Exit `0` requires the exact mitigated domain plus either a positive `blocked_scripts` counter or a
+blocked action on the fresh High Risk script. Browser blocking and telemetry are both required for
+the before-and-after proof.
+
+## Phase 4: Remove the mitigation and prove restoration
+
+The repository-backed teardown first removes only the demo mitigation. In the same Terraform
+directory, preview and apply the false toggle:
+
+```bash
+terraform plan \
+  -target=module.http_lb.xcsh_mitigated_domain.this \
+  -var=csd_demo_mitigation_enabled=false
+terraform apply \
+  -target=module.http_lb.xcsh_mitigated_domain.this \
+  -var=csd_demo_mitigation_enabled=false
+```
+
+After propagation, prove restoration with one fresh headed browser session:
+
+```bash
+HEADFUL=1 \
+SESSIONS=1 \
+EXPECT_SCRIPT=loaded \
+EXPECTED_SCRIPT_URL="http://$CSD_CDN_HOST/csd-demo/checkout.js" \
+NODE_PATH="$PLAYWRIGHT_DIR/node_modules" \
+node "$TRAFFIC_REPO/suites/csd-detection/02-population-detection.js" "$LB_FQDN"
+```
+
+Require `classification=loaded`, `passed=true`, `loaded=1`, and `blocked=0`. This restores the
+pre-mitigation state without destroying the shared application, CSD policy, or simulator. Continue
+with the [full infrastructure teardown](/csd/en/demo/phase-4-teardown/) only when that broader
+cleanup was explicitly requested.
+
+Remove the temporary dependency directory when the exercise is complete:
+
+```bash
+rm -rf "$PLAYWRIGHT_DIR"
+```

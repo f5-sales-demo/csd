@@ -111,12 +111,12 @@ resource "aws_vpc_security_group_egress_rule" "task" {
 }
 
 data "aws_subnet" "alb" {
-  for_each = toset(var.alb_subnet_ids)
+  for_each = { for index, id in var.alb_subnet_ids : tostring(index) => id }
   id       = each.value
 }
 
 data "aws_subnet" "task" {
-  for_each = toset(var.task_subnet_ids)
+  for_each = { for index, id in var.task_subnet_ids : tostring(index) => id }
   id       = each.value
 }
 

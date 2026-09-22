@@ -316,7 +316,7 @@ resource "aws_s3_bucket_policy" "alb_logs" {
   })
 }
 
-# Vendored from f5-sales-demo/origin-server commit c8e40ee038629334e0635ce3390bbab5bc642384.
+# Vendored from f5-sales-demo/origin-server commit d6384bb0621c4c1eceb38d55a6b63e7b9cc7083a.
 module "origin" {
   source = "./vendor/aws-juice-shop"
 

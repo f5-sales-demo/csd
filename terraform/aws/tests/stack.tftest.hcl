@@ -1,4 +1,16 @@
-mock_provider "aws" {}
+mock_provider "aws" {
+  mock_resource "aws_cloudwatch_log_group" {
+    defaults = {
+      arn = "arn:aws:logs:us-east-1:280469140135:log-group:/aws/vpc/csd-juice-shop"
+    }
+  }
+
+  mock_resource "aws_iam_role" {
+    defaults = {
+      arn = "arn:aws:iam::280469140135:role/csd-juice-shop-vpc-flow"
+    }
+  }
+}
 mock_provider "xcsh" {}
 
 override_data {
@@ -29,7 +41,7 @@ override_module {
 }
 
 run "stack_contract" {
-  command = plan
+  command = apply
 
   assert {
     condition     = aws_vpc.csd.cidr_block == "10.43.0.0/16"
@@ -66,6 +78,31 @@ run "stack_contract" {
   assert {
     condition     = aws_s3_bucket.alb_logs.bucket_prefix == "f5-sales-demo-csd-alb-logs-" && aws_s3_bucket.alb_logs.force_destroy
     error_message = "The ALB log bucket must use a generated name and allow complete demo teardown."
+  }
+
+  assert {
+    condition     = aws_s3_bucket_versioning.alb_logs.versioning_configuration[0].status == "Enabled"
+    error_message = "The ALB access-log bucket must retain recoverable object versions."
+  }
+
+  assert {
+    condition     = aws_flow_log.csd.traffic_type == "ALL" && aws_flow_log.csd.log_destination_type == "cloud-watch-logs"
+    error_message = "The dedicated VPC must publish all flow records to CloudWatch Logs."
+  }
+
+  assert {
+    condition     = aws_cloudwatch_log_group.vpc_flow.name == "/aws/vpc/csd-juice-shop" && aws_cloudwatch_log_group.vpc_flow.retention_in_days == 365
+    error_message = "VPC flow logging must use the dedicated one-year-retention CloudWatch log group."
+  }
+
+  assert {
+    condition     = strcontains(aws_kms_key.logs.policy, "log-group:/aws/vpc/csd-juice-shop*")
+    error_message = "The CloudWatch Logs KMS policy must authorize the VPC flow-log namespace."
+  }
+
+  assert {
+    condition     = length(aws_default_security_group.csd.ingress) == 0 && length(aws_default_security_group.csd.egress) == 0
+    error_message = "The VPC default security group must be explicitly managed with no ingress or egress rules."
   }
 
   assert {

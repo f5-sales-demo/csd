@@ -36,6 +36,13 @@ resource "aws_vpc" "csd" {
   }
 }
 
+resource "aws_default_security_group" "csd" {
+  vpc_id = aws_vpc.csd.id
+
+  tags = { Name = "${local.name}-default-deny-all" }
+}
+
+
 resource "aws_internet_gateway" "csd" {
   vpc_id = aws_vpc.csd.id
   tags   = { Name = "${local.name}-igw" }
@@ -144,7 +151,10 @@ resource "aws_kms_key" "logs" {
         Resource = "*"
         Condition = {
           ArnLike = {
-            "kms:EncryptionContext:aws:logs:arn" = "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/${local.name}*"
+            "kms:EncryptionContext:aws:logs:arn" = [
+              "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/ecs/${local.name}*",
+              "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/vpc/${local.name}*",
+            ]
           }
         }
       }
@@ -159,10 +169,80 @@ resource "aws_kms_alias" "logs" {
   target_key_id = aws_kms_key.logs.key_id
 }
 
+resource "aws_cloudwatch_log_group" "vpc_flow" {
+  name              = "/aws/vpc/${local.name}"
+  retention_in_days = 365
+  kms_key_id        = aws_kms_key.logs.arn
+
+  tags = { Name = "${local.name}-vpc-flow" }
+}
+
+resource "aws_iam_role" "vpc_flow" {
+  name = "${local.name}-vpc-flow"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "vpc-flow-logs.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+      Condition = {
+        StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
+        ArnLike = {
+          "aws:SourceArn" = "arn:${data.aws_partition.current.partition}:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:vpc-flow-log/*"
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "vpc_flow" {
+  name = "${local.name}-vpc-flow-delivery"
+  role = aws_iam_role.vpc_flow.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogStreams",
+      ]
+      Resource = "${aws_cloudwatch_log_group.vpc_flow.arn}:*"
+    }]
+  })
+}
+
+resource "aws_flow_log" "csd" {
+  vpc_id               = aws_vpc.csd.id
+  traffic_type         = "ALL"
+  log_destination_type = "cloud-watch-logs"
+  log_destination      = aws_cloudwatch_log_group.vpc_flow.arn
+  iam_role_arn         = aws_iam_role.vpc_flow.arn
+
+  tags = { Name = "${local.name}-vpc-flow" }
+}
+
+
 resource "aws_s3_bucket" "alb_logs" {
+  # checkov:skip=CKV2_AWS_62:Dedicated ALB access-log sink has no event consumer; notifications would add an unused delivery path.
+  # checkov:skip=CKV_AWS_18:Server access logging to this same dedicated log sink would recurse; no separate durable audit bucket is part of this ephemeral demo stack.
+  # checkov:skip=CKV_AWS_144:Cross-region replication conflicts with same-state ephemeral teardown and is not required for this disposable ALB log sink.
+  # checkov:skip=CKV_AWS_145:ALB access-log delivery supports only Amazon S3-managed encryption keys (SSE-S3), not SSE-KMS.
+
   bucket_prefix = local.alb_logs_bucket_prefix
   force_destroy = true
 }
+
+resource "aws_s3_bucket_versioning" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
 
 resource "aws_s3_bucket_public_access_block" "alb_logs" {
   bucket = aws_s3_bucket.alb_logs.id

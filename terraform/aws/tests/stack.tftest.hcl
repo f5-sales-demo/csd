@@ -44,6 +44,16 @@ run "stack_contract" {
   command = apply
 
   assert {
+    condition     = length(regexall("allowed_account_ids\\s*=\\s*\\[\\s*var\\.expected_aws_account_id\\s*\\]", file("${path.module}/versions.tf"))) == 1
+    error_message = "The AWS provider must enforce the approved account from expected_aws_account_id at provider initialization."
+  }
+
+  assert {
+    condition     = length(regexall("(?s)module\\s+\"origin\"\\s*\\{.*?depends_on\\s*=\\s*\\[\\s*aws_route\\.public_internet,\\s*aws_route\\.private_egress,\\s*aws_route_table_association\\.public,\\s*aws_route_table_association\\.private,\\s*aws_s3_bucket_policy\\.alb_logs,\\s*aws_s3_bucket_server_side_encryption_configuration\\.alb_logs,\\s*\\]", file("${path.module}/main.tf"))) == 1
+    error_message = "The origin module must wait for both default routes, both route-table association sets, and the existing log-bucket dependencies."
+  }
+
+  assert {
     condition     = aws_vpc.csd.cidr_block == "10.43.0.0/16"
     error_message = "The CSD stack must use the reviewed non-overlapping VPC CIDR."
   }

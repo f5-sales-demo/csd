@@ -343,7 +343,10 @@ module "origin" {
   tags                        = var.tags
 
   depends_on = [
+    aws_route.public_internet,
     aws_route.private_egress,
+    aws_route_table_association.public,
+    aws_route_table_association.private,
     aws_s3_bucket_policy.alb_logs,
     aws_s3_bucket_server_side_encryption_configuration.alb_logs,
   ]

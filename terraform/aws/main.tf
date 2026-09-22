@@ -202,15 +202,22 @@ resource "aws_iam_role_policy" "vpc_flow" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "logs:CreateLogStream",
-        "logs:PutLogEvents",
-        "logs:DescribeLogStreams",
-      ]
-      Resource = "${aws_cloudwatch_log_group.vpc_flow.arn}:*"
-    }]
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "logs:DescribeLogStreams",
+        ]
+        Resource = "${aws_cloudwatch_log_group.vpc_flow.arn}:*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "logs:DescribeLogGroups"
+        Resource = "*"
+      },
+    ]
   })
 }
 
@@ -274,6 +281,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "alb_logs" {
 
     expiration {
       days = 90
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 90
     }
 
     abort_incomplete_multipart_upload {

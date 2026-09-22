@@ -86,6 +86,27 @@ run "stack_contract" {
   }
 
   assert {
+    condition = anytrue([
+      for statement in jsondecode(aws_iam_role_policy.vpc_flow.policy).Statement :
+      statement.Effect == "Allow" && try(toset(statement.Action), toset([statement.Action])) == toset(["logs:DescribeLogGroups"]) && statement.Resource == "*"
+    ])
+    error_message = "The VPC flow-log role must allow DescribeLogGroups in a separate wildcard-scoped statement."
+  }
+
+  assert {
+    condition = anytrue([
+      for statement in jsondecode(aws_iam_role_policy.vpc_flow.policy).Statement :
+      statement.Effect == "Allow" && contains(try(toset(statement.Action), toset([statement.Action])), "logs:PutLogEvents") && statement.Resource == "${aws_cloudwatch_log_group.vpc_flow.arn}:*" && !contains(try(toset(statement.Action), toset([statement.Action])), "logs:DescribeLogGroups")
+    ])
+    error_message = "Restrictable VPC flow-log write actions must remain scoped to the log-group ARN and separate from DescribeLogGroups."
+  }
+
+  assert {
+    condition     = one(aws_s3_bucket_lifecycle_configuration.alb_logs.rule).expiration[0].days == 90 && one(aws_s3_bucket_lifecycle_configuration.alb_logs.rule).noncurrent_version_expiration[0].noncurrent_days == 90 && one(aws_s3_bucket_lifecycle_configuration.alb_logs.rule).abort_incomplete_multipart_upload[0].days_after_initiation == 7
+    error_message = "The ALB log lifecycle must expire current and noncurrent versions after 90 days while preserving multipart cleanup."
+  }
+
+  assert {
     condition     = aws_flow_log.csd.traffic_type == "ALL" && aws_flow_log.csd.log_destination_type == "cloud-watch-logs"
     error_message = "The dedicated VPC must publish all flow records to CloudWatch Logs."
   }

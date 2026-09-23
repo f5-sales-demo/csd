@@ -1,0 +1,99 @@
+---
+title: Terraform Troubleshooting
+description: "Recovery procedures for CSD Terraform planning, apply, propagation, and logging failures"
+sidebar:
+  order: 4
+  label: Troubleshooting
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+<Aside type="caution" title="Recovery is operator-driven">
+The procedures below describe operator decisions and checks. They are not automated remediation. Retain the same backend and state, resolve the cause, then create, review, and apply a fresh saved plan.
+</Aside>
+
+## Elastic IP quota
+
+**Symptom:** planning or apply reports that the regional Elastic IP quota is exhausted while creating the NAT Gateway allocation.
+
+1. Confirm the failure is in the guarded AWS account and region.
+2. Identify unused allocations through the approved AWS operational process; do not delete unrelated addresses.
+3. Release an unused address only with its owner's approval, or request a quota increase.
+4. Keep the existing backend and state, then create and review a fresh saved plan.
+
+The stack intentionally creates one NAT Gateway. Adding a second gateway to evade another failure changes the reviewed topology and does not solve an exhausted quota.
+
+## Namespace or entitlement
+
+**Symptom:** the F5 Distributed Cloud namespace cannot be created, or the `require_csd` precondition reports that Client-Side Defense Standard is not subscribed.
+
+- Confirm provider credentials target the intended tenant and that the guarded namespace is permitted.
+- Confirm the subscription status in the tenant. Do not remove or bypass the entitlement precondition.
+- If the namespace already exists outside this Terraform state, determine its owner before proceeding. Import it into the intended single source of truth only after review; do not run a competing API workflow.
+- Resolve access or entitlement, retain the same state, and produce a fresh plan.
+
+<Aside type="caution" title="Exclusive ownership">
+Choose one ownership mode. Never run the API create/update/delete workflow against resources present in Terraform state.
+</Aside>
+
+## Partial apply
+
+**Symptom:** some resources exist after an interrupted or failed apply.
+
+Do not start over with a new local state, manually recreate resources, or use API create/update/delete against Terraform-managed objects. Terraform records successfully completed actions incrementally.
+
+1. Preserve the configured S3 backend and state key.
+2. Inspect state and current provider errors without editing resources out of state.
+3. Resolve the underlying quota, permission, dependency, propagation, or service error.
+4. Run a new plan and review the remaining changes.
+5. Apply only the fresh saved plan, then complete the proof chain and no-drift plan.
+
+## State lock
+
+**Symptom:** Terraform reports that the remote state is locked.
+
+First determine whether another Terraform process or operator still owns the lock. Wait for active work to finish. If the owner is confirmed gone, review the lock metadata and use the documented force-unlock procedure only with explicit coordination. Never delete or replace the backend state object to clear a lock.
+
+After the lock is safely cleared, create a fresh plan; a plan produced before lock resolution is stale.
+
+## Certificate or origin propagation
+
+**Symptoms:** the F5 Distributed Cloud virtual host is not ready, the certificate is pending, HTTP does not redirect, HTTPS fails, or the origin returns connection errors soon after apply.
+
+- Confirm DNS for the configured domain points to the current F5 Distributed Cloud service endpoint using runtime output and live DNS, not a persisted VIP.
+- Allow certificate issuance and virtual-host configuration to propagate, then recheck status.
+- Confirm the origin pool uses the current ALB hostname from `terraform output -raw origin_hostname` on port 80.
+- Confirm the ALB target is healthy before troubleshooting F5 Distributed Cloud routing.
+- Confirm the ALB security group still restricts ingress to the reviewed Regional Edge CIDRs and that those CIDRs are current before apply.
+
+Do not hardcode a generated ALB hostname, VIP, or certificate date as a recovery shortcut.
+
+## Transient F5 Distributed Cloud 503
+
+**Symptom:** provider operations return a transient `503` while AWS resources remain healthy.
+
+Do not change resource ownership or duplicate objects through the API. Record the failing operation, wait for the service condition to clear, and generate a fresh plan against the same state. Review it before applying. If `503` responses persist, verify tenant status and provider connectivity and escalate with timestamps and request context that contain no credentials.
+
+## Logging gaps
+
+**Symptom:** the application works but one or more required log streams are empty.
+
+First run the executable [Terraform-Owned AWS Origin and Log Evidence](/csd/en/diagnostics/#terraform-owned-aws-origin-and-log-evidence). Read `application_url` from the current Terraform output, generate both HTTP and HTTPS traffic, and only then inspect log delivery:
+
+```bash
+APPLICATION_URL=$(terraform -chdir=terraform/aws output -raw application_url)
+curl -fsS -o /dev/null "${APPLICATION_URL/https:/http:}"
+curl -fsS -o /dev/null "$APPLICATION_URL"
+```
+
+The HTTP request exercises redirect handling; the HTTPS request traverses F5 Distributed Cloud to the ALB origin. Do not diagnose ALB access-log delivery from an idle stack.
+
+| Signal | Checks |
+| --- | --- |
+| ECS application logs | Confirm tasks are running, the ECS log group exists, the execution path can write, the KMS key policy authorizes the ECS log-group namespace, and a current event follows generated traffic. |
+| VPC Flow Logs | Confirm the flow log is active, its IAM role can write to the dedicated CloudWatch log-group ARN, `logs:DescribeLogGroups` remains in its separate required statement, and a recent stream event follows generated traffic. |
+| ALB access logs | Confirm the generated bucket, delivery policy, SSE-S3, and requests reaching the ALB. Retry the S3 listing at a fixed interval for a bounded period, such as every 60 seconds for 15 minutes. An empty listing immediately after traffic is inconclusive. |
+
+The expected retention controls are 365 days for CloudWatch logs and 90 days for current and noncurrent ALB log objects, with incomplete multipart uploads removed after seven days. Do not disable encryption or broaden IAM to make delivery appear healthy.
+
+After recovery, repeat the complete proof chain and require a final no-drift Terraform plan.

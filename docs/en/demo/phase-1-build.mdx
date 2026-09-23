@@ -1,873 +1,591 @@
 ---
 title: "Phase 1 — Build"
-description: "Deploy CSD infrastructure via F5 XC API — healthcheck, origin pool, load balancer, protected domain"
+description: "Build and prove the CSD architecture with API-owned F5 Distributed Cloud resources"
 sidebar:
   order: 2
   label: "Phase 1 — Build"
 ---
 
-import { Aside, Steps } from "@astrojs/starlight/components";
+import { Aside } from "@astrojs/starlight/components";
 
-Phase 1 deploys and validates the full CSD infrastructure. Complete all steps in order — each step must PASS before proceeding. Return to the [index](/csd/en/demo/) to complete Environment Setup and variable resolution before running these commands.
+Phase 1 creates one API-owned F5 Distributed Cloud application path: a namespace, a protected domain, an optional healthcheck, one origin pool, and one unsuffixed HTTPS load balancer. The load balancer uses automatic certificate management, redirects HTTP to HTTPS, advertises on the public default VIP, routes to one origin pool, and injects Client-Side Defense on all pages.
 
-## Step 0: Check & Create Namespace (Conditional)
+API mode requires an independently owned and operated origin. Supply either its public DNS hostname or its public IP address; this workflow does not read an origin endpoint from `terraform/aws` state. Complete the [environment preflight](/csd/en/demo/) before making changes.
 
-Check if the target namespace already exists on the tenant. If it does not exist, create it. Track the result in the `NAMESPACE_CREATED` shell variable — Phase 4 teardown uses this to decide whether to delete the namespace.
+## Step 0: Validate Inputs and Record Ownership
+
+<Aside type="caution">
+**Choose one ownership mode. Never run this API create/update/delete workflow against F5 Distributed Cloud resources present in Terraform state.**
+
+The API and Terraform workflows build the same logical architecture, but they are mutually exclusive owners. If the selected namespace, protected domain, origin pool, healthcheck, or load balancer is Terraform-owned, stop and use the Terraform workflow. Do not import, adopt, replace, or delete it through this API workflow.
+</Aside>
+
+Require numeric ports and DNS-label resource names before the first request:
 
 ```bash
-NS_CHECK=$(curl -s -o /dev/null -w '%\{http_code\}' \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx")
+case "${XCSH_API_URL:-}" in
+  https://*) ;;
+  *) echo "STOP: XCSH_API_URL must be an HTTPS URL"; exit 1 ;;
+esac
+while [ "${XCSH_API_URL%/}" != "$XCSH_API_URL" ]; do
+  XCSH_API_URL=${XCSH_API_URL%/}
+done
+export XCSH_API_URL
+XCSH_TENANT_HOSTNAME=${XCSH_API_URL#https://}
+case "$XCSH_TENANT_HOSTNAME" in
+  ''|*/*|*:*|*[!A-Za-z0-9.-]*)
+    echo "STOP: XCSH_API_URL must contain only an HTTPS tenant hostname"
+    exit 1
+    ;;
+esac
+XCSH_TENANT_IDENTITY=${XCSH_TENANT_HOSTNAME%%.*}
+[ -n "$XCSH_TENANT_IDENTITY" ] || {
+  echo "STOP: tenant identity could not be derived from XCSH_API_URL"
+  exit 1
+}
+export XCSH_TENANT_HOSTNAME XCSH_TENANT_IDENTITY
 
-NAMESPACE_CREATED="false"
-if [ "$NS_CHECK" = "404" ]; then
-  curl -s -X POST \
-    -H "Authorization: APIToken xF5XC_API_TOKENx" \
-    -H "Content-Type: application/json" \
-    -d '{"metadata": {"name": "xF5XC_NAMESPACEx"}, "spec": {}}' \
-    "xF5XC_API_URLx/api/web/namespaces" | jq .
-  NAMESPACE_CREATED="true"
+dns_label='^[a-z]([a-z0-9-]{0,62}[a-z0-9])?$'
+
+for value in "$XCSH_NAMESPACE" "$XCSH_LB_NAME" "$XCSH_ORIGIN_POOL"; do
+  printf '%s' "$value" | grep -Eq "$dns_label" || {
+    echo "STOP: invalid DNS-label resource name: $value"
+    exit 1
+  }
+done
+
+if [ -n "${XCSH_HC_NAME:-}" ]; then
+  printf '%s' "$XCSH_HC_NAME" | grep -Eq "$dns_label" || {
+    echo "STOP: invalid healthcheck DNS-label name"
+    exit 1
+  }
 fi
+
+case "${XCSH_ORIGIN_PORT:-}" in
+  ''|*[!0-9]*) echo "STOP: XCSH_ORIGIN_PORT must be an integer"; exit 1 ;;
+esac
+[ "$XCSH_ORIGIN_PORT" -ge 1 ] && [ "$XCSH_ORIGIN_PORT" -le 65535 ] || {
+  echo "STOP: XCSH_ORIGIN_PORT must be between 1 and 65535"
+  exit 1
+}
+
+case "${XCSH_ORIGIN_KIND:-}" in
+  public_name)
+    [ -n "${XCSH_ORIGIN_HOSTNAME:-}" ] && [ -z "${XCSH_ORIGIN_IP:-}" ] || exit 1
+    ;;
+  public_ip)
+    [ -n "${XCSH_ORIGIN_IP:-}" ] && [ -z "${XCSH_ORIGIN_HOSTNAME:-}" ] || exit 1
+    ;;
+  *) echo "STOP: XCSH_ORIGIN_KIND must be public_name or public_ip"; exit 1 ;;
+esac
 ```
 
-<Aside type="note">
-**The `spec` field is required.** The F5 XC namespace API requires a `spec` field in the request body even when no configuration is needed — pass an empty object `{}`. Omitting `spec` returns error code `3` ("spec should not be empty in request").
-</Aside>
-
-### Evidence
-
-Confirm the namespace exists and record whether it was created:
+Create a local, secret-free session ledger only when the configured path is absent. If a ledger already exists, never replace, truncate, or reinitialize it: validate it completely and resume only that exact matching API session. [Phase 4](/csd/en/demo/phase-4-teardown/) uses `resources` as its only deletion allowlist. `outcomes` is an append-only request journal; it never grants deletion authority.
 
 ```bash
-curl -s -o /dev/null -w '%\{http_code\}' \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx"
-echo "NAMESPACE_CREATED=$NAMESPACE_CREATED"
+export CSD_API_SESSION_FILE="${CSD_API_SESSION_FILE:-.csd-api-session.json}"
+case "$CSD_API_SESSION_FILE" in
+  /*) ;;
+  *) CSD_API_SESSION_FILE="$PWD/$CSD_API_SESSION_FILE" ;;
+esac
+CSD_API_SESSION_DIR=$(dirname -- "$CSD_API_SESSION_FILE")
+CSD_API_SESSION_NAME=$(basename -- "$CSD_API_SESSION_FILE")
+[ -d "$CSD_API_SESSION_DIR" ] && [ "$CSD_API_SESSION_NAME" != . ] && [ "$CSD_API_SESSION_NAME" != .. ] || {
+  echo "STOP: CSD_API_SESSION_FILE must be a valid absolute or relative file path"
+  exit 1
+}
+CSD_API_SESSION_DIR=$(cd "$CSD_API_SESSION_DIR" && pwd -P) || exit 1
+CSD_API_SESSION_FILE="$CSD_API_SESSION_DIR/$CSD_API_SESSION_NAME"
+export CSD_API_SESSION_FILE CSD_API_SESSION_DIR
+umask 077
+
+validate_api_ledger() {
+  jq -e --arg api_url "$XCSH_API_URL" --arg tenant_hostname "$XCSH_TENANT_HOSTNAME" \
+    --arg tenant_identity "$XCSH_TENANT_IDENTITY" --arg ns "$XCSH_NAMESPACE" \
+    --arg domain "$XCSH_DOMAINNAME" --arg protected_name "$XCSH_LB_NAME" \
+    --arg pool_name "$XCSH_ORIGIN_POOL" --arg lb_name "$XCSH_LB_NAME" \
+    --arg hc_name "${XCSH_HC_NAME:-}" '
+    (keys | sort) == ["environment","outcomes","ownership_mode","resources","schema_version","session_id"] and
+    .schema_version == 1 and .ownership_mode == "api" and
+    (.session_id | type == "string" and test("^[0-9]{8}T[0-9]{6}Z$")) and
+    .environment == {
+      api_url: $api_url, tenant_hostname: $tenant_hostname, tenant_identity: $tenant_identity,
+      namespace: $ns, domain: $domain
+    } and
+    (.resources | type == "array") and
+    (all(.resources[];
+      (keys | sort) == ["kind","name","namespace","spec","status"] and
+      (.kind | IN("namespace","protected_domain","healthcheck","origin_pool","http_loadbalancer","mitigated_domain")) and
+      .namespace == $ns and
+      (.name | type == "string" and test("^[a-z]([a-z0-9-]{0,62}[a-z0-9])?$")) and
+      (.status | IN("created","pre-existing","unknown")) and
+      (
+        (.kind == "namespace" and .name == $ns) or
+        (.kind == "protected_domain" and .name == $protected_name) or
+        (.kind == "origin_pool" and .name == $pool_name) or
+        (.kind == "http_loadbalancer" and .name == $lb_name) or
+        (.kind == "healthcheck" and $hc_name != "" and .name == $hc_name) or
+        (.kind == "mitigated_domain")
+      ) and
+      (.spec | type == "object")
+    )) and
+    ([.resources[] | [.kind,.namespace,.name] | join("\u0000")] | length) ==
+    ([.resources[] | [.kind,.namespace,.name] | join("\u0000")] | unique | length) and
+    ([.resources[] | select(.status == "unknown")] | length == 0) and
+    (.outcomes | type == "array") and
+    (all(.outcomes[];
+      (keys | sort) == ["kind","name","namespace","operation","result"] and
+      (.operation | IN("GET","POST","PUT")) and
+      (.kind | IN("namespace","protected_domain","healthcheck","origin_pool","http_loadbalancer","mitigated_domain")) and
+      .namespace == $ns and
+      (.name | type == "string" and test("^[a-z]([a-z0-9-]{0,62}[a-z0-9])?$")) and
+      (
+        (.kind == "namespace" and .name == $ns) or
+        (.kind == "protected_domain" and .name == $protected_name) or
+        (.kind == "origin_pool" and .name == $pool_name) or
+        (.kind == "http_loadbalancer" and .name == $lb_name) or
+        (.kind == "healthcheck" and $hc_name != "" and .name == $hc_name) or
+        (.kind == "mitigated_domain")
+      ) and
+      (.result | IN("match","absent","created","replaced","conflict","unknown"))
+    )) and
+    ([.outcomes[] | select(.result == "unknown")] | length == 0)
+  ' "$CSD_API_SESSION_FILE" >/dev/null
+}
+
+if [ -e "$CSD_API_SESSION_FILE" ] || [ -L "$CSD_API_SESSION_FILE" ]; then
+  [ -f "$CSD_API_SESSION_FILE" ] && validate_api_ledger || {
+    echo "STOP: existing ledger is corrupt, mismatched, duplicated, or has unknown ownership"
+    exit 1
+  }
+  echo "Resuming matching API session $(jq -r .session_id "$CSD_API_SESSION_FILE")"
+else
+  ledger_tmp=$(mktemp "${CSD_API_SESSION_FILE}.XXXXXX") || exit 1
+  jq -n \
+    --arg session_id "$(date -u +%Y%m%dT%H%M%SZ)" \
+    --arg api_url "$XCSH_API_URL" \
+    --arg tenant_hostname "$XCSH_TENANT_HOSTNAME" \
+    --arg tenant_identity "$XCSH_TENANT_IDENTITY" \
+    --arg namespace "$XCSH_NAMESPACE" \
+    --arg domain "$XCSH_DOMAINNAME" \
+    '{
+      schema_version: 1,
+      ownership_mode: "api",
+      session_id: $session_id,
+      environment: {
+        api_url: $api_url,
+        tenant_hostname: $tenant_hostname,
+        tenant_identity: $tenant_identity,
+        namespace: $namespace,
+        domain: $domain
+      },
+      resources: [],
+      outcomes: []
+    }' > "$ledger_tmp" &&
+    ln "$ledger_tmp" "$CSD_API_SESSION_FILE" &&
+    rm -f "$ledger_tmp" || {
+      rm -f "$ledger_tmp"
+      echo "STOP: ledger creation failed; an existing ledger was not overwritten"
+      exit 1
+    }
+fi
+
+ledger_outcome() {
+  operation=$1 kind=$2 namespace=$3 name=$4 result=$5
+  tmp=$(mktemp "${CSD_API_SESSION_FILE}.XXXXXX") || return 1
+  jq -e --arg operation "$operation" --arg kind "$kind" --arg namespace "$namespace" \
+    --arg name "$name" --arg result "$result" '
+      .schema_version == 1 and .ownership_mode == "api" and
+      ($operation | IN("GET","POST","PUT")) and
+      ($result | IN("match","absent","created","replaced","conflict","unknown"))
+      | if . then
+          input | .outcomes += [{operation:$operation,kind:$kind,namespace:$namespace,name:$name,result:$result}]
+        else error("invalid outcome") end
+    ' "$CSD_API_SESSION_FILE" "$CSD_API_SESSION_FILE" > "$tmp" &&
+    mv "$tmp" "$CSD_API_SESSION_FILE" || { rm -f "$tmp"; return 1; }
+}
+
+ledger_record() {
+  kind=$1 namespace=$2 name=$3 status=$4 spec=${5:-'{}'}
+  case "$kind" in
+    namespace|protected_domain|healthcheck|origin_pool|http_loadbalancer|mitigated_domain) ;;
+    *) return 1 ;;
+  esac
+  case "$status" in created|pre-existing|unknown) ;; *) return 1 ;; esac
+  printf '%s' "$name" | grep -Eq '^[a-z]([a-z0-9-]{0,62}[a-z0-9])?$' || return 1
+  printf '%s' "$spec" | jq -e 'type == "object"' >/dev/null || return 1
+
+  tmp=$(mktemp "${CSD_API_SESSION_FILE}.XXXXXX") || return 1
+  jq -e --arg kind "$kind" --arg namespace "$namespace" --arg name "$name" \
+    --arg status "$status" --argjson spec "$spec" '
+      .schema_version == 1 and .ownership_mode == "api" and
+      ([.resources[] | select(.kind == $kind and .namespace == $namespace and .name == $name)] | length) == 0
+      | if . then
+          input | .resources += [{kind:$kind,namespace:$namespace,name:$name,status:$status,spec:$spec}]
+        else error("duplicate or invalid resource identity") end
+    ' "$CSD_API_SESSION_FILE" "$CSD_API_SESSION_FILE" > "$tmp" &&
+    mv "$tmp" "$CSD_API_SESSION_FILE" || { rm -f "$tmp"; return 1; }
+}
 ```
 
-| Field | Expected | Status |
-| --- | --- | --- |
-| HTTP Status | `200` | PASS if returned, FAIL if `404` or other |
-| `NAMESPACE_CREATED` | `true` (created) or `false` (pre-existing) | Informational — used by Phase 4 teardown |
+Call `ledger_outcome` immediately after **every** GET, POST, or PUT result, before another API request.
+Record `unknown` for transport errors, malformed bodies, ambiguous `5xx` responses, or any response whose identity cannot be proven, then stop.
+Call `ledger_record` exactly once per resource: `pre-existing` after an exact matching GET or `409`, `created` after a successful create, and `unknown` after a conflicting result.
+On resume, process resources in dependency order. For an existing resource entry, require its exact live object to match and do not call `ledger_record` again.
 
-## Step 1: Create Healthcheck (Optional)
+If a successful POST was journaled as `created` but its resource entry was interrupted before append, require an exact matching GET and restore that resource entry as `created`. Without that same-session successful POST outcome, an existing object is `pre-existing`, never `created`.
+Never overwrite, relabel, or infer ownership for a resource entry. A ledger containing any `unknown` resource or outcome must be reconciled outside this workflow before it can resume.
 
-Create an HTTP healthcheck that the origin pool can use to monitor backend health.
+All requests below are native `xcsh_api` operations. Substitute current values for placeholders. Successful POST and PUT response bodies are mutation evidence; later reads prove settled state.
 
-<Aside type="note">
-**Healthchecks are optional for CSD.** The Client-Side Defense feature does not depend on origin health monitoring. If your tenant has exhausted the healthcheck object limit (error code `8` — see Error Handling), skip this step and create the origin pool without a healthcheck reference. CSD will function normally.
+## Step 1: Read or Create the Namespace
 
-If you do create a healthcheck, create it BEFORE the origin pool. The origin pool must reference an existing healthcheck — if the healthcheck does not exist when you create the origin pool, the reference will be silently empty.
-</Aside>
+GET the exact namespace:
 
-```bash
-curl -s -X POST \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  -H "Content-Type: application/json" \
-  -d '{
+```json
+{
+  "method": "GET",
+  "path": "/api/web/namespaces/{namespace}",
+  "params": { "namespace": "<XCSH_NAMESPACE>" }
+}
+```
+
+After a matching response, call `ledger_outcome GET namespace "$XCSH_NAMESPACE" "$XCSH_NAMESPACE" match` and record it as `pre-existing`. After `404`, call the same helper with `absent`, then create it:
+
+```json
+{
+  "method": "POST",
+  "path": "/api/web/namespaces",
+  "payload": {
+    "metadata": { "name": "<XCSH_NAMESPACE>" },
+    "spec": {}
+  }
+}
+```
+
+Immediately journal the POST and record ownership. A successful create is `created`; `409` is `pre-existing`; any other ambiguous or conflicting result is `unknown` and stops the workflow. Re-read the exact namespace, journal that GET, and require the expected name.
+
+## Step 2: Read or Create the Protected Domain
+
+The DNS-label resource name is `client-side-defense`; the protected value is the eTLD+1 root in `XCSH_ROOT_DOMAIN`. These are different identifiers.
+
+First list the collection:
+
+```json
+{
+  "method": "GET",
+  "path": "/api/shape/csd/namespaces/{namespace}/protected_domains",
+  "params": { "namespace": "<XCSH_NAMESPACE>" }
+}
+```
+
+Journal the list GET. Select only the item whose top-level `name` is exactly `client-side-defense`. If found, perform the individual GET before comparing its full spec:
+
+```json
+{
+  "method": "GET",
+  "path": "/api/shape/csd/namespaces/{namespace}/protected_domains/{name}",
+  "params": {
+    "namespace": "<XCSH_NAMESPACE>",
+    "name": "client-side-defense"
+  }
+}
+```
+
+Journal the exact GET. If its `metadata.name`, namespace, and `spec.protected_domain` match, record `pre-existing` and continue without modifying it. A conflict is `unknown` and blocks the build. If the list contained no exact name, create it:
+
+```json
+{
+  "method": "POST",
+  "path": "/api/shape/csd/namespaces/{namespace}/protected_domains",
+  "params": { "namespace": "<XCSH_NAMESPACE>" },
+  "payload": {
     "metadata": {
-      "name": "xF5XC_HC_NAMEx",
-      "namespace": "xF5XC_NAMESPACEx",
-      "labels": {},
-      "annotations": {},
-      "disable": false
+      "name": "client-side-defense",
+      "namespace": "<XCSH_NAMESPACE>"
+    },
+    "spec": { "protected_domain": "<XCSH_ROOT_DOMAIN>" }
+  }
+}
+```
+
+Journal the POST immediately. Record `created` only after a successful create; record `409` as `pre-existing`; record any uncertain result as `unknown` and stop. Then run and journal the individual GET and require the exact name and protected root.
+
+## Step 3: Optionally Create a Healthcheck
+
+If `XCSH_HC_NAME` is empty, create no healthcheck, add no healthcheck ledger resource, and omit `spec.healthcheck` from every origin-pool body. Otherwise GET `/api/config/namespaces/{namespace}/healthchecks/{name}`, journal its outcome, and create only after `404`:
+
+```json
+{
+  "method": "POST",
+  "path": "/api/config/namespaces/{namespace}/healthchecks",
+  "params": { "namespace": "<XCSH_NAMESPACE>" },
+  "payload": {
+    "metadata": {
+      "name": "<XCSH_HC_NAME>",
+      "namespace": "<XCSH_NAMESPACE>"
     },
     "spec": {
       "http_health_check": {
-        "use_origin_server_name": {},
         "path": "/",
-        "use_http2": false,
-        "headers": {},
-        "request_headers_to_remove": [],
-        "expected_status_codes": ["200"]
+        "use_origin_server_name": {}
       },
-      "timeout": 3,
       "interval": 15,
-      "jitter": 0,
+      "timeout": 3,
       "unhealthy_threshold": 1,
-      "healthy_threshold": 3,
-      "jitter_percent": 30
+      "healthy_threshold": 3
     }
-  }' \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks" \
-  | jq .
+  }
+}
 ```
 
-A `200` response with the created object confirms the healthcheck was created. If the response contains `"code": 8` with a message like `"Object kind healthcheck has exhausted limits(150)"`, the tenant has hit its healthcheck limit — skip to Step 2 and omit the healthcheck reference. CSD does not depend on health monitoring.
+Journal the POST, then record its ownership exactly once. Read and journal the exact object; require the expected name, path, and thresholds. If quota is exhausted, do not delete unrelated healthchecks: leave `XCSH_HC_NAME` empty and continue only if no healthcheck resource was created or recorded.
 
-### Evidence
+## Step 4: Read or Create the Origin Pool
 
-Confirm the healthcheck exists:
+Use `public_name` for an independently owned public DNS origin, or `public_ip` for an independently owned public IP origin. Never place an IP in `public_name.dns_name` or a hostname in `public_ip.ip`.
 
-```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx" \
-  | jq '{name: .metadata.name, namespace: .metadata.namespace, path: .spec.http_health_check.path, interval: .spec.interval}'
-```
+GET `/api/config/namespaces/{namespace}/origin_pools/{name}` and journal the outcome. An exact match is `pre-existing` and stops this build; a conflict is `unknown` and stops; only `404` permits POST.
 
-| Field | Expected | Status |
-| --- | --- | --- |
-| HTTP Status | `200` with object | PASS if returned, FAIL if `404` |
-| `name` | Matches `F5XC_HC_NAME` | PASS |
-| `path` | `/` | PASS |
-| Step 1 skipped (error code `8`, limit exhausted) | — | PASS (healthcheck is optional for CSD) |
+Choose exactly one clean create body. The `port` value is a JSON number, not a quoted string.
 
-## Step 2: Create Origin Pool
+### `public_name` origin
 
-Create an origin pool pointing to your backend server. If you created a healthcheck in Step 1, include the `healthcheck` reference. If Step 1 was skipped, use an empty array.
-
-**With healthcheck** (Step 1 succeeded):
-
-```bash
-curl -s -X POST \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  -H "Content-Type: application/json" \
-  -d '{
+```json
+{
+  "method": "POST",
+  "path": "/api/config/namespaces/{namespace}/origin_pools",
+  "params": { "namespace": "<XCSH_NAMESPACE>" },
+  "payload": {
     "metadata": {
-      "name": "xF5XC_ORIGIN_POOLx",
-      "namespace": "xF5XC_NAMESPACEx",
-      "labels": {},
-      "annotations": {},
-      "description": "Origin pool for CSD demo",
-      "disable": false
+      "name": "<XCSH_ORIGIN_POOL>",
+      "namespace": "<XCSH_NAMESPACE>"
     },
     "spec": {
-      "origin_servers": [{
-        "public_ip": { "ip": "xF5XC_ORIGIN_IPx" },
-        "labels": {}
-      }],
-      "no_tls": {},
-      "port": xF5XC_ORIGIN_PORTx,
-      "same_as_endpoint_port": {},
-      "healthcheck": [{
-        "namespace": "xF5XC_NAMESPACEx",
-        "name": "xF5XC_HC_NAMEx",
-        "kind": "healthcheck"
-      }],
-      "loadbalancer_algorithm": "LB_OVERRIDE",
-      "endpoint_selection": "LOCAL_PREFERRED"
+      "origin_servers": [
+        { "public_name": { "dns_name": "<XCSH_ORIGIN_HOSTNAME>" } }
+      ],
+      "port": 80
     }
-  }' \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools" \
-  | jq .
+  }
+}
 ```
 
-**Without healthcheck** (Step 1 skipped):
+### `public_ip` origin
 
-```bash
-curl -s -X POST \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  -H "Content-Type: application/json" \
-  -d '{
+```json
+{
+  "method": "POST",
+  "path": "/api/config/namespaces/{namespace}/origin_pools",
+  "params": { "namespace": "<XCSH_NAMESPACE>" },
+  "payload": {
     "metadata": {
-      "name": "xF5XC_ORIGIN_POOLx",
-      "namespace": "xF5XC_NAMESPACEx",
-      "labels": {},
-      "annotations": {},
-      "description": "Origin pool for CSD demo",
-      "disable": false
+      "name": "<XCSH_ORIGIN_POOL>",
+      "namespace": "<XCSH_NAMESPACE>"
     },
     "spec": {
-      "origin_servers": [{
-        "public_ip": { "ip": "xF5XC_ORIGIN_IPx" },
-        "labels": {}
-      }],
-      "no_tls": {},
-      "port": xF5XC_ORIGIN_PORTx,
-      "same_as_endpoint_port": {},
-      "healthcheck": [],
-      "loadbalancer_algorithm": "LB_OVERRIDE",
-      "endpoint_selection": "LOCAL_PREFERRED"
+      "origin_servers": [
+        { "public_ip": { "ip": "<XCSH_ORIGIN_IP>" } }
+      ],
+      "port": 80
     }
-  }' \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools" \
-  | jq .
+  }
+}
 ```
 
-A `200` response confirms the origin pool was created.
+Replace `80` with the validated numeric value of `XCSH_ORIGIN_PORT` without quotes. When `XCSH_HC_NAME` is non-empty, add this sibling to the selected `spec`; otherwise omit it entirely:
 
-<Aside type="caution">
-If the response contains `"code": 8` with a message like `"Object kind endpoint has exhausted limits(500)"` or `"Object kind origin_pool has exhausted limits"`, the tenant has hit its quota. Unlike healthchecks, origin pools are **required** for the demo — the demo cannot proceed without one. Delete unused origin pools from other namespaces to free capacity (deleting an origin pool also frees its endpoint sub-objects), then retry. If the limit cannot be resolved, contact your F5 Distributed Cloud (F5 XC) administrator to increase the tenant quota.
-</Aside>
-
-### Verify Healthcheck is Linked
-
-If you included a healthcheck reference, confirm it is properly linked:
-
-```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
-  | jq '.spec.healthcheck'
+```json
+"healthcheck": [
+  {
+    "namespace": "<XCSH_NAMESPACE>",
+    "name": "<XCSH_HC_NAME>"
+  }
+]
 ```
 
-A populated array confirms the link. An empty array `[]` is expected if Step 1 was skipped, or means the healthcheck was not found if you intended to link one.
+Journal the POST immediately and record `created` only for a successful create. Record `409` as `pre-existing`, never `created`; an ambiguous response is `unknown` and stops. Read and journal the exact pool. Require one server of the selected kind, the exact endpoint, a numeric matching port, and either the one expected healthcheck reference or no `healthcheck` field.
 
-### Evidence
+### Clean Origin-Pool Replace
 
-Confirm the origin pool exists and has the correct configuration:
+Only a pool recorded as `created` by this session may exercise PUT. Build the replacement from a clean request body, not from a GET response. Select exactly one branch.
 
-```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx" \
-  | jq '{name: .metadata.name, origin_ip: .spec.origin_servers[0].public_ip.ip, port: .spec.port, healthcheck_count: (.spec.healthcheck | length)}'
-```
+#### Replace a `public_name` pool
 
-| Field | Expected | Status |
-| --- | --- | --- |
-| HTTP Status | `200` | PASS if returned, FAIL if `404` |
-| `name` | Matches `F5XC_ORIGIN_POOL` | PASS |
-| `origin_ip` | Matches `F5XC_ORIGIN_IP` | PASS |
-| `port` | Matches `F5XC_ORIGIN_PORT` | PASS |
-| `healthcheck_count` | `1` (with HC) or `0` (without) | PASS either way |
-
-## Step 3: Create HTTP Load Balancers with CSD
-
-Create **two** load balancers with Client-Side Defense enabled — an HTTP LB (primary, port 80) and an HTTPS LB (secondary, port 443 with automatic certificate management). The HTTP LB is the default for all demo traffic. The HTTPS LB is a nice to have that depends on Let's Encrypt certificate provisioning, which can hit rate limits in demo environments.
-
-<Aside type="note">
-The HTTP Load Balancer spec has 22+ `oneOf` choice groups. Every group must have exactly one choice set or the API returns a `422` error. The configurations below disable all optional security features except CSD — modify as needed for your environment. Both LBs share the same origin pool, CSD settings, and domain — only the listener type differs.
-</Aside>
-
-<Aside type="tip">
-Both LB names derive from `F5XC_LB_NAME`: the HTTP LB is `${F5XC_LB_NAME}-http` and the HTTPS LB is `${F5XC_LB_NAME}-https`. No additional environment variables are needed.
-</Aside>
-
-### HTTP Load Balancer (Primary)
-
-This is the **primary** load balancer for demos. It uses an `http` listener on port 80 with F5 XC managed DNS. It does not depend on TLS certificate provisioning, so it becomes ready immediately after DNS resolves.
-
-```bash
-curl -s -X POST \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  -H "Content-Type: application/json" \
-  -d '{
+```json
+{
+  "method": "PUT",
+  "path": "/api/config/namespaces/{namespace}/origin_pools/{name}",
+  "params": {
+    "namespace": "<XCSH_NAMESPACE>",
+    "name": "<XCSH_ORIGIN_POOL>"
+  },
+  "payload": {
     "metadata": {
-      "name": "xF5XC_LB_NAMEx-http",
-      "namespace": "xF5XC_NAMESPACEx",
-      "labels": {},
-      "annotations": {},
-      "description": "HTTP LB with Client-Side Defense enabled (primary demo LB)",
-      "disable": false
+      "name": "<XCSH_ORIGIN_POOL>",
+      "namespace": "<XCSH_NAMESPACE>"
     },
     "spec": {
-      "domains": ["xF5XC_DOMAINNAMEx"],
-      "http": {
-        "dns_volterra_managed": true,
-        "port": 80
-      },
+      "origin_servers": [
+        { "public_name": { "dns_name": "<XCSH_ORIGIN_HOSTNAME>" } }
+      ],
+      "port": 80
+    }
+  }
+}
+```
+
+#### Replace a `public_ip` pool
+
+```json
+{
+  "method": "PUT",
+  "path": "/api/config/namespaces/{namespace}/origin_pools/{name}",
+  "params": {
+    "namespace": "<XCSH_NAMESPACE>",
+    "name": "<XCSH_ORIGIN_POOL>"
+  },
+  "payload": {
+    "metadata": {
+      "name": "<XCSH_ORIGIN_POOL>",
+      "namespace": "<XCSH_NAMESPACE>"
+    },
+    "spec": {
+      "origin_servers": [
+        { "public_ip": { "ip": "<XCSH_ORIGIN_IP>" } }
+      ],
+      "port": 80
+    }
+  }
+}
+```
+
+In the selected body, replace `80` with the validated numeric `XCSH_ORIGIN_PORT` without quotes.
+When `XCSH_HC_NAME` is non-empty, add the `healthcheck` sibling shown above; otherwise omit it entirely.
+Journal the PUT as `replaced`, then read and journal the exact pool and repeat all checks.
+Never copy `system_metadata`, `status`, `resource_version`, `referring_objects`, or other response-managed fields into PUT.
+
+The linked [Phase 4 API teardown](/csd/en/demo/phase-4-teardown/#delete-in-reverse-dependency-order) deletes this pool only when its unique ledger resource has `status: "created"`, after deleting the load balancer, and verifies the pool returns `404` before deleting an optional healthcheck.
+
+## Step 5: Create and Replace One HTTPS Load Balancer
+
+The unsuffixed load balancer name is `XCSH_LB_NAME`; the reference value is `client-side-defense`. Do not create `-http` and `-https` variants.
+
+GET `/api/config/namespaces/{namespace}/http_loadbalancers/{name}` and journal the result. An exact existing object is `pre-existing` and stops this build; a conflict is `unknown` and stops; only `404` permits POST.
+
+The catalog requires `metadata.name`, `metadata.namespace`, and `spec.domains`. The body below adds only the requested HTTPS, advertisement, route, and CSD choices; it omits server-default TLS and load-balancing fields.
+
+```json
+{
+  "method": "POST",
+  "path": "/api/config/namespaces/{namespace}/http_loadbalancers",
+  "params": { "namespace": "<XCSH_NAMESPACE>" },
+  "payload": {
+    "metadata": {
+      "name": "<XCSH_LB_NAME>",
+      "namespace": "<XCSH_NAMESPACE>"
+    },
+    "spec": {
+      "domains": ["<XCSH_DOMAINNAME>"],
+      "https_auto_cert": { "http_redirect": true },
       "advertise_on_public_default_vip": {},
-      "default_route_pools": [{
-        "pool": {
-          "namespace": "xF5XC_NAMESPACEx",
-          "name": "xF5XC_ORIGIN_POOLx",
-          "kind": "origin_pool"
-        },
-        "weight": 1,
-        "priority": 1
-      }],
-      "client_side_defense": {
-        "policy": {
-          "js_insert_all_pages": {}
+      "default_route_pools": [
+        {
+          "pool": {
+            "namespace": "<XCSH_NAMESPACE>",
+            "name": "<XCSH_ORIGIN_POOL>"
+          },
+          "weight": 1,
+          "priority": 1
         }
-      },
-      "disable_rate_limit": {},
-      "no_service_policies": {},
-      "round_robin": {},
-      "disable_waf": {},
-      "no_challenge": {},
-      "disable_bot_defense": {},
-      "disable_api_definition": {},
-      "disable_api_discovery": {},
-      "disable_ip_reputation": {},
-      "disable_malicious_user_detection": {},
-      "single_lb_app": {
-        "disable_discovery": {},
-        "disable_ddos_detection": {},
-        "disable_malicious_user_detection": {}
-      },
-      "disable_trust_client_ip_headers": {},
-      "user_id_client_ip": {},
-      "disable_threat_mesh": {},
-      "l7_ddos_action_default": {},
-      "system_default_timeouts": {},
-      "default_sensitive_data_policy": {},
-      "disable_malware_protection": {},
-      "disable_api_testing": {}
+      ],
+      "client_side_defense": {
+        "policy": { "js_insert_all_pages": {} }
+      }
     }
-  }' \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers" \
-  | jq .
+  }
+}
 ```
 
-A `200` response confirms the HTTP load balancer was created with CSD enabled.
+Journal the POST immediately. Record `created` only for a successful create, with `spec: {"domain":"<XCSH_DOMAINNAME>","origin_pool":"<XCSH_ORIGIN_POOL>"}`. Record `409` as `pre-existing`; record ambiguity as `unknown` and stop.
 
-<Aside type="caution">
-If the response contains `"code": 8` with a message like `"Object kind http_loadbalancer has exhausted limits"`, the tenant has hit its load balancer quota. Load balancers are **required** for the demo. Delete unused load balancers to free capacity, then retry.
-</Aside>
+GET and journal the exact load balancer. Verify the unsuffixed name, the single expected domain, HTTPS auto-cert with redirect enabled, public-default-VIP advertisement, one expected origin-pool reference with weight and priority `1`, and all-pages CSD injection.
 
-### HTTPS Load Balancer (Secondary)
+### Clean Load-Balancer PUT
 
-This is the **secondary** load balancer. It uses `https_auto_cert` on port 443 with automatic Let's Encrypt certificate provisioning. Before creating it, check if a **skeleton HTTPS LB** exists from a previous teardown — if so, restore it via PUT instead of POST to preserve the existing Let's Encrypt certificate and avoid rate limits (5 duplicate certificates per exact identifier set per 7 days).
+Require the ledger to identify this exact load balancer as `created`. Exercise replace with a fresh body containing only the same metadata and spec used for POST:
 
-**Check if the HTTPS LB already exists:**
-
-```bash
-HTTPS_CHECK=$(curl -s -o /dev/null -w '%\{http_code\}' \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
-```
-
-If `HTTPS_CHECK` is `200`, a skeleton HTTPS LB exists — use **Path A (PUT)**. If `404`, use **Path B (POST)**.
-
-#### Path A: Restore Skeleton via PUT (HTTPS LB exists)
-
-When a skeleton HTTPS LB exists from a prior teardown, restore the full configuration via PUT. This re-attaches the origin pool and re-enables CSD **without triggering a new Let's Encrypt certificate request** — the existing certificate remains valid.
-
-```bash
-curl -s -X PUT \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  -H "Content-Type: application/json" \
-  -d '{
+```json
+{
+  "method": "PUT",
+  "path": "/api/config/namespaces/{namespace}/http_loadbalancers/{name}",
+  "params": {
+    "namespace": "<XCSH_NAMESPACE>",
+    "name": "<XCSH_LB_NAME>"
+  },
+  "payload": {
     "metadata": {
-      "name": "xF5XC_LB_NAMEx-https",
-      "namespace": "xF5XC_NAMESPACEx",
-      "labels": {},
-      "annotations": {},
-      "description": "HTTPS LB with Client-Side Defense enabled (secondary, cert-dependent)",
-      "disable": false
+      "name": "<XCSH_LB_NAME>",
+      "namespace": "<XCSH_NAMESPACE>"
     },
     "spec": {
-      "domains": ["xF5XC_DOMAINNAMEx"],
-      "https_auto_cert": {
-        "http_redirect": false,
-        "add_hsts": false,
-        "port": 443,
-        "default_header": {},
-        "enable_path_normalize": {},
-        "no_mtls": {},
-        "default_loadbalancer": {}
-      },
+      "domains": ["<XCSH_DOMAINNAME>"],
+      "https_auto_cert": { "http_redirect": true },
       "advertise_on_public_default_vip": {},
-      "default_route_pools": [{
-        "pool": {
-          "namespace": "xF5XC_NAMESPACEx",
-          "name": "xF5XC_ORIGIN_POOLx",
-          "kind": "origin_pool"
-        },
-        "weight": 1,
-        "priority": 1
-      }],
-      "client_side_defense": {
-        "policy": {
-          "js_insert_all_pages": {}
+      "default_route_pools": [
+        {
+          "pool": {
+            "namespace": "<XCSH_NAMESPACE>",
+            "name": "<XCSH_ORIGIN_POOL>"
+          },
+          "weight": 1,
+          "priority": 1
         }
-      },
-      "disable_rate_limit": {},
-      "no_service_policies": {},
-      "round_robin": {},
-      "disable_waf": {},
-      "no_challenge": {},
-      "disable_bot_defense": {},
-      "disable_api_definition": {},
-      "disable_api_discovery": {},
-      "disable_ip_reputation": {},
-      "disable_malicious_user_detection": {},
-      "single_lb_app": {
-        "disable_discovery": {},
-        "disable_ddos_detection": {},
-        "disable_malicious_user_detection": {}
-      },
-      "disable_trust_client_ip_headers": {},
-      "user_id_client_ip": {},
-      "disable_threat_mesh": {},
-      "l7_ddos_action_default": {},
-      "system_default_timeouts": {},
-      "default_sensitive_data_policy": {},
-      "disable_malware_protection": {},
-      "disable_api_testing": {}
-    }
-  }' \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
-  | jq .
-```
-
-A `200` response confirms the skeleton was restored with the full configuration. The certificate state should remain `CertificateValid` — no new Let's Encrypt provisioning is triggered.
-
-<Aside type="note">
-**Skeleton restoration.** PUT replaces the entire object spec. The skeleton HTTPS LB retained its domain binding and certificate during teardown. This PUT restores the origin pool reference and re-enables Client-Side Defense without triggering a new Let's Encrypt certificate request. HTTPS is available immediately.
-</Aside>
-
-#### Path B: Create New via POST (HTTPS LB does not exist)
-
-When no HTTPS LB exists (first run or after a full teardown), create it via POST. This triggers Let's Encrypt certificate provisioning, which may take 5–10 minutes.
-
-```bash
-curl -s -X POST \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "metadata": {
-      "name": "xF5XC_LB_NAMEx-https",
-      "namespace": "xF5XC_NAMESPACEx",
-      "labels": {},
-      "annotations": {},
-      "description": "HTTPS LB with Client-Side Defense enabled (secondary, cert-dependent)",
-      "disable": false
-    },
-    "spec": {
-      "domains": ["xF5XC_DOMAINNAMEx"],
-      "https_auto_cert": {
-        "http_redirect": false,
-        "add_hsts": false,
-        "port": 443,
-        "default_header": {},
-        "enable_path_normalize": {},
-        "no_mtls": {},
-        "default_loadbalancer": {}
-      },
-      "advertise_on_public_default_vip": {},
-      "default_route_pools": [{
-        "pool": {
-          "namespace": "xF5XC_NAMESPACEx",
-          "name": "xF5XC_ORIGIN_POOLx",
-          "kind": "origin_pool"
-        },
-        "weight": 1,
-        "priority": 1
-      }],
+      ],
       "client_side_defense": {
-        "policy": {
-          "js_insert_all_pages": {}
-        }
-      },
-      "disable_rate_limit": {},
-      "no_service_policies": {},
-      "round_robin": {},
-      "disable_waf": {},
-      "no_challenge": {},
-      "disable_bot_defense": {},
-      "disable_api_definition": {},
-      "disable_api_discovery": {},
-      "disable_ip_reputation": {},
-      "disable_malicious_user_detection": {},
-      "single_lb_app": {
-        "disable_discovery": {},
-        "disable_ddos_detection": {},
-        "disable_malicious_user_detection": {}
-      },
-      "disable_trust_client_ip_headers": {},
-      "user_id_client_ip": {},
-      "disable_threat_mesh": {},
-      "l7_ddos_action_default": {},
-      "system_default_timeouts": {},
-      "default_sensitive_data_policy": {},
-      "disable_malware_protection": {},
-      "disable_api_testing": {}
+        "policy": { "js_insert_all_pages": {} }
+      }
     }
-  }' \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers" \
-  | jq .
+  }
+}
 ```
 
-A `200` response confirms the HTTPS load balancer was created. Certificate provisioning begins automatically.
+Journal the PUT as `replaced`. Do not PUT a server response wholesale. GET and journal the exact load balancer again, then repeat all six checks. [Phase 4](/csd/en/demo/phase-4-teardown/#delete-in-reverse-dependency-order) deletes only its ledger-created entry and verifies `404` before deleting the pool.
+
+## Step 6: DNS, Certificate, and Origin Recovery
+
+API acceptance is not end-to-end proof. Resolve failures without changing ownership or creating duplicate objects:
+
+1. **DNS:** Verify the application A record and `_acme-challenge` record. For F5 Distributed Cloud authoritative DNS, confirm the existing zone permits HTTP-load-balancer-managed records. For external DNS, publish the values reported by the load balancer. Do not replace or delete a shared zone.
+2. **Negative caching:** After an earlier `NXDOMAIN`, query the authoritative nameserver before changing configuration.
+3. **Certificate:** Poll the same load balancer until `cert_state` is `CertificateValid`. A rate-limit state blocks this HTTPS-only design; do not create a second HTTP load balancer.
+4. **Origin:** Prove the independently owned DNS or IP endpoint is serving the configured port, then prove F5 Distributed Cloud can reach it.
+5. **Transient `503`:** Wait for propagation and repeat GET and traffic checks. Do not POST duplicates.
+
+A DNS-zone update is a separate shared-object change requiring operator approval. It is outside this session's deletion allowlist.
+
+## Step 7: Prove the Complete Path
+
+All checks are required before Phase 2:
+
+| Order | Evidence | Required result |
+| --- | --- | --- |
+| 1 | Origin service | Independently owned origin is healthy |
+| 2 | Origin target | DNS or IP origin responds on numeric `XCSH_ORIGIN_PORT` |
+| 3 | F5 virtual host | The single load balancer reports `VIRTUAL_HOST_READY` |
+| 4 | Certificate | `cert_state` is `CertificateValid` for `XCSH_DOMAINNAME` |
+| 5 | Redirect | `curl -I "http://$XCSH_DOMAINNAME/"` returns `301` with an HTTPS `Location` |
+| 6 | HTTPS application | `curl -fsS -o /dev/null -w '%{http_code}\n' "https://$XCSH_DOMAINNAME/"` returns `200` |
+| 7 | Rendered application | A browser renders the Juice Shop application over HTTPS |
+| 8 | CSD injection | Returned HTML or the browser DOM contains `__imp_apg__` |
+| 9 | CSD beacon | Browser network evidence shows a request to the CSD `dip` endpoint |
+
+Finally GET and journal the load balancer, origin pool, optional healthcheck, and protected-domain list. For the protected domain, follow a matching list item with the exact individual GET and journal both. Preserve those responses and `.csd-api-session.json` as teardown evidence.
 
 <Aside type="caution">
-If the response contains `"code": 8` with "exhausted limits", the HTTPS LB cannot be created. The HTTPS LB is optional — the demo proceeds using the HTTP LB. Note the quota limitation in the Phase 1 Evidence Summary as INFO.
-</Aside>
-
-<Aside type="note">
-**Let's Encrypt rate limits.** Creating a new HTTPS LB triggers a Let's Encrypt certificate request. Let's Encrypt allows only 5 duplicate certificates per exact identifier set per 7 days. If `cert_state` shows `AutoCertDomainRateLimited`, the demo continues using the HTTP LB. To avoid hitting this limit, the default teardown preserves the HTTPS LB as a skeleton — see [Phase 4 — Teardown](/csd/en/demo/phase-4-teardown/).
-</Aside>
-
-### Evidence
-
-Confirm both load balancers exist with CSD enabled. Always use a **GET** for evidence — the POST response returns transient state values that may not reflect the settled configuration.
-
-**HTTP LB (primary):**
-
-```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
-  | jq '{name: .metadata.name, domains: .spec.domains, csd_enabled: (.spec.client_side_defense != null), state: .spec.state}'
-```
-
-| Field | Expected | Status |
-| --- | --- | --- |
-| HTTP Status | `200` | PASS if returned, FAIL if `404` |
-| `name` | `${F5XC_LB_NAME}-http` | PASS |
-| `domains` | Contains `F5XC_DOMAINNAME` | PASS |
-| `csd_enabled` | `true` | PASS — CSD is configured on this LB |
-| `state` | `VIRTUAL_HOST_READY` or `VIRTUAL_HOST_PENDING_A_RECORD` | Expected — HTTP LB transitions to READY once DNS resolves. Any other state (e.g. `VIRTUAL_HOST_FAILED`) is a FAIL — report to operator and do not proceed |
-
-**HTTPS LB (secondary):**
-
-```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
-  | jq '{name: .metadata.name, domains: .spec.domains, csd_enabled: (.spec.client_side_defense != null), state: .spec.state, cert_state: .spec.cert_state}'
-```
-
-| Field | Expected | Status |
-| --- | --- | --- |
-| HTTP Status | `200` | PASS if returned, FAIL if `404` |
-| `name` | `${F5XC_LB_NAME}-https` | PASS |
-| `domains` | Contains `F5XC_DOMAINNAME` | PASS |
-| `csd_enabled` | `true` | PASS — CSD is configured on this LB |
-| `creation_method` | PUT (restored skeleton) or POST (new) | INFO — PUT preserves existing certificate |
-| `state` | `VIRTUAL_HOST_READY` (PUT) or `VIRTUAL_HOST_PENDING_A_RECORD` (POST) | Expected — PUT path may already be READY since DNS persisted from skeleton |
-| `cert_state` | `CertificateValid` (PUT) or `PreDomainChallengePending` (POST) | PUT preserves existing cert; POST triggers new provisioning |
-
-## Step 4: Configure DNS
-
-After creating the load balancer, it enters `VIRTUAL_HOST_PENDING_A_RECORD` status and the automatic certificate stays in `PreDomainChallengePending`. Two DNS records must exist before the LB becomes fully operational:
-
-1. **A record** — `xF5XC_DOMAINNAMEx` pointing to the VIP IP address (from `dns_info` in the LB response)
-2. **ACME challenge record** — `_acme-challenge.xF5XC_DOMAINNAMEx` for TLS certificate validation (managed automatically when using F5 XC DNS with managed records; manual CNAME required for external DNS)
-
-The approach depends on whether F5 XC is the authoritative DNS provider for your domain.
-
-### Detect DNS Authority
-
-Check the nameservers for your root domain:
-
-```bash
-dig +short NS xF5XC_ROOT_DOMAINx
-```
-
-If the response includes `ns1.f5clouddns.com` and `ns2.f5clouddns.com`, F5 XC is the authoritative DNS provider — follow **Option A**. Otherwise, follow **Option B** for external DNS.
-
-### Option A: F5 XC Managed DNS
-
-When F5 XC is the authoritative DNS provider, the platform can automatically create both the A record and the ACME challenge CNAME — but only when the DNS zone has `allow_http_lb_managed_records` enabled.
-
-<Aside type="note">
-DNS zones live in the **system** namespace, not in user namespaces. The zone name matches the root domain (e.g., `bankexample.com`).
-</Aside>
-
-**1. Check if managed records are enabled:**
-
-```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
-  | jq '.spec.primary.allow_http_lb_managed_records'
-```
-
-If the response is `true`, the platform will auto-create DNS records for load balancers — skip to **3. Verify DNS resolution**. If `false` or `null`, continue to the next step.
-
-**2. Enable managed records:**
-
-<Aside type="caution">
-The `PUT` payload must include the **full zone spec** — metadata and all existing configuration fields. Omitting fields will reset them to defaults. Retrieve the current zone configuration first, then modify only the `allow_http_lb_managed_records` field.
-</Aside>
-
-Retrieve the current zone configuration, enable managed records, and update:
-
-```bash
-# Get current zone config
-ZONE_CONFIG=$(curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx")
-
-# Update with managed records enabled
-echo "$ZONE_CONFIG" \
-  | jq '.spec.primary.allow_http_lb_managed_records = true' \
-  | curl -s -X PUT \
-    -H "Authorization: APIToken xF5XC_API_TOKENx" \
-    -H "Content-Type: application/json" \
-    -d @- \
-    "xF5XC_API_URLx/api/config/dns/namespaces/system/dns_zones/xF5XC_ROOT_DOMAINx" \
-  | jq .
-```
-
-<Aside type="caution">
-The zone spec contains an `x-ves-io-managed` rr_set_group with platform-managed records. Your `PUT` payload **must preserve this group** — omitting it causes HTTP 403 "reserved for internal purposes". Always retrieve the current zone configuration with `GET` first, modify only the fields you need, and send back the complete spec.
-</Aside>
-
-A `200` response (empty `\{\}`) confirms the zone was updated. F5 XC will create the A record and ACME challenge record in the zone's auto-managed record group. If the managed records do not appear within 60 seconds, re-apply the load balancer to trigger record creation:
-
-```bash
-LB_CONFIG=$(curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http")
-echo "$LB_CONFIG" | curl -s -X PUT \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  -H "Content-Type: application/json" \
-  -d @- \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
-  | jq .
-```
-
-This GET+PUT re-apply does not change the LB configuration — it simply triggers the platform to re-evaluate the DNS zone and create managed records. If the A record still does not resolve within 60 seconds after the re-apply, stop and report to the operator — do not retry the re-apply more than once.
-
-**3. Verify DNS resolution:**
-
-```bash
-dig +short xF5XC_DOMAINNAMEx A
-```
-
-The response should return the VIP IP address. DNS propagation is typically immediate for F5 XC managed zones, but allow up to 60 seconds.
-
-<Aside type="tip">
-**Negative DNS cache:** If you queried the domain before the record existed, your recursive resolver may have cached the `NXDOMAIN` response. Verify against the authoritative nameserver to rule out stale cache:
-
-```bash
-dig +short xF5XC_DOMAINNAMEx A @ns1.f5clouddns.com
-```
-</Aside>
-
-### Option B: External DNS Provider
-
-When your domain uses an external DNS provider, you must create the records manually. Extract the required values from the load balancer:
-
-```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
-  | jq '{
-    vip_ip: .spec.dns_info[0].ip_address,
-    acme_target: .spec.auto_cert_info.dns_records
-  }'
-```
-
-Create these records at your DNS provider:
-
-| Type | Name | Value |
-| --- | --- | --- |
-| A | `xF5XC_DOMAINNAMEx` | VIP IP from `dns_info[0].ip_address` |
-| CNAME | `_acme-challenge.xF5XC_DOMAINNAMEx` | `*.autocerts.ves.volterra.io` |
-
-After creating the records, verify resolution:
-
-```bash
-dig +short xF5XC_DOMAINNAMEx A
-dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
-```
-
-<Aside type="tip">
-The A record is required for the LB to transition from `VIRTUAL_HOST_PENDING_A_RECORD` to `VIRTUAL_HOST_READY`. The ACME CNAME is required for automatic TLS certificate provisioning. Without both records, the LB will remain in a pending state.
-</Aside>
-
-### Evidence
-
-| Test | Command | Expected | Status |
-| --- | --- | --- | --- |
-| DNS-1: A Record | `dig +short $F5XC_DOMAINNAME A` | VIP IP address returned | PASS if IP returned, FAIL if empty |
-| DNS-2: ACME CNAME | `dig +short _acme-challenge.$F5XC_DOMAINNAME CNAME` | `*.autocerts.ves.volterra.io` | PASS if CNAME returned |
-| DNS authority | `dig +short NS $F5XC_ROOT_DOMAIN` | F5 XC or external nameservers | Informational — determines Option A vs B |
-
-If DNS-1 returns empty after 60 seconds, see [Troubleshooting &mdash; LB Stuck in VIRTUAL_HOST_PENDING_A_RECORD](/csd/en/demo/#lb-stuck-in-virtual_host_pending_a_record).
-
-## Step 5: Verify CSD is Enabled
-
-Check that Client-Side Defense is enabled for the tenant. CSD is configured at the tenant level — if it has not been enabled yet, contact your F5 XC administrator.
-
-```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
-  | jq .
-```
-
-A response containing `"isConfigured": true` and `"isEnabled": true` confirms CSD is active.
-
-### Evidence
-
-```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/status" \
-  | jq '{configured: .isConfigured, enabled: .isEnabled}'
-```
-
-| Field | Expected | Status |
-| --- | --- | --- |
-| `configured` | `true` | PASS |
-| `enabled` | `true` | PASS |
-| Either is `false` | — | FAIL — contact F5 XC administrator to enable CSD at tenant level |
-
-## Step 6: Register Protected Domain
-
-Register the root domain that CSD will monitor. The `protected_domain` field must be the **eTLD+1** root domain (e.g., `f5demos.com`), not the full FQDN.
-
-<Aside type="caution">
-**Protected domains are tenant-scoped, not namespace-scoped.** Unlike healthchecks, origin pools, and load balancers, protected domains are registered globally on the tenant — the namespace in the API URL is a routing parameter, not an ownership boundary. However, the protected domain is a CSD configuration object tied to this deployment and **should be deleted during teardown** when the deployment is being fully removed. Do not confuse this with the DNS zone, which is shared infrastructure and should never be deleted.
-</Aside>
-
-### Check if Already Registered
-
-Before creating, check whether the domain is already registered on the tenant. A `409` response to the POST means the domain already exists — this is a success condition, not an error.
-
-```bash
-curl -s -X POST \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "metadata": {
-      "name": "xF5XC_DOMAINNAMEx",
-      "namespace": "xF5XC_NAMESPACEx"
-    },
-    "spec": {
-      "protected_domain": "xF5XC_ROOT_DOMAINx"
-    }
-  }' \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
-  | jq .
-```
-
-| Response | Meaning | Action |
-| --- | --- | --- |
-| `200` | Domain registered successfully | Continue to Step 7 |
-| `409` (domain already exists) | Domain was previously registered on this tenant | Already done — continue to Step 7 |
-| `"code": 8` (exhausted limits) | Protected domain quota full | **Blocking** — protected domains are required for CSD. Delete unused protected domains or contact your administrator. |
-
-### Evidence
-
-The POST response itself is the primary evidence — it returns the registered domain object with `spec.protected_domain` matching your root domain. Alternatively, list all protected domains to confirm:
-
-```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
-  | jq '.items | length'
-```
-
-| Field | Expected | Status |
-| --- | --- | --- |
-| POST returned `protected_domain` | Matches `F5XC_ROOT_DOMAIN` | PASS |
-| POST returned `200` or `409` | Domain registered or already exists | PASS |
-| List items count | &gt; 0 | PASS |
-
-<Aside type="note">
-The individual GET endpoint (`/protected_domains/\{name\}`) is not available for protected domains. Use the POST response or the list endpoint for verification.
-</Aside>
-
-## Step 7: Verify
-
-### DNS Resolution
-
-Confirm the A record is resolving and the ACME challenge CNAME is in place:
-
-```bash
-dig +short xF5XC_DOMAINNAMEx A
-dig +short _acme-challenge.xF5XC_DOMAINNAMEx CNAME
-```
-
-The A record should return the VIP IP address. The CNAME should point to `*.autocerts.ves.volterra.io` (or a related autocerts target).
-
-### Load Balancer State
-
-Check that both load balancers have transitioned out of their pending states. The HTTP LB is the primary check — it should reach `VIRTUAL_HOST_READY` once DNS resolves, with no certificate dependency. The HTTPS LB certificate state is informational only.
-
-**HTTP LB (primary — must be READY to proceed):**
-
-```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http" \
-  | jq '{state: .spec.state}'
-```
-
-| Field | Expected | Intermediate States |
-| --- | --- | --- |
-| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS not configured (see Step 4) |
-
-**HTTPS LB (secondary — informational, does not block progression):**
-
-```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
-  | jq '{state: .spec.state, cert_state: .spec.cert_state}'
-```
-
-| Field | Expected | Intermediate States |
-| --- | --- | --- |
-| `state` | `VIRTUAL_HOST_READY` | `VIRTUAL_HOST_PENDING_A_RECORD` — DNS not configured; `VIRTUAL_HOST_DNS_A_RECORD_ADDED` — A record found, waiting for cert |
-| `cert_state` | `CertificateValid` | `PreDomainChallengePending` — waiting for ACME CNAME; `DomainChallengeStarted` — ACME challenge in progress; `AutoCertDomainRateLimited` — Let's Encrypt rate limit hit (expected in demo environments, does not affect HTTP LB) |
-
-<Aside type="note">
-Certificate provisioning can take **5–10 minutes** after DNS records are created. If `cert_state` shows `AutoCertDomainRateLimited`, this is expected in demo environments where infrastructure is frequently created and destroyed. The HTTP LB is unaffected — proceed with the demo using `http://` URLs.
-</Aside>
-
-### JS Configuration
-
-```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/js_configuration" \
-  | jq .
-```
-
-The response contains a `scriptTag` field with the full HTML `<script>` tag that the load balancer injects into page responses.
-
-### Detected Domains
-
-```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
-  | jq '{summary: .domain_summary, domains: .domains_list}'
-```
-
-### Detected Scripts
-
-The scripts endpoint requires a time range using epoch timestamps (seconds since Unix epoch). The example below queries the last 7 days.
-
-```bash
-NOW=$(date +%s)
-START=$(( NOW - 604800 ))
-curl -s -X POST \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  -H "Content-Type: application/json" \
-  -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
-  | jq '[.scripts[]? | {script_name: .script_name, risk_level: .risk_level}]'
-```
-
-### Form Fields
-
-The form fields endpoint requires a time range using epoch timestamps, passed as query parameters.
-
-```bash
-NOW=$(date +%s)
-START=$(( NOW - 604800 ))
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/formFields?startTime=$START&endTime=$NOW" \
-  | jq '.form_fields'
-```
-
-### Phase 1 Evidence Summary
-
-After completing all verification checks, the AI assistant should present a consolidated status table:
-
-| Test ID | Check | Expected | Required | Status |
-| --- | --- | --- | --- | --- |
-| DNS-1 | A Record resolves | VIP IP returned | **Yes** | PASS / FAIL |
-| DNS-2 | ACME CNAME exists | `*.autocerts.ves.volterra.io` | No | PASS / PENDING |
-| LB-1 | HTTP LB state | `VIRTUAL_HOST_READY` | **Yes** | PASS / PENDING |
-| LB-2 | HTTPS LB state | `VIRTUAL_HOST_READY` | No | PASS / PENDING / INFO |
-| TLS-1 | Certificate state | `CertificateValid` | No | PASS / PENDING / INFO |
-| CSD-1 | JS configuration | `scriptTag` present | **Yes** | PASS / FAIL |
-| CSD-2 | CSD status | `isEnabled: true` | **Yes** | PASS / FAIL |
-| CSD-3 | Protected domain | Domain registered | **Yes** | PASS / FAIL |
-
-<Aside type="note">
-**Phase 2 uses the HTTP LB.** HTTPS is optional — if TLS-1 shows `AutoCertDomainRateLimited` or LB-2 remains PENDING, the demo proceeds normally using `http://` URLs. Only DNS-1, LB-1, CSD-1, CSD-2, and CSD-3 are required to pass before proceeding to Phase 2.
-</Aside>
-
-If LB-1 shows PENDING, poll every 30 seconds for up to 4 iterations (2 minutes total). If LB-1 is still not `VIRTUAL_HOST_READY` after 4 iterations, check DNS resolution with `dig` and report to operator — do not proceed until LB-1 reaches READY. For LB-2 and TLS-1, poll every 60 seconds for up to 10 iterations (10 minutes). If still in an intermediate state after 10 iterations, record the current state as INFO and proceed — these are informational and do not block demo progression.
-
-<Aside type="note">
-The `dns_info` field in the LB response may be empty (`[]`) even when DNS resolves correctly — this happens after a clean recreation. Always verify DNS resolution with `dig` rather than relying on `dns_info` for the VIP address.
+An API `200`, resolved DNS, or issued certificate alone does not prove the demo. Do not proceed until the origin is healthy, HTTPS renders the application, `__imp_apg__` is present, and the browser sends the `dip` request.
 </Aside>
 
 ---
 
-**Phase 1 complete.** Proceed to [Phase 2 — Attack](/csd/en/demo/phase-2-attack/) to run the attack simulation.
+**Phase 1 complete.** Keep `.csd-api-session.json` for the linked [Phase 4 API teardown](/csd/en/demo/phase-4-teardown/), which deletes ledger-created objects in reverse dependency order and verifies each exact object is absent. Proceed to [Phase 2 — Attack](/csd/en/demo/phase-2-attack/) only after the full proof chain passes.

@@ -1,0 +1,187 @@
+---
+title: Terraform Operations
+description: "Plan, apply, verify, and destroy the CSD reference stack safely"
+sidebar:
+  order: 3
+  label: Operations
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+<Aside type="caution" title="Exclusive ownership">
+Choose one ownership mode. Never run the API create/update/delete workflow against resources present in Terraform state.
+</Aside>
+
+Run all commands from `terraform/aws`. Preserve the configured backend and state throughout deployment, recovery, verification, and teardown.
+
+## Deploy
+
+<Steps>
+
+1. **Verify operator identity and inputs**
+
+   Authenticate the approved AWS profile and F5 Distributed Cloud provider environment, then confirm the AWS caller before Terraform initialization:
+
+   ```bash
+   aws sts get-caller-identity --profile Users-280469140135
+   ```
+
+   Confirm that the returned account matches the guarded account in `variables.tf`. Review the configured profile, region, namespace, and domain rather than overriding them casually. Set exactly one supported F5 Distributed Cloud authentication method in the environment; do not place credentials in Terraform files.
+
+2. **Initialize the reviewed backend**
+
+   ```bash
+   terraform init -reconfigure
+   terraform validate
+   terraform test
+   ```
+
+   Confirm initialization selected the configured S3 bucket and key, encryption remains enabled, and native lock-file support is active. Do not migrate to a local or replacement state to work around access or locking failures.
+
+   `terraform test` uses mocked providers to validate configuration contracts only. It does not prove runtime resource health, protected traffic flow, log delivery, or CSD telemetry; those checks occur after apply through `application_url` and the executable diagnostics below.
+
+3. **Create a saved plan, then verify its effective Regional Edge CIDRs**
+
+   Use only the reviewed configuration in this directory. Undocumented plan overrides make the saved plan's inputs ambiguous, so fail closed if Terraform CLI argument injection, environment variable inputs, or automatic variable files are present. Retrieve the current published list immediately before planning, create the saved plan, and inspect that plan's effective ALB ingress resources:
+
+   ```bash
+   test -z "${TF_CLI_ARGS-}" && test -z "${TF_CLI_ARGS_plan-}" || {
+     echo "STOP: TF_CLI_ARGS and TF_CLI_ARGS_plan overrides are not permitted"
+     exit 1
+   }
+   test -z "$(env | awk -F= '/^TF_VAR_/ { print $1 }')" || {
+     echo "STOP: TF_VAR_* overrides are not permitted"
+     exit 1
+   }
+   if test -e terraform.tfvars || find . -maxdepth 1 -type f -name '*.auto.tfvars' -print -quit | grep -q .; then
+     echo "STOP: automatic variable files are not permitted by this procedure"
+     exit 1
+   fi
+
+   CIDR_SOURCE=https://docs.cloud.f5.com/docs-v2/downloads/platform/reference/network-cloud-ref/ips-domains.txt
+   umask 077
+   WORK_DIR=$(mktemp -d)
+   trap 'rm -rf "$WORK_DIR"' EXIT
+   curl --fail --silent --show-error --location "$CIDR_SOURCE" > "$WORK_DIR/published.txt"
+   awk '
+     /^#### REs in the Americas$/ { found=1; next }
+     found && /^#### / { exit }
+     found && /^[0-9]+(\.[0-9]+){3}\/[0-9]+$/ { print }
+   ' "$WORK_DIR/published.txt" | sort -u > "$WORK_DIR/published-cidrs.txt"
+   test -s "$WORK_DIR/published-cidrs.txt" || { echo "STOP: published Americas CIDRs were not found"; exit 1; }
+
+   terraform plan -out=csd.tfplan
+   terraform show -json csd.tfplan > "$WORK_DIR/plan.json"
+   jq -er '
+     [.planned_values.root_module
+       | recurse(.child_modules[]?)
+       | .resources[]?
+       | select(.address | startswith("module.origin.aws_vpc_security_group_ingress_rule.alb["))
+       | select(.type == "aws_vpc_security_group_ingress_rule")
+       | .values.cidr_ipv4]
+     | if length > 0 and all(. != null and . != "") then .[] else error("ALB ingress CIDRs absent or unknown") end
+   ' "$WORK_DIR/plan.json" | sort -u > "$WORK_DIR/planned-cidrs.txt"
+   test -s "$WORK_DIR/planned-cidrs.txt" || { echo "STOP: planned ALB ingress CIDRs were not found"; exit 1; }
+   cmp -s "$WORK_DIR/published-cidrs.txt" "$WORK_DIR/planned-cidrs.txt" || {
+     diff -u "$WORK_DIR/planned-cidrs.txt" "$WORK_DIR/published-cidrs.txt" || true
+     echo "STOP: saved-plan ALB ingress CIDRs do not exactly match the current published Americas list"
+     exit 1
+   }
+   printf 'CIDR comparison: PASS (%s exact entries)\n' "$(wc -l < "$WORK_DIR/planned-cidrs.txt" | tr -d ' ')"
+
+   PLAN_SHA256=$(shasum -a 256 csd.tfplan | awk '{print $1}')
+   printf 'Saved-plan SHA-256: %s\n' "$PLAN_SHA256"
+   terraform show csd.tfplan
+   ```
+
+   The plan JSON contains deployment details. Process it only in the private temporary directory; do not print, retain, or publish it. Retain only the sanitized CIDR comparison result.
+
+   Review every create, update, replacement, and destroy action. Confirm the plan retains the identity guards, dedicated VPC, two public and two private subnets, one NAT Gateway, private tasks, restricted ALB ingress, logging controls, and the expected F5 Distributed Cloud resources. A plan file is ephemeral approval evidence; do not commit it or copy its digest into documentation.
+
+4. **Approve and apply only the hashed, reviewed saved plan**
+
+   After the CIDR comparison and complete plan review, obtain a new explicit approval and bind the record to the already computed digest. Do not reuse approval from an earlier plan:
+
+   ```bash
+   read -r -p "Apply reviewed plan $PLAN_SHA256? Type yes: " CSD_APPLY_APPROVAL
+   test "$CSD_APPLY_APPROVAL" = yes || { echo "STOP: apply not approved"; exit 1; }
+   read -r -p "Record approver identity: " CSD_APPLY_APPROVER
+   test -n "$CSD_APPLY_APPROVER" || { echo "STOP: approver identity is required"; exit 1; }
+
+   umask 077
+   jq -n --arg approval "$CSD_APPLY_APPROVAL" --arg approver "$CSD_APPLY_APPROVER" \
+     --arg plan_sha256 "$PLAN_SHA256" --arg approved_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+     '{approval:$approval,approver:$approver,plan_sha256:$plan_sha256,approved_at:$approved_at}' \
+     > .csd-apply-approval.json
+
+   test "$(jq -r .approval .csd-apply-approval.json)" = yes
+   test "$(jq -r .plan_sha256 .csd-apply-approval.json)" = \
+     "$(shasum -a 256 csd.tfplan | awk '{print $1}')"
+   terraform apply csd.tfplan
+   ```
+
+   If apply is interrupted or partially succeeds, retain the same backend and state. Resolve the root cause, create and review a fresh saved plan, obtain a new recorded approval for that plan, and apply it. Do not replay a stale plan or switch state.
+
+5. **Read runtime values from outputs**
+
+   ```bash
+   terraform output
+   APPLICATION_URL=$(terraform output -raw application_url)
+   ORIGIN_HOSTNAME=$(terraform output -raw origin_hostname)
+   printf 'Protected URL: %s\nOrigin hostname: %s\n' "$APPLICATION_URL" "$ORIGIN_HOSTNAME"
+   ```
+
+   `application_url` is the protected HTTPS URL (`https://<configured-domain>`) served through F5 Distributed Cloud; it is not the direct ALB origin. `origin_hostname` is the AWS ALB hostname consumed by the origin pool. Use current outputs for operational checks. Do not transcribe generated IDs, ARNs, VIPs, bucket suffixes, certificate dates, task IDs, or plan digests into persistent prose.
+
+</Steps>
+
+## Required proof chain
+
+An accepted apply is not proof that the application works. Run the executable [Diagnostics & Verification](/csd/en/diagnostics/) procedures, including [Terraform-Owned AWS Origin and Log Evidence](/csd/en/diagnostics/#terraform-owned-aws-origin-and-log-evidence), and collect evidence in this order:
+
+1. ECS service reaches steady state with the expected task count.
+2. The ALB target is healthy on the configured health-check port.
+3. Send HTTP and HTTPS requests to `application_url`; require HTTP `301`, HTTPS `200`, rendered Juice Shop content, and the injected `__imp_apg__` path.
+4. Confirm ECS CloudWatch logs and VPC Flow Logs receive current entries from that traffic.
+5. Allow for ALB access-log delivery latency, then require a recent non-empty S3 log object. An empty listing immediately after a request is not a failure; retry with bounded waits before troubleshooting delivery.
+6. The F5 Distributed Cloud virtual host reports ready.
+7. The automatically managed certificate is valid for the configured domain.
+8. Browser DevTools shows the CSD script request and subsequent request to the F5 signal-collection endpoint (`dip`).
+
+Use the stack outputs as inputs to these checks. A failure at one layer must be fixed before claiming the next layer is healthy.
+
+## Confirm no drift
+
+After the proof chain passes, generate a fresh plan:
+
+```bash
+terraform plan -detailed-exitcode
+```
+
+Exit code `0` is the required no-change result. Exit code `2` means Terraform detected changes and the deployment is not complete. Exit code `1` is an error that must be resolved.
+
+## Destroy
+
+Destruction removes the application, platform resources, logs, and networking represented by this state. Before creating the destroy plan, capture every identifier required by the executable post-destroy checks in [Phase 4 — Teardown](/csd/en/demo/phase-4-teardown/). If the complete evidence file cannot be created and validated from current state outputs, stop.
+
+Create and inspect the saved plan:
+
+```bash
+terraform plan -destroy -out=csd-destroy.tfplan
+terraform show csd-destroy.tfplan
+```
+
+After reviewing that exact plan, obtain and record a new explicit approval bound to its SHA-256 digest, as shown in Phase 4. Verify the recorded approval and digest immediately before applying:
+
+```bash
+test "$(jq -r .approval .csd-destroy-approval.json)" = yes
+test "$(jq -r .plan_sha256 .csd-destroy-approval.json)" = \
+  "$(shasum -a 256 csd-destroy.tfplan | awk '{print $1}')"
+terraform apply csd-destroy.tfplan
+```
+
+Verify the apply completes, state is empty, and every exact AWS and F5 Distributed Cloud identifier captured before destroy is absent from live reads. The captured KMS key is the exception: require AWS to report `PendingDeletion`.
+
+If using `-detailed-exitcode`, run `terraform plan -destroy -detailed-exitcode` and require exit code `0`. Do not run a normal plan expecting no changes after destroy—the configuration still declares the stack and would propose recreation.
+
+Follow the complete capture, approval, and executable verification procedure in [Phase 4 — Teardown](/csd/en/demo/phase-4-teardown/). Do not use API deletion as a Terraform teardown substitute.

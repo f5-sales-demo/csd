@@ -249,7 +249,7 @@ DevTools stores column visibility in the Chrome profile. Edit this **before laun
 
 **Preferences file location:**
 
-```
+```text
 ~/.cache/chrome-screenshot/chrome-profile/Default/Preferences
 ```
 
@@ -529,13 +529,13 @@ end tell'
 
 **Combining filters** — separate with space (AND logic):
 
-```
+```text
 method:POST domain:api.example.com status-code:200
 ```
 
 **Negation** — prefix with `-`:
 
-```
+```text
 -domain:cdn.example.com -mime-type:image/png
 ```
 
@@ -543,7 +543,7 @@ method:POST domain:api.example.com status-code:200
 
 For data extraction (not visual), the MCP's `list_network_requests` tool filters by resource type:
 
-```
+```text
 list_network_requests with resourceTypes: ["fetch", "xhr"]
 ```
 
@@ -2007,7 +2007,7 @@ prompt.clear();
 
 ### Console error suppression
 
-The demo site fires error-level console messages from two sources: `common.js` runtime errors and Bot Defense WebSocket reconnection failures (`wss://botdemo.sales-demo.f5demos.com/socket.io/...`). Additionally, injected CDN scripts from the attack simulation produce Chrome Issues (CORS, ES module errors). These create visible noise in Console screenshots:
+The demo application, browser extensions, and injected simulation scripts can emit unrelated runtime errors, reconnect failures, CORS diagnostics, or module-loading issues. Treat these as generic console noise unless the current capture demonstrates that they are part of the scenario under test. They can create visible noise in Console screenshots:
 
 - Red error messages in the Console panel
 - An error counter badge (red square with count) in the top DevTools toolbar
@@ -2030,7 +2030,7 @@ f.messageLevelFiltersSetting.set({verbose: false, info: true, warning: true, err
 
 The preference key is `message-level-filters` (stored as JSON in Chrome Preferences). Default value: `{"verbose":false,"info":true,"warning":true,"error":true}`.
 
-2. **Issue counter hiding** — The `devtools-issue-counter` custom element appears in both the Console toolbar and the main DevTools toolbar (inside the shadow DOM of `.main-tabbed-pane`). Hide both via `display: none`:
+1. **Issue counter hiding** — The `devtools-issue-counter` custom element appears in both the Console toolbar and the main DevTools toolbar (inside the shadow DOM of `.main-tabbed-pane`). Hide both via `display: none`:
 
 ```javascript
 // Hide issue counter in Console toolbar
@@ -2044,7 +2044,7 @@ var ic = rt.querySelector('devtools-issue-counter');
 if (ic) ic.style.display = 'none';
 ```
 
-3. **Error counter badge hiding** — The red error count badge is an `icon-button` element inside the same shadow DOM toolbar:
+1. **Error counter badge hiding** — The red error count badge is an `icon-button` element inside the same shadow DOM toolbar:
 
 ```javascript
 var ib = rt.querySelector('icon-button');

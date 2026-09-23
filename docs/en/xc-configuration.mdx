@@ -9,69 +9,108 @@ sidebar:
 import { Aside, Steps } from "@astrojs/starlight/components";
 import Screenshot from "@f5-sales-demo/docs-theme/components/Screenshot.astro";
 
-CSD is already enabled on the demo application. This section shows the configuration screens.
+This page is an inspection walkthrough for the deployed reference architecture. Select either the
+[API workflow](/csd/en/demo/) or [Terraform](/csd/en/terraform/) as the resource owner before
+deployment.
 
-## Navigate to Client-Side Defense
+Choose one ownership mode. Never run the API create/update/delete workflow against resources present in Terraform state.
+
+When Terraform owns the resources, use the console only to inspect status and configuration. Do
+not select edit, clone, delete, or save actions.
+
+## Inspect Client-Side Defense
 
 <Steps>
-1. Log in to the **F5 Distributed Cloud Console**
-2. Select the **Client-Side Defense** workspace
-3. Set the namespace to **bot-defense**
-4. Navigate to **Manage** &rarr; **Configuration**
+  1. Log in to the **F5 Distributed Cloud Console** 2. Select the **Client-Side
+  Defense** workspace 3. Set the namespace to **client-side-defense** 4.
+  Navigate to **Manage** &rarr; **Configuration** 5. Inspect the protected-domain
+  resource named `client-side-defense` and confirm its protected-domain value is
+  `f5-sales-demo.com`; do not modify it
 </Steps>
 
-<Screenshot light="/images/csd-config.png" alt="CSD Configuration page showing domain list" />
-
-## Domain Configuration
-
-Adding a domain on the CSD Configuration page registers it with the CSD reporting engine. This defines the namespace scope for which CSD gathers and reports telemetry — script detections, alert notifications, and mitigation actions all roll up under the registered domain.
-
-The demo domain (`botdemo.sales-demo.f5demos.com`) is registered here.
-
-<Aside type="note">
-The CSD Configuration page does **not** control JavaScript injection. Injection scope is configured on the HTTP Load Balancer (see below). Do not modify the demo domain configuration — review the settings in read-only mode.
+<Aside type="note" title="UI layout example">
+  The following screenshot shows the general Configuration-page layout. Labels
+  and example values may differ from the current console. Use the resource name
+  and protected-domain value stated above as authoritative.
 </Aside>
 
-## HTTP Load Balancer Method
+<Screenshot
+  light="/images/csd-config.png"
+  alt="Example layout of the CSD Configuration page"
+/>
 
-The HTTP Load Balancer is where JavaScript injection is configured. This controls whether and where the CSD scripts are inserted into application pages served through the load balancer.
+## Inspect the HTTP Load Balancer
+
+The shared architecture uses one HTTP load balancer named `client-side-defense`. It advertises on
+the public default VIP, serves HTTPS with an automatic certificate, redirects HTTP to HTTPS, routes
+to one origin pool, and inserts CSD JavaScript on all pages. The AWS origin pool uses the deployed
+Application Load Balancer hostname as `public_name`; an Azure alternate uses `public_ip`.
 
 <Steps>
-1. Navigate to **Multi-Cloud App Connect** &rarr; **HTTP Load Balancers**
-2. Click the **&hellip;** (actions) menu on the load balancer serving the application and select **Manage Configuration**
-
-   <Screenshot light="/images/csd-lb-config.png" alt="HTTP Load Balancers list showing the demo load balancer" />
-3. Scroll to the **Client-Side Defense** section in the left sidebar
-
-   The **Client-Side Defense** field is set to **Enable** and the **Client-Side Defense Policy** shows **Configured**.
-
-   <Screenshot light="/images/csd-lb-csd-settings.png" alt="CSD toggle and settings within the HTTP Load Balancer configuration" />
-4. Click **View Configuration** to open the CSD policy details
-
-   The **JavaScript Insertion Settings** field shows the injection scope. The demo load balancer is set to **Insert JavaScript in All Pages**.
-
-   <Screenshot light="/images/csd-lb-injection-scope.png" alt="JavaScript injection scope in the CSD sub-configuration" />
+  1. Navigate to **Multi-Cloud App Connect** &rarr; **HTTP Load Balancers** 2.
+  Open the read-only details for `client-side-defense`; do not choose **Manage
+  Configuration** when Terraform owns it 3. Confirm the domain is
+  `client-side-defense.f5-sales-demo.com` and the virtual host is ready 4.
+  Inspect the **Client-Side Defense** section and confirm JavaScript insertion
+  applies to all pages
 </Steps>
 
+<Aside type="note" title="UI layout examples">
+  The following screenshots document where these settings appeared in an earlier
+  console layout. They are orientation aids only; their names and displayed
+  values are not the current deployment source of truth.
+</Aside>
+
+<Screenshot
+  light="/images/csd-lb-config.png"
+  alt="Example HTTP Load Balancers list layout"
+/>
+
+<Screenshot
+  light="/images/csd-lb-csd-settings.png"
+  alt="Example Client-Side Defense settings layout"
+/>
+
+<Screenshot
+  light="/images/csd-lb-injection-scope.png"
+  alt="Example JavaScript insertion settings layout"
+/>
+
 <Aside type="tip">
-The CSD Configuration page (above) registers a domain with the reporting engine. The HTTP Load Balancer controls script injection. Both must be configured for CSD to function end-to-end.
+  The CSD Configuration page registers the protected domain with the reporting
+  engine. The HTTP load balancer controls script injection. Both settings are
+  required end-to-end.
 </Aside>
 
 ## Verify Script Injection
 
 <Steps>
-1. Open the [demo application](https://botdemo.sales-demo.f5demos.com) in Chrome
+1. Open [the reference application](https://client-side-defense.f5-sales-demo.com) in Chrome
 2. Press **F12** to open DevTools
 3. Go to the **Elements** tab
 4. Search for `__imp_apg__` or `zeronaught` in the HTML to locate CSD instrumentation scripts
-5. Confirm one or more CSD `<script>` tags are present in the `<head>` — the exact script paths vary by deployment
-6. Confirm the scripts were injected by the load balancer (they are not part of the application source)
+5. Confirm one or more CSD `<script>` tags are present in the `<head>` — exact paths vary by deployment
+6. Confirm the scripts were injected by the load balancer rather than included in the origin application
 </Steps>
 
-<Screenshot light="/images/csd-injected-scripts-light.png" dark="/images/csd-injected-scripts-dark.png" alt="Injected scripts in DevTools Elements tab" />
+<Aside type="note" title="UI layout example">
+  The following DevTools screenshot is a layout-only orientation aid. Script
+  names, paths, and page markup may differ from the current deployment; verify
+  injection from the live application.
+</Aside>
 
-The CSD instrumentation scripts are injected by the F5 XC load balancer — they are not part of the application source.
+<Screenshot
+  light="/images/csd-injected-scripts-light.png"
+  dark="/images/csd-injected-scripts-dark.png"
+  alt="Injected scripts in DevTools Elements tab"
+/>
+
+The CSD instrumentation scripts are injected by the F5 Distributed Cloud load balancer; they are
+not part of the application source.
 
 <Aside type="caution">
-If the scripts are not present, verify the domain is configured and you are accessing the application through the F5 XC load balancer (not directly to the origin).
+  If the scripts are absent, confirm that the protected domain is registered,
+  the load balancer uses CSD insertion on all pages, and the browser is reaching
+  the application through the F5 Distributed Cloud load balancer rather than
+  directly reaching the origin.
 </Aside>

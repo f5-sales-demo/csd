@@ -1,25 +1,20 @@
 # CSD — Readiness Verification Matrix
 
-## Required Variables
+## Deployment Contract
 
-| Variable | Required | Default | Placeholder (treat as missing) |
-| --- | --- | --- | --- |
-| `F5XC_API_TOKEN` | **Yes** | — | `example-api-token` |
-| `F5XC_API_URL` | **Yes** | — | `https://example-tenant.console.ves.volterra.io` |
-| `F5XC_NAMESPACE` | **Yes** | — | `example-namespace` |
-| `F5XC_DOMAINNAME` | **Yes** | — | `app.example.com` |
-| `F5XC_ROOT_DOMAIN` | **Yes** | — | `example.com` |
-| `F5XC_LB_NAME` | **Yes** | — | `example-lb-name`, `example-lb` |
-| `F5XC_EMAIL` | **Yes** | — | `user@example.com` |
-| `F5XC_ORIGIN_IP` | **Yes** | — | `198.51.100.10` |
+The AWS reference and Azure alternate use the same logical F5 Distributed Cloud architecture: namespace `client-side-defense`, domain `client-side-defense.f5-sales-demo.com`, one origin pool, and one unsuffixed `client-side-defense` HTTP load balancer. The LB uses HTTPS automatic certificates with HTTP redirect, the public default VIP, one default route-pool reference, and CSD injection on all pages.
 
-## Optional Variables
+The reference origin can be a hostname via `public_name` or an IP via `public_ip`; healthcheck attachment is optional. API mode receives this origin as independent input and never reads Terraform or AWS state.
 
-| Variable | Default |
-| --- | --- |
-| `F5XC_HC_NAME` | `csd-hc` |
-| `F5XC_ORIGIN_POOL` | `csd-origin` |
-| `F5XC_ORIGIN_PORT` | `3000` |
+Choose one ownership mode. `XCSH_CSD_DEPLOYMENT_MODE` must be exactly `api` or `terraform`. Never run the API create/update/delete workflow against resources present in Terraform state.
+
+For API-owned execution, resolve the tenant API URL and token, namespace, domain, unsuffixed LB
+name, origin-pool name, origin kind, exactly one matching non-placeholder hostname or IP, and an
+integer port from 1 through 65535. The unselected origin value must be empty, and an empty
+`XCSH_HC_NAME` means omit the healthcheck. Reject example credentials, `origin.example.com`, and
+RFC 5737 TEST-NET addresses. Always require a non-empty, non-placeholder
+`XCSH_APPLICATION_MARKER`, independent of origin representation. The repository reference defaults
+to `OWASP Juice Shop`; non-reference API and Azure scenarios must set a stable scenario marker.
 
 ## Readiness Checks
 
@@ -46,108 +41,78 @@ operator interpretation required.
    `200` → PASS, `403` → FAIL (missing CSD role binding), `404`
    → WARN (namespace does not exist — CSD access will be verified
    after namespace creation in Phase 1), all others → FAIL.
-4. **PF-T0-4: RBAC Permission Matrix** — non-destructive probes
-   test read and write permissions for every object type the demo
-   needs. Read is tested via `GET` on list endpoints. Write is
-   tested via `DELETE` on known-nonexistent objects — `403` means
-   denied, `404` means allowed (RBAC passed but object doesn't
-   exist). The probe computes a deterministic
-   `{check, permissions, status, detail}` object via jq. `status`
-   is PASS if all required objects (origin pool, load balancer,
-   CSD status, protected domain) have full CRUD. WARN if only
-   optional objects (namespace, healthcheck, mitigated domain) are
-   restricted. FAIL if any required object is denied.
-
-   **Namespace special case:** if namespace write is denied but
-   PF-T0-2 returned `200` (namespace exists), this is WARN not
-   FAIL — the demo can proceed with the pre-existing namespace.
-   If PF-T0-2 returned `404` AND namespace write is denied, this
-   is FAIL — the namespace doesn't exist and cannot be created.
-
-   **CSD special case:** if CSD endpoints return `403`, the CSD
-   service may not be enabled for this tenant or namespace
-   (Plan-Based Access Control). This is always FAIL for the demo.
+4. **PF-T0-4: Read-Only Access Matrix** — establish ownership first, then
+   use GET requests on the namespace and required list/detail endpoints.
+   `XCSH_CSD_DEPLOYMENT_MODE` must be exactly `api` or `terraform`. API mode
+   classifies each target as absent, pre-existing, or unknown; Terraform
+   mode stops this API workflow and uses only its configured backend and
+   state. A successful read proves visibility, not write permission.
+   Never test authorization with DELETE, namespace cascade deletion, or
+   another mutation. Required-resource `403` responses fail readiness;
+   unresolved ownership or unexpected responses are UNKNOWN and block
+   mutation.
 
 ### T1: Quotas & Capacity
 
-Uses the Quota Usage API to query tenant-wide limits and current
-usage for each object kind the demo needs. Calculates remaining
-capacity and reports PASS/WARN/FAIL based on whether enough room
-exists. Falls back to probe-and-delete if the Quota Usage API is
-not accessible.
+Uses the read-only Quota Usage API to query tenant-wide limits and
+current usage for each object kind the demo needs. Calculates remaining
+capacity and reports PASS/WARN/FAIL when the endpoint provides complete
+data. If access is denied or a required kind is absent, record capacity
+as UNKNOWN and obtain an administrator quota/configuration check; do not
+create temporary objects.
 
-4. **PF-T1-0: Quota Usage Gate** — GET
-   `/api/web/namespaces/system/quota/usage?namespace=system`. This
-   endpoint requires the `system` namespace (not the demo
-   namespace). If `200`, pass the `objects` map through a jq filter
-   that computes a deterministic `gate` verdict (PASS/WARN/FAIL)
-   by comparing each object kind's `remaining` capacity against the
-   demo's `needed` count. If `403` or any error, fall back to
-   probe-based checks (see Fallback below).
+The gate evaluates the required platform object capacity:
 
-   The gate evaluates four object kinds:
+| Kind | Needed | Required | Min to proceed |
+| --- | --- | --- | --- |
+| `healthcheck` | 1 | No | 0 |
+| `origin_pool` | 1 | Yes | 1 |
+| `endpoint` | 1 | Yes | 1 |
+| `http_loadbalancer` | 1 | Yes | 1 |
 
-   | Kind | Needed | Required | Min to proceed |
-   | --- | --- | --- | --- |
-   | `healthcheck` | 1 | No | 0 |
-   | `origin_pool` | 1 | Yes | 1 |
-   | `endpoint` | 1 | Yes | 1 |
-   | `http_loadbalancer` | 2 (or 1 if HTTPS LB skeleton exists) | Yes | 1 |
+For each kind, the jq filter calculates:
 
-   For each kind, the jq filter calculates:
-   - `remaining = limit - usage` (unlimited if limit is `-1`)
-   - `status = PASS` if `remaining >= needed`
-   - `status = WARN` if `remaining >= min_proceed` but `< needed`
-   - `status = FAIL` if `remaining < min_proceed` and kind is
-     required (WARN if optional)
+- `remaining = limit - usage` (unlimited if limit is `-1`)
+- `status = PASS` if `remaining >= needed`
+- `status = WARN` if `remaining >= min_proceed` but `< needed`
+- `status = FAIL` if `remaining < min_proceed` and kind is required (WARN if optional)
 
-   The overall `gate` is FAIL if any check is FAIL, WARN if any is
-   WARN, PASS otherwise. A FAIL gate blocks demo execution.
+The overall `gate` is FAIL if any check is FAIL, WARN if any is WARN, PASS otherwise. A FAIL gate blocks demo execution.
 
-5. **PF-T1-4: Protected Domain Quota** — CSD protected domains do
-   not appear in the platform Quota Usage API. Use probe-based
-   check: POST a probe protected domain named
-   `preflight-probe.example.com` with
-   `protected_domain: "example.com"` (RFC 2606), then DELETE it.
-   If creation returns error code `8`, record as FAIL. A `409`
-   (domain already exists) counts as PASS.
+1. **PF-T1-4: Protected Domain Capacity** — protected-domain capacity is
+   not exposed by the platform Quota Usage API. List current protected
+   domains to detect target conflicts, then record capacity as UNKNOWN
+   unless an administrator supplies the limit and usage. Do not create
+   or delete a probe, and never treat `409` as proof of available quota.
 
-### Fallback: Probe-Based Quota Checks
+### Exceptional Mutation Probes
 
-If PF-T1-0 fails (403, 404, or unexpected format), fall back to
-probe-and-delete for all object kinds. Create and immediately
-delete temporary objects to test whether the tenant has capacity:
-
-- `preflight-quota-probe` healthcheck
-- `preflight-origin-probe` origin pool (tests both origin pool and
-  endpoint sub-object quota simultaneously)
-- `preflight-lb-probe` HTTP load balancer
-- `preflight-probe.example.com` protected domain
-
-Error code `8` from creation indicates exhausted limits. Record as
-WARN for healthchecks (optional) or FAIL for required objects.
+Readiness has no mutation fallback. If an exceptional mutation probe is
+separately approved, it must use a run-unique DNS-label name, prove that
+exact name absent with GET, and atomically append every GET and POST
+result to the ownership ledger. Only a ledger entry marked `created` may
+be deleted. A `409` is `pre-existing`, never `created`.
 
 ### T2: Platform Prerequisites
 
 FAIL in any T2 check blocks execution. Each check computes a
 deterministic `{check, status, detail}` object via jq.
 
-10. **PF-T2-1: CSD Tenant Status** — GET CSD status. jq computes:
+1. **PF-T2-1: CSD Tenant Status** — GET CSD status. jq computes:
     `{check, configured, enabled, status, detail}` where `status` is
     PASS if both `.isConfigured` and `.isEnabled` are `true`, FAIL
     otherwise.
-11. **PF-T2-2: DNS Zone Exists** — GET
+2. **PF-T2-2: DNS Zone Exists** — GET
     `/api/config/dns/namespaces/system/dns_zones/{root_domain}`.
     HTTP code captured in variable, jq computes: `200` → PASS,
     `404` → WARN (external DNS may be in use), `403` → WARN (token
     may lack system namespace access), all others → FAIL.
-12. **PF-T2-3: DNS Managed Records** — only if T2-2 returned `200`.
-    jq computes: `{check, managed_records, status, detail}` where
-    `status` is PASS if `allow_http_lb_managed_records` is `true`,
-    WARN otherwise. If WARN and PF-T2-4 shows F5 XC nameservers,
-    auto-enable using GET+PUT, then re-check. If external DNS,
-    record as INFO. If auto-remediation fails, record as FAIL.
-13. **PF-T2-4: DNS Nameserver Authority** — `dig +short NS`
+3. **PF-T2-3: DNS Managed Records** — only if T2-2 returned `200`.
+    Read and report `spec.primary.allow_http_lb_managed_records`. `true`
+    is PASS; `false` or absent is WARN. Never automatically PUT a shared
+    DNS zone. Use external/manual DNS, or obtain separate approval from
+    the established DNS owner for a reviewed complete-spec change.
+4. **PF-T2-4: DNS Nameserver Authority** — `dig +short NS`
     output piped through `jq -Rs` which computes:
     `{check, nameservers, status, detail}` where `status` is PASS
     if output contains `f5clouddns.com`, INFO for external DNS,
@@ -155,108 +120,44 @@ deterministic `{check, status, detail}` object via jq.
 
 ### T3: Origin Health
 
-The placeholder guard blocks execution. Connectivity and content checks warn
-only after an authorized origin passes the guard.
+Resolve the API origin from independent environment input, never from Terraform or AWS state.
+Require `XCSH_ORIGIN_KIND=public_name|public_ip`, exactly one matching non-placeholder hostname or
+IP, the other value empty, and an integer `XCSH_ORIGIN_PORT` from 1 through 65535. Empty
+`XCSH_HC_NAME` means omit the healthcheck. Always require `XCSH_APPLICATION_MARKER` to be non-empty
+and not a documentation placeholder. The repository reference defaults to `OWASP Juice Shop`;
+non-reference API and Azure scenarios must set a stable, deployment-specific marker.
 
-**Placeholder guard:** A computed check (`PF-T3-origin-guard`) pipes
-`F5XC_ORIGIN_IP` through `jq -Rs` to test against RFC 5737 TEST-NET
-ranges (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`). jq
-outputs `{check, origin_ip, is_test_net, status, detail}` where
-`status` is FAIL if the IP matches a TEST-NET range and CONTINUE
-otherwise. If FAIL, stop until the operator supplies an authorized lab origin.
-These ranges are reserved for documentation per
-[RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) and will
-never respond to connectivity tests.
+`XCSH_CSD_DEPLOYMENT_MODE=api|terraform` identifies ownership only and must not select cloud-provider checks.
 
-14. **PF-T3-1: Origin Connectivity** — cURL the origin IP:port with
-    `--connect-timeout 10 --max-time 15`. HTTP code captured in
-    variable, jq computes: `200–599` → PASS, `0` → WARN (origin
-    unreachable from this network), all others → WARN.
-15. **PF-T3-2: HTML Content** — only if T3-1 returned a valid HTTP
-    status, check if response contains `</html>`. Outputs PASS or
-    WARN deterministically.
+1. **PF-T3-1: Origin Connectivity** — request the resolved origin with bounded connect and total timeouts. A valid HTTP response proves reachability; connection failure blocks end-to-end proof.
+2. **PF-T3-2: Origin Content** — require the stable `XCSH_APPLICATION_MARKER` value in the origin response regardless of origin representation. Record the matching response as an observed lab result; a status code alone is not content proof.
 
-### T4: Environment Clean
+### T4: Ownership and Existing State
 
-If PF-T0-2 returned `404` (namespace does not exist), skip T4 and
-report status as `CLEAN` — a non-existent namespace cannot contain
-leftover objects.
+Determine the owner before any mutation. API mode expects targets to be absent or recorded in the current run's atomic ledger. The ledger permits only approved kinds and stores exact name, namespace, and one status (`created`, `pre-existing`, or `unknown`), with exactly one entry per kind/name/namespace.
 
-Executes auto-teardown if leftover objects are found. The pre-flight
-check computes a deterministic `{objects, any_infra_exists,
-any_csd_exists, status, action}` object via jq. The `status` field
-is one of: CLEAN, HTTPS_SKELETON, ALL_EXIST, TEARDOWN_NEEDED, or
-MITIGATIONS_ONLY.
+Append after every GET and POST result. `409` is always `pre-existing`. Phase 3 records mitigated domains.
 
-- `CLEAN` — all objects return 404, all counts are 0.
-- `HTTPS_SKELETON` — only the HTTPS LB exists and it is in skeleton
-  state (empty `default_route_pools`, no `client_side_defense`). All
-  other infra objects (HTTP LB, origin pool, healthcheck) return 404,
-  and CSD objects (protected domains, mitigated domains) have count 0.
-  This is a **clean-equivalent** state — the skeleton preserves the
-  Let's Encrypt certificate from a prior teardown. See
-  [Phase 4 — Teardown](/csd/demo/phase-4-teardown/) for why
-  the HTTPS LB is preserved.
-- `ALL_EXIST` — both HTTP LB and origin pool exist.
-- `TEARDOWN_NEEDED` — partial infra exists (not a skeleton).
-- `MITIGATIONS_ONLY` — only mitigated domains remain.
+Phase 4 derives targets only from ledger entries marked `created`, fails on API URL or namespace mismatch, and requires explicit approval. Namespace cascade deletion requires a second approval. Never auto-teardown unknown, mixed-owner, pre-existing, or Terraform-owned resources. Terraform mode uses only its configured backend and state.
 
-16. Run the six pre-flight commands (HTTP LB, HTTPS LB, Origin Pool,
-    Healthcheck, protected domains, mitigated domains). Capture each
-    HTTP status code and domain count, then pipe all six through jq
-    to compute environment status deterministically. When the HTTPS LB
-    returns `200`, also fetch the full object body to determine if it
-    is a **skeleton** (empty `default_route_pools` and no
-    `client_side_defense`) or a fully-configured LB. This distinction
-    determines whether the status is `HTTPS_SKELETON`
-    (clean-equivalent) or `TEARDOWN_NEEDED`.
-17. Also check for stale probe objects from a prior interrupted
-    pre-flight run — delete if found. These probes are only created
-    when the Quota Usage API was unavailable and fallback
-    probe-based checks were used, or for the protected domain
-    probe (PF-T1-4) which always uses probe-based checking:
-    - `preflight-quota-probe` (healthcheck)
-    - `preflight-lb-probe` (HTTP load balancer)
-    - `preflight-origin-probe` (origin pool)
-    - `preflight-probe.example.com` (protected domain)
-18. **Auto-teardown if needed** — if `status` is not CLEAN and not
-    `HTTPS_SKELETON` (any non-skeleton objects exist), run the full
-    Phase 4 teardown by reading and executing commands from
-    `docs/demo/phase-4-teardown.mdx`. No confirmation
-    needed — Prepare is pre-meeting cleanup. If `status` is
-    `HTTPS_SKELETON`, no teardown is needed — the skeleton is
-    preserved by design and Phase 1 will restore it via PUT.
-19. **Re-run pre-flight** — execute the same pre-flight checks to
-    confirm `status` is CLEAN or `HTTPS_SKELETON`. For CLEAN: `404`
-    on all objects, counts are 0. For `HTTPS_SKELETON`: HTTPS LB
-    returns `200` with skeleton state, all other objects return `404`,
-    counts are 0. If any unexpected object still exists, report
-    failure and stop.
+### T5: End-to-End Proof Chain
 
-### T5: Certificate Readiness
+All common checks and the checks for the selected cloud scenario must pass before presenting the environment. Ownership mode (`api|terraform`) does not select the cloud scenario.
 
-INFO only. Checks compute deterministic `{check, status, detail}`
-objects.
+**Common F5 path evidence:**
 
-20. **PF-T5-1: Recent Certificate Issuance History** — there is no
-    API to query Let's Encrypt rate limits directly. Note as INFO
-    that frequent create/destroy cycles can exhaust the weekly limit
-    (5 duplicate certificates per exact identifier set per 7 days).
-    The default teardown behavior preserves the HTTPS LB as a skeleton
-    to avoid triggering new certificate requests. If the HTTPS LB was
-    fully deleted and rebuilt multiple times recently, include a
-    warning that HTTPS may be rate-limited.
-21. **PF-T5-2: Cert State** — captures HTTP code and response body.
-    jq computes `{check, cert_state, status, detail}`:
-    - HTTP `404` → SKIP (no HTTPS LB exists)
-    - `CertificateValid` → PASS
-    - `AutoCertDomainRateLimited` → INFO (plan for HTTP-only)
-    - `Pending`/`Started` → INFO (provisioning in progress)
-    - All others → INFO with raw `cert_state` value
+1. The non-empty DNS A-record set exactly equals the current VIP set from the exact LB in the expected namespace.
+2. The ACME challenge CNAME or TXT owner and value match current certificate or DNS metadata; any non-empty record is not sufficient.
+3. The exact protected-domain name and namespace are registered.
+4. The F5 Distributed Cloud virtual host reports `VIRTUAL_HOST_READY`, and the automatic certificate reports a valid state.
+5. HTTP redirects to HTTPS; HTTPS returns the expected scenario-specific application marker and contains an injected `__imp_apg__` script reference.
+6. A recent F5 access-log event recorded after the validation request matches the exact protected host.
+7. Browser DevTools observes a CSD `dip` request.
 
-    When the HTTPS LB exists as a skeleton from a prior teardown,
-    PF-T5-2 should still run and report the certificate state. A
-    `CertificateValid` result confirms the skeleton preservation
-    strategy is working — HTTPS will be available immediately after
-    Phase 1 restores the LB via PUT, with no Let's Encrypt
-    provisioning delay.
+**AWS reference evidence:** ECS reaches steady state, an ALB target is healthy, and recent CloudWatch application logs, VPC Flow Logs, and ALB access logs show delivery.
+
+**Azure alternate evidence:** the exact subscription, resource group, resource IDs, deployment owner, and provisioning state are verified from the Azure source of truth, and a recent Azure application-log event is observed after the protected validation request. Do not apply AWS ECS, ALB, CloudWatch, flow-log, or S3 assertions to Azure.
+
+When Terraform owns the selected stack, a final refresh-aware Terraform plan must report no drift. An API `200` or successful Terraform apply proves configuration acceptance, not this operational chain. Certificate/origin propagation and transient F5 `503` responses require bounded retry and fresh observation.
+
+Resolve quota, namespace, state-lock, certificate, or origin issues without changing ownership. Retain the same backend/state and create a fresh saved plan for every Terraform retry.

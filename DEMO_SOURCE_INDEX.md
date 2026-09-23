@@ -4,37 +4,47 @@
 
 | ID | File | Topics |
 | -- | ---- | ------ |
-| LOCAL-OVERVIEW | `docs/overview.mdx` | CSD overview, capabilities, architecture |
-| LOCAL-INDEX | `docs/index.mdx` | Landing page, product summary |
-| LOCAL-XC-CONFIG | `docs/xc-configuration.mdx` | F5 XC console configuration, LB setup |
-| LOCAL-CSD-CONSOLE | `docs/csd-console.mdx` | CSD dashboard, detections UI |
-| LOCAL-TELEMETRY | `docs/telemetry-beacons.mdx` | Telemetry scripts, beacon format |
-| LOCAL-TRIGGER | `docs/trigger-detection.mdx` | Detection triggering, attack simulation |
-| LOCAL-ATTACK | `docs/attack-scripts.mdx` | Attack scripts, skimmer behavior |
-| LOCAL-DEMO-SITE | `docs/demo-website.mdx` | Demo site setup, Juice Shop |
-| LOCAL-DIAGNOSTICS | `docs/diagnostics.mdx` | Troubleshooting, diagnostic tests |
-| LOCAL-REFERENCES | `docs/references.mdx` | External links, further reading |
-| LOCAL-API-REF | `docs/api-reference.mdx` | CSD API endpoints, request/response |
-| LOCAL-API-AUTO | `docs/demo/index.mdx` | API automation overview, variable resolution |
-| LOCAL-PHASE1 | `docs/demo/phase-1-build.mdx` | Phase 1 build, provisioning |
-| LOCAL-PHASE2 | `docs/demo/phase-2-attack.mdx` | Phase 2 attack simulation |
-| LOCAL-PHASE3 | `docs/demo/phase-3-mitigate.mdx` | Phase 3 mitigation, allow/mitigate |
-| LOCAL-PHASE4 | `docs/demo/phase-4-teardown.mdx` | Phase 4 teardown, cleanup |
-| LOCAL-FAQ | `docs/faq.mdx` | Frequently asked questions — alerts, logging, SIEM, mitigation behavior, detection timing |
+| LOCAL-OVERVIEW | `docs/en/overview.mdx` | CSD overview, one-LB architecture, ownership modes |
+| LOCAL-INDEX | `docs/en/index.mdx` | Landing page, product summary |
+| LOCAL-XC-CONFIG | `docs/en/xc-configuration.mdx` | F5 XC configuration and all-pages injection |
+| LOCAL-CSD-CONSOLE | `docs/en/csd-console.mdx` | CSD dashboard and detections UI |
+| LOCAL-TELEMETRY | `docs/en/telemetry-beacons.mdx` | Injected script and `dip` beacon observations |
+| LOCAL-TRIGGER | `docs/en/trigger-detection.mdx` | Authorized detection simulation |
+| LOCAL-ATTACK | `docs/en/attack-scripts.mdx` | Attack scripts and skimmer behavior |
+| LOCAL-DEMO-SITE | `docs/en/demo-website.mdx` | AWS Juice Shop reference and Azure alternate |
+| LOCAL-DIAGNOSTICS | `docs/en/diagnostics.mdx` | Provider-specific origin and end-to-end checks |
+| LOCAL-REFERENCES | `docs/en/references.mdx` | External links and further reading |
+| LOCAL-API-REF | `docs/en/api-reference.mdx` | Current CSD endpoint paths and payloads |
+| LOCAL-API-AUTO | `docs/en/demo/index.mdx` | API/Terraform ownership selection and readiness |
+| LOCAL-PHASE1 | `docs/en/demo/phase-1-build.mdx` | API-owned build and verification |
+| LOCAL-PHASE2 | `docs/en/demo/phase-2-attack.mdx` | Ownership-neutral attack simulation |
+| LOCAL-PHASE3 | `docs/en/demo/phase-3-mitigate.mdx` | API-owned or Terraform-owned mitigation paths |
+| LOCAL-PHASE4 | `docs/en/demo/phase-4-teardown.mdx` | Owner-specific cleanup |
+| LOCAL-AZURE | `docs/en/demo/third-party-lifecycle.mdx` | Separate Azure full-origin alternate |
+| LOCAL-TERRAFORM | `docs/en/terraform/index.mdx` | AWS reference Terraform workflow |
+| LOCAL-FAQ | `docs/en/faq.mdx` | Alerts, logging, SIEM, mitigation, detection timing |
+| LOCAL-PRODUCT-EXPERTISE | `DEMO_PRODUCT_EXPERTISE.md` | Product boundaries, telemetry, threat coverage, and Magecart kill chain |
 
 ## F5 API Documentation
 
 | ID | URL | Topics |
 | -- | --- | ------ |
-| F5-API-CSD | <https://docs.cloud.f5.com/docs-v2/api/shape-client-side-defense> | CSD API spec, enable/status/scripts/detections |
-| F5-API-ALLOWED | <https://docs.cloud.f5.com/docs-v2/api/shape-client-side-defense-allowed-domain> | Allowed domain API |
-| F5-API-PROTECTED | <https://docs.cloud.f5.com/docs-v2/api/shape-client-side-defense-protected-domain> | Protected domain API |
-| F5-API-MITIGATED | <https://docs.cloud.f5.com/docs-v2/api/shape-client-side-defense-mitigated-domain> | Mitigated domain API |
-| F5-API-SUB | <https://docs.cloud.f5.com/docs-v2/api/shape-client-side-defense-subscription> | CSD subscription API |
-| F5-API-HEALTH | <https://docs.cloud.f5.com/docs-v2/api/healthcheck> | Healthcheck API |
-| F5-API-LB | <https://docs.cloud.f5.com/docs-v2/api/views-http-loadbalancer> | HTTP load balancer API |
-| F5-API-QUOTA | <https://docs.cloud.f5.com/docs-v2/api/quota> | Quota API, tenant limits, usage |
+| F5-API-ENRICHED | <https://f5-sales-demo.github.io/api-specs-enriched/en/> | Canonical F5 Distributed Cloud API documentation |
+| F5-API-CSD | <https://f5-sales-demo.github.io/api-specs-enriched/en/api-reference/shape-api/> | Shape CSD status, domains, scripts, form fields, and mitigation operations |
+| F5-API-LB | <https://f5-sales-demo.github.io/api-specs-enriched/en/api-reference/virtual-api/> | HTTP load balancer schema and operations |
+| F5-API-ORIGIN | <https://f5-sales-demo.github.io/api-specs-enriched/en/api-reference/virtual-api/> | Origin pool schema and `public_name`/`public_ip` oneOf choices |
+| F5-API-HEALTH | <https://f5-sales-demo.github.io/api-specs-enriched/en/api-reference/virtual-api/> | Optional healthcheck schema |
 | F5-QUOTA-REF | <https://docs.cloud.f5.com/docs-v2/platform/reference/default-quota-reference> | Default quota values by plan tier |
+
+## Infrastructure Source Provenance
+
+| ID | Source | Provenance |
+| -- | ------ | ---------- |
+| TF-AWS | `terraform/aws/versions.tf`, `terraform/aws/variables.tf`, `terraform/aws/main.tf`, `terraform/aws/outputs.tf`, `terraform/aws/tests/stack.tftest.hcl` | Canonical AWS reference implementation using `f5-sales-demo/xcsh` |
+| ORIGIN-VENDORED | `terraform/aws/vendor/aws-juice-shop/` | Vendored from `f5-sales-demo/origin-server` commit `d6384bb0621c4c1eceb38d55a6b63e7b9cc7083a` |
+| ORIGIN-PUBLISHED | <https://f5-sales-demo.github.io/origin-server/> | Published origin documentation released by merge `595841996ef7e782870be8200dce4775defb7e80` |
+
+The AWS Terraform stack and standalone API workflow create the same logical F5 Distributed Cloud architecture but are mutually exclusive owners. Choose one ownership mode. Never run the API create/update/delete workflow against resources present in Terraform state.
 
 ## F5 Product Documentation
 
@@ -42,7 +52,6 @@
 | -- | --- | ------ |
 | F5-CSD-ABOUT | <https://docs.cloud.f5.com/docs-v2/client-side-defense/concepts/about-csd> | CSD concepts, architecture, how it works |
 | F5-CSD-HOWTO | <https://docs.cloud.f5.com/docs-v2/client-side-defense/how-tos/configure-csd> | CSD configuration guide |
-| F5-CSD-FAQ | <https://docs.cloud.f5.com/docs-v2/client-side-defense/faqs/csd> | CSD frequently asked questions |
 
 ## Community & Technical Articles
 
@@ -80,16 +89,15 @@
 
 | ID | URL | Topics |
 | -- | --- | ------ |
-| OWASP-CLICKJACKING | <https://owasp.org/www-community/attacks/Clickjacking> | Clickjacking, UI redressing, iframe overlay |
+| OWASP-CLICKJACKING | <https://community.owasp.org/attacks/Clickjacking> | Clickjacking, UI redressing, iframe overlay |
 | OWASP-CLICKJACKING-DEFENSE | <https://cheatsheetseries.owasp.org/cheatsheets/Clickjacking_Defense_Cheat_Sheet.html> | Clickjacking prevention, CSP frame-ancestors |
-| OWASP-MITB | <https://owasp.org/www-community/attacks/Man-in-the-browser_attack> | Man-in-the-Browser, browser trojan, session hijack |
-| OWASP-XSS | <https://owasp.org/www-community/attacks/xss/> | Cross-site scripting, script injection, DOM XSS |
-| OWASP-CLIENT-SIDE-TOP10 | <https://owasp.org/www-project-top-10-client-side-security-risks/> | Client-side security risks ranking |
-| MITRE-SUPPLY-CHAIN | <https://attack.mitre.org/techniques/T1195/> | Supply chain compromise T1195 |
-| MITRE-SUPPLY-CHAIN-SW | <https://attack.mitre.org/techniques/T1195/002/> | Software supply chain compromise T1195.002 |
-| MITRE-MITB | <https://attack.mitre.org/techniques/T1185/> | Man-in-the-Browser T1185 |
-| MITRE-EXFILTRATION | <https://attack.mitre.org/tactics/TA0010/> | Data exfiltration tactic TA0010 |
-| MITRE-RESOURCE-HIJACK | <https://attack.mitre.org/techniques/T1496/> | Resource hijacking T1496, cryptojacking |
+| OWASP-XSS | <https://community.owasp.org/attacks/xss/> | Cross-site scripting, script injection, DOM XSS |
+| OWASP-CLIENT-SIDE-TOP10 | <https://owasp.org/projects/top-10-client-side-security-risks> | Candidate client-side security risks |
+| MITRE-SUPPLY-CHAIN | <https://attack.mitre.org/techniques/T1195/> | Supply Chain Compromise T1195 |
+| MITRE-SUPPLY-CHAIN-SW | <https://attack.mitre.org/techniques/T1195/002/> | Compromise Software Supply Chain T1195.002 |
+| MITRE-BROWSER-SESSION-HIJACKING | <https://attack.mitre.org/techniques/T1185/> | Browser Session Hijacking T1185 |
+| MITRE-EXFILTRATION | <https://attack.mitre.org/tactics/TA0010/> | Exfiltration tactic TA0010 |
+| MITRE-RESOURCE-HIJACK | <https://attack.mitre.org/techniques/T1496/> | Resource Hijacking T1496, including cryptomining |
 | AKAMAI-WEB-SKIMMING | <https://www.akamai.com/glossary/what-is-web-skimming> | Web skimming, digital skimming definition |
 | SANSEC-MAGECART | <https://sansec.io/what-is-magecart> | Magecart, formjacking, e-commerce skimming, group taxonomy, notable breaches (BA, Ticketmaster, NewEgg) |
 | ANGULAR-ZONE-JS | <https://angular.dev/guide/zone> | Angular zone.js API patching, browser API interception, implications for browser automation |
@@ -106,12 +114,12 @@
 | "Can CSD detect X?" | LOCAL-OVERVIEW (boundaries) | F5-CSD-ABOUT |
 | "How do I automate X?" | LOCAL-API-AUTO | F5-COMMUNITY-AUTOMATION |
 | "What is Magecart?" | F5-ATTACK-VECTORS | WebSearch fallback |
-| "Walk me through a Magecart attack" | LOCAL-EXPERTISE (Magecart Kill Chain) | SANSEC-MAGECART |
+| "Walk me through a Magecart attack" | LOCAL-PRODUCT-EXPERTISE (Magecart Kill Chain) | SANSEC-MAGECART |
 | "How do I configure X?" | LOCAL-XC-CONFIG | F5-CSD-HOWTO |
 | "What does the dashboard show?" | LOCAL-CSD-CONSOLE | F5-CSD-ABOUT |
 | "How does telemetry work?" | LOCAL-TELEMETRY | F5-CSD-ABOUT |
 | "What is clickjacking?" | OWASP-CLICKJACKING | LOCAL-OVERVIEW |
-| "What is man-in-the-browser?" | OWASP-MITB, MITRE-MITB | LOCAL-OVERVIEW |
+| "What is browser session hijacking?" | MITRE-BROWSER-SESSION-HIJACKING | LOCAL-OVERVIEW |
 | "What is a supply chain attack?" | MITRE-SUPPLY-CHAIN | F5-ATTACK-VECTORS |
 | "What is cryptojacking?" | MITRE-RESOURCE-HIJACK | LOCAL-OVERVIEW |
 | "What is web skimming/Magecart?" | SANSEC-MAGECART, AKAMAI-WEB-SKIMMING | F5-ATTACK-VECTORS |

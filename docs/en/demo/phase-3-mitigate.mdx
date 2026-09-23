@@ -1,68 +1,137 @@
 ---
 title: "Phase 3 — Mitigate"
-description: "Apply CSD mitigation policy and verify attack traffic is blocked"
+description: "Apply CSD mitigation policy and verify browser-observed enforcement"
 sidebar:
   order: 4
   label: "Phase 3 — Mitigate"
 ---
 
-import { Aside, Steps } from "@astrojs/starlight/components";
+import { Aside } from "@astrojs/starlight/components";
 
-Phase 3 creates a **before/after proof** of CSD mitigation. You re-run the attack with no mitigations to establish a baseline, apply mitigations, then re-run the same attack to prove CSD blocks the network calls. Phase 2 must be complete — all DET checks PASS — before proceeding.
+Phase 3 creates a **before/after proof** of CSD mitigation. Re-run the authorized simulation over HTTPS to establish a baseline, mitigate only script domains observed in that baseline and current telemetry, then repeat the same run. Phase 2 has one entry gate: DET-3 must PASS; DET-1 and DET-4 may remain PENDING.
 
 <Aside type="note">
-**CSD mitigation blocks script loading from mitigated domains.** When a domain is on the mitigate list, the CSD JavaScript intercepts `&lt;script&gt;` tag source URLs and prevents scripts from loading — stopping supply-chain attacks at the source. CSD does not intercept `fetch()` or `XMLHttpRequest` calls. This phase captures proof of script blocking by running the same attack before and after mitigation.
+Browser Network behavior is the enforcement evidence. API resources, lists, and counters prove configuration state and reported telemetry; they do not prove that a browser request was blocked. Do not claim a specific internal blocking mechanism unless current product documentation states it.
 </Aside>
 
 <Aside type="caution">
-**Live testing note:** The mitigation POST/DELETE endpoints have been validated in development environments but behavior details (response timing, effect on script detection status) may vary across tenant configurations. If you observe unexpected responses, check the [API Reference](/csd/en/api-reference/#mitigated-domains) for the canonical endpoint definitions.
+Propagation and telemetry timing vary by tenant and traffic volume. Record timestamps and observed results rather than presenting a fixed product timing guarantee.
+</Aside>
+
+<Aside type="caution" title="Select the resource owner before mutation">
+The POST and DELETE commands on this page are only for API-owned mitigated-domain resources. Never run them against resources present in Terraform state.
+For Terraform ownership, change the repository configuration, review a fresh plan, and apply from the same backend and state.
 </Aside>
 
 ## Step 1: Confirm No Active Mitigations (Baseline)
 
-Before capturing the "before" snapshot, verify the environment is clean — no mitigations should be active. This ensures the baseline attack runs without any CSD blocking.
+Before capturing the "before" snapshot, use the Phase 1 `CSD_API_SESSION_FILE`, `ledger_outcome`, and `ledger_record` helpers in the same shell. Normalize the current API URL, derive its tenant identity, resolve the ledger path, and validate the exact API URL, tenant, namespace, and domain before any request:
 
-### Check Mitigated Domains Count
+```bash
+case "${XCSH_API_URL:-}" in https://*) ;; *) exit 1 ;; esac
+while [ "${XCSH_API_URL%/}" != "$XCSH_API_URL" ]; do
+  XCSH_API_URL=${XCSH_API_URL%/}
+done
+XCSH_TENANT_HOSTNAME=${XCSH_API_URL#https://}
+case "$XCSH_TENANT_HOSTNAME" in ''|*/*|*:*|*[!A-Za-z0-9.-]*) exit 1 ;; esac
+XCSH_TENANT_IDENTITY=${XCSH_TENANT_HOSTNAME%%.*}
+[ -n "$XCSH_TENANT_IDENTITY" ] || exit 1
+case "${CSD_API_SESSION_FILE:-.csd-api-session.json}" in
+  /*) CSD_API_SESSION_FILE=${CSD_API_SESSION_FILE:-.csd-api-session.json} ;;
+  *) CSD_API_SESSION_FILE="$PWD/${CSD_API_SESSION_FILE:-.csd-api-session.json}" ;;
+esac
+CSD_API_SESSION_DIR=$(dirname -- "$CSD_API_SESSION_FILE")
+CSD_API_SESSION_NAME=$(basename -- "$CSD_API_SESSION_FILE")
+[ -d "$CSD_API_SESSION_DIR" ] && [ "$CSD_API_SESSION_NAME" != . ] && [ "$CSD_API_SESSION_NAME" != .. ] || exit 1
+CSD_API_SESSION_DIR=$(cd "$CSD_API_SESSION_DIR" && pwd -P) || exit 1
+CSD_API_SESSION_FILE="$CSD_API_SESSION_DIR/$CSD_API_SESSION_NAME"
+export CSD_API_SESSION_FILE CSD_API_SESSION_DIR XCSH_API_URL XCSH_TENANT_HOSTNAME XCSH_TENANT_IDENTITY
+
+jq -e --arg api_url "$XCSH_API_URL" --arg tenant_hostname "$XCSH_TENANT_HOSTNAME" \
+  --arg tenant_identity "$XCSH_TENANT_IDENTITY" --arg ns "$XCSH_NAMESPACE" \
+  --arg domain "$XCSH_DOMAINNAME" --arg protected_name "$XCSH_LB_NAME" \
+  --arg pool_name "$XCSH_ORIGIN_POOL" --arg lb_name "$XCSH_LB_NAME" \
+  --arg hc_name "${XCSH_HC_NAME:-}" '
+  (keys | sort) == ["environment","outcomes","ownership_mode","resources","schema_version","session_id"] and
+  .schema_version == 1 and .ownership_mode == "api" and
+  (.session_id | type == "string" and test("^[0-9]{8}T[0-9]{6}Z$")) and
+  .environment == {
+    api_url: $api_url, tenant_hostname: $tenant_hostname, tenant_identity: $tenant_identity,
+    namespace: $ns, domain: $domain
+  } and
+  (.resources | type == "array") and
+  (all(.resources[];
+    (keys | sort) == ["kind","name","namespace","spec","status"] and
+    (.kind | IN("namespace","protected_domain","healthcheck","origin_pool","http_loadbalancer","mitigated_domain")) and
+    .namespace == $ns and
+    (.name | type == "string" and test("^[a-z]([a-z0-9-]{0,62}[a-z0-9])?$")) and
+    (.status | IN("created","pre-existing","unknown")) and
+    (
+      (.kind == "namespace" and .name == $ns) or
+      (.kind == "protected_domain" and .name == $protected_name) or
+      (.kind == "origin_pool" and .name == $pool_name) or
+      (.kind == "http_loadbalancer" and .name == $lb_name) or
+      (.kind == "healthcheck" and $hc_name != "" and .name == $hc_name) or
+      (.kind == "mitigated_domain")
+    ) and
+    (.spec | type == "object")
+  )) and
+  ([.resources[] | [.kind,.namespace,.name] | join("\u0000")] | length) ==
+  ([.resources[] | [.kind,.namespace,.name] | join("\u0000")] | unique | length) and
+  ([.resources[] | select(.status == "unknown")] | length == 0) and
+  (.outcomes | type == "array") and
+  (all(.outcomes[];
+    (keys | sort) == ["kind","name","namespace","operation","result"] and
+    (.operation | IN("GET","POST","PUT")) and
+    (.kind | IN("namespace","protected_domain","healthcheck","origin_pool","http_loadbalancer","mitigated_domain")) and
+    .namespace == $ns and
+    (.name | type == "string" and test("^[a-z]([a-z0-9-]{0,62}[a-z0-9])?$")) and
+    (
+      (.kind == "namespace" and .name == $ns) or
+      (.kind == "protected_domain" and .name == $protected_name) or
+      (.kind == "origin_pool" and .name == $pool_name) or
+      (.kind == "http_loadbalancer" and .name == $lb_name) or
+      (.kind == "healthcheck" and $hc_name != "" and .name == $hc_name) or
+      (.kind == "mitigated_domain")
+    ) and
+    (.result | IN("match","absent","created","replaced","conflict","unknown"))
+  )) and
+  ([.outcomes[] | select(.result == "unknown")] | length == 0)
+' "$CSD_API_SESSION_FILE" >/dev/null || {
+  echo "STOP: mitigation ledger is corrupt, mismatched, duplicated, or has unknown ownership"
+  exit 1
+}
+```
+
+List mitigated domains. If the count is not `0`, stop and use Phase 4 to remove only mitigation entries recorded as `created` by their originating session. Baseline cleanup must never guess names or delete unrecorded resources.
 
 ```bash
 curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
+  -H "Authorization: APIToken xXCSH_API_TOKENx" \
+  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/mitigated_domains" \
   | jq '{count: (.items | length)}'
 ```
 
-If the count is **not** `0`, mitigations remain from a prior run. Delete each one before proceeding:
-
-```bash
-# Delete a mitigated domain (repeat for each domain name)
-curl -s -X DELETE \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/<domain-name>" \
-  | jq .
-```
-
-Replace `<domain-name>` with the `metadata.name` used when the domain was mitigated (e.g., `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io`, `httpbin.org`, `jsonplaceholder.typicode.com`). If `httpbin.org` cleanup leaves a remaining item, also try deleting `www.httpbin.org` — some prior runs may have used that as the metadata name.
-
-### Confirm Phase 2 Detections Are Present
+### Confirm the Phase 2 Entry Gate
 
 ```bash
 curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
-  | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
+  -H "Authorization: APIToken xXCSH_API_TOKENx" \
+  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/detected_domains" \
+  | jq '{total_domains: .domain_summary.totalDomains.count, domains: [.domains_list[]? | {domain, category}]}'
 ```
 
 ### Evidence
 
 | Check | Expected | Status |
 | --- | --- | --- |
-| Mitigated domain count | `0` (clean baseline) | PASS if 0, requires cleanup if &gt; 0 |
-| Detected domain count | &gt; 0 (Phase 2 detections present) | PASS if &gt; 0 |
-| Exfil domains present | `www.httpbin.org`, `jsonplaceholder.typicode.com` | PASS if at least one appears |
+| Mitigated domain count | `0` (clean baseline) | PASS if 0; otherwise reconcile owned entries before continuing |
+| DET-3 | At least one synthetic external destination from the Phase 2 run appears in `/detected_domains` | **Required to proceed** |
+| Slower checks | DET-1 and DET-4 | PENDING is allowed |
 
 ## Step 2: Run Attack — Before Mitigation
 
-Re-run the combined simulation with **no mitigations active** to capture a fresh baseline. This is the **"before" snapshot** — proof that attacks succeed when CSD mitigation is not applied.
+Re-run the combined simulation with **no mitigations active** to capture a fresh baseline. This is the **"before" snapshot**: a record of which candidate browser requests were observed before CSD mitigation was applied.
 
 <Aside type="note">
 This step requires browser-side JavaScript execution — `curl` cannot trigger CSD detection. AI assistants with browser automation tools (MCP Chrome DevTools, Playwright, Puppeteer) execute these steps directly using the **AI-Automated Execution** sequence below. Operators without browser automation perform the manual steps.
@@ -70,15 +139,16 @@ This step requires browser-side JavaScript execution — `curl` cannot trigger C
 
 ### AI-Automated Execution
 
-AI assistants with browser automation tools run the attack simulation programmatically using the same Phase 2 initScript (which saves native `fetch`):
+AI assistants with browser automation tools run the same Phase 2 simulation against the protected HTTPS application:
 
-1. **Navigate with initScript** — first navigate to `about:blank` to ensure a clean document context (avoids stale initScripts from prior navigations), then `navigate_page` to `http://$F5XC_DOMAINNAME/#/login` with the **Phase 2 initScript** (verbatim code in [Phase 2 — AI-Automated Execution](/csd/en/demo/phase-2-attack/#ai-automated-execution)). This initScript saves native `setInterval`, `clearInterval`, `fetch`, and `console.log` — the native `fetch` reference is correct here because no mitigations are active
-2. **Dismiss Welcome Banner** — `press_key` with `Escape` to close the Welcome Banner. On subsequent visits the banner may not appear (cookies persisted). The cookie consent dialog is dismissed automatically by the Escape key
-3. **Wait for completion** — wait 10 seconds for all CDN script load/error callbacks and fetch promise resolutions to complete
-4. **Capture evidence** — `list_console_messages` to check for `[CSD Demo] Simulation complete` and CDN load results; `list_network_requests` filtered to `script` and `fetch` types to verify HTTP status codes (`200`/`201` for success)
+1. **Navigate with initScript** — use a clean context, then navigate to `https://$XCSH_DOMAINNAME/#/login` with the Phase 2 initScript.
+2. **Dismiss Welcome Banner** — press `Escape` if it appears.
+3. **Wait for completion** — allow the candidate requests to settle; ten seconds is a common lab observation, not a product guarantee.
+4. **Capture baseline evidence** — record console completion and the browser Network results for every candidate script and fetch request. This observed set defines eligible mitigation targets.
 
 <Aside type="caution">
-**zone.js incompatibility** — Juice Shop uses Angular's zone.js, which patches `setTimeout`, `setInterval`, `fetch`, `XMLHttpRequest`, and other browser APIs. This breaks the MCP `evaluate_script`, `fill`, and `click` tools with `Cannot read properties of undefined (reading 'call')`. Use `navigate_page` with `initScript` instead — `initScript` runs before zone.js loads, so you can save native API references and use them in polling callbacks. The initScript must fill form fields using the native `HTMLInputElement.prototype.value` setter (not `fill`) and run the detection script inline (not via `setTimeout`, which zone.js may intercept after page load). See [Trigger Detection — AI-Automated Execution](/csd/en/trigger-detection/#ai-automated-execution) for details.
+**zone.js incompatibility** — Juice Shop uses zone.js, which can disrupt browser-automation calls after page load.
+Use `navigate_page` with `initScript` so required browser functions are preserved before application instrumentation runs. Fill fields through the native input value setter and run the simulation inside the polling callback. See [Trigger Detection — AI-Automated Execution](/csd/en/trigger-detection/#ai-automated-execution).
 </Aside>
 
 <Aside type="note">
@@ -89,248 +159,243 @@ AI assistants with browser automation tools run the attack simulation programmat
 
 Operators without browser automation tools run the simulation manually using the same procedure as [Phase 2 — Step 8: Attack Simulation](/csd/en/demo/phase-2-attack/#step-8-attack-simulation):
 
-1. Navigate to `http://xF5XC_DOMAINNAMEx/#/login`
-2. Enter dummy credentials in the Email and Password fields (do not submit)
-3. Open DevTools — press **F12** and switch to the **Console** tab
-4. Paste and run the Combined Detection Script from [Trigger Detection](/csd/en/trigger-detection/#run-the-combined-simulation-script)
-5. Observe console output — all CDN scripts should load and exfil calls should succeed with `200`/`201` responses
+1. Navigate to `https://xXCSH_DOMAINNAMEx/#/login`
+2. Enter synthetic markers in the Email and Password fields (do not submit)
+3. Open DevTools and select the **Console** and **Network** tabs
+4. Run the Combined Detection Script from [Trigger Detection](/csd/en/trigger-detection/#run-the-combined-simulation-script)
+5. Record the script and fetch requests actually observed; do not assume all candidates completed
 
 ### Evidence — Before Mitigation
 
 | Check | Expected (Before Mitigation) | Status |
 | --- | --- | --- |
-| CDN scripts injected | All 4 script tags load — `[Supply Chain] Loaded from` messages appear, network tab shows `200` | PASS |
-| Exfil fetch to `www.httpbin.org` | Network tab shows `200` — data sent | PASS |
-| Exfil fetch to jsonplaceholder.typicode.com | Network tab shows `201` — data sent | PASS |
-| Console output | `[CSD Demo] Simulation complete` | PASS |
+| Protected application | Loaded over HTTPS | PASS / FAIL |
+| HTTP redirect | `http://xXCSH_DOMAINNAMEx/` returns `301`; do not execute the simulation over HTTP | PASS / FAIL |
+| Candidate script requests | Record the observed subset and result for each | PASS / FAIL |
+| Synthetic fetch requests | Record the observed browser result for each | PASS / FAIL |
+| Console output | `[CSD Demo] Simulation complete` | PASS / FAIL |
 
-<Aside type="note">
-**Verifying with network requests:** The most reliable evidence is the **Network tab** (or `list_network_requests` for AI assistants), not console callbacks. Zone.js in Juice Shop can break promise `.then()` callbacks and script `onload` handlers, causing console messages to be incomplete even when network requests succeed. Always cross-reference console output with network request status codes.
-</Aside>
-
-<Aside type="tip">
-This is the baseline proof: with no mitigations active, the attacker's scripts load freely and data exfiltration succeeds. Save or screenshot this evidence — you will compare it directly against the "after" results in Step 5.
-</Aside>
+The browser Network record is the baseline execution evidence. Preserve the exact observed script-domain subset for Step 3.
 
 ## Step 3: Apply Mitigations
 
-For each detected domain, POST to the mitigated domains endpoint. The primary targets from the Phase 2 simulation are the 4 CDN injection domains and any data exfiltration domains detected.
+Mitigate only script domains that satisfy both conditions: they were observed in the Step 2 browser Network baseline, and they appear in the current `/detected_domains` response. Do not require all four CDN candidates and do not add synthetic fetch destinations merely because the harness attempted them.
 
-**Primary mitigation targets** (from the combined simulation script):
-
-| Domain | Role |
-| --- | --- |
-| `cdn.jsdelivr.net` | CDN script injection |
-| `esm.sh` | CDN script injection |
-| `unpkg.com` | CDN script injection |
-| `ga.jspm.io` | CDN script injection |
-| `www.httpbin.org` | Data exfiltration endpoint |
-| `jsonplaceholder.typicode.com` | Data exfiltration endpoint |
-
-<Aside type="note">
-The POST body requires **both** `metadata.name` (the identifier for the object) and `spec.mitigated_domain` (the domain string CSD will classify). Both must be set — `spec: {}` causes a `400` error. For most domains, both fields use the same value (e.g., `cdn.jsdelivr.net`). See the `httpbin.org` exception below.
-</Aside>
-
-**Mitigate a domain** (run once per domain):
+Prepare a reviewed tab-separated list containing only that intersection. Each resource name must be a DNS label and each hostname remains in `spec.mitigated_domain`:
 
 ```bash
-curl -s -X POST \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "metadata": {
-      "name": "cdn.jsdelivr.net",
-      "namespace": "xF5XC_NAMESPACEx"
-    },
-    "spec": {
-      "mitigated_domain": "cdn.jsdelivr.net"
-    }
-  }' \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
-  | jq .
+cat >"$CSD_API_SESSION_DIR/observed-mitigation-targets.tsv" <<'TARGETS'
+# Include only rows supported by this run's browser and API evidence.
+# cdn-jsdelivr-net<TAB>cdn.jsdelivr.net
+TARGETS
 ```
 
-Repeat for each domain:
+Review the file before continuing. An empty target list blocks mitigation because there is no observed script-domain baseline to compare.
+
+For each reviewed pair, GET the exact DNS-label name first, then append exactly one ledger outcome before processing the next pair. A successful POST is `created`; an exact GET or `409` is `pre-existing`; timeout, malformed response, conflict, or ambiguous `5xx` is `unknown` and stops the phase. A `409` is never evidence that this session created the object.
 
 ```bash
-# esm.sh
-curl -s -X POST \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  -H "Content-Type: application/json" \
-  -d '{"metadata":{"name":"esm.sh","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"esm.sh"}}' \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
-  | jq .
+mitigate_domain() {
+  name=$1 domain=$2
+  base="$XCSH_API_URL/api/shape/csd/namespaces/$XCSH_NAMESPACE/mitigated_domains"
+  spec=$(jq -cn --arg domain "$domain" '{mitigated_domain:$domain}') || return 1
+  body=$(mktemp) || return 1
 
-# unpkg.com
-curl -s -X POST \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  -H "Content-Type: application/json" \
-  -d '{"metadata":{"name":"unpkg.com","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"unpkg.com"}}' \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
-  | jq .
+  code=$(curl -sS -o "$body" -w '%{http_code}' \
+    -H "Authorization: APIToken xXCSH_API_TOKENx" \
+    "$base/$name") || code=000
 
-# ga.jspm.io
-curl -s -X POST \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  -H "Content-Type: application/json" \
-  -d '{"metadata":{"name":"ga.jspm.io","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"ga.jspm.io"}}' \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
-  | jq .
+  case "$code" in
+    200)
+      if jq -e --arg name "$name" --arg ns "$XCSH_NAMESPACE" --arg domain "$domain" '
+        .metadata.name == $name and .metadata.namespace == $ns and
+        .spec.mitigated_domain == $domain
+      ' "$body" >/dev/null; then
+        ledger_outcome GET mitigated_domain "$XCSH_NAMESPACE" "$name" match || return 1
+        ledger_record mitigated_domain "$XCSH_NAMESPACE" "$name" pre-existing "$spec" || return 1
+      else
+        ledger_outcome GET mitigated_domain "$XCSH_NAMESPACE" "$name" unknown || return 1
+        ledger_record mitigated_domain "$XCSH_NAMESPACE" "$name" unknown "$spec" || return 1
+        rm -f "$body"
+        return 1
+      fi
+      ;;
+    404)
+      ledger_outcome GET mitigated_domain "$XCSH_NAMESPACE" "$name" absent || return 1
+      code=$(curl -sS -o "$body" -w '%{http_code}' -X POST \
+        -H "Authorization: APIToken xXCSH_API_TOKENx" \
+        -H "Content-Type: application/json" \
+        -d "$(jq -cn --arg name "$name" --arg ns "$XCSH_NAMESPACE" --arg domain "$domain" \
+          '{metadata:{name:$name,namespace:$ns},spec:{mitigated_domain:$domain}}')" \
+        "$base") || code=000
+      case "$code" in
+        200|201)
+          if jq -e --arg name "$name" --arg ns "$XCSH_NAMESPACE" --arg domain "$domain" '
+            .metadata.name == $name and .metadata.namespace == $ns and
+            .spec.mitigated_domain == $domain
+          ' "$body" >/dev/null; then
+            ledger_outcome POST mitigated_domain "$XCSH_NAMESPACE" "$name" created || return 1
+            ledger_record mitigated_domain "$XCSH_NAMESPACE" "$name" created "$spec" || return 1
+          else
+            ledger_outcome POST mitigated_domain "$XCSH_NAMESPACE" "$name" unknown || return 1
+            ledger_record mitigated_domain "$XCSH_NAMESPACE" "$name" unknown "$spec" || return 1
+            rm -f "$body"
+            return 1
+          fi
+          ;;
+        409)
+          ledger_outcome POST mitigated_domain "$XCSH_NAMESPACE" "$name" conflict || return 1
+          code=$(curl -sS -o "$body" -w '%{http_code}' \
+            -H "Authorization: APIToken xXCSH_API_TOKENx" \
+            "$base/$name") || code=000
+          if [ "$code" = 200 ] && jq -e --arg name "$name" --arg ns "$XCSH_NAMESPACE" \
+            --arg domain "$domain" '
+              .metadata.name == $name and .metadata.namespace == $ns and
+              .spec.mitigated_domain == $domain
+            ' "$body" >/dev/null; then
+            ledger_outcome GET mitigated_domain "$XCSH_NAMESPACE" "$name" match || return 1
+            ledger_record mitigated_domain "$XCSH_NAMESPACE" "$name" pre-existing "$spec" || return 1
+          else
+            ledger_outcome GET mitigated_domain "$XCSH_NAMESPACE" "$name" unknown || return 1
+            ledger_record mitigated_domain "$XCSH_NAMESPACE" "$name" unknown "$spec" || return 1
+            rm -f "$body"
+            return 1
+          fi
+          ;;
+        *)
+          ledger_outcome POST mitigated_domain "$XCSH_NAMESPACE" "$name" unknown || return 1
+          ledger_record mitigated_domain "$XCSH_NAMESPACE" "$name" unknown "$spec" || return 1
+          rm -f "$body"
+          return 1
+          ;;
+      esac
+      ;;
+    *)
+      ledger_outcome GET mitigated_domain "$XCSH_NAMESPACE" "$name" unknown || return 1
+      ledger_record mitigated_domain "$XCSH_NAMESPACE" "$name" unknown "$spec" || return 1
+      rm -f "$body"
+      return 1
+      ;;
+  esac
+  rm -f "$body"
+}
 
-# httpbin.org — use www.httpbin.org as mitigated_domain (see note below)
-curl -s -X POST \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  -H "Content-Type: application/json" \
-  -d '{"metadata":{"name":"httpbin.org","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"www.httpbin.org"}}' \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
-  | jq .
-
-# jsonplaceholder.typicode.com
-curl -s -X POST \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  -H "Content-Type: application/json" \
-  -d '{"metadata":{"name":"jsonplaceholder.typicode.com","namespace":"xF5XC_NAMESPACEx"},"spec":{"mitigated_domain":"jsonplaceholder.typicode.com"}}' \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
-  | jq .
+target_count=0
+while IFS="$(printf '\t')" read -r name domain; do
+  case "$name" in ''|'#'*) continue ;; esac
+  [ -n "$domain" ] || { echo "STOP: malformed mitigation target"; exit 1; }
+  mitigate_domain "$name" "$domain" || exit 1
+  target_count=$((target_count + 1))
+done <"$CSD_API_SESSION_DIR/observed-mitigation-targets.tsv"
+[ "$target_count" -gt 0 ] || { echo "STOP: no observed mitigation targets"; exit 1; }
 ```
 
-<Aside type="note">
-**`httpbin.org` eTLD+1 constraint:** The API rejects bare eTLD+1 domains as `mitigated_domain` values with `"Invalid root domain: cannot derive eTLD+1"`. Use `www.httpbin.org` as the `spec.mitigated_domain` value while keeping `httpbin.org` as `metadata.name`. The mitigation is applied correctly — the `name` identifier is what appears in the mitigated domains list. Any bare domain (no subdomain) used as an exfil target in a custom simulation script will have the same constraint.
-</Aside>
-
-A `200` response returns the created mitigated domain object. A `409` response means the domain is already in the mitigated list — this is a success condition.
+Do not retry a missing or failed item by POSTing blindly: the ledger's uniqueness rule prevents rewriting ownership history. Resolve the `unknown` entry first and start a new reviewed session if necessary.
 
 ## Step 4: Verify Mitigations Applied
 
-List all mitigated domains and confirm the count matches the number of domains just submitted:
+List all mitigated domains and reconcile the reviewed targets against the collection and ledger:
 
 ```bash
 curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
-  | jq '{count: (.items | length)}'
+  -H "Authorization: APIToken xXCSH_API_TOKENx" \
+  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/mitigated_domains" \
+  | jq '{count: (.items | length), items: [.items[]? | {name: .metadata.name, domain: .spec.mitigated_domain}]}'
 ```
 
 <Aside type="note">
-The mitigated domains list endpoint returns items with null `metadata.name` for ALL items — individual domain names are not visible in the list response. Verify by checking that the item count equals the number of POST requests made (6 for the standard simulation). The `200` response from each individual POST in Step 3 is the authoritative evidence that each mitigation was created. If the count is 1 with a null-name item and no mitigations were applied, treat the count as 0 — this is a backend artifact (see [Pre-flight Check](/csd/en/demo/#pre-flight-check) for the decision rule).
+Collection output confirms configuration state only. It does not establish ownership or browser enforcement, and unrelated pre-existing entries may be present.
 </Aside>
 
-### Evidence
+### Mitigation Ledger Evidence
 
 | Check | Expected | Status |
 | --- | --- | --- |
-| Mitigated domain count | 6 (matches POST count) | PASS if count matches |
-| All Step 3 POSTs returned `200` or `409` | Each domain accepted | PASS |
-
-If the count is lower than expected, re-run the POST command for the missing domain from Step 3.
+| Reviewed targets | Exactly the non-empty observed intersection from Step 3 | PASS / FAIL |
+| Ledger outcomes | One unique entry per reviewed target; each `created` or `pre-existing`; none `unknown` | PASS / FAIL |
+| Created ownership | Only a `200`/`201` POST is `created`; every `409` is `pre-existing` | PASS / FAIL |
 
 ## Step 5: Run Attack — After Mitigation
 
-Re-run the **exact same** combined simulation to capture the **"after" snapshot**. The simulation script is identical — only CSD's mitigation state has changed. Script loads from mitigated domains are now blocked by the CSD JavaScript (the `&lt;script&gt;` tag `src` is cleared to an empty string).
+Re-run the **exact same HTTPS simulation** and compare browser Network behavior for the reviewed target domains. The simulation script is unchanged; only mitigation configuration differs.
 
 <Aside type="note">
-This step uses the same browser automation sequence as Step 2. The difference is not in what you run — it's in what you observe. With mitigations active, CSD blocks `&lt;script&gt;` tag loads from mitigated domains. Fetch API calls to mitigated exfil domains still complete — CSD mitigation targets script loading, not fetch/XHR.
+API list membership and counters confirm configuration. A mitigation PASS requires a browser-observed behavior change for a reviewed script domain relative to the baseline.
 </Aside>
 
-### AI-Automated Execution
+### After-Mitigation AI Execution
 
-AI assistants with browser automation tools re-run the attack simulation programmatically using the **same Phase 2 initScript** (verbatim code in [Phase 2 — AI-Automated Execution](/csd/en/demo/phase-2-attack/#ai-automated-execution)). The initScript saves native `fetch` to avoid zone.js errors — this does not affect CSD mitigation because CSD does not intercept `fetch()` calls.
+1. Use a clean browser context and navigate to `https://$XCSH_DOMAINNAME/#/login` with the Phase 2 initScript.
+2. Dismiss the Welcome Banner if present.
+3. Allow requests to settle using the same observation method as the baseline.
+4. Capture console completion and Network results for every reviewed target domain.
 
-1. **Navigate with initScript** — use `new_page` with `isolatedContext` for a clean browser context (avoids stale initScripts from Step 2), then navigate to `about:blank`, then to the login page with the **Phase 2 initScript**
-2. **Dismiss Welcome Banner** — `press_key` with `Escape`
-3. **Wait for completion** — wait 10 seconds for all async callbacks
-4. **Capture evidence** — `list_console_messages` to check for `[CSD Demo] Simulation complete`; `list_network_requests` filtered to `script` and `fetch` types to observe that CDN script loads are **absent** (CSD cleared the script src) while fetch calls to exfil domains still complete normally
+### After-Mitigation Manual Execution
 
-### Manual Execution
+1. Navigate to `https://xXCSH_DOMAINNAMEx/#/login`.
+2. Enter the same synthetic markers used in the baseline.
+3. Open DevTools and preserve the Network log.
+4. Run the same Combined Detection Script.
+5. Compare each reviewed target's browser request with the Step 2 baseline.
 
-Operators without browser automation tools re-run the simulation manually using the same procedure as [Phase 2 — Step 8: Attack Simulation](/csd/en/demo/phase-2-attack/#step-8-attack-simulation):
-
-1. Navigate to `http://xF5XC_DOMAINNAMEx/#/login`
-2. Enter dummy credentials in the Email and Password fields (do not submit)
-3. Open DevTools — press **F12** and switch to the **Console** tab
-4. Paste and run the Combined Detection Script from [Trigger Detection](/csd/en/trigger-detection/#run-the-combined-simulation-script)
-5. Observe console and network output — CDN script `onload` and `onerror` callbacks do not fire for mitigated domains (CSD cleared the script `src` to an empty string, preventing the network request entirely). Fetch calls to exfil domains (www.httpbin.org, jsonplaceholder.typicode.com) **still complete** with `200`/`201` — CSD mitigation blocks script loading, not fetch/XHR calls
-
-<Aside type="caution" title="Mitigation propagation timing">
-The CSD JavaScript is expected to block script loading from mitigated domains by intercepting the `&lt;script&gt;` tag `src` setter. However, in testing over HTTP (port 80), script `src` clearing was not observed within 5 minutes of applying mitigations — all CDN scripts continued to load normally. This may indicate that mitigation propagation requires more than 5 minutes, or that the mechanism behaves differently over HTTP vs HTTPS. If mitigation blocking is not observed, allow additional propagation time and verify the CSD telemetry script has refreshed its configuration.
-
-**Fetch calls are not intercepted by CSD mitigation** (verified). Exfil fetch calls to mitigated domains (www.httpbin.org, jsonplaceholder.typicode.com) still complete normally with `200`/`201` responses, both before and after mitigation. CSD mitigation targets the supply-chain vector (malicious script loading), not data exfiltration via fetch/XHR. Use the same Phase 2 initScript (with native `fetch` saved) for both Step 2 and Step 5.
+<Aside type="caution" title="Propagation timing">
+If browser behavior has not changed, record the result as PENDING and retry after allowing additional propagation time. The lab does not assert a fixed propagation interval or an exact internal enforcement mechanism.
 </Aside>
 
 ### Evidence — After Mitigation
 
 | Check | Expected (After Mitigation) | Status |
 | --- | --- | --- |
-| CDN script loads | **Blocked** — scripts do not appear in network tab (CSD cleared `src` to empty string) | PASS |
-| CDN script callbacks | Neither `onload` nor `onerror` fires for mitigated domains | PASS |
-| Exfil fetch to `www.httpbin.org` | `200` — fetch still completes (CSD does not intercept fetch) | INFO |
-| Exfil fetch to jsonplaceholder.typicode.com | `201` — fetch still completes (CSD does not intercept fetch) | INFO |
-| Console output | `[CSD Demo] Simulation complete` | PASS |
+| Reviewed script domains | At least one browser-observed request outcome differs from its successful baseline in a way consistent with enforcement | PASS / PENDING / FAIL |
+| Unreviewed domains | No mitigation claim | INFO |
+| Synthetic fetch requests | Record observed results; they are not mitigation targets in this procedure | INFO |
+| API configuration | Reviewed domains appear in the mitigated-domain collection and ledger | PASS / FAIL |
+| Console output | `[CSD Demo] Simulation complete` | PASS / FAIL |
 
-<Aside type="tip">
-**Backend verification is the most reliable proof.** If browser-visible
-script blocking is not observed within the demo timeframe, use the
-`/detected_domains` API response as primary evidence. The
-`mitigatedDomains` count and reduced `actionNeededCount` in the domain
-summary confirm that mitigations are active in the backend — even if
-the CSD JavaScript in the browser hasn't yet refreshed its
-configuration to enforce blocking.
-</Aside>
+Browser Network behavior is the enforcement proof. API counters and list membership are supporting configuration evidence only.
 
 ## Step 6: Before vs After Comparison
 
-This is the demo payoff — side-by-side evidence proving that the same attack, on the same page, with the same script, now produces a completely different result.
+Compare only the reviewed domains observed in the Step 2 baseline:
 
-### Comparison Table
-
-| Signal | Before Mitigation (Step 2) | After Mitigation (Step 5) |
+| Signal | Before Mitigation | After Mitigation |
 | --- | --- | --- |
-| CDN script loads | `200` — all 4 CDN scripts load normally | **Blocked** — scripts absent from network tab (CSD cleared `src` to empty string) |
-| CDN `onload` callbacks | `[Supply Chain] Loaded from` messages appear | No callbacks fire (no network request was made) |
-| Synthetic signal to `www.httpbin.org` | `200` — signal sent | `200` — fetch still completes (CSD does not intercept fetch) |
-| Synthetic signal to jsonplaceholder.typicode.com | `201` — signal sent | `201` — fetch still completes (CSD does not intercept fetch) |
-| CSD mitigated domains API | 0 mitigated | 6 mitigated |
+| Reviewed script-domain request | Record actual browser result | Record actual browser result and whether enforcement is observable |
+| Synthetic fetch request | Record actual browser result | Record actual browser result; informational only |
+| Mitigated-domain API | Baseline state | Reviewed targets present; configuration evidence only |
 
-### Verify Mitigation in Backend Data
-
-Query `/detected_domains` every 60 seconds for up to 10 iterations (10 minutes). Proceed to the comparison table once the query returns, or after the 10-minute maximum — these checks are informational and do not gate Phase 4.
-
-**Check Detected Domains Post-Mitigation:**
+### Verify Post-Mitigation Configuration Data
 
 ```bash
 curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/detected_domains" \
-  | jq '{total_domains: .domain_summary.totalDomains, domains: [.domains_list[]? | {domain: .domain, category: .category}]}'
+  -H "Authorization: APIToken xXCSH_API_TOKENx" \
+  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/detected_domains" \
+  | jq '{summary: {total: .domain_summary.totalDomains.count, mitigated: .domain_summary.mitigatedDomains.count, action_needed: .domain_summary.actionNeededCount.count}, domains: [.domains_list[]? | {domain, status, category}]}'
 ```
-
-**Check Scripts for Mitigated Status:**
 
 ```bash
 NOW=$(date +%s)
 START=$(( NOW - 86400 ))
 curl -s -X POST \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
+  -H "Authorization: APIToken xXCSH_API_TOKENx" \
   -H "Content-Type: application/json" \
   -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/scripts" \
-  | jq '{total: (.scripts | length), scripts: [.scripts[]? | {script_name: .script_name, risk_level: .risk_level}]}'
+  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/scripts" \
+  | jq '{total: (.scripts | length), scripts: [.scripts[]? | {script_name, risk_level}]}'
 ```
+
+These API results may lag and are informational after configuration is applied. They do not override browser enforcement evidence.
 
 ### Phase 3 Evidence Summary
 
 | Check | Expected | Status |
 | --- | --- | --- |
-| Baseline clean (Step 1) | 0 mitigated domains at start | PASS / FAIL |
-| Before — attack succeeds (Step 2) | Scripts load, exfil returns 200/201 | PASS / FAIL |
-| Mitigations applied (Step 3) | All 6 domains accepted via POST (200 or 409) | PASS / FAIL |
-| Mitigated count confirmed (Step 4) | 6 items in list | PASS / FAIL |
-| After — script loads blocked (Step 5) | CDN scripts absent from network tab, fetch calls still complete | PASS / FAIL |
-| Before vs After comparison (Step 6) | Clear difference between Step 2 and Step 5 evidence | PASS / FAIL |
-
-<Aside type="note">
-Detection status updates after mitigation may take time to appear in the API response. If the domains still show "Action Needed" immediately after mitigation, query `/detected_domains` every 60 seconds for up to 10 iterations (10 minutes). If still not updated after 10 iterations, record the current state as INFO — this does not block Phase 4.
-</Aside>
+| Phase 2 entry gate | DET-3 PASS; DET-1/DET-4 may be PENDING | PASS / FAIL |
+| HTTPS baseline | Browser evidence captured for the actual observed domain subset | PASS / FAIL |
+| Mitigations applied | One ledgered result per reviewed observed target | PASS / FAIL |
+| Configuration confirmed | Reviewed targets present in collection/API data | PASS / FAIL |
+| Browser enforcement | Observable before/after change for at least one reviewed script domain | PASS / PENDING / FAIL |
+| HTTP behavior | Used only to verify `301` redirect | PASS / FAIL |
 
 ---
 

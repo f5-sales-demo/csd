@@ -1,231 +1,354 @@
 ---
 title: "Phase 4 — Teardown"
-description: "Clean up demo objects from F5 XC tenant after demo completion"
+description: "Remove the CSD deployment through its recorded API or Terraform owner"
 sidebar:
   order: 5
   label: "Phase 4 — Teardown"
 ---
 
-import { Aside, Steps } from "@astrojs/starlight/components";
+import { Aside } from "@astrojs/starlight/components";
 
-Phase 4 removes all objects created during the exercise in reverse dependency order. This phase requires explicit human confirmation before any destructive operations.
-
-<Aside type="caution">
-**Confirm before proceeding.** If you are an AI assistant, you MUST ask the human operator: "Phase 4 will permanently delete all deployment objects. Are you ready to tear down? Reply 'yes' to proceed." Do not execute any DELETE commands until the operator confirms.
-
-**Exception:** When teardown runs as part of Stage 1 Prepare (pre-meeting cleanup), the operator's "prepare the demo" trigger phrase serves as implicit authorization. No additional confirmation is needed. The confirmation gate above applies only during standalone teardown or post-meeting Stage 4.
-</Aside>
-
-## Teardown Order
-
-Remove objects in **reverse creation order** — delete objects that depend on other objects first:
-
-1. **Mitigated Domains** — delete all CSD mitigated domains created in Phase 3
-2. **HTTPS Load Balancer** (`${F5XC_LB_NAME}-https`) — strip to skeleton (preserve Let's Encrypt certificate); full DELETE if `NAMESPACE_CREATED=true` or on explicit request
-3. **HTTP Load Balancer** (`${F5XC_LB_NAME}-http`) — depends on Origin Pool
-4. **Origin Pool** — depends on Healthcheck (if created)
-5. **DNS zone cleanup** — the HTTPS LB skeleton retains its managed A and ACME records (this is desired — it keeps the certificate valid). The HTTP LB's managed records auto-clean on deletion. Manual records in `default_rr_set_group` need manual cleanup via `PUT`
-6. **Healthcheck** — only if created in Phase 1 Step 1
-7. **Protected Domain** — delete the CSD protected domain registration
-8. **Namespace** — only if created during Phase 1 Step 0 (`NAMESPACE_CREATED=true`)
+Phase 4 removes the deployment through the same ownership mode that created it. API-owned resources are deleted only from the Phase 1 session record. Terraform-owned resources are destroyed only through a reviewed saved Terraform plan.
 
 <Aside type="caution">
-**Do not delete the DNS zone.** The DNS zone is shared infrastructure supporting many other DNS records across the platform and should never be deleted. Only clean up records you added manually to the `default_rr_set_group`. The protected domain, however, is a CSD configuration object tied to this deployment and **should** be deleted when fully tearing down.
+**Explicit approval is required.** Before either path, ask: "Phase 4 will permanently delete the CSD deployment recorded by its owner. Are you ready to tear down? Reply 'yes' to proceed." Do not delete or apply a destroy plan until the operator replies `yes`.
+
+**Choose one ownership mode. Never run the API create/update/delete workflow against resources present in Terraform state.**
 </Aside>
 
-## Delete Mitigated Domains
+Select exactly one path:
 
-If Phase 3 was executed, delete all mitigated domains before removing infrastructure objects. The standard simulation creates 6 mitigated domains:
+- **Path A — API-owned:** Phase 1 produced `.csd-api-session.json` with `ownership_mode: "api"` and exact `created` entries.
+- **Path B — Terraform-owned:** the remote backend and current state contain the deployment.
+
+If ownership is ambiguous, stop. Do not infer ownership from matching names, tags, current accessibility, or a successful GET.
+
+## Path A: Delete API-Owned Objects
+
+### Validate the Session Record
+
+Fail closed unless the ledger is structurally valid, belongs to the current environment, contains only allowed kinds/statuses, and has exactly one entry per `(kind, namespace, name)`. Environment variables validate the ledger; they never select teardown names.
 
 ```bash
-for domain in cdn.jsdelivr.net esm.sh unpkg.com ga.jspm.io httpbin.org jsonplaceholder.typicode.com; do
-  curl -s -X DELETE \
-    -H "Authorization: APIToken xF5XC_API_TOKENx" \
-    "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains/$domain"
+SESSION_FILE="${CSD_API_SESSION_FILE:-.csd-api-session.json}"
+case "$SESSION_FILE" in /*) ;; *) SESSION_FILE="$PWD/$SESSION_FILE" ;; esac
+SESSION_DIR=$(dirname -- "$SESSION_FILE")
+SESSION_NAME=$(basename -- "$SESSION_FILE")
+[ -d "$SESSION_DIR" ] && [ "$SESSION_NAME" != . ] && [ "$SESSION_NAME" != .. ] || {
+  echo "STOP: API session ledger path is invalid"; exit 1;
+}
+SESSION_DIR=$(cd "$SESSION_DIR" && pwd -P) || exit 1
+SESSION_FILE="$SESSION_DIR/$SESSION_NAME"
+export CSD_API_SESSION_FILE="$SESSION_FILE" CSD_API_SESSION_DIR="$SESSION_DIR"
+test -f "$SESSION_FILE" || { echo "STOP: API session ledger is missing"; exit 1; }
+
+case "${XCSH_API_URL:-}" in https://*) ;; *) exit 1 ;; esac
+while [ "${XCSH_API_URL%/}" != "$XCSH_API_URL" ]; do
+  XCSH_API_URL=${XCSH_API_URL%/}
 done
+export XCSH_API_URL
+XCSH_TENANT_HOSTNAME=${XCSH_API_URL#https://}
+case "$XCSH_TENANT_HOSTNAME" in ''|*/*|*:*|*[!A-Za-z0-9.-]*) exit 1 ;; esac
+XCSH_TENANT_IDENTITY=${XCSH_TENANT_HOSTNAME%%.*}
+[ -n "$XCSH_TENANT_IDENTITY" ] || exit 1
+
+jq -e --arg api_url "$XCSH_API_URL" --arg tenant_hostname "$XCSH_TENANT_HOSTNAME" \
+  --arg tenant_identity "$XCSH_TENANT_IDENTITY" --arg ns "$XCSH_NAMESPACE" \
+  --arg domain "$XCSH_DOMAINNAME" '
+  .schema_version == 1 and .ownership_mode == "api" and
+  .environment == {
+    api_url: $api_url, tenant_hostname: $tenant_hostname, tenant_identity: $tenant_identity,
+    namespace: $ns, domain: $domain
+  } and
+  (.resources | type == "array") and
+  (all(.resources[];
+    (.kind | IN("namespace","protected_domain","healthcheck","origin_pool","http_loadbalancer","mitigated_domain")) and
+    (.namespace == $ns) and
+    (.name | type == "string" and test("^[a-z]([a-z0-9-]{0,62}[a-z0-9])?$")) and
+    (.status | IN("created","pre-existing","unknown")) and
+    (.spec | type == "object")
+  )) and
+  ([.resources[] | [.kind,.namespace,.name] | join("\u0000")] | length) ==
+  ([.resources[] | [.kind,.namespace,.name] | join("\u0000")] | unique | length) and
+  ([.resources[] | select(.status == "unknown")] | length == 0)
+' "$SESSION_FILE" >/dev/null || {
+  echo "STOP: ledger is corrupt, mismatched, duplicated, or has unknown ownership"
+  exit 1
+}
+
+TF_XC_STATE=$(terraform -chdir=terraform/aws state list) || {
+  echo "STOP: Terraform state could not be read; ownership is unresolved"
+  exit 1
+}
+while IFS= read -r state_address; do
+  [ -n "$state_address" ] || continue
+  resource_address=$state_address
+  while [[ "$resource_address" =~ ^module\.[^.\[]+(\[[^]]+\])?\.(.+)$ ]]; do
+    resource_address=${BASH_REMATCH[2]}
+  done
+
+  if [[ "$resource_address" =~ ^data\.xcsh_[A-Za-z0-9_]+\.[A-Za-z0-9_-]+(\[[^]]+\])?$ ]]; then
+    continue
+  fi
+  if [[ "$resource_address" =~ ^xcsh_[A-Za-z0-9_]+\.[A-Za-z0-9_-]+(\[[^]]+\])?$ ]]; then
+    echo "STOP: Terraform state contains managed xcsh resource $state_address; use Terraform Path B"
+    exit 1
+  fi
+  if [[ "$resource_address" == *xcsh_* ]]; then
+    echo "STOP: unrecognized Terraform address shape $state_address; ownership is unresolved"
+    exit 1
+  fi
+done <<<"$TF_XC_STATE"
+
+CREATED=$(jq -c '[.resources[] | select(.status == "created")]' "$SESSION_FILE")
+printf '%s\n' "$CREATED" | jq .
 ```
 
-Verify: List mitigated domains to confirm the count is 0 (or 1 — see note below):
+Only entries in `CREATED` are eligible. `pre-existing` and `unknown` entries cannot be deleted. Do not compare names to `XCSH_LB_NAME`, `XCSH_ORIGIN_POOL`, `XCSH_HC_NAME`, or any other mutable environment variable to choose targets.
+
+### Capture Live Inventory
+
+Before deleting anything, read the current namespace inventory with the native API wildcard inventory operation and preserve the response with the session record:
+
+```json
+{
+  "method": "GET",
+  "paths": [
+    "*"
+  ],
+  "params": {
+    "namespace": "<XCSH_NAMESPACE>"
+  }
+}
+```
+
+The live inventory is evidence, not authorization. It may reveal unrelated or externally visible objects, but it does not expand the deletion allowlist.
+
+### Delete in Reverse Dependency Order
+
+Enumerate targets only from the validated `CREATED` snapshot and reject any duplicate kind/name before mutation:
 
 ```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/mitigated_domains" \
-  | jq '{count: (.items | length)}'
+jq -er '
+  def rank: {mitigated_domain:1,http_loadbalancer:2,origin_pool:3,healthcheck:4,protected_domain:5,namespace:6}[.];
+  sort_by(.kind | rank)[] | [.kind,.namespace,.name] | @tsv
+' <<<"$CREATED" > .csd-api-delete-targets.tsv || {
+  echo "STOP: could not derive deletion targets from ledger"
+  exit 1
+}
 ```
 
-<Aside type="note">
-The mitigated domains list may return a phantom entry (count = 1) with null metadata after all mitigated domains are deleted. This is a backend artifact that appears when the CSD service state is between configurations — it does not represent a real mitigation and can be ignored. Attempting to delete this phantom entry returns `"Delete list when service not configured"`.
-</Aside>
+Process `.csd-api-delete-targets.tsv` line by line in its emitted reverse-dependency order. For each row, map the recorded kind to exactly one endpoint; never substitute a current environment name:
 
-## HTTPS Load Balancer
+| Recorded kind | DELETE endpoint |
+| --- | --- |
+| `mitigated_domain` | `/api/shape/csd/namespaces/{namespace}/mitigated_domains/{name}` |
+| `http_loadbalancer` | `/api/config/namespaces/{namespace}/http_loadbalancers/{name}` |
+| `origin_pool` | `/api/config/namespaces/{namespace}/origin_pools/{name}` |
+| `healthcheck` | `/api/config/namespaces/{namespace}/healthchecks/{name}` |
+| `protected_domain` | `/api/shape/csd/namespaces/{namespace}/protected_domains/{name}` |
 
-The HTTPS LB teardown behavior depends on whether the namespace was created during this demo session (`NAMESPACE_CREATED` variable from Phase 1 Step 0):
+The `namespace` row is withheld for the guarded cascade procedure below. Before each object DELETE, re-read the same ledger file and require exactly one matching entry with `status == "created"`; if the ledger changed, is corrupt, or the match count is not one, stop.
 
-- **`NAMESPACE_CREATED=false`** (pre-existing namespace) — strip to **skeleton** state, preserving the Let's Encrypt certificate for reuse
-- **`NAMESPACE_CREATED=true`** (namespace created during demo) — **full DELETE**, since the namespace itself will be deleted and the certificate cannot be preserved
+After each DELETE, GET that exact ledger-recorded object and require `404` before continuing. If it remains, wait once, GET once more, then stop. Never delete `pre-existing` or `unknown` entries, and never infer targets from collection counts or null names.
 
-### Path A: Strip to Skeleton (Pre-existing Namespace)
-
-When the namespace is pre-existing, strip the HTTPS LB to a **skeleton** state — remove the origin pool reference and CSD configuration while preserving the domain binding, `https_auto_cert` settings, and the Let's Encrypt certificate. This avoids triggering a new certificate request on the next demo run (Let's Encrypt enforces a limit of 5 duplicate certificates per exact identifier set per 7 days).
-
-**Step 1 — GET the current HTTPS LB config:**
-
-```bash
-HTTPS_LB_JSON=$(curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https")
-```
-
-**Step 2 — Strip to skeleton via jq and PUT back:**
-
-```bash
-echo "$HTTPS_LB_JSON" | jq '{
-  metadata: .metadata,
-  spec: (.spec | del(.client_side_defense) | .disable_client_side_defense = {} | .default_route_pools = [])
-}' | curl -s -X PUT \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  -H "Content-Type: application/json" \
-  -d @- \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
-  | jq .
-```
-
-The jq filter preserves the entire spec (domains, `https_auto_cert`, `advertise_on_public_default_vip`, and all disabled feature flags) while removing `client_side_defense` (replaced with `disable_client_side_defense: {}`) and clearing `default_route_pools` to an empty array. The certificate and DNS bindings remain intact.
-
-**Verify** the HTTPS LB is now a skeleton:
-
-```bash
-curl -s \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https" \
-  | jq '{
-    name: .metadata.name,
-    domains: .spec.domains,
-    has_origin_pools: ((.spec.default_route_pools // []) | length > 0),
-    has_csd: (.spec.client_side_defense != null),
-    cert_state: .spec.cert_state
-  }'
-```
-
-Expected: `has_origin_pools: false`, `has_csd: false`, `domains` still populated, `cert_state` unchanged (e.g., `CertificateValid`).
-
-### Path B: Full Delete (Namespace Created During Demo)
-
-When the namespace was created during this demo session, the HTTPS LB must be fully deleted — skeleton preservation is unnecessary because the namespace itself will be removed at the end of teardown.
-
-```bash
-curl -s -X DELETE \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-https"
-```
-
-Verify: `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` should not contain `${F5XC_LB_NAME}-https`.
-
-<Aside type="tip">
-**Full teardown option (pre-existing namespace).** Even when the namespace is pre-existing, you can fully delete the HTTPS LB if decommissioning the demo domain permanently or if the operator explicitly requests "full teardown" or "force delete". Only use full DELETE when the domain will not be reused within 7 days. Deleting the HTTPS LB triggers a new Let's Encrypt certificate request on the next demo run.
-</Aside>
-
-## Delete HTTP Load Balancer
-
-Delete the primary HTTP LB:
-
-```bash
-curl -s -X DELETE \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/http_loadbalancers/xF5XC_LB_NAMEx-http"
-```
-
-Verify: `GET /api/config/namespaces/\{namespace\}/http_loadbalancers` should not contain `${F5XC_LB_NAME}-http`. If the object still appears in the list after DELETE returned `200`, wait 30 seconds and re-check once. If still present after the second check, report to operator — do not proceed.
-
-## Delete Origin Pool
-
-```bash
-curl -s -X DELETE \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/origin_pools/xF5XC_ORIGIN_POOLx"
-```
-
-Verify: `GET /api/config/namespaces/\{namespace\}/origin_pools` should not contain the pool name. If the object still appears in the list after DELETE returned `200`, wait 30 seconds and re-check once. If still present after the second check, report to operator.
-
-## Delete Healthcheck
-
-```bash
-curl -s -X DELETE \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/config/namespaces/xF5XC_NAMESPACEx/healthchecks/xF5XC_HC_NAMEx"
-```
-
-Verify: `GET /api/config/namespaces/\{namespace\}/healthchecks` should not contain the healthcheck name. If the object still appears in the list after DELETE returned `200`, wait 30 seconds and re-check once. If still present after the second check, report to operator.
-
-## Delete Protected Domain
-
-Delete the CSD protected domain registration. The protected domain is tenant-scoped (not namespace-scoped), but it is a CSD configuration object tied to this deployment — not shared infrastructure like the DNS zone.
-
-```bash
-curl -s -X DELETE \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains/xF5XC_ROOT_DOMAINx"
-```
-
-Verify: List protected domains to confirm the domain is no longer registered:
-
-```bash
-curl -s -X GET \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/shape/csd/namespaces/xF5XC_NAMESPACEx/protected_domains" \
-  | jq '.items // [] | map(.metadata.name)'
-```
-
-<Aside type="note">
-The individual GET endpoint (`/protected_domains/\{name\}`) may return "API Group could not be determined." If the DELETE endpoint returns the same error, use the list endpoint to verify that the domain no longer appears, or delete the protected domain through the F5 Distributed Cloud (F5 XC) Console UI instead.
-</Aside>
-
-## Delete Namespace (Conditional)
-
-This step runs **only** if the namespace was created during Phase 1 Step 0 (`NAMESPACE_CREATED=true`). If the namespace was pre-existing (`NAMESPACE_CREATED=false`), skip this step entirely — the namespace is shared infrastructure that must not be deleted.
+### Namespace Cascade Delete: Fail Closed
 
 <Aside type="caution">
-**Cascade delete removes all namespace-scoped objects.** The cascade delete endpoint removes the namespace and every object within it. All infrastructure objects (load balancers, origin pools, healthchecks) should already be deleted by the preceding teardown steps. The cascade delete acts as a final cleanup to catch any remaining objects and remove the namespace itself.
+Cascade deletion can remove every namespace-scoped object, including objects never created by this session. It is not a cleanup shortcut.
 </Aside>
 
+Run cascade deletion only when all of these statements are true:
+
+- The ledger has exactly one namespace entry for the current environment and its status is `created`.
+- Every other ledger-created entry was deleted and verified absent.
+- A fresh `xcsh_api` wildcard inventory (`GET`, `paths: ["*"]`, current namespace) reports zero confirmed namespace members.
+- `External-visible results` and `Unknown-scope results` were reviewed but are not treated as namespace members or deletion targets.
+- No `pre-existing` or `unknown` ledger entry exists in that namespace.
+
+If any condition fails, preserve the namespace and report the blocker. If all pass, request a **second explicit approval**: "The recorded objects are absent and inventory has zero confirmed members. Cascade-delete the ledger-created namespace `<recorded-name>`? Reply 'yes' to proceed." The first teardown approval does not authorize this cascade.
+
+Only after the second `yes`, issue the namespace lifecycle operation documented for this API: `POST /api/web/namespaces/{namespace}/cascade_delete`. Use the namespace name read from the ledger in the path parameter and request body:
+
+```json
+{
+  "method": "POST",
+  "path": "/api/web/namespaces/{namespace}/cascade_delete",
+  "params": {
+    "namespace": "<ledger-created namespace name>"
+  },
+  "payload": {
+    "name": "<ledger-created namespace name>"
+  }
+}
+```
+
+Then GET `/api/web/namespaces/{namespace}` with that same recorded name and require `404`. The standard `DELETE /api/web/namespaces/{namespace}` operation is not the documented deletion lifecycle and must not be substituted. Do not delete a shared DNS zone or manual DNS records unless separately approved and recorded as API-created by this exact session.
+
+### API Teardown Evidence
+
+Retain the following evidence with the session record:
+
+| Check | Required result |
+| --- | --- |
+| Initial approval | Exact affirmative operator response recorded |
+| Ownership | Targets derived only from unique ledger entries with `status: "created"` |
+| Reverse order | Mitigations, LB, pool, optional healthcheck, protected domain |
+| Object reads | Each deleted object returned `404` before its dependency was removed |
+| Namespace inventory | Zero confirmed members before cascade, or namespace preserved |
+| Cascade approval | Separate explicit affirmative response recorded |
+| Final state | Namespace `404` only after authorized cascade; otherwise namespace preserved |
+
+## Path B: Destroy Terraform-Owned Resources
+
+Do not use any API DELETE request in this path. Keep the same remote S3 backend, state key, native lockfile, AWS profile, region, account, namespace, and domain used for deployment.
+
+Initialize without changing backend ownership:
+
 ```bash
-if [ "$NAMESPACE_CREATED" = "true" ]; then
-  curl -s -X POST \
-    -H "Authorization: APIToken xF5XC_API_TOKENx" \
-    -H "Content-Type: application/json" \
-    -d '{"name": "xF5XC_NAMESPACEx"}' \
-    "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx/cascade_delete" | jq .
+terraform -chdir=terraform/aws init
+terraform -chdir=terraform/aws validate
+```
+
+Before creating any destroy plan, capture every identifier used by the post-destroy checks from current state. Validate the complete evidence object, then make it read-only. Keep it with the teardown evidence; do not commit it or put credentials, tokens, provider configuration, or other secrets in it:
+
+```bash
+IDENTIFIERS=.csd-destroy-identifiers.json
+umask 077
+terraform -chdir=terraform/aws output -json | jq -e '
+def nonempty_string: type == "string" and length > 0;
+def nonempty_string_array:
+  type == "array" and length > 0 and all(.[]; type == "string" and length > 0);
+{
+  aws_account_id: .aws_account_id.value,
+  aws_region: .aws_region.value,
+  vpc_id: .vpc_id.value,
+  public_subnet_ids: .public_subnet_ids.value,
+  private_subnet_ids: .private_subnet_ids.value,
+  alb_arn: .alb_arn.value,
+  target_group_arn: .target_group_arn.value,
+  alb_access_logs_bucket: .alb_access_logs_bucket.value,
+  cloudwatch_logs_kms_key_arn: .cloudwatch_logs_kms_key_arn.value,
+  xc_namespace: .xc_namespace.value,
+  xc_protected_domain_name: .xc_protected_domain_name.value,
+  xc_origin_pool_name: .xc_origin_pool_name.value,
+  xc_http_loadbalancer_name: .xc_http_loadbalancer_name.value
+} | select(
+  (.aws_account_id | nonempty_string) and (.aws_region | nonempty_string) and
+  (.vpc_id | nonempty_string) and (.public_subnet_ids | nonempty_string_array) and
+  (.private_subnet_ids | nonempty_string_array) and (.alb_arn | nonempty_string) and
+  (.target_group_arn | nonempty_string) and (.alb_access_logs_bucket | nonempty_string) and
+  (.cloudwatch_logs_kms_key_arn | nonempty_string) and (.xc_namespace | nonempty_string) and
+  (.xc_protected_domain_name | nonempty_string) and (.xc_origin_pool_name | nonempty_string) and
+  (.xc_http_loadbalancer_name | nonempty_string)
+ )' > "$IDENTIFIERS" || {
+  rm -f "$IDENTIFIERS"
+  echo "STOP: complete post-destroy identifiers could not be captured"
+  exit 1
+}
+chmod 0400 "$IDENTIFIERS"
+
+terraform -chdir=terraform/aws plan \
+  -destroy \
+  -out=csd-destroy.tfplan
+terraform -chdir=terraform/aws show csd-destroy.tfplan
+```
+
+Review the complete plan before approval. It must destroy only resources owned by this state. Confirm the expected F5 Distributed Cloud objects are the one namespace, protected domain, origin pool, and unsuffixed HTTPS load balancer, along with the AWS origin infrastructure managed by the same state. Unexpected replacements, creates, provider errors, or unrelated destroys block teardown.
+
+After that review, obtain and record a new explicit approval bound to the exact saved-plan bytes. An earlier general teardown approval is not apply authorization:
+
+```bash
+read -r -p "Apply the reviewed destroy plan? Type yes: " CSD_DESTROY_APPROVAL
+test "$CSD_DESTROY_APPROVAL" = yes || { echo "STOP: destroy not approved"; exit 1; }
+read -r -p "Record approver identity: " CSD_DESTROY_APPROVER
+test -n "$CSD_DESTROY_APPROVER" || { echo "STOP: approver identity is required"; exit 1; }
+
+PLAN_FILE=terraform/aws/csd-destroy.tfplan
+PLAN_SHA256=$(shasum -a 256 "$PLAN_FILE" | awk '{print $1}')
+jq -n --arg approval "$CSD_DESTROY_APPROVAL" \
+  --arg approver "$CSD_DESTROY_APPROVER" --arg plan_sha256 "$PLAN_SHA256" \
+  --arg approved_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  '{approval:$approval,approver:$approver,plan_sha256:$plan_sha256,approved_at:$approved_at}' \
+  > .csd-destroy-approval.json
+chmod 0400 .csd-destroy-approval.json
+
+test "$(jq -r .approval .csd-destroy-approval.json)" = yes
+test "$(jq -r .plan_sha256 .csd-destroy-approval.json)" = \
+  "$(shasum -a 256 "$PLAN_FILE" | awk '{print $1}')"
+terraform -chdir=terraform/aws apply csd-destroy.tfplan
+```
+
+Do not run a fresh unsaved `terraform destroy` after approval; the reviewed saved-plan bytes and its recorded approval are the authorization boundary.
+
+Verify both Terraform state and live absence using only the identifiers captured before destroy:
+
+```bash
+test -z "$(terraform -chdir=terraform/aws state list)"
+
+set +e
+terraform -chdir=terraform/aws plan -destroy -detailed-exitcode -out=csd-post-destroy.tfplan
+PLAN_RC=$?
+set -e
+test "$PLAN_RC" -eq 0
+
+AWS_ACCOUNT_ID=$(jq -r .aws_account_id .csd-destroy-identifiers.json)
+AWS_REGION=$(jq -r .aws_region .csd-destroy-identifiers.json)
+VPC_ID=$(jq -r .vpc_id .csd-destroy-identifiers.json)
+ALB_ARN=$(jq -r .alb_arn .csd-destroy-identifiers.json)
+TARGET_GROUP_ARN=$(jq -r .target_group_arn .csd-destroy-identifiers.json)
+ALB_LOG_BUCKET=$(jq -r .alb_access_logs_bucket .csd-destroy-identifiers.json)
+KMS_KEY_ARN=$(jq -r .cloudwatch_logs_kms_key_arn .csd-destroy-identifiers.json)
+SUBNET_IDS=$(jq -r '[.public_subnet_ids[],.private_subnet_ids[]] | join(" ")' .csd-destroy-identifiers.json)
+
+test "$(aws sts get-caller-identity --query Account --output text)" = "$AWS_ACCOUNT_ID"
+test "$(aws ec2 describe-vpcs --region "$AWS_REGION" \
+  --filters "Name=vpc-id,Values=$VPC_ID" \
+  --query 'length(Vpcs)' --output text)" = "0"
+test "$(aws ec2 describe-subnets --region "$AWS_REGION" \
+  --filters "Name=subnet-id,Values=${SUBNET_IDS// /,}" \
+  --query 'length(Subnets)' --output text)" = "0"
+
+if ALB_ERROR=$(aws elbv2 describe-load-balancers --region "$AWS_REGION" \
+  --load-balancer-arns "$ALB_ARN" 2>&1); then
+  echo "STOP: captured ALB still exists"
+  exit 1
 fi
+printf '%s' "$ALB_ERROR" | grep -q 'LoadBalancerNotFound'
+
+if TG_ERROR=$(aws elbv2 describe-target-groups --region "$AWS_REGION" \
+  --target-group-arns "$TARGET_GROUP_ARN" 2>&1); then
+  echo "STOP: captured target group still exists"
+  exit 1
+fi
+printf '%s' "$TG_ERROR" | grep -q 'TargetGroupNotFound'
+
+test "$(aws s3api list-buckets \
+  --query "length(Buckets[?Name=='$ALB_LOG_BUCKET'])" --output text)" = "0"
+test "$(aws kms describe-key --region "$AWS_REGION" --key-id "$KMS_KEY_ARN" \
+  --query 'KeyMetadata.KeyState' --output text)" = "PendingDeletion"
 ```
 
-<Aside type="note">
-The standard `DELETE /api/web/namespaces/{name}` endpoint returns `"Not Implemented"` (error code `12`). You **must** use the cascade delete endpoint (`POST .../cascade_delete`) to delete a namespace.
-</Aside>
+Required result: state output is empty, the **destroy-mode** plan exits `0`, and every captured AWS identifier is absent, except that the captured KMS key must be in `PendingDeletion` because AWS enforces a deletion waiting period. Do not use a normal configuration plan after destroy: the configuration still declares the stack, so a normal plan correctly proposes recreation.
 
-Verify: Confirm the namespace no longer exists:
+Also issue these read-only `xcsh_api` GETs using values from `.csd-destroy-identifiers.json`; each must return `404`:
 
-```bash
-curl -s -o /dev/null -w '%\{http_code\}' \
-  -H "Authorization: APIToken xF5XC_API_TOKENx" \
-  "xF5XC_API_URLx/api/web/namespaces/xF5XC_NAMESPACEx"
-```
+| Captured value | GET endpoint |
+| --- | --- |
+| `xc_http_loadbalancer_name` | `/api/config/namespaces/{namespace}/http_loadbalancers/{name}` |
+| `xc_origin_pool_name` | `/api/config/namespaces/{namespace}/origin_pools/{name}` |
+| `xc_protected_domain_name` | `/api/shape/csd/namespaces/{namespace}/protected_domains/{name}` |
+| `xc_namespace` | `/api/web/namespaces/{namespace}` |
 
-Expected: `404` if `NAMESPACE_CREATED=true`, `200` if `NAMESPACE_CREATED=false`.
+Pass `xc_namespace` as `namespace` and the corresponding captured resource value as `name`. Any successful read is a live-remnant blocker. Do not delete the remnant through the API—retain the same backend and recover through a fresh reviewed Terraform destroy plan.
 
-## Phase 4 Evidence Summary
+If apply is interrupted by an EIP quota, state lock, certificate/origin propagation, namespace dependency, or transient F5 Distributed Cloud `503`, retain the same backend and state. Resolve the cause, then create, review, approve, and apply a fresh saved destroy plan. Never switch to API deletion to finish a Terraform-owned teardown.
 
-| Object | Delete Status | Verify Status |
-| --- | --- | --- |
-| Mitigated Domains (6) | All `200` (empty `\{\}`) or skipped if Phase 3 not run | Count 0 (or 1 phantom) — PASS |
-| HTTPS Load Balancer (`-https`) | `200` (skeleton PUT) or `200` (full DELETE if `NAMESPACE_CREATED=true`) | Skeleton verified or not in list — PASS |
-| HTTP Load Balancer (`-http`) | `200` (empty `\{\}`) | Not in list — PASS |
-| Origin Pool | `200` (empty `\{\}`) | Not in list — PASS |
-| Healthcheck | `200` (empty `\{\}`) or skipped | Not in list — PASS |
-| Protected Domain | `200` (empty `\{\}`) | Not in list — PASS |
-| DNS zone | NOT deleted (shared infra) | Zone still exists — PASS |
-| Namespace | `200` (cascade delete) if `NAMESPACE_CREATED=true`, skipped otherwise | `404` if deleted, `200` if preserved — PASS |
+## Completion
 
----
+Teardown is complete only when the selected owner's verification passes:
 
-**Teardown complete.** When the namespace was pre-existing (`NAMESPACE_CREATED=false`), all deployment objects have been removed except the HTTPS LB skeleton, which preserves the Let's Encrypt certificate and domain binding for the next demo run. When the namespace was created during the demo (`NAMESPACE_CREATED=true`), all objects including the HTTPS LB and namespace have been fully deleted. The DNS zone and its non-managed records remain intact in both cases.
+- **API path:** every session-recorded API-created object is absent, while all pre-existing and unrecorded objects remain untouched.
+- **Terraform path:** state is empty, the destroy-mode plan exits `0`, and exact pre-destroy identifiers are absent from both AWS and F5 Distributed Cloud live reads.
+
+There is no skeleton load balancer and no second load balancer to preserve. A future build creates the same single logical architecture through exactly one selected owner.

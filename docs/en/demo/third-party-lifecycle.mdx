@@ -8,20 +8,30 @@ sidebar:
 
 import { Aside } from "@astrojs/starlight/components";
 
-This repository-backed exercise proves the full Client-Side Defense lifecycle with one behaving
-third-party script. The
-[`webapp-api-protection`](https://github.com/f5-sales-demo/webapp-api-protection) checkout loads
-`/csd-demo/checkout.js` from a separately deployed
-[`cdn-simulator`](https://github.com/f5-sales-demo/cdn-simulator) edge. The script reads synthetic
-payment fields, so CSD inventories the edge host as a High Risk third-party domain.
+This **Azure alternate scenario** proves the full Client-Side Defense lifecycle with one behaving
+third-party script. It is separate from the AWS Juice Shop reference deployment. The
+[`webapp-api-protection`](https://github.com/f5-sales-demo/webapp-api-protection) repository owns
+the Azure application, its F5 Distributed Cloud configuration, and the optional mitigated-domain
+resource. The separately deployed
+[`cdn-simulator`](https://github.com/f5-sales-demo/cdn-simulator) repository owns the edge that
+serves `/csd-demo/checkout.js`. The script reads synthetic payment fields, so CSD inventories the
+edge host as a High Risk third-party domain.
 
-The `csd_cdn_simulator_host` Terraform value supplies both the page's script host and the mitigation
-target. This exact-host relationship makes the detect, mitigate, and block result deterministic.
-Use an FQDN, not a raw IP.
+The `csd_cdn_simulator_host` Terraform value passes the `cdn-simulator` repository's `edge_fqdn`
+output into the `webapp-api-protection` deployment as both the page's script host and the mitigation
+target. Each Azure repository retains its own Terraform backend and state. Its owner must create,
+review, and apply the exact saved plan from that repository; do not copy resources between states,
+recompute an approved apply, or manage either repository's resources through `terraform/aws` or the
+standalone CSD API workflow. Matching the script host to the mitigation target produced repeatable
+detect, mitigate, and block results in this lab, but classification and processing time remain
+tenant-dependent. Use an FQDN, not a raw IP.
 
 <Aside type="note">
-This scenario uses synthetic values against the authorized F5 demo application. It complements the
-standalone API exercise in the other demo pages.
+  This Azure scenario uses synthetic values against the authorized F5 demo
+  application. For the AWS Juice Shop reference deployment and its mutually
+  exclusive API or Terraform ownership modes, use the other demo pages. Choose
+  one ownership mode. Never run the API create/update/delete workflow against
+  resources present in Terraform state.
 </Aside>
 
 ## Prerequisites
@@ -100,16 +110,19 @@ configuration, authentication, or dataplane failure that must be repaired before
 ## Phase 3: Mitigate and prove blocking
 
 Continue only after the detection verifier exits `0`. In the `webapp-api-protection/terraform`
-directory, preview and apply only the demo mitigation resource:
+directory, have that deployment's owner create and inspect a complete saved plan. Do not use
+`-target`; an independently recomputed targeted apply is not the reviewed change:
 
 ```bash
 terraform plan \
-  -target=module.http_lb.xcsh_mitigated_domain.this \
-  -var=csd_demo_mitigation_enabled=true
-terraform apply \
-  -target=module.http_lb.xcsh_mitigated_domain.this \
-  -var=csd_demo_mitigation_enabled=true
+  -var=csd_demo_mitigation_enabled=true \
+  -out=csd-mitigation-enable.tfplan
+terraform show csd-mitigation-enable.tfplan
+terraform apply csd-mitigation-enable.tfplan
 ```
+
+Apply only those reviewed saved-plan bytes against the same backend and state. Any unrelated action,
+replacement, provider error, or change to the separately owned simulator blocks the apply.
 
 This creates `block-cdn-simulator` for the host supplied by `csd_cdn_simulator_host`; it does not
 maintain a second domain list. After propagation, run the same population with only the expected
@@ -141,17 +154,19 @@ the before-and-after proof.
 
 ## Phase 4: Remove the mitigation and prove restoration
 
-The repository-backed teardown first removes only the demo mitigation. In the same Terraform
-directory, preview and apply the false toggle:
+The `webapp-api-protection` owner first removes only its demo mitigation. In that repository's
+`terraform` directory, create and inspect a complete saved plan with the false toggle. Do not use
+`-target` or run a newly recomputed apply after review:
 
 ```bash
 terraform plan \
-  -target=module.http_lb.xcsh_mitigated_domain.this \
-  -var=csd_demo_mitigation_enabled=false
-terraform apply \
-  -target=module.http_lb.xcsh_mitigated_domain.this \
-  -var=csd_demo_mitigation_enabled=false
+  -var=csd_demo_mitigation_enabled=false \
+  -out=csd-mitigation-disable.tfplan
+terraform show csd-mitigation-disable.tfplan
+terraform apply csd-mitigation-disable.tfplan
 ```
+
+Apply only those reviewed saved-plan bytes against the same backend and state.
 
 After propagation, prove restoration with one fresh headed browser session:
 
@@ -164,10 +179,21 @@ NODE_PATH="$PLAYWRIGHT_DIR/node_modules" \
 node "$TRAFFIC_REPO/suites/csd-detection/02-population-detection.js" "$LB_FQDN"
 ```
 
-Require `classification=loaded`, `passed=true`, `loaded=1`, and `blocked=0`. This restores the
-pre-mitigation state without destroying the shared application, CSD policy, or simulator. Continue
-with the [full infrastructure teardown](/csd/en/demo/phase-4-teardown/) only when that broader
-cleanup was explicitly requested.
+Require `classification=loaded`, `passed=true`, `loaded=1`, and `blocked=0`. These are
+lab-observed classifications from the current tenant, not guaranteed timing or classification in
+another tenant. Then require the `webapp-api-protection` owner to run a full refresh-aware plan
+against the same backend and state; exit code `0` with no changes is the restoration gate:
+
+```bash
+terraform plan -detailed-exitcode -out=csd-restoration-check.tfplan
+```
+
+Exit code `2` means restoration is incomplete: inspect the saved plan, correct the owning
+configuration or runtime condition, and repeat the saved-plan review and apply workflow. For broader
+cleanup, obtain explicit approval and use each Azure repository's owner-specific teardown procedure:
+the `webapp-api-protection` owner destroys only its state, and the `cdn-simulator` owner separately
+destroys only its state. Do not use this repository's `terraform/aws` stack, Phase 4 API teardown,
+or any standalone API DELETE operation for these Azure-owned resources.
 
 Remove the temporary dependency directory when the exercise is complete:
 

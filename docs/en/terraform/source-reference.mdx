@@ -1,0 +1,48 @@
+---
+title: Terraform Source Reference
+description: "Rendered canonical Terraform source for the CSD AWS and F5 Distributed Cloud stack"
+sidebar:
+  order: 2
+  label: Source Reference
+---
+
+The following five files are staged from the canonical `terraform/aws` implementation. The rendered source is the reference; do not copy generated resource identifiers or runtime outputs into persistent configuration.
+
+## Provider and backend
+
+`versions.tf` pins Terraform and provider constraints, configures encrypted remote S3 state with native locking, restricts the AWS provider to the approved account, and includes the required explicit `provider "xcsh" {}` block. The F5 Distributed Cloud provider source is `f5-sales-demo/xcsh`.
+
+```hcl file=../../_data/terraform/aws/versions.tf
+```
+
+## Variables and identity guards
+
+`variables.tf` defines the reviewed account, profile, region, namespace, domain, network layout, restricted F5 Distributed Cloud origin CIDRs, and common tags. Its validations prevent accidental reuse against another environment.
+
+```hcl file=../../_data/terraform/aws/variables.tf
+```
+
+## Stack resources
+
+`main.tf` contains the entitlement precondition, AWS networking and logging resources, the vendored origin module, and the F5 Distributed Cloud resources. The AWS origin pool uses the module's ALB hostname through `public_name`; the HTTPS load balancer redirects HTTP, uses the public default VIP, references one default-route pool, and enables all-pages CSD injection.
+
+```hcl file=../../_data/terraform/aws/main.tf
+```
+
+## Outputs
+
+`outputs.tf` is the supported interface for runtime identifiers and validation inputs. Use `terraform output -raw application_url` for protected-path checks and retrieve other values with `terraform output`; do not persist generated IDs, ARNs, VIPs, bucket suffixes, certificate dates, task IDs, or plan digests in documentation.
+
+```hcl file=../../_data/terraform/aws/outputs.tf
+```
+
+## Contract tests
+
+`tests/stack.tftest.hcl` uses mocked providers to verify configuration contracts: identity restrictions, topology, logging controls, namespace and entitlement ordering, origin-pool wiring, HTTPS redirect, public advertisement, all-pages CSD injection, and negative cases for the wrong AWS account or missing entitlement.
+
+Mocked assertions do not validate deployed resources, runtime health, traffic flow, log delivery, or CSD telemetry. After apply, use `application_url` and run the executable [Diagnostics & Verification](/csd/en/diagnostics/) procedures.
+
+```hcl file=../../_data/terraform/aws/tests/stack.tftest.hcl
+```
+
+The vendored module itself remains canonical under `terraform/aws/vendor/aws-juice-shop`; it is intentionally not duplicated on this page. Its pinned provenance is documented in the [architecture overview](./).

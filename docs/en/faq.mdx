@@ -12,17 +12,10 @@ Frequently asked questions about F5 Distributed Cloud Client-Side Defense, compi
 
 ## Does CSD generate alerts when violations are detected?
 
-Yes, but CSD-specific alert rules must be explicitly configured. CSD auto-creates an Alert Receiver using the account email address provided during setup. You can configure alert triggers for:
-
-- New suspicious domain detected
-- Risk score threshold exceeded
-- New script detected on a protected page
-- Behavior change on a previously seen script
-
-Alerts can be scoped per-domain or applied globally across all protected domains. See the [CSD Console — Alert Configuration](/csd/en/csd-console/#alert-configuration) section for setup details.
+CSD supports alerting as part of its detection, alerting, and mitigation workflow. Available alert channels and rule controls depend on the tenant configuration; verify the current controls in the CSD console. See the [official CSD concepts](https://docs.cloud.f5.com/docs-v2/client-side-defense/concepts/about-csd) and [CSD Console — Alert Configuration](/csd/en/csd-console/#alert-configuration).
 
 <Aside type="note">
-Alert rules are configured in the CSD dashboard, not via the automation API. The API endpoints (`/scripts`, `/detected_domains`) provide detection data but do not trigger alerts on their own.
+The alert names and scoping shown in this demo are **lab observations**, not a complete product contract. The CSD data APIs (`/scripts`, `/detected_domains`) expose detection data; they do not themselves configure alert delivery.
 </Aside>
 
 ## Can I view HTTP request logs for CSD events?
@@ -34,49 +27,36 @@ CSD operates via **client-side JavaScript telemetry** — there are no server-si
 3. Telemetry beacons are sent to the F5 backend for analysis
 4. Detection results appear in the CSD API and dashboard
 
-The **load balancer access logs** (`/api/data/namespaces/\{ns\}/access_logs`) include a `csd_js_injection` field that confirms whether the CSD script tag was injected into a response. For CSD detection data, use the API endpoints: [`/scripts`](/csd/en/api-reference/#detected-scripts), [`/detected_domains`](/csd/en/api-reference/#detected-domains), and [`/formFields`](/csd/en/api-reference/#form-fields).
+In this lab, load balancer access-log records expose `csd_js_injection` when injection telemetry is present. Treat the exact field presence and representation as a lab observation and validate it against the active tenant. For CSD detection data, use [`/scripts`](/csd/en/api-reference/#scripts), [`/detected_domains`](/csd/en/api-reference/#detected-domains), and [`/formFields`](/csd/en/api-reference/#form-fields).
 
 See the [Diagnostics](/csd/en/diagnostics/) guide for the full Layer 7 (HTTP) and Layer 8 (CSD telemetry) verification tests.
 
 ## Does CSD integrate with SIEM tools (Splunk, Datadog, etc.)?
 
-No native SIEM webhook or syslog integration is documented for CSD specifically. The CSD detection data is available through the REST API endpoints:
+The current CSD documentation exposes detection data through REST API endpoints such as:
 
-- `/scripts` — detected scripts with risk levels
-- `/detected_domains` — categorized domains (CDN, exfil, etc.)
-- `/formFields` — form fields accessed by scripts with sensitivity classification
+- `/scripts` — detected scripts and associated analysis
+- `/detected_domains` — detected domains
+- `/formFields` — form fields observed by CSD
 
-Customers can poll these API endpoints on a schedule and forward detection data to their SIEM. See the [API Reference](/csd/en/api-reference/) for endpoint details and authentication.
+A customer can evaluate polling these endpoints and forwarding the returned data to its SIEM. That is an integration pattern, not a documented native CSD SIEM connector. See the [API Reference](/csd/en/api-reference/) for endpoint details.
 
 <Aside type="tip">
-The F5 Distributed Cloud platform supports **Global Log Receiver** configurations for streaming HTTP access logs to external systems (Splunk, Datadog, S3, etc.). While this covers load balancer access logs (including the `csd_js_injection` field), it does not include CSD detection events. For detection data, use the API polling approach described above.
+Global Log Receivers are a separate F5 Distributed Cloud platform capability for supported log streams. Do not assume that a Global Log Receiver carries CSD detection events; validate the desired event type and destination against current platform documentation.
 </Aside>
 
 ## What does CSD mitigation actually block?
 
-CSD mitigation blocks `<script>` tag loading from mitigated domains by intercepting the `src` attribute — the CSD JavaScript clears the `src` to an empty string, preventing the network request entirely. This targets the **supply-chain vector**: malicious third-party scripts that are injected into the page via `<script>` tags.
+Official F5 documentation states that one-click mitigation instructs CSD to block detected exfiltration. The exact browser mechanism and which request primitives are affected are implementation details, not a stable public API contract.
 
-CSD mitigation does **not** intercept:
+In this demo lab, before/after browser inspection has shown blocked third-party script loads after the source domain is mitigated. Validate the current behavior with browser network evidence rather than promising that CSD clears a particular DOM attribute or categorically excludes specific browser APIs.
 
-- `fetch()` calls
-- `XMLHttpRequest` calls
-- `<img>` or `<link>` tag loads
-- WebSocket connections
-
-This design is intentional — CSD focuses on the script loading mechanism that supply-chain attacks (Magecart, formjacking, skimming) use to inject malicious code. Application-level API calls made via `fetch()` or `XMLHttpRequest` are outside CSD's scope and are handled by other F5 XC security features (WAF, Bot Defense, API Protection).
-
-See [Phase 3 — Mitigate](/csd/en/demo/phase-3-mitigate/) for a before/after proof demonstrating script blocking behavior.
+See [Phase 3 — Mitigate](/csd/en/demo/phase-3-mitigate/) for the lab's before/after proof procedure and the [official CSD concepts](https://docs.cloud.f5.com/docs-v2/client-side-defense/concepts/about-csd) for the supported product claim.
 
 ## How long do detections take to appear after running an attack?
 
-Detection timing varies by endpoint:
+Detection timing varies with traffic volume and backend processing. The timings in this repository are **lab-observed polling windows**, not a service-level objective: `/detected_domains` often populates first, while script and form-field analysis can take longer. Follow the bounded polling procedure and stop to troubleshoot if its limit is reached.
 
-| Endpoint | Typical timing | Notes |
-| --- | --- | --- |
-| `/detected_domains` | Minutes | Populates first — this is the primary indicator that the CSD pipeline is processing |
-| `/scripts` | 10–30 minutes | Uses a slower backend processing schedule |
-| `/formFields` | 20–30 minutes | ML sensitivity classification (`Sensitive` vs `Not Sensitive`) requires additional processing |
-
-Detections **persist across infrastructure teardown/rebuild** when the same protected domain is re-registered on the same tenant. After a teardown and rebuild, query `/detected_domains` once — if the response contains items, prior detections are still available and no waiting is required.
+Detection history has persisted across rebuilds in this demo tenant when the same protected domain was registered again. Treat that as a lab observation, not a retention guarantee; query the current tenant before deciding whether new traffic is required.
 
 See the [Phase 2 — Detection Verification](/csd/en/demo/phase-2-attack/#step-9-detection-verification-via-api) section for the recommended polling protocol.

@@ -8,7 +8,34 @@ sidebar:
 
 import { Aside } from "@astrojs/starlight/components";
 
-F5 Distributed Cloud Client-Side Defense (CSD) protects web applications from client-side attacks by monitoring JavaScript behavior directly in the browser. The F5 XC load balancer can be configured to inject the CSD telemetry script into pages served to the client. This script observes all JavaScript activity — which scripts load, which form fields they read, and which network connections they make. Telemetry data is sent to the F5 XC platform where machine learning models analyze script behavior, assign risk scores, and flag anomalies. Security teams review detections in the CSD console and take action by allowing or mitigating script domains.
+F5 Distributed Cloud Client-Side Defense (CSD) adds browser-side telemetry to a protected application through the HTTP Load Balancer (HTTPS with HTTP redirect).
+The service reports script, domain, form-field, risk, and behavior data for security review. Administrators can place observed domains on allow or mitigate lists. Validate actual coverage and enforcement with current tenant evidence before making a customer claim.
+
+## Reference Architecture
+
+The API and Terraform workflows create the same logical F5 Distributed Cloud architecture centered on one **HTTP Load Balancer (HTTPS with HTTP redirect)**:
+
+```mermaid
+flowchart LR
+    U[Browser] -->|HTTPS| L["HTTP Load Balancer (HTTPS with HTTP redirect)"]
+    H[HTTP request] -->|301 redirect| L
+    L -->|CSD telemetry insertion| U
+    L --> P[Origin pool]
+    P --> A["AWS: public_name ALB hostname"]
+    P -. alternate .-> Z["Azure: public_ip address"]
+```
+
+The shared settings are namespace `client-side-defense`, domain
+`client-side-defense.f5-sales-demo.com`, public default VIP advertisement, HTTPS automatic
+certificate issuance with HTTP redirect, one default origin-pool route, and CSD insertion on all
+pages. The load balancer has the unsuffixed name `client-side-defense`; there is no separate HTTP
+resource. Protected-application execution uses HTTPS; HTTP is tested only for the `301` redirect.
+
+Choose one ownership mode: [API build](/csd/en/demo/phase-1-build/) or
+[Terraform](/csd/en/terraform/). The resulting traffic path is equivalent, but ownership is
+mutually exclusive.
+
+Choose one ownership mode. Never run the API create/update/delete workflow against resources present in Terraform state.
 
 ```mermaid
 flowchart LR
@@ -20,66 +47,64 @@ flowchart LR
 
 ## Core Detection Signals
 
-CSD monitors three categories of browser-side behavior:
+CSD telemetry in this lab provides evidence for these browser-side categories:
 
-| Signal | What CSD Observes | Example |
+| Signal | What to Validate | Example |
 | --- | --- | --- |
-| **Form field reads** | Which scripts access which `input` fields present in the page DOM at load time | `main.js` reading the `password` field on `/login` |
-| **Script inventory** | All first-party and third-party JavaScript loaded on each page, tracked by source domain | A new `<script>` tag loading from `cdn.jsdelivr.net` appearing on the login page |
-| **Network interactions** | Domains involved in script network activity — includes both script-load source domains and fetch/XHR destination domains | Scripts sourced from `esm.sh` and data exfiltration targets like `www.httpbin.org` appearing in detected domains |
+| **Form field interactions** | Form-field entries associated with observed scripts | An entry for an email or password input in `/formFields` |
+| **Script inventory** | First-party and third-party scripts reported for the protected page | A CDN script URL in `/scripts` |
+| **Detected domains** | Domains returned by `/detected_domains` for the active run | A candidate CDN or synthetic external destination observed in the run |
 
 <Aside type="caution">
-CSD's Network interactions signal primarily tracks **script-load source domains**. However, fetch/XHR destination domains also appear in the `/detected_domains` API and Dashboard domain table — CSD detects network activity at the domain level, not just script loads. See [Detection Boundaries](#detection-boundaries) for the full list of behavioral limitations.
+Do not infer complete coverage from the harness definition. Report only domains and fields observed in browser and API evidence for the active run.
 </Aside>
 
 ## Feature Matrix
 
 | Feature | Description | Console Location |
 | --- | --- | --- |
-| **Script risk scoring** | Automatic classification: No Risk, Low Risk, High Risk | Script List &rarr; Risk Level column |
-| **Form field sensitivity** | Auto-classifies fields as Sensitive (by system) based on field type and name | Form Fields view &rarr; Analysis column |
-| **Behavior timeline** | Charts script risk level, source domain, and type over time | Script detail &rarr; Overview &rarr; Behaviors Over Time |
-| **Affected user attribution** | Tracks impacted users by IP, geolocation, browser, and device | Script detail &rarr; Affected Users tab |
-| **Domain allow list** | Mark trusted script domains as allowed | Dashboard &rarr; domain row &rarr; Add To Allow List |
-| **Domain mitigate list** | Block network calls and form field reads from specific script domains, preventing data exfiltration | Dashboard &rarr; domain row &rarr; Add To Mitigate List |
-| **Alert configuration** | Notifications for new domains, risk changes, suspicious behavior | Notifications section |
-| **Script justification** | Add notes explaining why a script is authorized (PCI DSS compliance) | Script detail &rarr; Justification field |
-| **Transaction tracking** | Monthly telemetry event counter confirming CSD is active | Dashboard &rarr; Transactions Consumed card |
+| **Script risk scoring** | Displays the risk classification returned for a script | Script List &rarr; Risk Level column |
+| **Form field analysis** | Displays available field analysis returned by the service | Form Fields view &rarr; Analysis column |
+| **Behavior timeline** | Displays reported script behavior over time | Script detail &rarr; Overview &rarr; Behaviors Over Time |
+| **Affected-user view** | Displays available impacted-user attributes | Script detail &rarr; Affected Users tab |
+| **Domain allow list** | Records trusted domains selected by an administrator | Dashboard &rarr; domain row &rarr; Add To Allow List |
+| **Domain mitigate list** | Records domains selected for mitigation | Dashboard &rarr; domain row &rarr; Add To Mitigate List |
+| **Alert configuration** | Configures available CSD notifications | Notifications section |
+| **Script justification** | Records administrator justification for an authorized script | Script detail &rarr; Justification field |
+| **Transaction counter** | Configuration/telemetry evidence that events were recorded; not enforcement proof | Dashboard &rarr; Transactions Consumed card |
 | **Time and location filters** | Filter all views by time range (24h, 7d, 30d) and location | Top bar filter controls |
 
 ## Detection Boundaries
 
-Understanding what CSD does **not** monitor is critical for setting accurate demo expectations:
+The following are lab observations, not universal product limits. Revalidate them in the active tenant and protected application:
 
-| Limitation | Detail | Verified |
+| Observation | Lab Evidence | Interpretation |
 | --- | --- | --- |
-| **Dynamically created fields** | CSD tracks `input` fields present in the DOM at page load. Fields injected by JavaScript after load are not monitored. A dynamically created `<input>` read by a script does not appear in the Form Fields view. | Yes — field absent from `/formFields` after 10-minute wait |
-| **Code-level obfuscation** | CSD does not flag dynamic code execution techniques or obfuscation patterns as separate detection signals. Obfuscated harvesters produce the same risk level as non-obfuscated ones — CSD tracks behavioral metadata, not source code patterns. | Yes — identical "High Risk" for both techniques |
-| **Form overlay fields** | CSD tracks only form fields present in the original DOM at page load. Overlay forms injected by JavaScript (a common digital skimming technique) are not tracked — only reads of the original fields are detected. | Yes — overlay fields absent from `/formFields` after 10-minute wait |
-| **Dashboard counter behavior** | The "Found &amp; Mitigated" and "Found &amp; Allowed" summary counts only change after an admin explicitly adds a domain to the mitigate or allow list. The "Action Needed" and "Total Found" counts update automatically when new domains are detected. | Yes — "Found &amp; Allowed" changed from 0 to 1 only after POST to `/allowed_domains` |
+| Dynamically created fields were absent | Field absent from `/formFields` during the observation window | The run did not produce form-field telemetry for that field; do not generalize beyond the tested build and traffic |
+| Obfuscated and unobfuscated samples had the same displayed risk | Same displayed classification in the tested run | No distinct obfuscation signal was observed in this lab |
+| Overlay fields were absent | Overlay field absent from `/formFields` during the observation window | The run did not produce form-field telemetry for the injected overlay field |
+| Dashboard summary counters changed after list mutations | Counter change observed after allow/mitigate API operations | Counters are configuration-state evidence, not proof that the browser enforced mitigation |
 
-<Aside type="note" title="API vs Console visibility">
-The `/detected_domains` API endpoint returns all detected domains including both first-party and third-party script source domains. The first-party application domain (e.g., `csd.bankexample.com`) appears in the detected domains list alongside third-party CDN domains. Both first-party and third-party domains appear in the Dashboard domain table.
-
-Fetch/XHR destination domains (e.g., `www.httpbin.org` contacted via `fetch()`) also appear in the `/detected_domains` response. The CSD platform tracks these at the domain level even though they are not script-load source domains.
+<Aside type="note" title="API and browser evidence">
+The API lists and counters show configuration and reported telemetry. Browser Network behavior is the enforcement evidence: compare the same HTTPS simulation before and after mitigation and record the requests actually observed. Domain coverage must be limited to the domains present in that run's baseline and API data.
 </Aside>
 
 ## PCI DSS v4.0 Mapping
 
-CSD directly addresses two PCI DSS v4.0 requirements for payment page security:
+CSD can provide evidence that supports assessment of PCI DSS v4.0 payment-page controls; it does not by itself establish compliance:
 
-| PCI DSS Requirement | What It Requires | How CSD Addresses It |
+| PCI DSS Requirement | Relevant CSD Evidence | Qualification |
 | --- | --- | --- |
-| **6.4.3** — Script management on payment pages | Maintain an inventory of all scripts, provide written authorization and justification for each, verify script integrity | Script List provides full inventory; Justification field documents authorization; behavior timeline tracks changes |
-| **11.6.1** — Tamper detection on payment pages | Detect unauthorized modifications to HTTP headers and payment page content | CSD telemetry detects new script injections, unauthorized form field reads, and new network domains — alerting on changes to page behavior |
+| **6.4.3** — Payment-page script management | Script inventory, approval status, and recorded justification available in the tenant | Confirm completeness and operating procedures with the assessor |
+| **11.6.1** — Payment-page change/tamper detection | Observed script, domain, and behavior changes | Validate alerting, response, and coverage against the customer's implementation |
 
 <Aside type="tip">
-Use the **Script justification** feature to document why each script is authorized on payment pages. This creates an audit trail that maps directly to PCI DSS 6.4.3 authorization requirements.
+Use script justification and current inventory as audit evidence, while keeping authorization, integrity validation, review cadence, and assessor acceptance in the customer's control framework.
 </Aside>
 
 ## Threat Coverage Matrix
 
-The following table maps common client-side attack categories to the CSD detection signals that would fire during each attack type. Attack types marked with **\*** are confirmed by [F5 official documentation](https://www.f5.com/cloud/products/client-side-defense). Unmarked types are inferred based on CSD's detection signal categories and may not be explicitly claimed by F5.
+The following table maps common client-side attack scenarios to lab signals relevant for validation. Scenarios marked with **\*** are described in [F5 product material](https://www.f5.com/cloud/products/client-side-defense). Unmarked mappings are scenario guidance, not confirmed F5 product claims. A `Yes` identifies a signal to test; it does not guarantee detection in every run.
 
 | Attack Category | Description | Field Reads | Script Injection | Network |
 | --- | --- | --- | --- | --- |
@@ -95,5 +120,5 @@ The following table maps common client-side attack categories to the CSD detecti
 | **Web skimmer persistence** | Re-injects skimmer scripts across page navigations — see [Sansec Magecart Research](https://sansec.io/what-is-magecart) | — | Yes | Yes |
 
 <Aside type="note">
-"Network" detection covers both script-load source domains and fetch/XHR destination domains — both appear in the CSD `/detected_domains` API and Dashboard domain table. However, CSD mitigation targets script loading (the supply-chain vector), not fetch/XHR calls. Mitigating a domain blocks `<script>` tag loads from that domain but does not intercept `fetch()` or `XMLHttpRequest` calls to it.
+The matrix describes which lab signals are relevant to each scenario; it is not a guarantee that every listed signal or domain appears in every run. Validate coverage from current browser and API evidence before presenting a claim.
 </Aside>

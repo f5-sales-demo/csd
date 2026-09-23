@@ -352,12 +352,16 @@ module "origin" {
   ]
 }
 
+resource "xcsh_namespace" "csd" {
+  name = var.namespace
+}
+
 resource "xcsh_protected_domain" "csd" {
   name             = "client-side-defense"
   namespace        = var.namespace
   protected_domain = "f5-sales-demo.com"
 
-  depends_on = [terraform_data.require_csd]
+  depends_on = [xcsh_namespace.csd, terraform_data.require_csd]
 }
 
 resource "xcsh_origin_pool" "origin" {
@@ -374,7 +378,7 @@ resource "xcsh_origin_pool" "origin" {
   no_tls                = {}
   same_as_endpoint_port = {}
 
-  depends_on = [terraform_data.require_csd]
+  depends_on = [xcsh_namespace.csd, terraform_data.require_csd]
 }
 
 resource "xcsh_http_loadbalancer" "csd" {
@@ -403,5 +407,5 @@ resource "xcsh_http_loadbalancer" "csd" {
     }
   }
 
-  depends_on = [terraform_data.require_csd, xcsh_protected_domain.csd]
+  depends_on = [xcsh_namespace.csd, xcsh_protected_domain.csd, terraform_data.require_csd]
 }

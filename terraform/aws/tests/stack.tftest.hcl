@@ -168,6 +168,27 @@ run "stack_contract" {
 
 
   assert {
+    condition     = xcsh_namespace.csd.name == var.namespace
+    error_message = "The stack must manage the F5 Distributed Cloud namespace used by all application resources."
+  }
+
+  assert {
+    condition     = length(regexall("(?s)resource\\s+\"xcsh_protected_domain\"\\s+\"csd\"\\s*\\{.*?depends_on\\s*=\\s*\\[\\s*xcsh_namespace\\.csd,\\s*terraform_data\\.require_csd\\s*\\]", file("${path.module}/main.tf"))) == 1
+    error_message = "The protected domain must wait for namespace creation and the CSD entitlement gate."
+  }
+
+  assert {
+    condition     = length(regexall("(?s)resource\\s+\"xcsh_origin_pool\"\\s+\"origin\"\\s*\\{.*?depends_on\\s*=\\s*\\[\\s*xcsh_namespace\\.csd,\\s*terraform_data\\.require_csd\\s*\\]", file("${path.module}/main.tf"))) == 1
+    error_message = "The origin pool must wait for namespace creation and the CSD entitlement gate."
+  }
+
+  assert {
+    condition     = length(regexall("(?s)resource\\s+\"xcsh_http_loadbalancer\"\\s+\"csd\"\\s*\\{.*?depends_on\\s*=\\s*\\[\\s*xcsh_namespace\\.csd,\\s*xcsh_protected_domain\\.csd,\\s*terraform_data\\.require_csd\\s*\\]", file("${path.module}/main.tf"))) == 1
+    error_message = "The HTTP load balancer must wait for the namespace, protected domain, and CSD entitlement gate; its pool reference remains an implicit dependency."
+  }
+
+
+  assert {
     condition     = xcsh_protected_domain.csd.namespace == "client-side-defense" && xcsh_protected_domain.csd.protected_domain == "f5-sales-demo.com"
     error_message = "The protected-domain prerequisite must use the guarded namespace and registrable parent domain."
   }

@@ -30,6 +30,8 @@ values = {}
 for line in (root / ".env.example").read_text().splitlines():
     if line and not line.startswith("#") and "=" in line:
         key, value = line.split("=", 1)
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
         values[key] = value
 
 required = {

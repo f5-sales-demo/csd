@@ -160,4 +160,14 @@ All common checks and the checks for the selected cloud scenario must pass befor
 
 When Terraform owns the selected stack, a final refresh-aware Terraform plan must report no drift. An API `200` or successful Terraform apply proves configuration acceptance, not this operational chain. Certificate/origin propagation and transient F5 `503` responses require bounded retry and fresh observation.
 
+### Page Tamper Header Experiment Gates
+
+These gates qualify a controlled candidate-header experiment; they do not establish an official monitored-header list.
+
+1. **PF-PT-1: Supported-Coverage Discovery** — PASS only when the current official Page Tamper documentation, the two alert names (`ClientSideDefenseHttpHeaderModified` and `ClientSideDefenseHttpHeaderCompromised`), and the candidate status as unconfirmed coverage are recorded. A candidate must not be presented as supported merely because it is security-relevant.
+2. **PF-PT-2: One-at-a-Time Scope** — PASS only when workstation and worker raw/browser evidence agree on the canonical baseline and a reviewed Terraform saved plan changes one header on one HTTP load balancer with no unrelated action. Simultaneous header mutations fail per-header attribution readiness. Never mutate a Terraform-owned load balancer through the API.
+3. **PF-PT-3: Alert Evidence Availability** — PASS only when the operator can search both alert names across active, inactive, unprocessed, silenced, and inhibited states and retain timestamped raw identifying fields for correlation. Missing endpoint/view access is FAIL, not evidence that no alert exists.
+4. **PF-PT-4: Browser Proof** — PASS only when fresh browser contexts prove HTTP success, the exact candidate mutation, CSD script injection, and a `dip` POST during a bounded campaign window. Issue #1231 supplies the browser runner; issue #1234 owns orchestration.
+5. **PF-PT-5: Mandatory Restoration** — PASS only after the canonical header value or absence is restored immediately, workstation and worker raw/browser evidence agree, the load balancer is ready with a valid certificate, Terraform reports no changes, and saved plans plus worker resources are removed. Any residual mutation, drift, or worker blocks readiness.
+
 Resolve quota, namespace, state-lock, certificate, or origin issues without changing ownership. Retain the same backend/state and create a fresh saved plan for every Terraform retry.

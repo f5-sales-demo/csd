@@ -179,3 +179,58 @@ Observed coverage and API field population vary by run. Do not claim all four CD
 
 The combined script is a simplified harvest, inject, and synthetic-request scenario for demonstrations.
 The [Attack Script Library](/csd/en/attack-scripts/) contains targeted scenarios for focused validation. Use each scenario only for the behavior and evidence it explicitly exercises.
+
+## Page Tamper HTTP-Header Experiment
+
+### Official mechanism and evidence boundary
+
+F5 documents that Page Tamper takes snapshots of HTTP headers and can raise
+`ClientSideDefenseHttpHeaderModified` and `ClientSideDefenseHttpHeaderCompromised` alerts. Collection spans
+multiple browser sessions and sequential cycles, and the baseline moves as observations accumulate. See
+[About Client-Side Defense](https://docs.cloud.f5.com/docs-v2/client-side-defense/concepts/about-csd) and
+[Configure Client-Side Defense](https://docs.cloud.f5.com/docs-v2/client-side-defense/how-tos/configure-csd).
+
+Those official sources do not publish an exact list of monitored headers. The following entries are experiment candidates, not a supported-coverage statement. `Feature-Policy`, when present, is a distinct legacy response header and must not be treated as evidence for `Permissions-Policy`.
+
+Use only these classifications:
+
+- **DETECTED** — a matching Page Tamper alert was retrieved and correlated to the one-header campaign window.
+- **NOT DETECTED WITHIN WINDOW** — the mutation and browser telemetry were proven, but no matching alert was retrieved during the bounded search. This does not prove unsupported behavior.
+- **AMBIGUOUS** — an alert or traffic signal exists, but timing, scope, or simultaneous changes prevent attribution.
+- **INVALID TEST** — the candidate was not mutated, or the mutation/traffic/restoration evidence chain is incomplete.
+
+### Candidate matrix
+
+| Candidate header | Canonical baseline before campaign | Tested mutation | Current classification | Evidence qualification |
+| --- | --- | --- | --- | --- |
+| `Content-Security-Policy` | Absent | `default-src * 'unsafe-inline' 'unsafe-eval' data: blob:` | NOT DETECTED WITHIN WINDOW | Exact mutation was observed in all 108 responses; no matching Page Tamper alert was returned in any searched state. |
+| `Strict-Transport-Security` | Absent | `max-age=60; includeSubDomains` | NOT DETECTED WITHIN WINDOW | Exact mutation was observed in all 108 responses; no matching Page Tamper alert was returned in any searched state. |
+| `X-Frame-Options` | `SAMEORIGIN` | `DENY` | NOT DETECTED WITHIN WINDOW | Exact mutation was observed in all 108 responses; no matching Page Tamper alert was returned in any searched state. |
+| `X-Content-Type-Options` | `nosniff` | `csd-test-invalid` | NOT DETECTED WITHIN WINDOW | Exact mutation was observed in all 108 responses; no matching Page Tamper alert was returned in any searched state. |
+| `Referrer-Policy` | Absent | `no-referrer` | NOT DETECTED WITHIN WINDOW | Exact mutation was observed in all 108 responses; no matching Page Tamper alert was returned in any searched state. |
+| `Permissions-Policy` | Absent | `geolocation=(), camera=(), microphone=()` | NOT DETECTED WITHIN WINDOW | Exact mutation was observed in all 108 responses; no matching Page Tamper alert was returned in any searched state. |
+| `Cache-Control` | Not recorded for an isolated test | Not mutated | INVALID TEST | Candidate only; no controlled mutation or attributable alert evidence. |
+| `Clear-Site-Data` | Not recorded for an isolated test | Not mutated | INVALID TEST | Candidate only; no controlled mutation or attributable alert evidence. |
+| `Cross-Origin-Embedder-Policy` | Not recorded for an isolated test | Not mutated | INVALID TEST | Candidate only; no controlled mutation or attributable alert evidence. |
+| `Cross-Origin-Opener-Policy` | Not recorded for an isolated test | Not mutated | INVALID TEST | Candidate only; no controlled mutation or attributable alert evidence. |
+| `Cross-Origin-Resource-Policy` | Not recorded for an isolated test | Not mutated | INVALID TEST | Candidate only; no controlled mutation or attributable alert evidence. |
+| `X-Permitted-Cross-Domain-Policies` | Not recorded for an isolated test | Not mutated | INVALID TEST | Candidate only; no controlled mutation or attributable alert evidence. |
+
+### 2026-09-24 lab observation
+
+The bounded campaign ran from `2026-09-24T20:22:00.476Z` through `2026-09-24T20:30:11.388Z`. It
+produced 108 of 108 fresh browser sessions with HTTP `200`, the exact six simultaneous response-header
+mutations above, an injected CSD script, and a CSD `dip` POST. Searches of the documented alert endpoint
+across active, inactive, unprocessed, silenced, and inhibited states later returned no
+`ClientSideDefenseHttpHeaderModified` or `ClientSideDefenseHttpHeaderCompromised` alert matching the campaign.
+
+Because all six headers changed simultaneously, a generic alert—had one been retrieved—would have been
+**AMBIGUOUS** for per-header attribution. No matching alert was retrieved within the searched states and
+window, so each tested header is currently **NOT DETECTED WITHIN WINDOW**. This is a bounded tenant observation,
+not proof that F5 does not monitor those headers.
+
+Restoration completed at `2026-09-24T21:40:51Z`. The live load balancer had `more_option` set to null,
+remained ready with a valid certificate, and returned the canonical state: `Content-Security-Policy`,
+`Strict-Transport-Security`, `Referrer-Policy`, and `Permissions-Policy` absent;
+`X-Frame-Options: SAMEORIGIN`; and `X-Content-Type-Options: nosniff`. Workstation plus worker raw HTTPS
+and browser evidence agreed, Terraform reported no changes, and no worker resources remained.

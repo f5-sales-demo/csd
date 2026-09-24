@@ -58,17 +58,34 @@ Run all commands from `terraform/aws`. Preserve the configured backend and state
      exit 1
    fi
 
-   CIDR_SOURCE=https://docs.cloud.f5.com/docs-v2/downloads/platform/reference/network-cloud-ref/ips-domains.txt
+   CIDR_SOURCE=https://docs.cloud.f5.com/docs-v2/downloads/platform/reference/network-cloud-ref/ips-domains.json
    umask 077
    WORK_DIR=$(mktemp -d)
    trap 'rm -rf "$WORK_DIR"' EXIT
-   curl --fail --silent --show-error --location "$CIDR_SOURCE" > "$WORK_DIR/published.txt"
-   awk '
-     /^#### REs in the Americas$/ { found=1; next }
-     found && /^#### / { exit }
-     found && /^[0-9]+(\.[0-9]+){3}\/[0-9]+$/ { print }
-   ' "$WORK_DIR/published.txt" | sort -u > "$WORK_DIR/published-cidrs.txt"
-   test -s "$WORK_DIR/published-cidrs.txt" || { echo "STOP: published Americas CIDRs were not found"; exit 1; }
+   curl --fail --silent --show-error --location "$CIDR_SOURCE" > "$WORK_DIR/published.json"
+   jq -er '
+     def valid_ipv4_cidr:
+       capture("^(?<address>[0-9]{1,3}(\\.[0-9]{1,3}){3})/(?<prefix>[0-9]{1,2})$") as $cidr
+       | ($cidr.address | split(".") | map(tonumber)) as $octets
+       | ($octets | length == 4 and all(. >= 0 and . <= 255))
+         and ($cidr.prefix | tonumber) <= 32;
+     .services.regional_edges.regions as $regions
+     | if ($regions | type) != "object" then error("regional_edges.regions is not an object") else . end
+     | if ($regions | keys | sort) != (["americas", "asia", "europe"] | sort) then error("unexpected Regional Edge region keys") else . end
+     | if ($regions.americas.ipv4_cidrs | length) != 16
+         or ($regions.europe.ipv4_cidrs | length) != 12
+         or ($regions.asia.ipv4_cidrs | length) != 13
+       then error("unexpected per-region Regional Edge CIDR counts") else . end
+     | [$regions.americas.ipv4_cidrs[], $regions.europe.ipv4_cidrs[], $regions.asia.ipv4_cidrs[]] as $cidrs
+     | if ($cidrs | length) != 41 or ($cidrs | unique | length) != 41
+       then error("expected exactly 41 unique Regional Edge CIDRs") else . end
+     | if all($cidrs[]; type == "string" and length > 0 and valid_ipv4_cidr)
+       then $cidrs[] else error("invalid Regional Edge IPv4 CIDR") end
+   ' "$WORK_DIR/published.json" | sort -u > "$WORK_DIR/published-cidrs.txt"
+   test "$(wc -l < "$WORK_DIR/published-cidrs.txt" | tr -d ' ')" = 41 || {
+     echo "STOP: published global Regional Edge TCP IPv4 CIDRs did not validate"
+     exit 1
+   }
 
    terraform plan -out=csd.tfplan
    terraform show -json csd.tfplan > "$WORK_DIR/plan.json"
@@ -79,15 +96,18 @@ Run all commands from `terraform/aws`. Preserve the configured backend and state
        | select(.address | startswith("module.origin.aws_vpc_security_group_ingress_rule.alb["))
        | select(.type == "aws_vpc_security_group_ingress_rule")
        | .values.cidr_ipv4]
-     | if length > 0 and all(. != null and . != "") then .[] else error("ALB ingress CIDRs absent or unknown") end
+     | if length == 41 and all(. != null and . != "") then .[] else error("expected 41 known ALB ingress CIDRs") end
    ' "$WORK_DIR/plan.json" | sort -u > "$WORK_DIR/planned-cidrs.txt"
-   test -s "$WORK_DIR/planned-cidrs.txt" || { echo "STOP: planned ALB ingress CIDRs were not found"; exit 1; }
-   cmp -s "$WORK_DIR/published-cidrs.txt" "$WORK_DIR/planned-cidrs.txt" || {
-     diff -u "$WORK_DIR/planned-cidrs.txt" "$WORK_DIR/published-cidrs.txt" || true
-     echo "STOP: saved-plan ALB ingress CIDRs do not exactly match the current published Americas list"
+   test "$(wc -l < "$WORK_DIR/planned-cidrs.txt" | tr -d ' ')" = 41 || {
+     echo "STOP: planned ALB ingress CIDRs are not exactly 41 unique entries"
      exit 1
    }
-   printf 'CIDR comparison: PASS (%s exact entries)\n' "$(wc -l < "$WORK_DIR/planned-cidrs.txt" | tr -d ' ')"
+   cmp -s "$WORK_DIR/published-cidrs.txt" "$WORK_DIR/planned-cidrs.txt" || {
+     diff -u "$WORK_DIR/planned-cidrs.txt" "$WORK_DIR/published-cidrs.txt" || true
+     echo "STOP: saved-plan ALB ingress CIDRs do not exactly match the current published global Regional Edge TCP IPv4 list"
+     exit 1
+   }
+   printf 'CIDR comparison: PASS (%s exact global TCP IPv4 entries)\n' "$(wc -l < "$WORK_DIR/planned-cidrs.txt" | tr -d ' ')"
 
    PLAN_SHA256=$(shasum -a 256 csd.tfplan | awk '{print $1}')
    printf 'Saved-plan SHA-256: %s\n' "$PLAN_SHA256"

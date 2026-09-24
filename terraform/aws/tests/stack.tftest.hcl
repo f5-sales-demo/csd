@@ -64,7 +64,8 @@ run "stack_contract" {
   }
 
   assert {
-    condition = var.origin_ingress_cidrs == toset([
+    condition = local.regional_edge_origin_cidrs == toset([
+      # Americas
       "5.182.215.0/25",
       "84.54.61.0/25",
       "23.158.32.0/25",
@@ -81,8 +82,35 @@ run "stack_contract" {
       "159.60.179.0/24",
       "159.60.181.0/24",
       "159.60.183.0/24",
-    ]) && !contains(var.origin_ingress_cidrs, "0.0.0.0/0")
-    error_message = "The public origin must allow only the documented Americas Regional Edge CIDRs by default."
+      # Europe
+      "5.182.213.0/24",
+      "5.182.212.0/25",
+      "5.182.214.0/25",
+      "84.54.60.0/25",
+      "185.56.154.0/25",
+      "159.60.160.0/24",
+      "159.60.161.0/24",
+      "159.60.162.0/24",
+      "159.60.163.0/24",
+      "159.60.188.0/24",
+      "159.60.182.0/24",
+      "159.60.178.0/24",
+      # Asia
+      "103.135.56.0/24",
+      "103.135.57.0/25",
+      "103.135.59.0/25",
+      "103.135.58.0/24",
+      "159.60.189.0/24",
+      "159.60.166.0/24",
+      "159.60.164.0/24",
+      "159.60.170.0/24",
+      "159.60.172.0/24",
+      "159.60.191.0/24",
+      "159.60.184.0/24",
+      "159.60.185.0/24",
+      "159.60.186.0/24",
+    ]) && length(local.regional_edge_origin_cidrs) == 41 && !contains(local.regional_edge_origin_cidrs, "0.0.0.0/0")
+    error_message = "The public origin must allow exactly the 41 documented global Regional Edge TCP IPv4 CIDRs."
   }
 
   assert {

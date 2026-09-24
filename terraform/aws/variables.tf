@@ -86,35 +86,6 @@ variable "private_subnet_cidrs" {
   }
 }
 
-# Source: https://docs.cloud.f5.com/docs-v2/platform/reference/network-cloud-ref
-# Revalidate these Americas Regional Edge origin-source CIDRs before every apply.
-variable "origin_ingress_cidrs" {
-  description = "F5 Distributed Cloud Americas Regional Edge IPv4 CIDRs allowed to reach the public HTTP origin."
-  type        = set(string)
-  default = [
-    "5.182.215.0/25",
-    "84.54.61.0/25",
-    "23.158.32.0/25",
-    "84.54.62.0/25",
-    "185.94.143.0/25",
-    "185.94.142.0/24",
-    "159.60.190.0/24",
-    "159.60.168.0/24",
-    "159.60.180.0/24",
-    "159.60.174.0/24",
-    "159.60.175.0/24",
-    "159.60.176.0/24",
-    "159.60.177.0/24",
-    "159.60.179.0/24",
-    "159.60.181.0/24",
-    "159.60.183.0/24",
-  ]
-
-  validation {
-    condition     = length(var.origin_ingress_cidrs) > 0 && alltrue([for cidr in var.origin_ingress_cidrs : can(cidrnetmask(cidr)) && !strcontains(cidr, ":") && cidr != "0.0.0.0/0"])
-    error_message = "origin_ingress_cidrs must contain valid restricted IPv4 CIDRs and must not include 0.0.0.0/0."
-  }
-}
 
 variable "tags" {
   description = "Tags applied to supported AWS resources."

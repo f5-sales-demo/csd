@@ -68,7 +68,7 @@ if values["XCSH_APPLICATION_MARKER"] != "OWASP Juice Shop":
     raise SystemExit("FAIL: XCSH_APPLICATION_MARKER must default to the repository reference marker")
 
 source_suffixes = {
-    ".cjs", ".hcl", ".ini", ".json", ".md", ".mdx", ".py", ".sh",
+    ".cjs", ".hcl", ".ini", ".json", ".md", ".mdx", ".mjs", ".py", ".sh",
     ".tf", ".toml", ".txt", ".yaml", ".yml",
 }
 maintained_prefixes = ("docs/en/", "docs/_imports/", ".github/", "scripts/", "tests/", "terraform/")
@@ -148,6 +148,7 @@ if findings:
 fixture_names = (
     "scripts/fixture.py",
     "scripts/fixture.cjs",
+    "scripts/fixture.mjs",
     "scripts/fixture.toml",
     "scripts/fixture.ini",
     "scripts/fixture.txt",
@@ -164,6 +165,55 @@ with tempfile.TemporaryDirectory() as directory:
         if not any(str(fixture) in finding for finding in fixture_findings):
             raise SystemExit(f"FAIL: maintained-source inventory skipped untracked fixture {fixture_name}")
         fixture.unlink()
+    authorized_fixture = fixture_root / "scripts/authorized-target.mjs"
+    authorized_fixture.write_text("export const target = 'https://client-side-defense.f5-sales-demo.com/';\n")
+    authorized_findings = legacy_findings(maintained_sources(fixture_root))
+    if any(str(authorized_fixture) in finding for finding in authorized_findings):
+        raise SystemExit("FAIL: required authorized public traffic identifier was rejected")
+config_sources = (
+    root / "scripts/csd-traffic.mjs",
+    root / "scripts/lib/csd-config.mjs",
+    root / "scripts/lib/csd-scenarios.mjs",
+    root / "scripts/lib/csd-runner.mjs",
+)
+for config_source in config_sources:
+    if not config_source.is_file():
+        raise SystemExit(f"FAIL: {config_source} is required for traffic target authorization")
+config_text = "\n".join(path.read_text(errors="replace") for path in config_sources)
+required_traffic_identifiers = (
+    "client-side-defense.f5-sales-demo.com",
+)
+for identifier in required_traffic_identifiers:
+    if identifier not in config_text:
+        raise SystemExit(f"FAIL: CSD traffic config lacks required public identifier: {identifier}")
+generator_text = "\n".join(path.read_text(errors="replace") for path in config_sources)
+if re.search(r"allowHosts\.(?:some|find)\s*\(|allowedHosts\.(?:some|find)\s*\(", generator_text):
+    raise SystemExit("FAIL: traffic target authorization must use exact-host membership, not collection predicates")
+
+scenario_text = (root / "scripts/lib/csd-scenarios.mjs").read_text(errors="replace")
+if "tagManager: 'reviewed-tag-manager-simulation'" not in scenario_text:
+    raise SystemExit("FAIL: tag-manager scenario lacks reviewed tag metadata")
+if "dataset.tagManager" not in scenario_text:
+    raise SystemExit("FAIL: runtime does not apply tag-manager metadata to its script element")
+
+high_volume = re.search(
+    r"'high-volume-domain-exfiltration':\s*define\(\{[\s\S]*?boundary:\s*'High volume[^\n]+\n\s*\}\),",
+    scenario_text,
+    re.MULTILINE,
+ )
+if not high_volume:
+    raise SystemExit("FAIL: high-volume scenario definition is missing")
+if len(re.findall(r"kind:\s*'fetch'", high_volume.group(0))) != 2:
+    raise SystemExit("FAIL: high-volume manifest must define exactly two POST operations")
+if "...injectCdn()" not in high_volume.group(0) or high_volume.group(0).count("kind: 'inject-script'") != 1:
+    raise SystemExit("FAIL: high-volume manifest must preserve five script attempts")
+documentation = (root / "docs/en/attack-scripts.mdx").read_text(errors="replace")
+high_volume_row = next((line for line in documentation.splitlines() if "`high-volume-domain-exfiltration`" in line), "")
+for phrase in ("five", "two", "seven"):
+    if phrase not in high_volume_row.lower():
+        raise SystemExit(f"FAIL: high-volume documentation lacks manifest parity term: {phrase}")
+
+
 demo = (root / "docs/en/demo/index.mdx").read_text()
 if re.search(r"PF-T3-skip|then \"SKIP\"", demo):
     raise SystemExit("FAIL: a placeholder origin can bypass readiness checks")

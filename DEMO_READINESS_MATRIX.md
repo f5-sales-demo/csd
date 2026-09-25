@@ -63,12 +63,12 @@ create temporary objects.
 
 The gate evaluates the required platform object capacity:
 
-| Kind | Needed | Required | Min to proceed |
-| --- | --- | --- | --- |
-| `healthcheck` | 1 | No | 0 |
-| `origin_pool` | 1 | Yes | 1 |
-| `endpoint` | 1 | Yes | 1 |
-| `http_loadbalancer` | 1 | Yes | 1 |
+| Kind                | Needed | Required | Min to proceed |
+| ------------------- | ------ | -------- | -------------- |
+| `healthcheck`       | 1      | No       | 0              |
+| `origin_pool`       | 1      | Yes      | 1              |
+| `endpoint`          | 1      | Yes      | 1              |
+| `http_loadbalancer` | 1      | Yes      | 1              |
 
 For each kind, the jq filter calculates:
 
@@ -99,24 +99,24 @@ FAIL in any T2 check blocks execution. Each check computes a
 deterministic `{check, status, detail}` object via jq.
 
 1. **PF-T2-1: CSD Tenant Status** — GET CSD status. jq computes:
-    `{check, configured, enabled, status, detail}` where `status` is
-    PASS if both `.isConfigured` and `.isEnabled` are `true`, FAIL
-    otherwise.
+   `{check, configured, enabled, status, detail}` where `status` is
+   PASS if both `.isConfigured` and `.isEnabled` are `true`, FAIL
+   otherwise.
 2. **PF-T2-2: DNS Zone Exists** — GET
-    `/api/config/dns/namespaces/system/dns_zones/{root_domain}`.
-    HTTP code captured in variable, jq computes: `200` → PASS,
-    `404` → WARN (external DNS may be in use), `403` → WARN (token
-    may lack system namespace access), all others → FAIL.
+   `/api/config/dns/namespaces/system/dns_zones/{root_domain}`.
+   HTTP code captured in variable, jq computes: `200` → PASS,
+   `404` → WARN (external DNS may be in use), `403` → WARN (token
+   may lack system namespace access), all others → FAIL.
 3. **PF-T2-3: DNS Managed Records** — only if T2-2 returned `200`.
-    Read and report `spec.primary.allow_http_lb_managed_records`. `true`
-    is PASS; `false` or absent is WARN. Never automatically PUT a shared
-    DNS zone. Use external/manual DNS, or obtain separate approval from
-    the established DNS owner for a reviewed complete-spec change.
+   Read and report `spec.primary.allow_http_lb_managed_records`. `true`
+   is PASS; `false` or absent is WARN. Never automatically PUT a shared
+   DNS zone. Use external/manual DNS, or obtain separate approval from
+   the established DNS owner for a reviewed complete-spec change.
 4. **PF-T2-4: DNS Nameserver Authority** — `dig +short NS`
-    output piped through `jq -Rs` which computes:
-    `{check, nameservers, status, detail}` where `status` is PASS
-    if output contains `f5clouddns.com`, INFO for external DNS,
-    FAIL if no NS records found.
+   output piped through `jq -Rs` which computes:
+   `{check, nameservers, status, detail}` where `status` is PASS
+   if output contains `f5clouddns.com`, INFO for external DNS,
+   FAIL if no NS records found.
 
 ### T3: Origin Health
 
@@ -140,7 +140,27 @@ Append after every GET and POST result. `409` is always `pre-existing`. Phase 3 
 
 Phase 4 derives targets only from ledger entries marked `created`, fails on API URL or namespace mismatch, and requires explicit approval. Namespace cascade deletion requires a second approval. Never auto-teardown unknown, mixed-owner, pre-existing, or Terraform-owned resources. Terraform mode uses only its configured backend and state.
 
-### T5: End-to-End Proof Chain
+### T5: Deterministic Browser Generator
+
+FAIL in any required browser check blocks Phase 2 execution. Platform telemetry is evaluated only after the immediate receipt passes.
+
+<!-- markdownlint-disable MD013 -->
+
+1. **PF-T5-1: Runtime** — `node --version` reports Node.js 22 or newer.
+2. **PF-T5-2: Scenario manifest** — `node scripts/csd-traffic.mjs --list` exits `0` and lists exactly these 11 stable scenarios: `login-credential-skimmer`, `registration-harvester`, `payment-overlay-card-skimmer`, `obfuscated-loader`, `multi-cdn-injection`, `tag-manager-hijack`, `multi-channel-exfiltration`, `high-volume-domain-exfiltration`, `form-overlay`, `keylogger-simulation`, and `maximum-detection`. No aliases are accepted.
+3. **PF-T5-3: CLI selection** — execution has exactly one selector form: one or more repeatable `--scenario` values, or `--all`. There is no implicit selector. `--list`, `--print-script`, and `--help` are nonexecution modes. `--timeout` and `--settle` accept validated durations; settle time is browser-event collection, not a CSD timing promise.
+4. **PF-T5-4: Loopback CDP** — a dedicated Chrome or Chromium profile exposes the configured loopback endpoint. Do not use a remote or credential-bearing CDP URL. The runner owns a new isolated context/page but does not close the external browser.
+5. **PF-T5-5: Authorized target** — the target is the built-in exact HTTPS reference or an exact host repeated through `--allow-host`. HTTP, IP literals, wildcard/suffix authorization, credentials, non-default ports, unauthorized redirects, and a mismatched final document origin fail closed.
+6. **PF-T5-6: Receipt destination and streams** — select a private ignored path such as `.artifacts/csd/<run>.json`, or use `--receipt -`. With `-`, stdout contains only JSON and human logs use stderr. Never commit receipts or CDP session data.
+7. **PF-T5-7: Immediate receipt gate** — require schema/run/start/end/duration, tool name/runtime, requested scenarios, target origin/routes, exact allowlist, sanitized CDP endpoint, sanitized Log/console and Network evidence, per-scenario assertions/markers, protected-document and instrumentation evidence, aggregate success/caveats, and deterministic DOM/target/context/listener cleanup. `eventual_csd_evidence` remains null/separate.
+8. **PF-T5-8: Scenario-specific evidence** — require native-setter synthetic markers for populated forms, masked-only payment-overlay evidence, encoded/decoded URL equality, exactly four multi-CDN attempts, run-scoped tag metadata, exactly three exfil channels, exactly five scripts plus two POSTs for `high-volume-domain-exfiltration`, overlay geometry/removal, aggregate periodic keylogger POST counts, and canonical primitive composition for `maximum-detection`.
+9. **PF-T5-9: Failure receipt** — when a destination is requested, an atomic receipt is written even after execution or cleanup failure. Preserve the primary error in `error` and runner cleanup failures in `cleanup.errors`. Candidate failures and timed-out outcomes remain observed evidence and are never relabeled as loads.
+10. **PF-T5-10: Claim boundary** — overlay and keylogger scenarios establish DOM behavior, original-field observation, and aggregate key-event counts only. They never establish captured values or guaranteed CSD classification. Do not claim every CDN candidate loaded or appeared.
+11. **PF-T5-11: Manual fallback** — generate the payload only with canonical `node scripts/csd-traffic.mjs --print-script <scenario>`. Do not keep a duplicate payload in documentation or another script.
+12. **PF-T5-12: Explicit post-receipt correlation** — the runner has no embedded/raw API client. Only after the immediate gate passes, use separate read-only `xcsh_api` operations scoped to the receipt window, protected origin, and exact reviewed Network hosts. Label results `OBSERVED`, `NOT_OBSERVED`, `PENDING`, or `ERROR`; never require fixed detection time or complete classification for generator success.
+<!-- markdownlint-enable MD013 -->
+
+### T6: End-to-End Proof Chain
 
 All common checks and the checks for the selected cloud scenario must pass before presenting the environment. Ownership mode (`api|terraform`) does not select the cloud scenario.
 
@@ -152,7 +172,7 @@ All common checks and the checks for the selected cloud scenario must pass befor
 4. The F5 Distributed Cloud virtual host reports `VIRTUAL_HOST_READY`, and the automatic certificate reports a valid state.
 5. HTTP redirects to HTTPS; HTTPS returns the expected scenario-specific application marker and contains an injected `__imp_apg__` script reference.
 6. A recent F5 access-log event recorded after the validation request matches the exact protected host.
-7. Browser DevTools observes a CSD `dip` request.
+7. The deterministic generator receipt records the protected document, `__imp_apg__`, immediate operation outcomes, cleanup, and whether a browser `dip` request was observed.
 
 **AWS reference evidence:** ECS reaches steady state, an ALB target is healthy, and recent CloudWatch application logs, VPC Flow Logs, and ALB access logs show delivery.
 

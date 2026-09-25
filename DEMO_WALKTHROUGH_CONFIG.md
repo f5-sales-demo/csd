@@ -19,24 +19,43 @@ at in plain language**, **(3) connect it to the customer's concern**,
 3. **Demo App** (`docs/en/demo-website.mdx`) — open the AWS Juice Shop reference and orient the customer.
 4. **Proof chain** (`docs/en/diagnostics.mdx`) — confirm ECS steady state, healthy ALB target, log delivery, ready F5 virtual host, valid certificate, HTTP `301`, HTTPS `200`, and rendered Juice Shop.
 5. **Telemetry Beacons** (`docs/en/telemetry-beacons.mdx`) — show the injected `__imp_apg__` script and a browser `dip` request.
-6. **Trigger Detection** (`docs/en/trigger-detection.mdx`) — run the authorized simulation and explain the observed signals.
-7. **CSD Console** (`docs/en/csd-console.mdx`) — show detections after the documented observation window.
+6. **Trigger Detection** (`docs/en/trigger-detection.mdx`) — run `scripts/csd-traffic.mjs`, then inspect the sanitized Page/Runtime/Network/Log receipt, terminal outcomes, instrumentation evidence, and cleanup.
+7. **CSD Console** (`docs/en/csd-console.mdx`) — only after the receipt passes, query or show asynchronous CSD telemetry and label it observed, not observed, pending, or error without promising timing.
 8. **Terraform closeout, when Terraform owns the stack** (`docs/en/terraform/index.mdx`) — show a final refresh-aware plan with no drift.
 
 Supporting pages: `docs/en/attack-scripts.mdx`, `docs/en/diagnostics.mdx`, `docs/en/demo/`, `docs/en/api-reference.mdx`, and `docs/en/references.mdx`.
 
 ## Attack / Trigger Simulation
 
-Paste IIFE scripts from `docs/en/attack-scripts.mdx` into the browser DevTools Console. The combined detection script in `docs/en/trigger-detection.mdx` provides a three-phase simulation (harvest → inject → exfiltrate) that triggers all three detection signals.
+Use the canonical scenario module and CLI; do not paste copied payloads from documentation:
 
-For AI-automated execution, use the `initScript` harness from `docs/en/trigger-detection.mdx`, which handles zone.js incompatibility in the Angular-based Juice Shop. Treat resulting detections, script injection, and beacon traffic as observed lab evidence rather than guaranteed timing or behavior in another tenant.
+```bash
+node scripts/csd-traffic.mjs --list
+mkdir -p .artifacts/csd
+node scripts/csd-traffic.mjs \
+  --scenario maximum-detection \
+  --cdp-endpoint http://127.0.0.1:9222 \
+  --timeout 30s \
+  --settle 10s \
+  --receipt .artifacts/csd/walkthrough-maximum-detection.json
+jq '{schema_version, run_id, started_at, ended_at, duration_ms, tool,
+  requested_scenarios, target, allowlist, cdp_endpoint,
+  scenarios: [.scenarios[] | {name, target, status, immediate_evidence, dom_cleanup, console, network, protected_document, instrumentation, cleanup, error, success, eventual_csd_evidence}],
+  success, caveats, error, eventual_csd_evidence}' \
+  .artifacts/csd/walkthrough-maximum-detection.json
+```
 
-## Detection Timing
+`--scenario` is repeatable; use `--all` instead when all 11 scenarios are required. There is no
+implicit execution selector. `--timeout` and `--settle` are browser-operation/event-collection
+durations, not platform timing promises. With `--receipt -`, stdout contains only the JSON receipt
+and human logs use stderr. A requested receipt is written atomically even after execution or cleanup
+failure, preserving the primary error separately from cleanup errors.
 
-In this lab, detections have typically appeared in the CSD dashboard within **5-10 minutes** after
-running scripts. This is a lab-observed polling window, not a service-level objective; timing and
-classification are tenant-dependent. Run the simulation early, continue with other walkthrough
-steps while polling, and troubleshoot rather than claiming success if the bounded window expires.
+Chrome or Chromium must expose a loopback CDP endpoint. A custom target requires `--target` and exact repeatable `--allow-host` values; redirects and final documents outside the exact allowlist fail closed.
+
+For manual fallback, generate the reviewed payload with `node scripts/csd-traffic.mjs --print-script maximum-detection`; this canonical output is the only payload source. The receipt must retain sanitized Log/console evidence and real Network terminal outcomes. In particular, `high-volume-domain-exfiltration` is five script attempts plus two POST attempts, not volumetric traffic.
+
+The runner does not query platform APIs. Only after the immediate receipt passes, run separate read-only `xcsh_api` operations scoped to its time window, protected origin, and reviewed Network hosts. Keep `eventual_csd_evidence` null/separate until then, report only observed subsets, and promise no detection timing or complete classification.
 
 ## Screenshot Standards
 

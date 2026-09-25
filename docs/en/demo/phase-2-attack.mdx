@@ -1,6 +1,6 @@
 ---
 title: "Phase 2 — Attack"
-description: "Simulate client-side attack traffic using pre-built scripts to trigger CSD detection"
+description: "Generate deterministic browser traffic, inspect its receipt, then correlate CSD telemetry"
 sidebar:
   order: 3
   label: "Phase 2 — Attack"
@@ -8,250 +8,154 @@ sidebar:
 
 import { Aside } from "@astrojs/starlight/components";
 
-Phase 2 generates simulated attack traffic against the protected application and confirms CSD detected it. Phase 1 must be complete — all Step 7 checks PASS — before proceeding.
-
-<Aside type="note" title="Ownership-neutral, read-only phase">
-Phase 2 only generates authorized browser traffic and reads CSD telemetry. It works with either the API-owned or Terraform-owned deployment mode and does not create, update, or delete infrastructure resources. Choose one ownership mode. Never run the API create/update/delete workflow against resources present in Terraform state.
-</Aside>
-
-## Step 8: Attack Simulation
-
-<Aside type="note">
-This step requires browser-side JavaScript execution — `curl` cannot trigger CSD detection. AI assistants with browser automation tools (MCP Chrome DevTools, Playwright, Puppeteer) execute these steps directly using the **AI-Automated Execution** sequence below. Operators without browser automation perform the manual steps.
-</Aside>
-
-After the infrastructure is verified (all Phase 1 Step 7 checks PASS), run the attack simulation scripts to generate CSD detections. The scripts are defined in the [Trigger Detection](/csd/en/trigger-detection/) guide and the [Attack Script Library](/csd/en/attack-scripts/).
-
-### AI-Automated Execution
-
-AI assistants with browser automation tools run the attack simulation programmatically:
-
-1. **Navigate with initScript** — first navigate to `about:blank` for a clean document context.
-   Then use `navigate_page` for `https://$XCSH_DOMAINNAME/#/login` with an `initScript` that saves native browser functions before zone.js patches them, polls for the login fields, fills synthetic markers through the native value setter, and executes the Combined Detection Script inline.
-2. **Dismiss Welcome Banner** — `press_key` with `Escape` to close the Welcome Banner. On subsequent visits the banner may not appear (cookies persisted).
-3. **Wait for completion** — allow sufficient time for the attempted CDN loads and fetch requests to settle; ten seconds is the usual lab observation, not a product timing guarantee.
-4. **Capture evidence** — use `list_console_messages` to confirm `[CSD Demo] Simulation complete`; use `list_network_requests` filtered to `script` and `fetch` types as the authoritative execution evidence for which requests completed, failed, or remained pending.
-
-**Phase 2 initScript (verbatim — use exactly as written):**
-
-```javascript
-// Save native references before zone.js patches them
-var _si = window.setInterval.bind(window);
-var _ci = window.clearInterval.bind(window);
-var _fetch = window.fetch.bind(window);
-var _log = window.console.log.bind(window.console);
-
-// Poll for login form fields, fill credentials, run detection script
-var _poll = _si(function() {
-  var emailEl = document.querySelector('#email');
-  var passEl  = document.querySelector('#password');
-  if (emailEl && passEl) {
-    _ci(_poll);
-    // Fill credentials via native setter (bypasses zone.js)
-    var nativeSet = Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype, 'value').set;
-    nativeSet.call(emailEl, 'test@example.com');
-    emailEl.dispatchEvent(new Event('input', { bubbles: true }));
-    nativeSet.call(passEl, '<DEMO_PASSWORD>');
-    passEl.dispatchEvent(new Event('input', { bubbles: true }));
-
-    // Run Combined Detection Script inline using native fetch for exfil
-    (function() {
-      _log('==================================================');
-      _log('[CSD Demo] Combined Detection Script — Starting');
-      _log('==================================================');
-
-      _log('\n[Formjack] Phase 1: Form field harvesting');
-      var inputs = document.querySelectorAll('input');
-      var populatedFieldCount = 0;
-      inputs.forEach(function(input) {
-        if (input.value) populatedFieldCount++;
-      });
-      _log('[Formjack] Observed ' + inputs.length + ' fields; values discarded');
-
-      _log('\n[Supply Chain] Phase 2: Multi-CDN script injection');
-      var cdns = [
-        { url: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js', name: 'jsdelivr' },
-        { url: 'https://esm.sh/moment@2.30.1', name: 'esm.sh' },
-        { url: 'https://unpkg.com/underscore@1.13.7/underscore-min.js', name: 'unpkg' },
-        { url: 'https://ga.jspm.io/npm:dayjs@1.11.13/dayjs.min.js', name: 'jspm' }
-      ];
-      cdns.forEach(function(cdn) {
-        var script = document.createElement('script');
-        script.src = cdn.url;
-        script.onload = function() { _log('[Supply Chain] Loaded from ' + cdn.name + ': ' + cdn.url); };
-        script.onerror = function() { _log('[Supply Chain] Blocked/failed from ' + cdn.name + ': ' + cdn.url); };
-        document.head.appendChild(script);
-        _log('[Supply Chain] Injected script tag: ' + cdn.name);
-      });
-
-      _log('\n[Exfil] Phase 3: Data exfiltration');
-      var payload = JSON.stringify({
-        type: 'combined_demo', field_count: inputs.length,
-        populated_field_count: populatedFieldCount,
-        field_values_discarded: true, timestamp: Date.now()
-      });
-      _fetch('https://www.httpbin.org/post', { method: 'POST', mode: 'no-cors', body: payload })
-        .then(function() { _log('[Exfil] Synthetic signal sent to www.httpbin.org'); });
-      _fetch('https://jsonplaceholder.typicode.com/posts', {
-        method: 'POST', mode: 'no-cors',
-        headers: { 'Content-Type': 'application/json' }, body: payload
-      }).then(function() { _log('[Exfil] Synthetic signal sent to jsonplaceholder.typicode.com'); });
-
-      _log('\n==================================================');
-      _log('[CSD Demo] Simulation complete');
-      _log('[CSD Demo] Fields observed: ' + inputs.length + ' (values discarded)');
-      _log('[CSD Demo] Scripts injected: 4 (4 CDN domains)');
-      _log('[CSD Demo] Exfil channels: 2 (fetch POST)');
-      _log('==================================================');
-    })();
-  }
-}, 300);
-```
+Phase 2 generates authorized browser behavior against the protected application. Phase 1 must be
+complete. This phase does not create, update, or delete infrastructure.
 
 <Aside type="caution">
-**zone.js incompatibility** — Juice Shop uses zone.js, which can disrupt browser-automation calls after page load.
-Use `navigate_page` with `initScript` so the harness preserves required browser functions before application instrumentation runs. Fill fields through the native input value setter and execute the simulation inside the polling callback. See [Trigger Detection — AI-Automated Execution](/csd/en/trigger-detection/#ai-automated-execution).
+  Browser execution and CSD telemetry are separate gates. Prove immediate
+  behavior from the sanitized receipt first. Correlate CSD telemetry separately
+  without promising a fixed detection delay.
 </Aside>
 
-<Aside type="note">
-**initScript accumulation** — each `navigate_page` call with an `initScript` parameter adds the script to a persistent list that runs on every subsequent document load. To avoid stale scripts interfering, either navigate to `about:blank` between runs or use `new_page` with `isolatedContext` for a clean browser context.
-</Aside>
+## Step 8: Run the deterministic browser generator
 
-<Aside type="note">
-**Saved browser references** — the initScript saves native browser functions before application instrumentation modifies them. This is a lab harness requirement, not a statement about the CSD enforcement implementation.
-</Aside>
-
-<Aside type="caution">
-**Transient origin response** — if an application asset returns a transient error and the page does not initialize, navigate to `about:blank`, wait briefly, and retry.
-If repeated attempts fail, test `https://$XCSH_DOMAINNAME/polyfills.js`. Test HTTP only for redirect behavior: `http://$XCSH_DOMAINNAME/` must return `301`.
-</Aside>
-
-### Manual Execution
-
-Operators without browser automation tools perform the steps manually:
-
-1. **Navigate** to the protected application login page: `https://xXCSH_DOMAINNAMEx/#/login`
-2. **Enter synthetic markers** — type `test@example.com` in the Email field and `<DEMO_PASSWORD>` in the Password field (do not submit the form)
-3. **Open DevTools** — press **F12** and switch to the **Console** tab
-4. **Run the Combined Detection Script** — paste the script from [Trigger Detection &mdash; Run the Combined Simulation Script](/csd/en/trigger-detection/#run-the-combined-simulation-script) into the console and press Enter
-5. **Verify execution** — confirm `[CSD Demo] Simulation complete`, then use the Network tab to record which CDN and synthetic fetch requests were actually observed.
-
-### What Gets Triggered
-
-| Signal | Behavior | Detection |
-| --- | --- | --- |
-| Form field observation | Reads existing email and password inputs without retaining values | Telemetry may associate scripts with observed fields; classification is evaluated separately |
-| Script injection | Attempts 4 `&lt;script&gt;` loads from `cdn.jsdelivr.net`, `esm.sh`, `unpkg.com`, and `ga.jspm.io` | Up to 4 third-party domains may appear; actual coverage is the set observed in this run |
-| Synthetic network signals | Sends field counts and explicit discard markers via `fetch`; field values never enter the payload | External destination domains may appear in detected-domain telemetry |
-
-<Aside type="note">
-**Coverage varies by run.** Browser limits, network conditions, or CDN behavior can prevent individual requests from completing.
-Record the domains present in the browser Network log and API response; do not require all four CDN candidates. Console completion proves the harness ran, while network requests prove browser execution.
-
-If accumulated browser state causes a page-level failure, create a fresh isolated browser context and retry the `about:blank` to protected-page sequence. Treat individual CDN failures separately from a failed application page.
-</Aside>
-
-<Aside type="tip">
-After running the attack simulation, poll `/detected_domains` at a reasonable lab interval. Proceed to Phase 3 only when DET-3 passes; DET-1 and DET-4 may remain PENDING.
-If DET-3 remains empty after the lab's normal observation window, verify CSD status, protected-domain registration, and script injection before retrying. Timing is tenant- and traffic-dependent.
-
-For additional targeted simulations, see the [Attack Script Library](/csd/en/attack-scripts/).
-</Aside>
-
-### Evidence
-
-Report both browser and configuration evidence. Browser Network behavior is the execution evidence; console output confirms the harness ran. API counters and lists confirm observed CSD configuration and telemetry state, but do not substitute for browser enforcement evidence.
-
-| Check | Expected | Status |
-| --- | --- | --- |
-| Protected login page | `200 OK` at `https://$XCSH_DOMAINNAME/#/login` | PASS / FAIL |
-| HTTP redirect | `301` at `http://$XCSH_DOMAINNAME/` | PASS / FAIL |
-| Console script executed | `[CSD Demo] Simulation complete` | PASS / FAIL |
-| Fields observed | Count &gt; 0; values discarded | PASS / FAIL |
-| Script requests | Record the subset of CDN requests observed in the Network log | PASS if at least one candidate request is observed |
-| Synthetic fetch attempts | Record both POST attempts and their observed browser result | PASS / FAIL |
-
-## Step 9: Detection Verification via API
-
-Query the CSD APIs to confirm detection. DET-3 is the single Phase 3 entry gate: at least one synthetic external destination from this run must appear in `/detected_domains`.
-DET-1 and DET-4 may remain PENDING while slower processing completes. Polling cadence and elapsed time are lab choices, not product guarantees. See the [API Reference](/csd/en/api-reference/).
-
-<Aside type="note">
-In this lab, `/detected_domains` has commonly populated before `/scripts` and `/formFields`. Treat that ordering and any elapsed times as observations from the active tenant, not guaranteed service behavior.
-</Aside>
-
-### Detected Scripts
-
-Query for scripts detected in the last 24 hours:
+### 8.1 Start Chrome for loopback CDP
 
 ```bash
-NOW=$(date +%s)
-START=$(( NOW - 86400 ))
-curl -s -X POST \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  -H "Content-Type: application/json" \
-  -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/scripts" \
-  | jq '{total: (.scripts | length), scripts: [.scripts[]? | {script_name, risk_level}]}'
+open -na "Google Chrome" --args \
+  --remote-debugging-port=9222 \
+  --user-data-dir="$TMPDIR/csd-demo-chrome"
 ```
 
-| Field | Expected | Status |
-| --- | --- | --- |
-| `total` | &gt; 0 (scripts detected) | PASS if &gt; 0; PENDING if 0 but `/detected_domains` shows exfil domains |
-| Script names | Includes any candidate CDN URLs reported for this run in `script_name` | PASS for the observed subset |
+Node.js 22 or newer is required. The runner owns an isolated context/page and leaves Chrome running.
 
-### Detected Domains
+### 8.2 Confirm the scenario contract
 
 ```bash
-curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/detected_domains" \
-  | jq '{total_domains: .domain_summary.totalDomains.count, domains: [.domains_list[]? | {domain, category}]}'
+node scripts/csd-traffic.mjs --list
 ```
 
-| Field | Expected | Status |
-| --- | --- | --- |
-| `total_domains` | &gt; 0 | PASS if &gt; 0 |
-| Domain list | Includes at least one synthetic external destination observed in this run | PASS if a matching destination appears |
+The output must list exactly: `login-credential-skimmer`, `registration-harvester`,
+`payment-overlay-card-skimmer`, `obfuscated-loader`, `multi-cdn-injection`,
+`tag-manager-hijack`, `multi-channel-exfiltration`, `high-volume-domain-exfiltration`,
+`form-overlay`, `keylogger-simulation`, and `maximum-detection`.
 
-### Form Fields
+### 8.3 Run a focused check
 
 ```bash
-NOW=$(date +%s)
-START=$(( NOW - 86400 ))
-curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/formFields?startTime=$START&endTime=$NOW" \
-  | jq '{total: (.form_fields | length), fields: [.form_fields[]? | {name, sensitivity: .analysis, scripts: (.scripts_count // 0), locations}]}'
+mkdir -p .artifacts/csd
+node scripts/csd-traffic.mjs \
+  --scenario login-credential-skimmer \
+  --cdp-endpoint http://127.0.0.1:9222 \
+  --timeout 30s \
+  --settle 10s \
+  --receipt .artifacts/csd/phase-2-login-credential-skimmer.json
 ```
 
-| Field | Expected | Status |
-| --- | --- | --- |
-| `total` | &gt; 0 | PASS if &gt; 0; PENDING if 0 but DET-3 passes |
-| `name` | Includes `email`, `password` | PASS if sensitive fields appear |
-| `sensitivity` | `Sensitive` for email/password fields | PASS if ML classified correctly |
+`--scenario` is repeatable when a focused run needs more than one scenario. An execution accepts
+one selector form only: repeated `--scenario` or `--all`. There is no default execution selector.
 
-<Aside type="note">
-Form fields and sensitivity metadata may appear later than detected-domain data in this lab. If fields are absent or partially classified, leave DET-4 PENDING and requery later. DET-3 remains the required Phase 3 entry gate.
-</Aside>
+### 8.4 Run composed or complete coverage
 
-### Phase 2 Evidence Summary
+```bash
+node scripts/csd-traffic.mjs \
+  --scenario maximum-detection \
+  --receipt .artifacts/csd/phase-2-maximum-detection.json
+```
 
-After all detection queries, present the final detection status:
+Use `--all` only when every independent scenario is required:
 
-| Test ID | Check | Status |
-| --- | --- | --- |
-| DET-1 | Scripts detected (`/scripts` endpoint) | PASS if &gt; 0; PENDING is allowed when DET-3 passes |
-| DET-2 | Candidate CDN domains observed | PASS for the subset observed in the run; not all four are required |
-| DET-3 | Synthetic external destination detected (`/detected_domains`) | **Required entry gate** — PASS if at least one destination observed in this run appears |
-| DET-4 | Form fields detected (`/formFields` endpoint) | PASS if &gt; 0; PENDING is allowed when DET-3 passes |
-| Transport | Protected application used HTTPS; HTTP tested only for `301` redirect | PASS / FAIL |
+```bash
+node scripts/csd-traffic.mjs \
+  --all \
+  --receipt .artifacts/csd/phase-2-all.json
+```
 
-<Aside type="note">
-**Proceed to Phase 3 only when DET-3 passes.** DET-1 and DET-4 may remain PENDING. Investigate a persistent DET-3 failure by checking CSD enablement, protected-domain registration, and CSD script injection.
-</Aside>
+`--timeout` bounds runner operations. `--settle` only collects late browser events; neither option
+promises platform timing. A custom target requires `--target` plus exact repeatable `--allow-host`
+values. Unsafe redirects and final origins fail closed.
 
----
+To stream a receipt, use `--receipt -`. Stdout contains only JSON and human logs use stderr:
 
-**Phase 2 complete.** Proceed to [Phase 3 — Mitigate](/csd/en/demo/phase-3-mitigate/) to apply mitigation rules and test browser enforcement.
+```bash
+node scripts/csd-traffic.mjs \
+  --scenario maximum-detection \
+  --receipt - \
+  | jq '{schema_version, run_id, requested_scenarios, success, eventual_csd_evidence}'
+```
+
+### 8.5 Inspect the file receipt
+
+```bash
+jq '{
+  schema_version, run_id, started_at, ended_at, duration_ms,
+  tool, requested_scenarios, target, allowlist, cdp_endpoint,
+  scenarios: [.scenarios[] | {
+    name, target, status, immediate_evidence, dom_cleanup, console, network,
+    protected_document, instrumentation, cleanup, error, success, eventual_csd_evidence
+  }],
+  success, caveats, error, eventual_csd_evidence
+}' .artifacts/csd/phase-2-maximum-detection.json
+```
+
+| Immediate check      | Required result                                                                                         |
+| -------------------- | ------------------------------------------------------------------------------------------------------- |
+| Target/document      | Exact authorized HTTPS top-frame origin and expected route                                              |
+| Protected page       | Ready, with `__imp_apg__` present                                                                       |
+| Scenario execution   | Required assertions, synthetic native-setter markers where applicable, and terminal Log/console markers |
+| Candidate requests   | Actual response, loading failure, or timed-out terminal state retained per attempt                      |
+| High-volume scenario | Exactly five script attempts plus two POST attempts                                                     |
+| Overlay/keylogger    | Geometry/removal or aggregate periodic POST-count evidence only; no entered values                      |
+| Cleanup              | DOM artifacts, listeners, timers, target, and context cleaned up                                        |
+| Aggregate            | `success`, caveats, and error independent from `eventual_csd_evidence`                                  |
+
+A requested destination receives an atomic receipt even after execution or cleanup failure. The
+primary error remains in `error`; runner cleanup failures remain in `cleanup.errors`. A candidate
+CDN failure remains observed browser evidence and is never converted to a successful load.
+
+### Manual fallback
+
+```bash
+node scripts/csd-traffic.mjs \
+  --print-script maximum-detection \
+  > .artifacts/csd/maximum-detection.browser.js
+```
+
+Review the generated file and paste it into DevTools Console on the documented route.
+`--print-script` is the only manual payload source. Manual execution cannot prove the automated
+receipt or cleanup contract.
+
+## Step 9: Run explicit post-receipt CSD reads
+
+The runner has no embedded/raw API client. Begin only after the immediate receipt passes. Use
+separate read-only `xcsh_api` operations scoped to the receipt's start/end window, protected origin,
+and exact reviewed Network hosts. Keep the result under `eventual_csd_evidence` and label each
+surface `OBSERVED`, `NOT_OBSERVED`, `PENDING`, or `ERROR`.
+
+| State          | Meaning                                                      |
+| -------------- | ------------------------------------------------------------ |
+| `OBSERVED`     | A matching reviewed record is present in the queried window. |
+| `NOT_OBSERVED` | The completed query returned no matching record.             |
+| `PENDING`      | More observation is planned; no timing promise is implied.   |
+| `ERROR`        | The API read failed or returned unusable evidence.           |
+
+The browser run remains successful when correlation is pending, empty, or unavailable. Correlation
+does not prove deterministic latency, complete coverage, or causation.
+
+## Phase 2 evidence summary
+
+| Test ID   | Check                                                                  | Gate                                                            |
+| --------- | ---------------------------------------------------------------------- | --------------------------------------------------------------- |
+| BROWSER-1 | Authorized final HTTPS origin and protected document ready             | Required                                                        |
+| BROWSER-2 | `__imp_apg__` present                                                  | Required                                                        |
+| BROWSER-3 | Immediate assertions plus Page/Runtime/Network/Log evidence in receipt | Required                                                        |
+| BROWSER-4 | Deterministic cleanup completed                                        | Required                                                        |
+| BROWSER-5 | Browser `dip` request observed                                         | Record PASS/PENDING; investigate absence before customer claims |
+| DET-1     | Matching script records                                                | `OBSERVED` / `NOT_OBSERVED` / `PENDING` / `ERROR`               |
+| DET-2     | Observed subset of candidate domains                                   | Never require every candidate                                   |
+| DET-3     | Matching detected-domain entry                                         | Required only by the Phase 3 mitigation workflow                |
+| DET-4     | Matching form-field entries                                            | Optional; overlay/keylogger claims remain browser-limited       |
+
+Proceed to [Phase 3 — Mitigate](/csd/en/demo/phase-3-mitigate/) only when its explicit detected-domain
+prerequisite is satisfied. Otherwise Phase 2 can still be a successful browser run with platform
+evidence pending.

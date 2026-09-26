@@ -30,13 +30,16 @@ override_data {
 override_module {
   target = module.origin
   outputs = {
-    origin_hostname   = "origin.example.com"
-    origin_url        = "http://origin.example.com"
-    listener_port     = 80
-    load_balancer_arn = "arn:aws:elasticloadbalancing:us-east-1:280469140135:loadbalancer/app/csd/0000000000000000"
-    target_group_arn  = "arn:aws:elasticloadbalancing:us-east-1:280469140135:targetgroup/csd/0000000000000000"
-    alb_subnet_ids    = ["subnet-public-a", "subnet-public-b"]
-    task_subnet_ids   = ["subnet-private-a", "subnet-private-b"]
+    origin_hostname              = "origin.example.com"
+    origin_url                   = "http://origin.example.com"
+    listener_port                = 80
+    load_balancer_arn            = "arn:aws:elasticloadbalancing:us-east-1:280469140135:loadbalancer/app/csd/0000000000000000"
+    target_group_arn             = "arn:aws:elasticloadbalancing:us-east-1:280469140135:targetgroup/csd/0000000000000000"
+    alb_subnet_ids               = ["subnet-public-a", "subnet-public-b"]
+    task_subnet_ids              = ["subnet-private-a", "subnet-private-b"]
+    page_tamper_path             = "/csd-page-tamper/payment"
+    page_tamper_url              = "http://origin.example.com/csd-page-tamper/payment"
+    page_tamper_target_group_arn = "arn:aws:elasticloadbalancing:us-east-1:280469140135:targetgroup/csd-page-tamper/0000000000000000"
   }
 }
 
@@ -51,6 +54,21 @@ run "stack_contract" {
   assert {
     condition     = length(regexall("(?s)module\\s+\"origin\"\\s*\\{.*?depends_on\\s*=\\s*\\[\\s*aws_route\\.public_internet,\\s*aws_route\\.private_egress,\\s*aws_route_table_association\\.public,\\s*aws_route_table_association\\.private,\\s*aws_s3_bucket_policy\\.alb_logs,\\s*aws_s3_bucket_server_side_encryption_configuration\\.alb_logs,\\s*\\]", file("${path.module}/main.tf"))) == 1
     error_message = "The origin module must wait for both default routes, both route-table association sets, and the existing log-bucket dependencies."
+  }
+
+  assert {
+    condition     = length(regexall("(?s)module\\s+\"origin\"\\s*\\{.*?enable_page_tamper_endpoint\\s*=\\s*true.*?depends_on", file("${path.module}/main.tf"))) == 1
+    error_message = "The CSD stack must permanently enable the inert-by-default Page Tamper endpoint."
+  }
+
+  assert {
+    condition     = output.page_tamper_path == "/csd-page-tamper/payment" && output.page_tamper_url == "http://origin.example.com/csd-page-tamper/payment"
+    error_message = "The CSD stack must re-export the dedicated Page Tamper path and direct origin URL."
+  }
+
+  assert {
+    condition     = output.page_tamper_target_group_arn == module.origin.page_tamper_target_group_arn
+    error_message = "The stack must re-export the dedicated Page Tamper target-group ARN for readiness checks."
   }
 
   assert {

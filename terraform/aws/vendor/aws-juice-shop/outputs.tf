@@ -72,3 +72,18 @@ output "container_image" {
   description = "Immutable image reference used by the task definition."
   value       = var.container_image
 }
+
+output "page_tamper_path" {
+  description = "Dedicated CSD Page Tamper payment path, or null when disabled."
+  value       = var.enable_page_tamper_endpoint ? local.page_tamper_path : null
+}
+
+output "page_tamper_url" {
+  description = "Direct HTTP URL for the dedicated CSD Page Tamper payment endpoint, or null when disabled."
+  value       = var.enable_page_tamper_endpoint ? "http://${aws_lb.this.dns_name}${local.page_tamper_path}" : null
+}
+
+output "page_tamper_target_group_arn" {
+  description = "Dedicated CSD Page Tamper target group ARN, or null when disabled."
+  value       = var.enable_page_tamper_endpoint ? one(aws_lb_target_group.page_tamper).arn : null
+}

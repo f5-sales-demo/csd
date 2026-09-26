@@ -184,10 +184,33 @@ When Terraform owns the selected stack, a final refresh-aware Terraform plan mus
 
 These gates qualify a controlled candidate-header experiment; they do not establish an official monitored-header list.
 
-1. **PF-PT-1: Supported-Coverage Discovery** — PASS only when the current official Page Tamper documentation, the two alert names (`ClientSideDefenseHttpHeaderModified` and `ClientSideDefenseHttpHeaderCompromised`), and the candidate status as unconfirmed coverage are recorded. A candidate must not be presented as supported merely because it is security-relevant.
-2. **PF-PT-2: One-at-a-Time Scope** — PASS only when workstation and worker raw/browser evidence agree on the canonical baseline and a reviewed Terraform saved plan changes one header on one HTTP load balancer with no unrelated action. Simultaneous header mutations fail per-header attribution readiness. Never mutate a Terraform-owned load balancer through the API.
-3. **PF-PT-3: Alert Evidence Availability** — PASS only when the operator can search both alert names across active, inactive, unprocessed, silenced, and inhibited states and retain timestamped raw identifying fields for correlation. Missing endpoint/view access is FAIL, not evidence that no alert exists.
-4. **PF-PT-4: Browser Proof** — PASS only when fresh browser contexts prove HTTP success, the exact candidate mutation, CSD script injection, and a `dip` POST during a bounded campaign window. Issue #1231 supplies the browser runner; issue #1234 owns orchestration.
-5. **PF-PT-5: Mandatory Restoration** — PASS only after the canonical header value or absence is restored immediately, workstation and worker raw/browser evidence agree, the load balancer is ready with a valid certificate, Terraform reports no changes, and saved plans plus worker resources are removed. Any residual mutation, drift, or worker blocks readiness.
+**Evidence correction:** On 2026-09-23, `ClientSideDefenseHttpHeaderModified` named
+`x-content-type-options`, `x-frame-options`, and `cache-control`, reported `modification=Added`, and
+included the exact protected path `/`. This proves detection for that event only, not Compromised
+behavior or complete header coverage. The 2026-09-24 six-header global-value campaign is **INVALID
+TEST** for Compromised-trigger conclusions because it had no controlled baseline/comparison cohorts
+and initially searched current alerts rather than alert history. Its later bounded negative search
+does not prove unsupported coverage.
 
-Resolve quota, namespace, state-lock, certificate, or origin issues without changing ownership. Retain the same backend/state and create a fresh saved plan for every Terraform retry.
+1. **PF-PT-1: Evidence Boundary** — PASS only when current official Page Tamper documentation, both alert names, the historical evidence boundary, and candidate status as unconfirmed coverage are recorded.
+2. **PF-PT-2: Dedicated Baseline** — PASS only when the inert `/csd-page-tamper/payment` endpoint returns the canonical page and all 12 exact headers to workstation and worker fresh browsers, with five empty synthetic fields, CSD injection, `dip`, healthy ordinary application traffic, and no Terraform drift.
+3. **PF-PT-3: Controlled Cohorts** — PASS only when control and tampered profiles alternate at the identical endpoint within one bounded window. Control retains all 12 headers; a tampered request sends only `X-CSD-Page-Tamper: <header-id>`, omits exactly that header, and retains the other 11. No load-balancer or origin-pool mutation is permitted.
+4. **PF-PT-4: Exact Alert Correlation** — PASS only when current alerts and alert history are polled and a record matches the exact namespace, selected header, `/csd-page-tamper/payment`, and experiment window. Generic or temporally adjacent alerts cannot satisfy a case.
+5. **PF-PT-5: Canary** — Run `X-Content-Type-Options` first. If it does not reach `COMPROMISED`, complete recovery, stop the suite, and diagnose. Do not claim success from `MODIFIED_ONLY` or `NO_ALERT_WITHIN_WINDOW`.
+6. **PF-PT-6: Conservative Outcome** — Assign exactly one of `COMPROMISED`, `MODIFIED_ONLY`, `NO_ALERT_WITHIN_WINDOW`, or `INVALID_TEST`; any incomplete validity or safety gate forces `INVALID_TEST`.
+7. **PF-PT-7: Recovery** — PASS only after 15 minutes of control-only traffic, all 12 headers re-proven from workstation and worker, CSD injection and `dip` observed, run-owned artifacts cleaned, endpoint and ordinary application healthy, load balancer ready, and final refresh-aware Terraform plan reporting no changes.
+
+The dedicated mixed-cohort design remains a hypothesis until live evidence satisfies every gate. Resolve quota, namespace, state-lock, certificate, or origin issues without changing ownership.
+
+**Live status (2026-09-25/26):** The dedicated endpoint is deployed and bootstrap-proven. Bootstrap
+run `dd91ea9b-3da3-4fc8-b24b-c32cdba2e863` (`2026-09-25T21:40:23.373Z` through
+`2026-09-25T22:42:18.638Z`) returned `alerts=[]` and passed endpoint/root health, 12 exact
+headers, five empty fields, CSD script, both ALB target groups, load-balancer readiness, certificate
+validity, and no-drift checks. The valid XCTO canary run
+`69f30bd0-6dc2-4721-bb21-cae159032af2` (`2026-09-25T23:21:44.908Z` through
+`2026-09-26T00:38:11.806Z`) completed 12/12 controls and 20/20 mixed pairs with valid telemetry
+and `alerts=[]`; current alerts were zero and history was empty. Its classification is
+`NO_ALERT_WITHIN_WINDOW`. Recovery passed with 10 control pairs, probes, readiness, cleanup, and
+Terraform no drift. PF-PT-2, PF-PT-3, PF-PT-6, and PF-PT-7 are proven for this canary execution;
+PF-PT-4 did not produce a correlation, and PF-PT-5 required the suite to stop. No remaining header
+was run by design, and the Compromised hypothesis remains unvalidated.

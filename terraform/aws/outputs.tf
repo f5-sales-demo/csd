@@ -28,6 +28,21 @@ output "application_url" {
   value       = "https://${var.domain}"
 }
 
+output "page_tamper_path" {
+  description = "Dedicated CSD Page Tamper payment path."
+  value       = module.origin.page_tamper_path
+}
+
+output "page_tamper_url" {
+  description = "Direct HTTP origin URL for the dedicated CSD Page Tamper payment endpoint."
+  value       = module.origin.page_tamper_url
+}
+
+output "page_tamper_target_group_arn" {
+  description = "Dedicated CSD Page Tamper target group ARN used by readiness checks."
+  value       = module.origin.page_tamper_target_group_arn
+}
+
 output "xc_namespace" {
   description = "F5 Distributed Cloud namespace containing application resources."
   value       = var.namespace

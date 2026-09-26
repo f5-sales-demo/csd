@@ -4,20 +4,247 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 
-set +e
-audit=$(bash scripts/check-pii.sh --scope staged --mode audit --format json)
-rc=$?
-set -e
-if [ "$rc" -eq 2 ]; then
-  echo "FAIL: managed PII audit could not run" >&2
-  exit 1
-fi
+public_ip_audit() {
+  local repo=${1:-$ROOT} scanner=${2:-${ROOT}/scripts/check-pii.sh}
+  local audit_file rc=0
+  audit_file=$(mktemp)
+  (cd "$repo" && bash "$scanner" --scope staged --mode audit --format json) >"$audit_file" || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    rm -f "$audit_file"
+    echo "FAIL: managed PII audit could not run" >&2
+    return 1
+  fi
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+    rm -f "$audit_file"
+    echo "FAIL: managed PII audit returned unexpected status ${rc}" >&2
+    return 1
+  fi
 
-count=$(jq '[.findings[] | select(.category == "public-ip-review")] | length' <<<"$audit")
-if [ "$count" -ne 0 ]; then
-  echo "FAIL: tracked content contains ${count} routable public-IP example finding(s)" >&2
-  exit 1
-fi
+  if ! PYTHONPATH="${ROOT}/scripts" python3 - "$repo" "$audit_file" <<'PY'; then
+from collections import Counter
+import ipaddress
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+from check_pii import (
+    ANSI_ESCAPE_RE,
+    DOCUMENTATION_NETWORKS,
+    DOTTED_VERSION_PREFIX_RE,
+    IPV4_RE,
+    MEDIA_SUFFIXES,
+    PRINTABLE_ASCII_RE,
+    SURROGATE_ESCAPE_BASE,
+    SURROGATE_ESCAPE_C1_LAST,
+    SURROGATE_ESCAPE_FIRST,
+    SURROGATE_ESCAPE_LAST,
+    SVG_PATH_ATTRIBUTE_RE,
+    TEXT_MEDIA_SUFFIXES,
+    invisible_format_character,
+    is_excluded,
+    looks_binary,
+)
+
+repo = Path(sys.argv[1])
+audit_path = Path(sys.argv[2])
+
+try:
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    raise SystemExit(f"FAIL: managed PII audit returned malformed JSON: {error}") from error
+if not isinstance(audit, dict) or not isinstance(audit.get("findings"), list):
+    raise SystemExit("FAIL: managed PII audit JSON lacks a findings array")
+for finding in audit["findings"]:
+    if not isinstance(finding, dict) or not isinstance(finding.get("category"), str):
+        raise SystemExit("FAIL: managed PII audit JSON contains a malformed finding")
+
+staged_paths = subprocess.run(
+    [
+        "git", "diff", "--cached", "--name-only", "-z", "--no-renames",
+        "--no-ext-diff", "--diff-filter=ACMRTUXB", "--",
+    ],
+    cwd=repo, check=True, capture_output=True,
+).stdout.split(b"\0")
+
+def git_blob(spec):
+    result = subprocess.run(
+        ["git", "show", spec], cwd=repo, capture_output=True, check=False,
+    )
+    if result.returncode == 0:
+        return result.stdout
+    return None
+
+def normalized_text(path, data):
+    if is_excluded(path):
+        return None
+    suffix = Path(path).suffix.lower()
+    if suffix in MEDIA_SUFFIXES - TEXT_MEDIA_SUFFIXES:
+        return None
+    if looks_binary(data):
+        printable = data.replace(b"\0", b"")
+        return "\n".join(
+            match.group(0).decode("ascii")
+            for match in PRINTABLE_ASCII_RE.finditer(printable)
+        )
+    decoded = data.decode("utf-8", "surrogateescape")
+    text = []
+    for character in decoded:
+        codepoint = ord(character)
+        if SURROGATE_ESCAPE_FIRST <= codepoint <= SURROGATE_ESCAPE_C1_LAST:
+            text.append(chr(codepoint - SURROGATE_ESCAPE_BASE))
+        elif not SURROGATE_ESCAPE_FIRST <= codepoint <= SURROGATE_ESCAPE_LAST:
+            text.append(character)
+    visible = (
+        char for char in ANSI_ESCAPE_RE.sub("", "".join(text))
+        if not invisible_format_character(char)
+    )
+    return "".join(visible)
+
+def public_ip_occurrences(path, data):
+    text = normalized_text(path, data)
+    if text is None:
+        return Counter()
+    occurrences = Counter()
+    for line in text.splitlines():
+        for match in IPV4_RE.finditer(line):
+            try:
+                address = ipaddress.ip_address(match.group(0))
+            except ValueError:
+                continue
+            if not address.is_global or address.is_multicast:
+                continue
+            if any(address in network for network in DOCUMENTATION_NETWORKS):
+                continue
+            prefix = line[max(0, match.start() - 96):match.start()]
+            if DOTTED_VERSION_PREFIX_RE.search(prefix):
+                continue
+            for attribute in SVG_PATH_ATTRIBUTE_RE.finditer(line, 0, match.start()):
+                value = line[attribute.end():match.start()]
+                if attribute.group("quote") not in value:
+                    break
+            else:
+                attribute = None
+            if attribute is not None:
+                continue
+            occurrences[(path, str(address))] += 1
+    return occurrences
+
+staged = Counter()
+head = Counter()
+for encoded_path in staged_paths:
+    if not encoded_path:
+        continue
+    path = encoded_path.decode("utf-8", "surrogateescape")
+    staged_blob = git_blob(f":{path}")
+    if staged_blob is None:
+        raise SystemExit(f"FAIL: cannot read staged blob for {path}")
+    staged.update(public_ip_occurrences(path, staged_blob))
+    head_blob = git_blob(f"HEAD:{path}")
+    if head_blob is not None:
+        head.update(public_ip_occurrences(path, head_blob))
+
+additions = staged - head
+if additions:
+    count = sum(additions.values())
+    details = ", ".join(
+        f"{path} ({amount} new occurrence{'s' if amount != 1 else ''})"
+        for (path, _value), amount in sorted(additions.items())
+    )
+    raise SystemExit(
+        f"FAIL: staged content introduces {count} routable public-IP "
+        f"example finding(s): {details}"
+    )
+PY
+    rm -f "$audit_file"
+    return 1
+  fi
+  rm -f "$audit_file"
+}
+
+public_ip_audit "$ROOT"
+
+PUBLIC_IP_A=$(printf '8.8.%s' '8.8')
+PUBLIC_IP_B=$(printf '1.1.%s' '1.1')
+IP_TEST_WORK=$(mktemp -d)
+cleanup_ip_tests() { rm -rf "$IP_TEST_WORK"; }
+trap cleanup_ip_tests EXIT
+
+new_ip_test_repo() {
+  local name=$1 repo="${IP_TEST_WORK}/$1"
+  mkdir -p "$repo"
+  git -C "$repo" init -q -b main
+  git -C "$repo" config user.email test@example.com
+  git -C "$repo" config user.name "Public IP Audit Test"
+  printf '# fixture\n' >"${repo}/fixture.tf"
+  git -C "$repo" add fixture.tf
+  git -C "$repo" commit -qm baseline
+  printf '%s' "$repo"
+}
+
+assert_ip_audit_passes() {
+  local label=$1 repo=$2
+  if public_ip_audit "$repo" >/dev/null 2>&1; then
+    echo "[OK] $label -> accepted"
+  else
+    echo "FAIL: $label was rejected" >&2
+    exit 1
+  fi
+}
+
+assert_ip_audit_fails() {
+  local label=$1 repo=$2 scanner=${3:-${ROOT}/scripts/check-pii.sh}
+  if public_ip_audit "$repo" "$scanner" >/dev/null 2>&1; then
+    echo "FAIL: $label was accepted" >&2
+    exit 1
+  else
+    echo "[OK] $label -> rejected"
+  fi
+}
+
+repo=$(new_ip_test_repo unchanged-shifted)
+printf 'allowed = "%s/32"\n' "$PUBLIC_IP_A" >"${repo}/fixture.tf"
+git -C "$repo" add fixture.tf
+git -C "$repo" commit -qm public-ip-baseline
+printf '# unrelated line shift\nallowed = "%s/32"\n' "$PUBLIC_IP_A" >"${repo}/fixture.tf"
+git -C "$repo" add fixture.tf
+assert_ip_audit_passes "unchanged CIDR with unrelated line shift" "$repo"
+
+repo=$(new_ip_test_repo new-file)
+printf 'address = "%s"\n' "$PUBLIC_IP_A" >"${repo}/new.tf"
+git -C "$repo" add new.tf
+assert_ip_audit_fails "routable IP in newly staged file" "$repo"
+
+repo=$(new_ip_test_repo duplicate)
+printf 'address = "%s"\n' "$PUBLIC_IP_A" >"${repo}/fixture.tf"
+git -C "$repo" add fixture.tf
+git -C "$repo" commit -qm public-ip-baseline
+printf 'first = "%s"\nsecond = "%s"\n' "$PUBLIC_IP_A" "$PUBLIC_IP_A" >"${repo}/fixture.tf"
+git -C "$repo" add fixture.tf
+assert_ip_audit_fails "duplicate occurrence of existing IP" "$repo"
+
+repo=$(new_ip_test_repo replacement)
+printf 'address = "%s"\n' "$PUBLIC_IP_A" >"${repo}/fixture.tf"
+git -C "$repo" add fixture.tf
+git -C "$repo" commit -qm public-ip-baseline
+printf 'address = "%s"\n' "$PUBLIC_IP_B" >"${repo}/fixture.tf"
+git -C "$repo" add fixture.tf
+assert_ip_audit_fails "replacement with different IP" "$repo"
+
+repo=$(new_ip_test_repo removal)
+printf 'first = "%s"\nsecond = "%s"\n' "$PUBLIC_IP_A" "$PUBLIC_IP_A" >"${repo}/fixture.tf"
+git -C "$repo" add fixture.tf
+git -C "$repo" commit -qm public-ip-baseline
+printf 'first = "%s"\n' "$PUBLIC_IP_A" >"${repo}/fixture.tf"
+git -C "$repo" add fixture.tf
+assert_ip_audit_passes "removed public-IP occurrence" "$repo"
+
+repo=$(new_ip_test_repo malformed-output)
+printf '# staged edit\n' >>"${repo}/fixture.tf"
+git -C "$repo" add fixture.tf
+malformed_scanner="${IP_TEST_WORK}/malformed-scanner.sh"
+printf '#!/usr/bin/env bash\nprintf "{malformed\\n"\nexit 1\n' >"$malformed_scanner"
+assert_ip_audit_fails "malformed scanner output" "$repo" "$malformed_scanner"
 
 python3 - <<'PY'
 from pathlib import Path

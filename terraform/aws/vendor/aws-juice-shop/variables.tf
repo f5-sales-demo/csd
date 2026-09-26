@@ -55,6 +55,12 @@ variable "allowed_ingress_cidrs" {
   }
 }
 
+variable "enable_page_tamper_endpoint" {
+  description = "Create the dedicated inert-by-default CSD Page Tamper payment endpoint."
+  type        = bool
+  default     = false
+}
+
 variable "container_image" {
   description = "OWASP Juice Shop OCI image reference pinned by immutable sha256 digest."
   type        = string

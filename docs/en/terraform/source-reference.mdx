@@ -17,28 +17,32 @@ The following five files are staged from the canonical `terraform/aws` implement
 
 ## Variables and identity guards
 
-`variables.tf` defines the reviewed account, profile, region, namespace, domain, network layout, restricted F5 Distributed Cloud origin CIDRs, and common tags. Its validations prevent accidental reuse against another environment.
+`variables.tf` defines the reviewed account, profile, region, namespace, domain, network layout, and common tags. Its validations prevent accidental reuse against another environment. Regional Edge origin CIDRs come from the offline, release-pinned `xcsh_network_regional_edges` data source in `main.tf`.
 
 ```hcl file=../../_data/terraform/aws/variables.tf
 ```
 
 ## Stack resources
 
-`main.tf` contains the entitlement precondition, AWS networking and logging resources, the vendored origin module, and the F5 Distributed Cloud resources. The AWS origin pool uses the module's ALB hostname through `public_name`; the HTTPS load balancer redirects HTTP, uses the public default VIP, references one default-route pool, and enables all-pages CSD injection.
+`main.tf` contains the entitlement precondition, the offline Regional Edge allowlist data source from the exact `f5-sales-demo/xcsh` 11.4.1 broad-surface restoration line, AWS networking and logging resources, the vendored origin module, and the F5 Distributed Cloud resources.
+
+The allowlist supplies CIDRs while the module retains ingress direction, protocol, and port policy. Release pinning makes the snapshot reproducible but not perpetually fresh; refresh it only through a reviewed provider upgrade.
+
+The AWS origin pool uses the module's ALB hostname through `public_name`; the HTTPS load balancer redirects HTTP, uses the public default VIP, references one default-route pool, and enables all-pages CSD injection.
 
 ```hcl file=../../_data/terraform/aws/main.tf
 ```
 
 ## Outputs
 
-`outputs.tf` is the supported interface for runtime identifiers and validation inputs. Use `terraform output -raw application_url` for protected-path checks and retrieve other values with `terraform output`; do not persist generated IDs, ARNs, VIPs, bucket suffixes, certificate dates, task IDs, or plan digests in documentation.
+`outputs.tf` is the supported interface for runtime identifiers, validation inputs, and Regional Edge allowlist provenance. Use `terraform output -raw application_url` for protected-path checks and retrieve other values with `terraform output`; do not persist generated IDs, ARNs, VIPs, bucket suffixes, certificate dates, task IDs, or plan digests in documentation.
 
 ```hcl file=../../_data/terraform/aws/outputs.tf
 ```
 
 ## Contract tests
 
-`tests/stack.tftest.hcl` uses mocked providers to verify configuration contracts: identity restrictions, topology, logging controls, namespace and entitlement ordering, origin-pool wiring, HTTPS redirect, public advertisement, all-pages CSD injection, and negative cases for the wrong AWS account or missing entitlement.
+`tests/stack.tftest.hcl` uses mocked providers to verify configuration contracts: identity restrictions, topology, logging controls, provider-owned Regional Edge allowlist wiring and provenance, namespace and entitlement ordering, origin-pool wiring, HTTPS redirect, public advertisement, all-pages CSD injection, and negative cases for the wrong AWS account or missing entitlement.
 
 Mocked assertions do not validate deployed resources, runtime health, traffic flow, log delivery, or CSD telemetry. After apply, use `application_url` and run the executable [Diagnostics & Verification](/csd/en/diagnostics/) procedures.
 

@@ -25,9 +25,8 @@ export function flattenAlertPayload(payload) {
     const labels = object(value.labels) ? value.labels : {};
     const alertname = value.alertname ?? labels.alertname ?? value.name;
     if (ALERT_NAMES.has(alertname)) results.push(value);
-    for (const [key, child] of Object.entries(value)) {
-      if (['labels', 'annotations'].includes(key)) continue;
-      if (Array.isArray(child) || object(child) || typeof child === 'string') visit(child);
+    for (const key of ['alerts', 'data', 'items', 'current', 'history']) {
+      if (Object.hasOwn(value, key)) visit(value[key]);
     }
   };
   visit(payload);
@@ -50,7 +49,7 @@ function fields(alert) {
     modification: alert.modification ?? labels.modification ?? annotations.modification,
     displayName: alert.display_name ?? alert.displayName ?? annotations.display_name ?? annotations.summary,
     description: alert.description ?? annotations.description,
-    state: alert.state ?? alert.status ?? (alert.endsAt || alert.ends_at ? 'resolved' : 'firing'),
+    state: alert.state ?? alert.status,
   };
 }
 
@@ -69,15 +68,37 @@ function safeText(value, limit = 500) {
     .slice(0, limit);
 }
 
+function protectedPath(value, expected) {
+  if (typeof value !== 'string' || !value.startsWith('https://')) return false;
+  try {
+    const url = new URL(value);
+    return (
+      url.origin === expected.origin &&
+      url.pathname === expected.path &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function correlateAlert(alert, expected, { current = false, allowPriorResolution = false } = {}) {
   const item = fields(alert);
   const started = Date.parse(item.startsAt);
   const windowStart = Date.parse(expected.windowStart);
   const windowEnd = Date.parse(expected.windowEnd);
-  const state = lower(item.state) === 'resolved' || item.endsAt ? 'resolved' : 'firing';
+  const endsAt = item.endsAt === '0001-01-01T00:00:00Z' ? null : item.endsAt;
+  const ended = endsAt == null || endsAt === '' ? NaN : Date.parse(endsAt);
+  const explicitState = item.state == null ? null : lower(item.state);
+  if (explicitState !== null && explicitState !== 'firing' && explicitState !== 'resolved') return null;
+  if (endsAt != null && endsAt !== '' && !Number.isFinite(ended)) return null;
+  const state = explicitState ?? (Number.isFinite(ended) ? 'resolved' : 'firing');
   if (!ALERT_NAMES.has(item.alertname)) return null;
   if (item.namespace !== expected.namespace) return null;
-  if (item.path !== expected.path) return null;
+  if (!protectedPath(item.path, expected)) return null;
   if (!includesHeader(item.header, expected.headerId)) return null;
   if (!Number.isFinite(started) || started > windowEnd) return null;
   if (started < windowStart && !(current && state === 'firing') && !(allowPriorResolution && state === 'resolved'))
@@ -89,7 +110,7 @@ export function correlateAlert(alert, expected, { current = false, allowPriorRes
     header_id: expected.headerId,
     state,
     starts_at: new Date(started).toISOString(),
-    ends_at: Number.isFinite(Date.parse(item.endsAt)) ? new Date(item.endsAt).toISOString() : null,
+    ends_at: Number.isFinite(ended) ? new Date(ended).toISOString() : null,
     modification: safeText(item.modification, 80) || null,
     display_name: safeText(item.displayName, 160) || null,
     description: safeText(item.description) || null,

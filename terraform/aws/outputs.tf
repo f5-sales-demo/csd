@@ -23,6 +23,20 @@ output "origin_url" {
   value       = module.origin.origin_url
 }
 
+output "regional_edge_allowlist_provenance" {
+  description = "Provenance and coverage metadata for the provider-owned Regional Edge origin allowlist."
+  value = {
+    id                    = data.xcsh_network_regional_edges.origin_ingress.id
+    api_release_tag       = data.xcsh_network_regional_edges.origin_ingress.api_release_tag
+    source_url            = data.xcsh_network_regional_edges.origin_ingress.source_url
+    manifest_generated_at = data.xcsh_network_regional_edges.origin_ingress.manifest_generated_at
+    source_sha256         = data.xcsh_network_regional_edges.origin_ingress.source_sha256
+    selected_regions      = sort(keys(data.xcsh_network_regional_edges.origin_ingress.cidr_blocks_by_region))
+    cidr_count            = length(data.xcsh_network_regional_edges.origin_ingress.cidr_blocks)
+    source_entry_count    = length(data.xcsh_network_regional_edges.origin_ingress.source_entries)
+  }
+}
+
 output "application_url" {
   description = "F5 Distributed Cloud protected application URL."
   value       = "https://${var.domain}"

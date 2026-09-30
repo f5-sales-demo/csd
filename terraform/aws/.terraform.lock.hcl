@@ -2,23 +2,21 @@
 # Manual edits may be lost in future updates.
 
 provider "registry.terraform.io/f5-sales-demo/xcsh" {
-  version     = "9.5.1"
-  constraints = "9.5.1"
+  version     = "11.4.1"
+  constraints = "11.4.1"
   hashes = [
-    "h1:cC9wOzlvbxIFpyb6bipfI+B/uzsIQnUGuGWRO/pabT8=",
-    "h1:dU2bPupKj2VsSXRXyuEsnO/WkKk/YuXrqchV4DDX9YY=",
-    "h1:tO4ElNytGP3hRiqxXZ84oTztYLpkPQ8hzYK8LORfICc=",
-    "zh:0e959c32db2190244972089a73d91cda81094e97089e8c6fc37a28f2184ebc5b",
-    "zh:1b7c512a2875509373f26700a0d164177737864461596bcf6ba2c4e93a1e1a13",
-    "zh:39547d6c5dab1df6f174528cfc1a2f707ccb5803801c5376359de5b6ecc11816",
-    "zh:39cd14430b5c9870b1c16618bb82cc106e14215251bb560db94cf8eb438d4e45",
-    "zh:3cef0adb588af8256c524ca4eaaee86396dc6fdb6fbca2ffc16d67c5c7b477d6",
-    "zh:59698ba304a4c7a91d1112404153030d9cd7ef1f759f8097e700450da9131f8b",
-    "zh:727a329f767ab938f0bc0776c5b63e67026094ed66274cdbd39937a3d8db9dd4",
-    "zh:915aaba6fc844bd9030f3084d2bfa65cbb0315d6f0e47760fcdbfa4e9b738355",
+    "h1:bQxunyFGGnQidCT/B3/jIeSZnYupVQN4UHP34i3CO14=",
+    "zh:10849ebb82d1986eb4e708cda95ef05dcf578295d0a65745e4b77775378132cc",
+    "zh:39cc81c878cd9fa7e4c76f1c4f79b2f362bb4ed22a5a4adbe84f187ba75d1f85",
+    "zh:6fb7b157fa9bd54e220b15b59c87494c0eca4982449109fb04542a3dc8417113",
+    "zh:947496235fd579159bf211defd074b873da99baa131c2c081f73846c08fc166a",
     "zh:95513584b227b9c7923e641aae986935821077b1eb4116845b5312ac412bbc72",
-    "zh:ac6862fd5ebd1860cc2707e97fb9c6da7e36a5e8398adcde42c4c3d5c07547ab",
-    "zh:ea20ee3d9bcc16f8a1f2ce1b62422fcfa6beee37fc5d7eb1de2fe474500f2525",
+    "zh:a9afa924a616d18a4bfe32b997dd5a67823b6b6ebdccc744805a54db2456fc4b",
+    "zh:b48791383c148373d88b20d2137c7cc9f8e1a97d71818f71ea0520bb3a77391f",
+    "zh:bd2d8fff9cac1c34e9f31d141ff6bec0add4e6546ec0af81264d8657db91a331",
+    "zh:bde38bd7b9a8997088f0a0a4adaa22e56b32ea22043b8e5adc8abdbe1d89d97b",
+    "zh:cb3d1fbca17645d0b89b289ffa8e16151766d8b2ade16b9c3fd44dc288626ebd",
+    "zh:d1138f9ea34aa331ccb08b011045b54f9766dad479fb5593a92db41604a671ab",
   ]
 }
 

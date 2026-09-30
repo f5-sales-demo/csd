@@ -11,7 +11,63 @@ mock_provider "aws" {
     }
   }
 }
-mock_provider "xcsh" {}
+mock_provider "xcsh" {
+  mock_data "xcsh_network_regional_edges" {
+    defaults = {
+      id                    = "0bb6fd6bd561aef1ea9fbc772119d4cfea8c26cbe82d7ea6e76f9aeb03366555:regional-edges:americas,asia,europe"
+      api_release_tag       = "v8.0.3"
+      source_url            = "https://docs.cloud.f5.com/docs-v2/downloads/platform/reference/network-cloud-ref/ips-domains.json"
+      manifest_generated_at = "2025-09-10T00:00:00Z"
+      source_sha256         = "0bb6fd6bd561aef1ea9fbc772119d4cfea8c26cbe82d7ea6e76f9aeb03366555"
+      regions               = ["americas", "asia", "europe"]
+      cidr_blocks_by_region = {
+        americas = [
+          "5.182.215.0/25", "84.54.61.0/25", "23.158.32.0/25", "84.54.62.0/25",
+          "185.94.143.0/25", "185.94.142.0/24", "159.60.190.0/24", "159.60.168.0/24",
+          "159.60.180.0/24", "159.60.174.0/24", "159.60.175.0/24", "159.60.176.0/24",
+          "159.60.177.0/24", "159.60.179.0/24", "159.60.181.0/24", "159.60.183.0/24",
+        ]
+        asia = [
+          "103.135.56.0/24", "103.135.57.0/25", "103.135.59.0/25", "103.135.58.0/24",
+          "159.60.189.0/24", "159.60.166.0/24", "159.60.164.0/24", "159.60.170.0/24",
+          "159.60.172.0/24", "159.60.191.0/24", "159.60.184.0/24", "159.60.185.0/24",
+          "159.60.186.0/24",
+        ]
+        europe = [
+          "5.182.213.0/24", "5.182.212.0/25", "5.182.214.0/25", "84.54.60.0/25",
+          "185.56.154.0/25", "159.60.160.0/24", "159.60.161.0/24", "159.60.162.0/24",
+          "159.60.163.0/24", "159.60.188.0/24", "159.60.182.0/24", "159.60.178.0/24",
+        ]
+      }
+      cidr_blocks = [
+        "5.182.215.0/25", "84.54.61.0/25", "23.158.32.0/25", "84.54.62.0/25",
+        "185.94.143.0/25", "185.94.142.0/24", "159.60.190.0/24", "159.60.168.0/24",
+        "159.60.180.0/24", "159.60.174.0/24", "159.60.175.0/24", "159.60.176.0/24",
+        "159.60.177.0/24", "159.60.179.0/24", "159.60.181.0/24", "159.60.183.0/24",
+        "103.135.56.0/24", "103.135.57.0/25", "103.135.59.0/25", "103.135.58.0/24",
+        "159.60.189.0/24", "159.60.166.0/24", "159.60.164.0/24", "159.60.170.0/24",
+        "159.60.172.0/24", "159.60.191.0/24", "159.60.184.0/24", "159.60.185.0/24",
+        "159.60.186.0/24", "5.182.213.0/24", "5.182.212.0/25", "5.182.214.0/25",
+        "84.54.60.0/25", "185.56.154.0/25", "159.60.160.0/24", "159.60.161.0/24",
+        "159.60.162.0/24", "159.60.163.0/24", "159.60.188.0/24", "159.60.182.0/24",
+        "159.60.178.0/24",
+      ]
+      source_entries = [
+        "5.182.215.0/25", "84.54.61.0/25", "23.158.32.0/25", "84.54.62.0/25",
+        "185.94.143.0/25", "185.94.142.0/24", "159.60.190.0/24", "159.60.168.0/24",
+        "159.60.180.0/24", "159.60.174.0/24", "159.60.175.0/24", "159.60.176.0/24",
+        "159.60.177.0/24", "159.60.179.0/24", "159.60.181.0/24", "159.60.183.0/24",
+        "103.135.56.0/24", "103.135.57.0/25", "103.135.59.0/25", "103.135.58.0/24",
+        "159.60.189.0/24", "159.60.166.0/24", "159.60.164.0/24", "159.60.170.0/24",
+        "159.60.172.0/24", "159.60.191.0/24", "159.60.184.0/24", "159.60.185.0/24",
+        "159.60.186.0/24", "5.182.213.0/24", "5.182.212.0/25", "5.182.214.0/25",
+        "84.54.60.0/25", "185.56.154.0/25", "159.60.160.0/24", "159.60.161.0/24",
+        "159.60.162.0/24", "159.60.163.0/24", "159.60.188.0/24", "159.60.182.0/24",
+        "159.60.178.0/24",
+      ]
+    }
+  }
+}
 
 override_data {
   target = data.aws_caller_identity.current
@@ -82,53 +138,38 @@ run "stack_contract" {
   }
 
   assert {
-    condition = local.regional_edge_origin_cidrs == toset([
-      # Americas
-      "5.182.215.0/25",
-      "84.54.61.0/25",
-      "23.158.32.0/25",
-      "84.54.62.0/25",
-      "185.94.143.0/25",
-      "185.94.142.0/24",
-      "159.60.190.0/24",
-      "159.60.168.0/24",
-      "159.60.180.0/24",
-      "159.60.174.0/24",
-      "159.60.175.0/24",
-      "159.60.176.0/24",
-      "159.60.177.0/24",
-      "159.60.179.0/24",
-      "159.60.181.0/24",
-      "159.60.183.0/24",
-      # Europe
-      "5.182.213.0/24",
-      "5.182.212.0/25",
-      "5.182.214.0/25",
-      "84.54.60.0/25",
-      "185.56.154.0/25",
-      "159.60.160.0/24",
-      "159.60.161.0/24",
-      "159.60.162.0/24",
-      "159.60.163.0/24",
-      "159.60.188.0/24",
-      "159.60.182.0/24",
-      "159.60.178.0/24",
-      # Asia
-      "103.135.56.0/24",
-      "103.135.57.0/25",
-      "103.135.59.0/25",
-      "103.135.58.0/24",
-      "159.60.189.0/24",
-      "159.60.166.0/24",
-      "159.60.164.0/24",
-      "159.60.170.0/24",
-      "159.60.172.0/24",
-      "159.60.191.0/24",
-      "159.60.184.0/24",
-      "159.60.185.0/24",
-      "159.60.186.0/24",
-    ]) && length(local.regional_edge_origin_cidrs) == 41 && !contains(local.regional_edge_origin_cidrs, "0.0.0.0/0")
-    error_message = "The public origin must allow exactly the 41 documented global Regional Edge TCP IPv4 CIDRs."
+    condition     = toset(keys(data.xcsh_network_regional_edges.origin_ingress.cidr_blocks_by_region)) == toset(["americas", "asia", "europe"])
+    error_message = "The provider fixture must represent exactly the Americas, Asia, and Europe Regional Edge regions."
+  }
+
+  assert {
+    condition     = length(data.xcsh_network_regional_edges.origin_ingress.cidr_blocks_by_region["americas"]) == 16 && length(data.xcsh_network_regional_edges.origin_ingress.cidr_blocks_by_region["asia"]) == 13 && length(data.xcsh_network_regional_edges.origin_ingress.cidr_blocks_by_region["europe"]) == 12
+    error_message = "The provider fixture must retain the reviewed Regional Edge counts: Americas 16, Asia 13, and Europe 12."
+  }
+
+  assert {
+    condition     = length(data.xcsh_network_regional_edges.origin_ingress.cidr_blocks) == 41 && length(toset(data.xcsh_network_regional_edges.origin_ingress.cidr_blocks)) == 41 && !contains(data.xcsh_network_regional_edges.origin_ingress.cidr_blocks, "0.0.0.0/0")
+    error_message = "The public origin must receive exactly 41 unique provider-owned Regional Edge CIDRs and never allow all IPv4 sources."
+  }
+
+  assert {
+    condition     = length(regexall("allowed_ingress_cidrs\\s*=\\s*toset\\(data\\.xcsh_network_regional_edges\\.origin_ingress\\.cidr_blocks\\)", file("${path.module}/main.tf"))) == 1
+    error_message = "The origin module input must be wired directly to the provider data source CIDR collection."
+  }
+
+  assert {
+    condition     = output.regional_edge_allowlist_provenance.id == data.xcsh_network_regional_edges.origin_ingress.id && output.regional_edge_allowlist_provenance.api_release_tag == "v8.0.3" && output.regional_edge_allowlist_provenance.source_url == data.xcsh_network_regional_edges.origin_ingress.source_url
+    error_message = "The provenance output must mirror the provider identity, API release tag, and source URL."
+  }
+
+  assert {
+    condition     = output.regional_edge_allowlist_provenance.manifest_generated_at == "2025-09-10T00:00:00Z" && output.regional_edge_allowlist_provenance.source_sha256 == "0bb6fd6bd561aef1ea9fbc772119d4cfea8c26cbe82d7ea6e76f9aeb03366555"
+    error_message = "The provenance output must mirror the reviewed manifest timestamp and source digest."
+  }
+
+  assert {
+    condition     = toset(output.regional_edge_allowlist_provenance.selected_regions) == toset(["americas", "asia", "europe"]) && output.regional_edge_allowlist_provenance.cidr_count == 41 && output.regional_edge_allowlist_provenance.source_entry_count == 41
+    error_message = "The provenance output must report exactly the three selected regions, 41 CIDRs, and 41 derived source entries."
   }
 
   assert {

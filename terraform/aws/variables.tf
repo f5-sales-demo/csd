@@ -12,11 +12,11 @@ variable "expected_aws_account_id" {
 variable "aws_profile" {
   description = "Local AWS shared-configuration profile."
   type        = string
-  default     = "Users-280469140135"
+  default     = "280469140135_Users"
 
   validation {
-    condition     = var.aws_profile == "Users-280469140135"
-    error_message = "Use the approved Users-280469140135 profile."
+    condition     = var.aws_profile == "280469140135_Users"
+    error_message = "Use the approved 280469140135_Users profile."
   }
 }
 

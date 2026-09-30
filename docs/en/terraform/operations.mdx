@@ -23,7 +23,7 @@ Run all commands from `terraform/aws`. Preserve the configured backend and state
    Authenticate the approved AWS profile and F5 Distributed Cloud provider environment, then confirm the AWS caller before Terraform initialization:
 
    ```bash
-   aws sts get-caller-identity --profile Users-280469140135
+   aws sts get-caller-identity --profile 280469140135_Users
    ```
 
    Confirm that the returned account matches the guarded account in `variables.tf`. Review the configured profile, region, namespace, and domain rather than overriding them casually. Set exactly one supported F5 Distributed Cloud authentication method in the environment; do not place credentials in Terraform files.
@@ -42,9 +42,19 @@ Run all commands from `terraform/aws`. Preserve the configured backend and state
 
 3. **Create a saved plan, then verify its effective Regional Edge CIDRs**
 
-   Use only the reviewed configuration in this directory. Undocumented plan overrides make the saved plan's inputs ambiguous, so fail closed if Terraform CLI argument injection, environment variable inputs, or automatic variable files are present. Retrieve the current published list immediately before planning, create the saved plan, and inspect that plan's effective ALB ingress resources:
+   Use only the reviewed configuration in this directory. Undocumented plan overrides make the saved plan's inputs ambiguous, so fail closed if Terraform CLI argument injection, environment variable inputs, or automatic variable files are present.
+
+   Confirm `versions.tf` pins `f5-sales-demo/xcsh` to exactly `11.4.1`; this is the broad-surface restoration line, and the `xcsh_network_regional_edges` data source is an offline snapshot compiled into that provider release. Omit `regions` to select all published regions.
+
+   Release pinning makes the selected snapshot reproducible, not perpetually fresh. A future allowlist refresh is a reviewed provider upgrade, never a manual CIDR edit.
+
+   Create the saved plan, inspect its provider provenance, and verify that the effective ALB security-group CIDR set is unchanged from the prior approved state:
 
    ```bash
+   grep -Eq 'version[[:space:]]*=[[:space:]]*"11\.4\.1"' versions.tf || {
+     echo "STOP: xcsh provider must be pinned to exactly 11.4.1"
+     exit 1
+   }
    test -z "${TF_CLI_ARGS-}" && test -z "${TF_CLI_ARGS_plan-}" || {
      echo "STOP: TF_CLI_ARGS and TF_CLI_ARGS_plan overrides are not permitted"
      exit 1
@@ -58,69 +68,41 @@ Run all commands from `terraform/aws`. Preserve the configured backend and state
      exit 1
    fi
 
-   CIDR_SOURCE=https://docs.cloud.f5.com/docs-v2/downloads/platform/reference/network-cloud-ref/ips-domains.json
    umask 077
    WORK_DIR=$(mktemp -d)
    trap 'rm -rf "$WORK_DIR"' EXIT
-   curl --fail --silent --show-error --location "$CIDR_SOURCE" > "$WORK_DIR/published.json"
-   jq -er '
-     def valid_ipv4_cidr:
-       capture("^(?<address>[0-9]{1,3}(\\.[0-9]{1,3}){3})/(?<prefix>[0-9]{1,2})$") as $cidr
-       | ($cidr.address | split(".") | map(tonumber)) as $octets
-       | ($octets | length == 4 and all(. >= 0 and . <= 255))
-         and ($cidr.prefix | tonumber) <= 32;
-     .services.regional_edges.regions as $regions
-     | if ($regions | type) != "object" then error("regional_edges.regions is not an object") else . end
-     | if ($regions | keys | sort) != (["americas", "asia", "europe"] | sort) then error("unexpected Regional Edge region keys") else . end
-     | if ($regions.americas.ipv4_cidrs | length) != 16
-         or ($regions.europe.ipv4_cidrs | length) != 12
-         or ($regions.asia.ipv4_cidrs | length) != 13
-       then error("unexpected per-region Regional Edge CIDR counts") else . end
-     | [$regions.americas.ipv4_cidrs[], $regions.europe.ipv4_cidrs[], $regions.asia.ipv4_cidrs[]] as $cidrs
-     | if ($cidrs | length) != 41 or ($cidrs | unique | length) != 41
-       then error("expected exactly 41 unique Regional Edge CIDRs") else . end
-     | if all($cidrs[]; type == "string" and length > 0 and valid_ipv4_cidr)
-       then $cidrs[] else error("invalid Regional Edge IPv4 CIDR") end
-   ' "$WORK_DIR/published.json" | sort -u > "$WORK_DIR/published-cidrs.txt"
-   test "$(wc -l < "$WORK_DIR/published-cidrs.txt" | tr -d ' ')" = 41 || {
-     echo "STOP: published global Regional Edge TCP IPv4 CIDRs did not validate"
-     exit 1
-   }
-
    terraform plan -out=csd.tfplan
    terraform show -json csd.tfplan > "$WORK_DIR/plan.json"
    jq -er '
-     [.planned_values.root_module
-       | recurse(.child_modules[]?)
-       | .resources[]?
+     .output_changes.regional_edge_allowlist_provenance.after
+     | {id, api_release_tag, source_url, manifest_generated_at, source_sha256, selected_regions, cidr_count, source_entry_count}
+   ' "$WORK_DIR/plan.json"
+   jq -er '
+     [.resource_changes[]
        | select(.address | startswith("module.origin.aws_vpc_security_group_ingress_rule.alb["))
-       | select(.type == "aws_vpc_security_group_ingress_rule")
-       | .values.cidr_ipv4]
-     | if length == 41 and all(. != null and . != "") then .[] else error("expected 41 known ALB ingress CIDRs") end
-   ' "$WORK_DIR/plan.json" | sort -u > "$WORK_DIR/planned-cidrs.txt"
-   test "$(wc -l < "$WORK_DIR/planned-cidrs.txt" | tr -d ' ')" = 41 || {
-     echo "STOP: planned ALB ingress CIDRs are not exactly 41 unique entries"
-     exit 1
-   }
-   cmp -s "$WORK_DIR/published-cidrs.txt" "$WORK_DIR/planned-cidrs.txt" || {
-     diff -u "$WORK_DIR/planned-cidrs.txt" "$WORK_DIR/published-cidrs.txt" || true
-     echo "STOP: saved-plan ALB ingress CIDRs do not exactly match the current published global Regional Edge TCP IPv4 list"
-     exit 1
-   }
-   printf 'CIDR comparison: PASS (%s exact global TCP IPv4 entries)\n' "$(wc -l < "$WORK_DIR/planned-cidrs.txt" | tr -d ' ')"
+       | select(.type == "aws_vpc_security_group_ingress_rule")]
+     | if length != 41 then error("expected 41 ALB ingress rules") else . end
+     | if any(.change.actions != ["no-op"] or .change.before.cidr_ipv4 != .change.after.cidr_ipv4)
+       then error("provider-backed plan changes an effective ALB ingress CIDR") else . end
+     | map(.change.after.cidr_ipv4)
+     | if (unique | length) != 41 or any(. == "0.0.0.0/0")
+       then error("expected 41 unique restricted ALB ingress CIDRs") else . end
+     | length
+   ' "$WORK_DIR/plan.json" |
+     xargs printf 'CIDR migration check: PASS (%s unchanged entries)\n'
 
    PLAN_SHA256=$(shasum -a 256 csd.tfplan | awk '{print $1}')
    printf 'Saved-plan SHA-256: %s\n' "$PLAN_SHA256"
    terraform show csd.tfplan
    ```
 
-   The plan JSON contains deployment details. Process it only in the private temporary directory; do not print, retain, or publish it. Retain only the sanitized CIDR comparison result.
+   The plan JSON contains deployment details. Process it only in the private temporary directory; do not print, retain, or publish it. Retain only the reviewed provenance fields and sanitized CIDR migration result. The data source supplies addresses only; the module continues to own ingress direction, TCP protocol, and port 80.
 
    Review every create, update, replacement, and destroy action. Confirm the plan retains the identity guards, dedicated VPC, two public and two private subnets, one NAT Gateway, private tasks, restricted ALB ingress, logging controls, and the expected F5 Distributed Cloud resources. A plan file is ephemeral approval evidence; do not commit it or copy its digest into documentation.
 
 4. **Approve and apply only the hashed, reviewed saved plan**
 
-   After the CIDR comparison and complete plan review, obtain a new explicit approval and bind the record to the already computed digest. Do not reuse approval from an earlier plan:
+   After the provenance review, unchanged-CIDR verification, and complete plan review, obtain a new explicit approval and bind the record to the already computed digest. Do not reuse approval from an earlier plan:
 
    ```bash
    read -r -p "Apply reviewed plan $PLAN_SHA256? Type yes: " CSD_APPLY_APPROVAL

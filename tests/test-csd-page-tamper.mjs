@@ -13,6 +13,7 @@ import {
 import {
   bootstrap,
   ControllerError,
+  cleanupWorker,
   createDependencies,
   DEFAULT_TIMINGS,
   HEADER_IDS,
@@ -28,7 +29,7 @@ const START = '2026-09-25T12:00:00.000Z';
 const config = (root, overrides = {}) => ({
   target: 'https://client-side-defense.f5-sales-demo.com/csd-page-tamper/payment',
   awsAccount: '280469140135',
-  awsProfile: 'Users-280469140135',
+  awsProfile: '280469140135_Users',
   awsRegion: 'us-east-1',
   namespace: 'client-side-defense',
   lbName: 'client-side-defense',
@@ -118,7 +119,7 @@ function alert(name = 'ClientSideDefenseHttpHeaderCompromised', overrides = {}) 
     labels: {
       alertname: name,
       namespace: 'client-side-defense',
-      path: '/csd-page-tamper/payment',
+      path: 'https://client-side-defense.f5-sales-demo.com/csd-page-tamper/payment',
       header: 'X-Content-Type-Options',
     },
     startsAt: START,
@@ -194,6 +195,7 @@ test('deployment identity accepts only the reviewed deployment', async () => {
 test('history JSON strings parse and exact current/history matches dedupe', () => {
   const expected = {
     namespace: 'client-side-defense',
+    origin: 'https://client-side-defense.f5-sales-demo.com',
     path: '/csd-page-tamper/payment',
     headerId: 'x-content-type-options',
     windowStart: '2026-09-25T11:59:00.000Z',
@@ -213,9 +215,30 @@ test('history JSON strings parse and exact current/history matches dedupe', () =
     ['firing', 'resolved'],
   );
 });
+test('JSON encoded alert in unrelated description cannot become Page Tamper proof', () => {
+  const expected = {
+    namespace: 'client-side-defense',
+    origin: 'https://client-side-defense.f5-sales-demo.com',
+    path: '/csd-page-tamper/payment',
+    headerId: 'x-content-type-options',
+    windowStart: START,
+    windowEnd: '2026-09-25T12:01:00.000Z',
+  };
+  const decoy = alert('UnrelatedAlert', { description: JSON.stringify(alert()) });
+  assert.deepEqual(correlateAlertViews({ current: [decoy], history: [] }, expected), []);
+  assert.deepEqual(correlateAlertViews({ current: [], history: [JSON.stringify(decoy)] }, expected), []);
+  const history = JSON.stringify({ '@timestamp': START, alerts: [JSON.stringify(alert())] });
+  assert.equal(correlateAlertViews({ current: [], history: [history] }, expected).length, 1);
+  assert.equal(
+    correlateAlertViews({ current: [{ data: JSON.stringify([alert()]) }], history: [] }, expected).length,
+    1,
+  );
+});
+
 test('current firing alerts may predate bootstrap while stale resolved history remains excluded', () => {
   const expected = {
     namespace: 'client-side-defense',
+    origin: 'https://client-side-defense.f5-sales-demo.com',
     path: '/csd-page-tamper/payment',
     headerId: 'x-content-type-options',
     windowStart: START,
@@ -238,6 +261,7 @@ test('current firing alerts may predate bootstrap while stale resolved history r
 test('correlation rejects wrong path, header, namespace, stale, future, and generic alerts', () => {
   const expected = {
     namespace: 'client-side-defense',
+    origin: 'https://client-side-defense.f5-sales-demo.com',
     path: '/csd-page-tamper/payment',
     headerId: 'x-content-type-options',
     windowStart: '2026-09-25T11:59:00.000Z',
@@ -245,7 +269,13 @@ test('correlation rejects wrong path, header, namespace, stale, future, and gene
   };
   const invalid = [
     alert('OtherAlert'),
-    alert(undefined, { labels: { ...alert().labels, path: '/other' } }),
+    alert(undefined, { labels: { ...alert().labels, path: 'https://client-side-defense.f5-sales-demo.com/other' } }),
+    alert(undefined, { labels: { ...alert().labels, path: 'https://other.example/csd-page-tamper/payment' } }),
+    alert(undefined, {
+      labels: { ...alert().labels, path: 'http://client-side-defense.f5-sales-demo.com/csd-page-tamper/payment' },
+    }),
+    alert(undefined, { labels: { ...alert().labels, path: '/csd-page-tamper/payment' } }),
+    alert(undefined, { labels: { ...alert().labels, path: 'not a URL' } }),
     alert(undefined, { labels: { ...alert().labels, header: 'x-frame-options' } }),
     alert(undefined, { labels: { ...alert().labels, namespace: 'other' } }),
     alert(undefined, { startsAt: '2026-09-25T11:58:59.999Z' }),
@@ -257,6 +287,71 @@ test('correlation rejects wrong path, header, namespace, stale, future, and gene
       .length,
     1,
   );
+});
+
+test('historical Modified live-format event matches exact origin, header list and nanoseconds', () => {
+  const expected = {
+    namespace: 'client-side-defense',
+    origin: 'https://client-side-defense.f5-sales-demo.com',
+    path: '/csd-page-tamper/payment',
+    headerId: 'x-content-type-options',
+    windowStart: '2026-09-25T11:59:00.000Z',
+    windowEnd: '2026-09-25T12:01:00.000Z',
+  };
+  const raw = alert('ClientSideDefenseHttpHeaderModified', {
+    labels: {
+      ...alert('ClientSideDefenseHttpHeaderModified').labels,
+      header: 'x-content-type-options, x-frame-options, cache-control',
+    },
+    startsAt: '2026-09-25T12:00:00.123456789Z',
+  });
+  const matches = correlateAlertViews({ current: [], history: [JSON.stringify(raw)] }, expected);
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].starts_at, '2026-09-25T12:00:00.123Z');
+  assert.equal(classifyAlerts(matches), 'MODIFIED_ONLY');
+});
+
+test('live firing sentinel stays open until a real resolved history event', () => {
+  const expected = {
+    namespace: 'client-side-defense',
+    origin: 'https://client-side-defense.f5-sales-demo.com',
+    path: '/csd-page-tamper/payment',
+    headerId: 'x-content-type-options',
+    windowStart: '2026-09-25T11:59:00.000Z',
+    windowEnd: '2026-09-25T12:01:00.000Z',
+  };
+  const firing = alert('ClientSideDefenseHttpHeaderModified', {
+    labels: { ...alert().labels, header: 'x-content-type-options, x-frame-options, cache-control' },
+    startsAt: '2026-09-25T11:58:00.123456789Z',
+    status: 'firing',
+    endsAt: '0001-01-01T00:00:00Z',
+  });
+  const resolved = { ...firing, status: 'resolved', endsAt: '2026-09-25T12:00:30.000Z' };
+  const views = { current: [firing], history: [JSON.stringify(resolved)] };
+  assert.deepEqual(
+    correlateAlertViews(views, expected).map(({ state, ends_at }) => [state, ends_at]),
+    [['firing', null]],
+  );
+  assert.deepEqual(
+    correlateAlertViews(views, expected, { allowPriorResolution: true }).map(({ state, ends_at }) => [state, ends_at]),
+    [
+      ['firing', null],
+      ['resolved', '2026-09-25T12:00:30.000Z'],
+    ],
+  );
+  assert.deepEqual(
+    correlateAlertViews({ current: [{ ...firing, status: undefined }], history: [] }, expected).map(
+      ({ state, ends_at }) => [state, ends_at],
+    ),
+    [['firing', null]],
+  );
+  assert.deepEqual(
+    correlateAlertViews({ current: [], history: [{ ...resolved, status: undefined }] }, expected, {
+      allowPriorResolution: true,
+    }).map(({ state, ends_at }) => [state, ends_at]),
+    [['resolved', '2026-09-25T12:00:30.000Z']],
+  );
+  assert.deepEqual(correlateAlertViews({ current: [{ ...firing, status: 'unknown' }], history: [] }, expected), []);
 });
 
 test('classification produces mutually exclusive outcomes', () => {
@@ -302,6 +397,69 @@ test('runHeader completes phases, correlation, recovery, receipt, and lock clean
     (await readdir(join(root, 'receipts'))).some((name) => name.endsWith('.tmp')),
     false,
   );
+});
+
+test('bounded campaign rejects old matching current firing without manufacturing alert proof', async () => {
+  const old = alert(undefined, { startsAt: '2026-09-25T11:59:59.999Z', endsAt: '0001-01-01T00:00:00Z' });
+  const resolved = { ...old, status: 'resolved', endsAt: '2026-09-25T11:59:59.999Z' };
+  for (const current of [[old], []]) {
+    const root = await workspace();
+    const result = await runHeader(
+      config(root, { timings: { ...config(root).timings, mixedMs: 2, pollMs: 1 } }),
+      deps({
+        alertSource: async () => ({
+          current: [
+            ...current,
+            alert(undefined, {
+              labels: { ...alert().labels, path: 'https://other.example/csd-page-tamper/payment' },
+              startsAt: old.startsAt,
+            }),
+            alert(undefined, { labels: { ...alert().labels, header: 'x-frame-options' }, startsAt: old.startsAt }),
+            alert(undefined, {
+              labels: { ...alert().labels, path: 'https://client-side-defense.f5-sales-demo.com/other' },
+              startsAt: old.startsAt,
+            }),
+            alert(undefined, { labels: { ...alert().labels, namespace: 'other' }, startsAt: old.startsAt }),
+          ],
+          history: [resolved],
+        }),
+      }),
+      'x-content-type-options',
+    );
+    assert.equal(result.outcome, current.length ? 'INVALID_TEST' : 'NO_ALERT_WITHIN_WINDOW');
+    assert.equal(result.recovery.success, true);
+    assert.deepEqual(result.alerts, []);
+    if (current.length) assert.equal(result.error.code, 'INVALID_TEST');
+  }
+});
+
+test('bounded campaign accepts in-window current and history once', async () => {
+  const root = await workspace();
+  const event = alert(undefined, { endsAt: '0001-01-01T00:00:00Z' });
+  const result = await runHeader(
+    config(root, { timings: { ...config(root).timings, mixedMs: 2, pollMs: 1 } }),
+    deps({ alertSource: async () => ({ current: [event], history: [event] }) }),
+    'x-content-type-options',
+  );
+  assert.equal(result.outcome, 'COMPROMISED');
+  assert.equal(result.alerts.length, 1);
+  assert.equal(result.alerts[0].starts_at, START);
+});
+
+test('bounded telemetry exception remains INVALID_TEST rather than a no-alert result', async () => {
+  const root = await workspace();
+  const result = await runHeader(
+    config(root, { timings: { ...config(root).timings, mixedMs: 2, pollMs: 1 } }),
+    deps({
+      alertSource: async () => {
+        throw new ControllerError('alert polling failed', 'TELEMETRY_GAP');
+      },
+    }),
+    'x-content-type-options',
+  );
+  assert.equal(result.outcome, 'INVALID_TEST');
+  assert.equal(result.error.code, 'TELEMETRY_GAP');
+  assert.deepEqual(result.alerts, []);
 });
 
 test('exact Compromised ends mixed phase before minimum pairs', async () => {
@@ -379,7 +537,13 @@ test('concurrent stale recovery is claimed by exactly one command', async () => 
   await mkdir(join(root, 'receipts'), { recursive: true });
   await writeFile(
     join(root, 'receipts', 'active.lock'),
-    JSON.stringify({ run_id: 'original-run', command: 'run', started_at: START, state: 'recovery-required' }),
+    JSON.stringify({
+      run_id: 'original-run',
+      command: 'run',
+      started_at: START,
+      state: 'recovery-required',
+      worker: null,
+    }),
   );
   let releaseRecovery;
   const recoveryPaused = new Promise((resolve) => {
@@ -426,7 +590,13 @@ test('successful interrupted recovery retains active state when owned claim rele
   await mkdir(receiptDir, { recursive: true });
   await writeFile(
     join(receiptDir, 'active.lock'),
-    JSON.stringify({ run_id: 'original-run', command: 'run', started_at: START, state: 'recovery-required' }),
+    JSON.stringify({
+      run_id: 'original-run',
+      command: 'run',
+      started_at: START,
+      state: 'recovery-required',
+      worker: null,
+    }),
   );
   const injected = deps({
     remove: async (path, options) => {
@@ -453,7 +623,13 @@ test('stale recovery claim takeover is exclusive under deterministic contention'
   await utimes(claimDir, new Date(0), new Date(0));
   await writeFile(
     join(receiptDir, 'active.lock'),
-    JSON.stringify({ run_id: 'original-run', command: 'run', started_at: START, state: 'recovery-required' }),
+    JSON.stringify({
+      run_id: 'original-run',
+      command: 'run',
+      started_at: START,
+      state: 'recovery-required',
+      worker: null,
+    }),
   );
 
   let releaseRecovery;
@@ -542,9 +718,9 @@ test('bootstrap correlates object-shaped current and history API views without d
       fetch: async (url) => ({
         ok: true,
         json: async () =>
-          url.endsWith('/history')
-            ? { data: [{ items: [JSON.stringify(resolvedAlert)] }] }
-            : { data: [{ items: [JSON.stringify(currentAlert)] }] },
+          new URL(url).pathname.endsWith('/history')
+            ? { alerts: [JSON.stringify(resolvedAlert)], total_hits: '1', scroll_id: '' }
+            : { data: JSON.stringify([currentAlert]) },
       }),
       sleep: async (ms) => {
         now += ms;
@@ -574,7 +750,10 @@ test('production alert polling normalizes current and history without duplicate 
         urls.push(url);
         return {
           ok: true,
-          json: async () => (url.endsWith('/history') ? [] : [currentAlert]),
+          json: async () =>
+            new URL(url).pathname.endsWith('/history')
+              ? { alerts: [], total_hits: '0', scroll_id: 'stable-zero-hit-cursor' }
+              : { data: JSON.stringify([currentAlert]) },
         };
       },
       sleep: async (ms) => {
@@ -586,8 +765,100 @@ test('production alert polling normalizes current and history without duplicate 
   );
   assert.equal(result.success, true);
   assert.equal(result.alerts.length, 1);
-  assert.ok(urls.some((url) => url.endsWith('/alerts')));
-  assert.ok(urls.some((url) => url.endsWith('/alerts/history')));
+  assert.ok(urls.some((url) => new URL(url).pathname.endsWith('/alerts') && !new URL(url).search));
+  for (const state of ['inactive', 'silenced', 'inhibited', 'unprocessed'])
+    assert.ok(urls.some((url) => new URL(url).searchParams.get(state) === 'true'));
+  assert.ok(
+    urls.some((url) => {
+      const parsed = new URL(url);
+      return (
+        parsed.pathname.endsWith('/alerts/history') &&
+        parsed.searchParams.get('start_time') === START &&
+        parsed.searchParams.has('end_time')
+      );
+    }),
+  );
+  assert.equal(
+    urls.some((url) => new URL(url).pathname.endsWith('/history/scroll')),
+    false,
+  );
+});
+
+test('production history scroll reconciles 501 hits and stops despite a remaining cursor', async () => {
+  const root = await workspace();
+  let now = Date.parse(START);
+  const urls = [];
+  const record = JSON.stringify(alert('ClientSideDefenseHttpHeaderModified'));
+  const result = await bootstrap(
+    config(root, { timings: { ...config(root).timings, bootstrapControlMs: 1, quietMs: 0, pollMs: 1 } }),
+    deps({
+      alertSource: null,
+      fetch: async (url, options) => {
+        urls.push(url);
+        assert.equal(options.headers.Authorization, 'APIToken secret-not-for-receipts');
+        const path = new URL(url).pathname;
+        const body = path.endsWith('/history/scroll')
+          ? { alerts: [record], total_hits: '501', scroll_id: 'still-present' }
+          : path.endsWith('/history')
+            ? { alerts: Array(500).fill(record), total_hits: '501', scroll_id: 'next-page' }
+            : { data: '[]' };
+        return { ok: true, json: async () => body };
+      },
+      sleep: async (ms) => {
+        now += ms;
+      },
+      now: () => new Date(now).toISOString(),
+      nowMs: () => now,
+    }),
+  );
+  assert.equal(result.success, true);
+  assert.equal(result.alerts.length, 1);
+  const scroll = urls.filter((url) => new URL(url).pathname.endsWith('/history/scroll'));
+  assert.equal(scroll.length, 1);
+  assert.equal(new URL(scroll[0]).searchParams.get('scroll_id'), 'next-page');
+});
+
+test('production telemetry fails closed on incomplete, repeated, malformed and HTTP error pages', async () => {
+  for (const failure of ['missing-cursor', 'repeated-cursor', 'bad-total', 'bad-record', 'bad-current', 'http-error']) {
+    const root = await workspace();
+    let now = Date.parse(START);
+    let scrollCalls = 0;
+    await assert.rejects(
+      bootstrap(
+        config(root, { timings: { ...config(root).timings, bootstrapControlMs: 1, quietMs: 0, pollMs: 1 } }),
+        deps({
+          alertSource: null,
+          fetch: async (url) => {
+            const path = new URL(url).pathname;
+            if (path.endsWith('/history/scroll')) scrollCalls += 1;
+            if (failure === 'http-error' && path.endsWith('/history')) return { ok: false };
+            const body = path.endsWith('/history/scroll')
+              ? { alerts: [JSON.stringify(alert())], total_hits: '3', scroll_id: 'same' }
+              : path.endsWith('/history')
+                ? failure === 'bad-total'
+                  ? { alerts: [], total_hits: 'invalid', scroll_id: '' }
+                  : failure === 'bad-record'
+                    ? { alerts: ['not json'], total_hits: '1', scroll_id: '' }
+                    : {
+                        alerts: [JSON.stringify(alert())],
+                        total_hits: '3',
+                        scroll_id: failure === 'missing-cursor' ? '' : 'same',
+                      }
+                : { data: failure === 'bad-current' ? '{invalid' : '[]' };
+            return { ok: true, json: async () => body };
+          },
+          sleep: async (ms) => {
+            now += ms;
+          },
+          now: () => new Date(now).toISOString(),
+          nowMs: () => now,
+        }),
+      ),
+      (error) => error instanceof ControllerError && error.code === 'TELEMETRY_GAP',
+      failure,
+    );
+    assert.equal(scrollCalls, failure === 'repeated-cursor' ? 1 : 0, failure);
+  }
 });
 
 test('suite final cleanup failure persists evidence and blocks new runs', async () => {
@@ -827,6 +1098,62 @@ test('failed bootstrap attempts recovery, persists failure, and clears lock only
   assert.equal(receipt.recovery.success, true);
 });
 
+test('bootstrap retains lock after production SSM final cleanup fails despite successful earlier recovery', async () => {
+  const root = await workspace();
+  const base = executor();
+  let cleanupCommands = 0;
+  let lastCommand = '';
+  let readinessCalls = 0;
+  const injected = deps({
+    workerProbe: null,
+    executor: async (argv, options) => {
+      if (argv[0] !== 'aws' || argv[1] !== 'ssm') return base(argv, options);
+      if (argv[2] === 'send-command') {
+        const parameters = argv[argv.indexOf('--parameters') + 1];
+        assert.ok(parameters.length <= 4096);
+        lastCommand = JSON.parse(parameters).commands[0];
+        if (lastCommand.includes('shutil.rmtree(root)')) cleanupCommands += 1;
+        return { code: 0, stdout: JSON.stringify({ Command: { CommandId: 'command-1' } }), stderr: '' };
+      }
+      if (argv[2] === 'get-command-invocation')
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            Status: cleanupCommands ? 'Failed' : 'Success',
+            ResponseCode: cleanupCommands ? 1 : 0,
+          }),
+          stderr: '',
+        };
+      throw new Error(`unexpected SSM operation: ${argv[2]}`);
+    },
+    readiness: async () => {
+      readinessCalls += 1;
+      return readinessCalls === 1
+        ? { endpoint_health: false }
+        : {
+            endpoint_health: true,
+            payment_health: true,
+            application_health: true,
+            lb_ready: true,
+            certificate_valid: true,
+          };
+    },
+  });
+  await assert.rejects(bootstrap(config(root), injected), (error) => error.code === 'READINESS_FAILED');
+  assert.ok(cleanupCommands > 0);
+  const receiptName = (await readdir(join(root, 'receipts'))).find((name) => name.startsWith('bootstrap-'));
+  const receipt = JSON.parse(await readFile(join(root, 'receipts', receiptName), 'utf8'));
+  assert.equal(receipt.success, false);
+  assert.equal(receipt.recovery.success, false);
+  assert.equal(receipt.recovery.cleanup.worker_artifacts_removed, false);
+  const lock = JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8'));
+  assert.equal(lock.state, 'recovery-required');
+  assert.equal(lock.recovery_completed, false);
+  assert.equal(lock.evidence_persistence_failure, false);
+  assert.equal(lock.error.code, 'RECOVERY_FAILED');
+  assert.equal((await status(config(root))).active, true);
+});
+
 test('recovery emits repeated control pairs before final proof', async () => {
   const root = await workspace();
   let now = Date.parse(START);
@@ -860,6 +1187,448 @@ test('F5 token is environment-only and exact API origin is mandatory', async () 
     validateDeploymentIdentity(config(root, { f5ApiUrl: 'https://other.console.ves.volterra.io' }), deps()),
     (error) => error.code === 'IDENTITY_MISMATCH',
   );
+});
+
+const ownedWorker = (name = 'original-run') => ({
+  runId: name,
+  root: `/tmp/xcsh-csd-${name}`,
+  instance_id: 'i-0123456789abcdef0',
+  aws_account: '280469140135',
+  aws_region: 'us-east-1',
+  aws_profile: '280469140135_Users',
+});
+
+function simulatedSsm(onScript, result = probe()) {
+  const base = executor();
+  let commandId = 0;
+  let pendingFailure = false;
+  return async (argv, options) => {
+    if (argv[1] !== 'ssm') return base(argv, options);
+    if (argv[2] === 'send-command') {
+      const script = JSON.parse(argv[argv.indexOf('--parameters') + 1]).commands[0];
+      pendingFailure = (await onScript(script)) === true;
+      return { code: 0, stdout: JSON.stringify({ Command: { CommandId: `cmd-${++commandId}` } }), stderr: '' };
+    }
+    if (argv[2] === 'get-command-invocation')
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          Status: pendingFailure ? 'Failed' : 'Success',
+          ResponseCode: pendingFailure ? 42 : 0,
+          StandardOutputContent: `XCSH_RESULT ${JSON.stringify(result)}\n`,
+        }),
+        stderr: '',
+      };
+    throw new Error(`unexpected SSM operation ${argv[2]}`);
+  };
+}
+
+test('bootstrap records original worker root before first SSM command, including failed creation', async () => {
+  const root = await workspace();
+  const base = executor();
+  let seen = 0;
+  const injected = deps({
+    workerProbe: null,
+    executor: async (argv, options) => {
+      if (argv[1] !== 'ssm') return base(argv, options);
+      if (argv[2] === 'send-command') {
+        const lock = JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8'));
+        assert.deepEqual(lock.worker, ownedWorker('00000000-0000-4000-8000-000000000001'));
+        seen++;
+        return { code: 1, stdout: '', stderr: '' };
+      }
+      throw new Error('unexpected SSM operation');
+    },
+  });
+  await assert.rejects(bootstrap(config(root), injected), (error) => error.code === 'EXTERNAL_COMMAND_FAILED');
+  assert.ok(seen >= 1);
+  assert.equal(JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8')).state, 'recovery-required');
+});
+
+test('bootstrap partial preparation retains recorded root without starting fresh probes', async () => {
+  const root = await workspace();
+  const scripts = [];
+  let probes = 0;
+  const result = deps({
+    workerProbe: null,
+    cleanup: null,
+    executor: simulatedSsm((script) => {
+      scripts.push(script);
+      return scripts.length === 2;
+    }),
+    probe: ({ headerId }) => {
+      probes++;
+      return probe({ headerId });
+    },
+  });
+  await assert.rejects(bootstrap(config(root), result), (error) => error.code === 'SSM_FAILED');
+  assert.equal(probes, 0);
+  assert.match(scripts[0], /mkdir "\$run"/);
+  assert.match(scripts[1], /printf %s/);
+  assert.match(scripts[2], /set -- '\/tmp\/xcsh-csd-00000000-0000-4000-8000-000000000001' cleanup/);
+  assert.equal(scripts.filter((script) => script.includes('mkdir "$run"')).length, 1);
+  const lock = JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8'));
+  assert.deepEqual(lock.worker, ownedWorker('00000000-0000-4000-8000-000000000001'));
+  assert.equal(lock.state, 'recovery-required');
+});
+
+test('bootstrap failure probes the recorded worker without creating an ephemeral root', async () => {
+  const root = await workspace();
+  const scripts = [];
+  let controls = 0;
+  const injected = deps({
+    workerProbe: null,
+    cleanup: null,
+    executor: simulatedSsm((script) => {
+      scripts.push(script);
+    }),
+    readiness: async () => ({ payment_health: false }),
+    probe: ({ headerId, worker }) => {
+      assert.deepEqual(worker, ownedWorker('00000000-0000-4000-8000-000000000001'));
+      controls++;
+      return probe({ headerId });
+    },
+  });
+  await assert.rejects(bootstrap(config(root), injected), (error) => error.code === 'READINESS_FAILED');
+  assert.ok(controls >= 2);
+  assert.equal(scripts.filter((script) => script.includes('mkdir "$run"')).length, 1);
+  assert.equal(
+    JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8')).worker.root,
+    ownedWorker('00000000-0000-4000-8000-000000000001').root,
+  );
+});
+
+test('single-header partial preparation re-prepares only its recorded root after verified cleanup', async () => {
+  const root = await workspace();
+  const scripts = [];
+  let probes = 0;
+  const result = await runHeader(
+    config(root),
+    deps({
+      workerProbe: null,
+      cleanup: null,
+      executor: simulatedSsm((script) => {
+        scripts.push(script);
+        return scripts.length === 2;
+      }),
+      probe: ({ headerId, worker }) => {
+        probes++;
+        assert.deepEqual(worker, ownedWorker('00000000-0000-4000-8000-000000000001'));
+        return probe({ headerId });
+      },
+    }),
+    'x-content-type-options',
+  );
+  assert.equal(result.outcome, 'INVALID_TEST');
+  assert.equal(result.recovery.success, true);
+  assert.ok(probes >= 2);
+  const mkdirs = scripts
+    .map((script, index) => (script.includes('mkdir "$run"') ? index : -1))
+    .filter((index) => index >= 0);
+  const cleanup = scripts.findIndex((script) =>
+    script.includes("set -- '/tmp/xcsh-csd-00000000-0000-4000-8000-000000000001' cleanup"),
+  );
+  assert.equal(mkdirs.length, 2);
+  assert.ok(mkdirs[0] < cleanup && cleanup < mkdirs[1]);
+  assert.ok(
+    scripts
+      .slice(mkdirs[1])
+      .some((script) => script.includes("set -- '/tmp/xcsh-csd-00000000-0000-4000-8000-000000000001' cleanup")),
+  );
+  await assert.rejects(stat(join(root, 'receipts', 'active.lock')), /ENOENT/);
+});
+
+test('single header records root before failed preparation and cannot issue clean receipt', async () => {
+  const root = await workspace();
+  const base = executor();
+  let commands = 0;
+  const injected = deps({
+    workerProbe: null,
+    executor: async (argv, options) => {
+      if (argv[1] !== 'ssm') return base(argv, options);
+      if (argv[2] === 'send-command') {
+        const lock = JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8'));
+        assert.deepEqual(lock.worker, ownedWorker('00000000-0000-4000-8000-000000000001'));
+        commands++;
+      }
+      return { code: 1, stdout: '', stderr: '' };
+    },
+  });
+  const receipt = await runHeader(config(root), injected, 'x-content-type-options');
+  assert.ok(commands >= 2, 'preparation and original-root cleanup were both attempted');
+  assert.equal(receipt.outcome, 'INVALID_TEST');
+  assert.equal(receipt.recovery.success, false);
+  assert.equal(JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8')).state, 'recovery-required');
+});
+
+test('single header persists shared worker root rather than header run id', async () => {
+  const root = await workspace();
+  const shared = ownedWorker('shared-worker');
+  let checked = false;
+  const injected = deps({
+    probe: async ({ headerId }) => {
+      const lock = JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8'));
+      assert.deepEqual(lock.worker, shared);
+      checked = true;
+      return probe({ headerId });
+    },
+  });
+  const result = await runHeader(config(root), injected, 'x-content-type-options', {
+    worker: shared,
+    finalizeWorker: false,
+  });
+  assert.equal(result.recovery.success, true);
+  assert.equal(checked, true);
+});
+
+test('interrupted recovery checks the original root before new controls and releases only after clean scan', async () => {
+  const root = await workspace();
+  await mkdir(join(root, 'receipts'), { recursive: true });
+  const original = ownedWorker('old-worker');
+  await writeFile(
+    join(root, 'receipts', 'active.lock'),
+    JSON.stringify({
+      run_id: 'old-case',
+      command: 'run',
+      started_at: START,
+      state: 'recovery-required',
+      worker: original,
+    }),
+  );
+  const base = executor();
+  let scanned = false;
+  let commandText = '';
+  const injected = deps({
+    executor: async (argv, options) => {
+      if (argv[1] !== 'ssm') return base(argv, options);
+      if (argv[2] === 'send-command') {
+        commandText = JSON.parse(argv[argv.indexOf('--parameters') + 1]).commands[0];
+        assert.match(commandText, /set -- '\/tmp\/xcsh-csd-old-worker' cleanup/);
+        assert.doesNotMatch(commandText, /kill -|pgrep|secret-not-for-receipts/);
+        scanned = true;
+        return { code: 0, stdout: JSON.stringify({ Command: { CommandId: 'scan-1' } }), stderr: '' };
+      }
+      return { code: 0, stdout: JSON.stringify({ Status: 'Success', ResponseCode: 0 }), stderr: '' };
+    },
+    probe: ({ headerId }) => {
+      assert.equal(scanned, true);
+      return probe({ headerId });
+    },
+  });
+  const result = await runHeader(config(root), injected, 'x-content-type-options');
+  assert.equal(result.recovery.success, true);
+  const recoveryName = (await readdir(join(root, 'receipts'))).find((name) => name.startsWith('recovery-old-case-'));
+  const recoveryReceipt = JSON.parse(await readFile(join(root, 'receipts', recoveryName), 'utf8'));
+  assert.deepEqual(recoveryReceipt.recovery.original_worker_cleanup, { worker_artifacts_removed: true });
+  assert.equal(scanned, true);
+  assert.match(commandText, /arg\.startswith\(prefix\) and arg\.endswith\(b'\/profile'\)/);
+  assert.match(commandText, /re\.fullmatch/);
+  await assert.rejects(stat(join(root, 'receipts', 'active.lock')), /ENOENT/);
+});
+
+test('interruption reuses recorded root and retains it if recovery preparation fails', async () => {
+  for (const failPreparation of [false, true]) {
+    const root = await workspace();
+    await mkdir(join(root, 'receipts'), { recursive: true });
+    const original = ownedWorker('old-worker');
+    await writeFile(
+      join(root, 'receipts', 'active.lock'),
+      JSON.stringify({
+        run_id: 'old-case',
+        command: 'run',
+        started_at: START,
+        state: 'recovery-required',
+        worker: original,
+      }),
+    );
+    const scripts = [];
+    let controls = 0;
+    let nextId = 0;
+    const injected = deps({
+      workerProbe: null,
+      cleanup: null,
+      randomUUID: () => `generated-${++nextId}`,
+      executor: simulatedSsm(async (script) => {
+        scripts.push(script);
+        if (script.includes('mkdir "$run"') && script.includes(original.root)) {
+          const lock = JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8'));
+          assert.deepEqual(lock.worker, original);
+          return failPreparation;
+        }
+        return false;
+      }),
+      probe: ({ headerId, worker }) => {
+        if (worker?.root === original.root) controls++;
+        return probe({ headerId });
+      },
+    });
+    if (failPreparation) {
+      await assert.rejects(
+        runHeader(config(root), injected, 'x-content-type-options'),
+        (error) => error.code === 'SSM_FAILED',
+      );
+      const lock = JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8'));
+      assert.deepEqual(lock.worker, original);
+      assert.equal(lock.state, 'recovery-required');
+      assert.equal(controls, 0);
+    } else {
+      const receipt = await runHeader(config(root), injected, 'x-content-type-options');
+      assert.equal(receipt.recovery.success, true);
+      assert.ok(controls >= 2);
+      await assert.rejects(stat(join(root, 'receipts', 'active.lock')), /ENOENT/);
+    }
+    assert.match(scripts[0], /set -- '\/tmp\/xcsh-csd-old-worker' cleanup/);
+    assert.match(scripts[1], /run='\/tmp\/xcsh-csd-old-worker';mkdir "\$run"/);
+    if (!failPreparation) {
+      const lastOldCleanup = scripts.findIndex(
+        (script, index) => index > 1 && script.includes("set -- '/tmp/xcsh-csd-old-worker' cleanup"),
+      );
+      const nextRoot = scripts.findIndex(
+        (script) => script.includes('mkdir "$run"') && !script.includes(original.root),
+      );
+      assert.ok(lastOldCleanup > 1 && nextRoot > lastOldCleanup);
+    }
+  }
+});
+
+test('legacy or wrong worker identity fails closed without SSM or control probes', async () => {
+  for (const worker of [undefined, { ...ownedWorker('old-worker'), root: '/tmp/xcsh-csd-other-worker' }]) {
+    const root = await workspace();
+    await mkdir(join(root, 'receipts'), { recursive: true });
+    const record = { run_id: 'old-case', command: 'run', started_at: START, state: 'recovery-required' };
+    if (worker) record.worker = worker;
+    await writeFile(join(root, 'receipts', 'active.lock'), JSON.stringify(record));
+    let touched = false;
+    await assert.rejects(
+      runHeader(
+        config(root),
+        deps({
+          executor: async (argv, options) => {
+            if (argv[1] === 'ssm') {
+              touched = true;
+              throw new Error('unsafe SSM');
+            }
+            return executor()(argv, options);
+          },
+          probe: () => {
+            touched = true;
+            throw new Error('unsafe probe');
+          },
+        }),
+        'x-content-type-options',
+      ),
+      (error) => error.code === 'WORKER_IDENTITY_INVALID',
+    );
+    assert.equal(touched, false);
+    const lock = JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8'));
+    assert.equal(lock.state, 'recovery-required');
+    assert.equal(lock.worker?.root, worker?.root);
+  }
+});
+
+test('interrupted recovery stops on original-root live profile without fresh probes', async () => {
+  const root = await workspace();
+  await mkdir(join(root, 'receipts'), { recursive: true });
+  await writeFile(
+    join(root, 'receipts', 'active.lock'),
+    JSON.stringify({
+      run_id: 'old-case',
+      command: 'run',
+      started_at: START,
+      state: 'recovery-required',
+      worker: ownedWorker('old-worker'),
+    }),
+  );
+  let probes = 0;
+  let cleanupCommands = 0;
+  const base = executor();
+  await assert.rejects(
+    runHeader(
+      config(root),
+      deps({
+        probe: () => {
+          probes++;
+          return probe();
+        },
+        executor: async (argv, options) => {
+          if (argv[1] !== 'ssm') return base(argv, options);
+          if (argv[2] === 'send-command') {
+            cleanupCommands++;
+            const script = JSON.parse(argv[argv.indexOf('--parameters') + 1]).commands[0];
+            assert.match(script, /set -- '\/tmp\/xcsh-csd-old-worker' cleanup/);
+            return { code: 0, stdout: JSON.stringify({ Command: { CommandId: 'still-running' } }), stderr: '' };
+          }
+          return { code: 0, stdout: JSON.stringify({ Status: 'Failed', ResponseCode: 42 }), stderr: '' };
+        },
+      }),
+      'x-content-type-options',
+    ),
+    (error) => error.code === 'RECOVERY_FAILED',
+  );
+  assert.equal(cleanupCommands, 1);
+  assert.equal(probes, 0);
+  const lock = JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8'));
+  assert.equal(lock.state, 'recovery-required');
+  assert.deepEqual(lock.worker, ownedWorker('old-worker'));
+  assert.equal(lock.recovery_completed, false);
+});
+
+test('worker cleanup refuses a live profile or uncertain SSM and never signals a process', async () => {
+  const root = await workspace();
+  const base = executor();
+  let sends = 0;
+  for (const responseCode of [1, 0]) {
+    let script = '';
+    const injected = deps({
+      executor: async (argv, options) => {
+        if (argv[1] !== 'ssm') return base(argv, options);
+        if (argv[2] === 'send-command') {
+          sends++;
+          const serialized = argv[argv.indexOf('--parameters') + 1];
+          assert.ok(serialized.length <= 4096);
+          script = JSON.parse(serialized).commands[0];
+          assert.ok(script.length <= 4096);
+          assert.doesNotMatch(script, /pgrep|kill\s+-|os\.kill|secret-not-for-receipts/);
+          assert.match(script, /scan\(\)[\s\S]*shutil\.rmtree\(root\)[\s\S]*scan\(\)/);
+          return { code: 0, stdout: JSON.stringify({ Command: { CommandId: 'scan-1' } }), stderr: '' };
+        }
+        return {
+          code: 0,
+          stdout: JSON.stringify({ Status: responseCode ? 'Failed' : 'Success', ResponseCode: responseCode }),
+          stderr: '',
+        };
+      },
+    });
+    assert.deepEqual(await cleanupWorker(config(root), injected, ownedWorker()), {
+      worker_artifacts_removed: responseCode === 0,
+    });
+  }
+  const before = sends;
+  assert.deepEqual(await cleanupWorker(config(root), deps(), { ...ownedWorker(), root: '/tmp/xcsh-csd-other' }), {
+    worker_artifacts_removed: false,
+  });
+  assert.equal(sends, before);
+});
+
+test('self-owned worker probe rejects successful browser result when root cleanup fails', async () => {
+  const root = await workspace();
+  const scripts = [];
+  await assert.rejects(
+    runWorkerProbe(
+      config(root),
+      deps({
+        executor: simulatedSsm((script) => {
+          scripts.push(script);
+          return script.includes('shutil.rmtree(root)');
+        }),
+      }),
+      'x-frame-options',
+    ),
+    (error) => error.code === 'RECOVERY_FAILED' && /cleanup failed/.test(error.message),
+  );
+  assert.ok(scripts.some((script) => script.includes('sudo -u ubuntu -H')));
+  assert.ok(scripts.some((script) => script.includes('shutil.rmtree(root)')));
+  assert.ok(scripts.every((script) => !/pgrep|kill\s+-|os\.kill/.test(script)));
 });
 
 test('production worker keeps every current-source SSM command and parameters value within 4096 characters', async () => {
@@ -905,7 +1674,9 @@ test('production worker keeps every current-source SSM command and parameters va
   assert.ok(commands.some((value) => value.includes('sha256sum')));
   assert.ok(commands.some((value) => value.includes('base64 -d')));
   assert.ok(commands.some((value) => value.includes('sudo -u ubuntu -H')));
-  assert.ok(commands.some((value) => value.includes("rm -rf '/tmp/xcsh-csd-")));
+  assert.ok(commands.some((value) => value.includes('shutil.rmtree(root)')));
+  assert.ok(commands.some((value) => value.includes('cmd.read(65537)')));
+  assert.ok(commands.every((value) => !value.includes('pgrep -f')));
   const encodedWorkerScript = commands
     .map((value) => value.match(/printf %s '([^']+)' >>'[^']+\.launch-[^']+\.b64'/)?.[1])
     .filter(Boolean)
@@ -1044,7 +1815,13 @@ test('same-host dead recovery owner is reclaimed before stale timeout', async ()
   );
   await writeFile(
     join(receiptDir, 'active.lock'),
-    JSON.stringify({ run_id: 'original-run', command: 'run', started_at: START, state: 'recovery-required' }),
+    JSON.stringify({
+      run_id: 'original-run',
+      command: 'run',
+      started_at: START,
+      state: 'recovery-required',
+      worker: null,
+    }),
   );
   const result = await runHeader(
     config(root, { timings: { ...config(root).timings, maximumCaseMs: 60 * 60_000 } }),
@@ -1071,7 +1848,13 @@ test('live, foreign, and legacy recovery owners remain age-gated', async () => {
     );
     await writeFile(
       join(receiptDir, 'active.lock'),
-      JSON.stringify({ run_id: 'original-run', command: 'run', started_at: START, state: 'recovery-required' }),
+      JSON.stringify({
+        run_id: 'original-run',
+        command: 'run',
+        started_at: START,
+        state: 'recovery-required',
+        worker: null,
+      }),
     );
     await assert.rejects(
       runHeader(

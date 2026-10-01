@@ -1,3 +1,7 @@
+variables {
+  alert_receiver_email = "alerts@example.test"
+}
+
 mock_provider "aws" {
   mock_resource "aws_cloudwatch_log_group" {
     defaults = {
@@ -101,6 +105,22 @@ override_module {
 
 run "stack_contract" {
   command = apply
+
+
+  assert {
+    condition     = module.page_tamper_alerts.namespace == var.namespace && module.page_tamper_alerts.receiver_name == "csd-page-tamper-alert-receiver"
+    error_message = "The Page Tamper receiver must be scoped to the managed CSD namespace."
+  }
+
+  assert {
+    condition     = module.page_tamper_alerts.policy_name == "csd-page-tamper-alert-policy" && module.page_tamper_alerts.alertname_regex == "^ClientSideDefenseHttpHeader(Modified|Compromised)$"
+    error_message = "The namespace Alert Policy must send only Page Tamper header alerts to the namespace receiver."
+  }
+
+  assert {
+    condition     = length(regexall("sensitive\\s*=\\s*true", file("${path.module}/alerts.tf"))) == 1
+    error_message = "The receiver email input must be marked sensitive."
+  }
 
   assert {
     condition     = length(regexall("allowed_account_ids\\s*=\\s*\\[\\s*var\\.expected_aws_account_id\\s*\\]", file("${path.module}/versions.tf"))) == 1

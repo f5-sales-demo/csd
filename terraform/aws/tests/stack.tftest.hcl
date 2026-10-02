@@ -1,3 +1,8 @@
+variables {
+  alert_receiver_email = "alerts@example.test"
+}
+
+
 mock_provider "aws" {
   mock_resource "aws_cloudwatch_log_group" {
     defaults = {
@@ -42,6 +47,21 @@ override_module {
 
 run "stack_contract" {
   command = apply
+
+  assert {
+    condition     = xcsh_alert_receiver.page_tamper.namespace == var.namespace && xcsh_alert_receiver.page_tamper.name == "csd-page-tamper-alert-receiver"
+    error_message = "The Page Tamper receiver must be scoped to the managed CSD namespace."
+  }
+
+  assert {
+    condition     = one(xcsh_alert_policy.page_tamper.receivers).namespace == var.namespace && one(xcsh_alert_policy.page_tamper.receivers).name == xcsh_alert_receiver.page_tamper.name && one(xcsh_alert_policy.page_tamper.routes).alertname_regex == "^ClientSideDefenseHttpHeader(Modified|Compromised)$"
+    error_message = "The CSD policy must route only the two Page Tamper header alert names to the namespace receiver."
+  }
+
+  assert {
+    condition     = length(regexall("sensitive\\s*=\\s*true", file("${path.module}/alerts.tf"))) == 1
+    error_message = "The personal email input must be marked sensitive in Terraform."
+  }
 
   assert {
     condition     = length(regexall("allowed_account_ids\\s*=\\s*\\[\\s*var\\.expected_aws_account_id\\s*\\]", file("${path.module}/versions.tf"))) == 1

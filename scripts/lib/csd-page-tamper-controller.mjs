@@ -8,7 +8,7 @@ import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { createGzip } from 'node:zlib';
 import { DOCUMENT_PROBE_HEADERS, DOCUMENT_PROBE_PATH, DOCUMENT_PROBE_SELECTOR_IDS } from './csd-config.mjs';
-import { classifyAlerts, correlateAlerts, correlateAlertViews } from './csd-page-tamper-alerts.mjs';
+import { classifyAlerts, correlateAlertViews } from './csd-page-tamper-alerts.mjs';
 import { CdpClient, runDocumentProbe } from './csd-runner.mjs';
 
 export const HEADER_VALUES = Object.freeze(
@@ -32,7 +32,7 @@ const REVIEWED = Object.freeze({
   targetOrigin: 'https://client-side-defense.f5-sales-demo.com',
   f5ApiOrigin: 'https://f5-sales-demo.console.ves.volterra.io',
   awsAccount: '280469140135',
-  awsProfile: 'Users-280469140135',
+  awsProfile: '280469140135_Users',
   awsRegion: 'us-east-1',
   namespace: 'client-side-defense',
   lbName: 'client-side-defense',
@@ -149,7 +149,27 @@ async function noDrift(config, deps) {
   return { checked: true, no_drift: result.code === 0 };
 }
 
-async function acquireLock(config, runId, now, commandName) {
+function workerIdentity(config, worker) {
+  if (worker === null) return null;
+  const root = worker?.root;
+  const runId = worker?.runId;
+  if (typeof runId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,63}$/.test(runId) ||
+      root !== `/tmp/xcsh-csd-${runId}` ||
+      !/^i-[0-9a-f]{8,17}$/.test(config.workerInstance))
+    throw new ControllerError('worker root or target identity cannot be proven', 'WORKER_IDENTITY_INVALID', 5);
+  return { runId, root, instance_id: config.workerInstance, aws_account: config.awsAccount, aws_region: config.awsRegion, aws_profile: config.awsProfile };
+}
+function validatedWorker(config, identity) {
+  if (!identity || typeof identity !== 'object' || Array.isArray(identity))
+    throw new ControllerError('recorded worker identity is missing', 'WORKER_IDENTITY_INVALID', 5);
+  const expected = workerIdentity(config, identity);
+  if (Object.keys(expected).some((key) => identity[key] !== expected[key]))
+    throw new ControllerError('recorded worker target differs from active worker', 'WORKER_IDENTITY_INVALID', 5);
+  return expected;
+}
+
+async function acquireLock(config, runId, now, commandName, worker = null) {
+  const identity = workerIdentity(config, worker);
   await mkdir(config.receiptDir, { recursive: true, mode: 0o700 });
   const path = join(config.receiptDir, 'active.lock');
   let handle;
@@ -160,6 +180,7 @@ async function acquireLock(config, runId, now, commandName) {
         schema_version: 1,
         run_id: runId,
         command: commandName,
+        worker: identity,
         started_at: now(),
         state: 'active',
         hostname: hostname(),
@@ -190,15 +211,16 @@ async function atomicReceipt(path, value) {
     await rm(temp, { force: true });
   }
 }
-async function preserveRecoveryLock(lockPath, receipt, error) {
+async function preserveRecoveryLock(lockPath, receipt, error, evidencePersistenceFailure = true) {
   await atomicReplace(lockPath, {
     schema_version: 1,
     run_id: receipt.run_id,
     command: receipt.command,
     started_at: receipt.started_at,
+    ...(Object.hasOwn(receipt, 'worker') ? { worker: receipt.worker } : {}),
     state: 'recovery-required',
     recovery_completed: receipt.recovery?.success === true,
-    evidence_persistence_failure: true,
+    evidence_persistence_failure: evidencePersistenceFailure,
     error: { code: error.code || 'RECEIPT_WRITE_FAILED', message: String(error.message).slice(0, 160) },
   });
 }
@@ -406,44 +428,67 @@ async function invokeSsm(config, deps, script, { expectResult = false } = {}) {
 }
 
 export async function prepareWorker(config, deps, runId = deps.randomUUID()) {
-  const root = `/tmp/xcsh-csd-${runId}`;
+  const { root } = workerIdentity(config, { runId, root: `/tmp/xcsh-csd-${runId}` });
   const archive = await gzipBuffer(workerArchiveEntries(await workerSources(deps)));
   const encoded = archive.toString('base64');
   const sha256 = createHash('sha256').update(archive).digest('hex');
   const archivePath = `${root}/sources.gz`;
-  try {
-    await invokeSsm(
-      config,
-      deps,
-      `set -eu;umask 077;run='${root}';rm -rf "$run";mkdir -p "$run";: >'${archivePath}.b64'`,
-    );
-    for (let offset = 0; offset < encoded.length; offset += SSM_CHUNK_SIZE) {
-      const chunk = encoded.slice(offset, offset + SSM_CHUNK_SIZE);
-      await invokeSsm(config, deps, `set -eu;printf %s '${chunk}' >>'${archivePath}.b64'`);
-    }
-    const extraction = `set -eu;run='${root}';base64 -d '${archivePath}.b64' >'${archivePath}';actual=$(sha256sum '${archivePath}'|cut -d' ' -f1);[ "$actual" = '${sha256}' ]||exit 41;rm -f '${archivePath}.b64';python3 - "$run" '${archivePath}' <<'PY'\nimport gzip,pathlib,sys\nout=pathlib.Path(sys.argv[1]);data=gzip.open(sys.argv[2],'rt').read();i=0\nwhile i<len(data):\n c=data.find(':',i);n=int(data[i:c]);name=data[c+1:c+1+n];i=c+1+n;c=data.find(':',i);size=int(data[i:c]);body=data[c+1:c+1+size];i=c+1+size;(out/name).write_text(body)\nPY\nchown -R ubuntu:ubuntu "$run";chmod -R go-rwx "$run"`;
-    await invokeSsm(config, deps, extraction);
-    return { runId, root, sha256 };
-  } catch (error) {
-    try {
-      await invokeSsm(config, deps, `rm -rf '${root}';[ ! -e '${root}' ]`);
-    } catch {}
-    throw error;
+  await invokeSsm(
+    config, deps,
+    `set -eu;umask 077;run='${root}';mkdir "$run";: >'${archivePath}.b64'`,
+  );
+  for (let offset = 0; offset < encoded.length; offset += SSM_CHUNK_SIZE) {
+    const chunk = encoded.slice(offset, offset + SSM_CHUNK_SIZE);
+    await invokeSsm(config, deps, `set -eu;printf %s '${chunk}' >>'${archivePath}.b64'`);
   }
+  const extraction = `set -eu;run='${root}';base64 -d '${archivePath}.b64' >'${archivePath}';actual=$(sha256sum '${archivePath}'|cut -d' ' -f1);[ "$actual" = '${sha256}' ]||exit 41;rm -f '${archivePath}.b64';python3 - "$run" '${archivePath}' <<'PY'\nimport gzip,pathlib,sys\nout=pathlib.Path(sys.argv[1]);data=gzip.open(sys.argv[2],'rt').read();i=0\nwhile i<len(data):\n c=data.find(':',i);n=int(data[i:c]);name=data[c+1:c+1+n];i=c+1+n;c=data.find(':',i);size=int(data[i:c]);body=data[c+1:c+1+size];i=c+1+size;(out/name).write_text(body)\nPY\nchown -R ubuntu:ubuntu "$run";chmod -R go-rwx "$run"`;
+  await invokeSsm(config, deps, extraction);
+  return { ...workerIdentity(config, { runId, root }), sha256 };
 }
+
+const WORKER_CLEANUP_SCRIPT = `set -eu
+python3 - "$1" "$2" <<'PY'
+import os,re,shutil,sys
+root=sys.argv[1]
+prefix=('--user-data-dir='+root+'/probe-').encode()
+def scan():
+    count=0
+    with os.scandir('/proc') as entries:
+        for entry in entries:
+            if not entry.name.isdecimal(): continue
+            count+=1
+            if count>8192: raise RuntimeError('process scan limit')
+            try:
+                with open('/proc/'+entry.name+'/cmdline','rb') as cmd:
+                    data=cmd.read(65537)
+            except FileNotFoundError: continue
+            if len(data)>65536: raise RuntimeError('process argv limit')
+            for arg in data.split(b'\\0'):
+                if arg.startswith(prefix) and arg.endswith(b'/profile'):
+                    if not re.fullmatch(b'--user-data-dir='+re.escape(root.encode())+b'/probe-[A-Za-z0-9-]+/profile',arg):
+                        raise RuntimeError('ambiguous owned Chrome profile')
+                    raise RuntimeError('owned Chrome profile remains active')
+scan()
+if sys.argv[2]!='scan':
+    if os.path.lexists(root): shutil.rmtree(root)
+    scan()
+    if os.path.lexists(root): raise RuntimeError('worker root remains')
+PY`;
 
 export async function cleanupWorker(config, deps, worker) {
   if (!worker) return { worker_artifacts_removed: true };
   try {
-    await invokeSsm(config, deps, `set -eu;rm -rf '${worker.root}';[ ! -e '${worker.root}' ]`);
+    const { root } = validatedWorker(config, worker);
+    await invokeSsm(config, deps, `set -- '${root}' cleanup;${WORKER_CLEANUP_SCRIPT}`);
     return { worker_artifacts_removed: true };
   } catch {
     return { worker_artifacts_removed: false };
   }
 }
 
+
 export async function runWorkerProbe(config, deps, headerId = null, worker = null) {
-  const owned = worker || (await prepareWorker(config, deps));
+  const owned = worker ? validatedWorker(config, worker) : await prepareWorker(config, deps);
   const probeId = deps.randomUUID();
   const probeRoot = `${owned.root}/probe-${probeId}`;
   const entry = Buffer.from(
@@ -458,6 +503,8 @@ chmod 700 "$spawn";/usr/bin/setsid --fork "$spawn" "$pidfile" "$chrome" --headle
   const encodedScript = Buffer.from(userScript).toString('base64');
   const launcher = `${owned.root}/.launch-${probeId}`;
   const encodedLauncher = `${launcher}.b64`;
+  let result;
+  let failure;
   try {
     await invokeSsm(config, deps, `set -eu;umask 077;: >'${encodedLauncher}'`);
     for (let offset = 0; offset < encodedScript.length; offset += SSM_CHUNK_SIZE)
@@ -467,10 +514,17 @@ chmod 700 "$spawn";/usr/bin/setsid --fork "$spawn" "$pidfile" "$chrome" --headle
         `set -eu;printf %s '${encodedScript.slice(offset, offset + SSM_CHUNK_SIZE)}' >>'${encodedLauncher}'`,
       );
     const script = `set -eu;launcher='${launcher}';encoded='${encodedLauncher}';cleanup(){ rm -f "$launcher" "$encoded"; };trap cleanup EXIT INT TERM;umask 077;base64 -d "$encoded" >"$launcher";chown ubuntu:ubuntu "$launcher";chmod 700 "$launcher";sudo -u ubuntu -H "$launcher";cleanup;[ ! -e '${probeRoot}' ]||exit 35;trap - EXIT INT TERM`;
-    return await invokeSsm(config, deps, script, { expectResult: true });
-  } finally {
-    if (!worker) await cleanupWorker(config, deps, owned);
+    result = await invokeSsm(config, deps, script, { expectResult: true });
+  } catch (error) {
+    failure = error;
   }
+  if (!worker) {
+    const cleanup = await cleanupWorker(config, { ...deps, signal: undefined }, owned);
+    if (!cleanup.worker_artifacts_removed)
+      throw new ControllerError('self-owned worker root cleanup failed', 'RECOVERY_FAILED', 5);
+  }
+  if (failure) throw failure;
+  return result;
 }
 
 async function browserProbe(config, deps, headerId = null, location = 'workstation', worker = null) {
@@ -487,21 +541,89 @@ async function browserProbe(config, deps, headerId = null, location = 'workstati
   }
 }
 
+const MAX_HISTORY_PAGES = 20;
+const HISTORY_PAGE_SIZE = 500;
+
 async function pollAlerts(config, deps, expected) {
   if (deps.alertSource) return deps.alertSource(expected);
   const headers = { Authorization: `APIToken ${config.f5ApiToken}` };
-  const base = REVIEWED.f5ApiOrigin;
-  const [current, history] = await Promise.all(
-    [
-      `${base}/api/data/namespaces/${encodeURIComponent(config.namespace)}/alerts`,
-      `${base}/api/data/namespaces/${encodeURIComponent(config.namespace)}/alerts/history`,
-    ].map(async (url) => {
-      const response = await deps.fetch(url, { headers, signal: deps.signal });
-      if (!response.ok) throw new ControllerError('alert telemetry request failed', 'TELEMETRY_GAP');
-      return response.json();
+  const base = `${REVIEWED.f5ApiOrigin}/api/data/namespaces/${encodeURIComponent(config.namespace)}/alerts`;
+  const get = async (url) => {
+    const response = await deps.fetch(url, { headers, signal: deps.signal });
+    if (!response.ok) throw new ControllerError('alert telemetry request failed', 'TELEMETRY_GAP');
+    try {
+      return await response.json();
+    } catch {
+      throw new ControllerError('alert telemetry returned invalid JSON', 'TELEMETRY_GAP');
+    }
+  };
+  const current = await Promise.all(
+    ['', 'inactive', 'silenced', 'inhibited', 'unprocessed'].map(async (state) => {
+      const url = new URL(base);
+      if (state) url.searchParams.set(state, 'true');
+      const payload = await get(url.toString());
+      if (payload === null || typeof payload !== 'object' ||
+          (!Array.isArray(payload) && !('data' in payload)))
+        throw new ControllerError('invalid current alert view', 'TELEMETRY_GAP');
+      if (!Array.isArray(payload) && typeof payload.data === 'string') {
+        let parsed;
+        try {
+          parsed = JSON.parse(payload.data);
+        } catch {
+          throw new ControllerError('invalid current alert data', 'TELEMETRY_GAP');
+        }
+        if (!parsed || typeof parsed !== 'object')
+          throw new ControllerError('invalid current alert data', 'TELEMETRY_GAP');
+      } else if (!Array.isArray(payload) && (!payload.data || typeof payload.data !== 'object')) {
+        throw new ControllerError('invalid current alert data', 'TELEMETRY_GAP');
+      }
+      return payload;
     }),
   );
-  return { current, history };
+  const historyUrl = new URL(`${base}/history`);
+  const start = new Date(expected.windowStart);
+  const end = new Date(expected.windowEnd);
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || start > end)
+    throw new ControllerError('invalid alert history window', 'TELEMETRY_GAP');
+  historyUrl.searchParams.set('start_time', start.toISOString());
+  historyUrl.searchParams.set('end_time', end.toISOString());
+  const history = [];
+  const seenCursors = new Set();
+  let cursor = null;
+  let total = null;
+  for (let page = 0; page < MAX_HISTORY_PAGES; page += 1) {
+    const url = cursor ? new URL(`${base}/history/scroll`) : new URL(historyUrl);
+    if (cursor) url.searchParams.set('scroll_id', cursor);
+    const payload = await get(url.toString());
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload) ||
+        !Array.isArray(payload.alerts) || !/^(0|[1-9]\d*)$/.test(payload.total_hits) ||
+        !Number.isSafeInteger(Number(payload.total_hits)) ||
+        Number(payload.total_hits) > MAX_HISTORY_PAGES * HISTORY_PAGE_SIZE ||
+        payload.alerts.length > HISTORY_PAGE_SIZE ||
+        typeof payload.scroll_id !== 'string')
+      throw new ControllerError('invalid alert history page', 'TELEMETRY_GAP');
+    const hits = Number(payload.total_hits);
+    if (total === null) total = hits;
+    if (hits !== total || history.length + payload.alerts.length > total)
+      throw new ControllerError('inconsistent alert history total', 'TELEMETRY_GAP');
+    for (const record of payload.alerts) {
+      let parsed;
+      try {
+        parsed = typeof record === 'string' ? JSON.parse(record) : record;
+      } catch {
+        throw new ControllerError('invalid alert history record', 'TELEMETRY_GAP');
+      }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+        throw new ControllerError('invalid alert history record', 'TELEMETRY_GAP');
+      history.push(parsed);
+    }
+    if (history.length === total) return { current, history };
+    if (!payload.scroll_id || seenCursors.has(payload.scroll_id) || !payload.alerts.length)
+      throw new ControllerError('incomplete alert history pagination', 'TELEMETRY_GAP');
+    seenCursors.add(payload.scroll_id);
+    cursor = payload.scroll_id;
+  }
+  throw new ControllerError('alert history page limit exceeded', 'TELEMETRY_GAP');
 }
 
 function alertViews(payload) {
@@ -512,7 +634,7 @@ function alertViews(payload) {
 }
 
 function alertExpected(config, headerId, windowStart, windowEnd) {
-  return { namespace: config.namespace, path: PAYMENT_PATH, headerId, windowStart, windowEnd };
+  return { namespace: config.namespace, origin: new URL(config.target).origin, path: PAYMENT_PATH, headerId, windowStart, windowEnd };
 }
 
 async function pollCandidateAlerts(config, deps, windowStart, windowEnd) {
@@ -543,9 +665,10 @@ function correlateCandidateAlerts(payloads, config, windowStart, windowEnd, know
 
 function correlateBoundedPayloads(payloads, expected) {
   const alerts = payloads.flatMap((payload) => {
-    if (payload && !Array.isArray(payload) && ('current' in payload || 'history' in payload))
-      return correlateAlerts([payload.current || [], payload.history || []], expected);
-    return correlateAlerts([payload], expected);
+    const matches = correlateAlertViews(alertViews(payload), expected);
+    if (matches.some((item) => item.state === 'firing' && Date.parse(item.starts_at) < Date.parse(expected.windowStart)))
+      throw new ControllerError('matching current alert predates the campaign window', 'INVALID_TEST');
+    return matches;
   });
   return [...new Map(alerts.map((alert) => [alertIdentity(alert), alert])).values()];
 }
@@ -623,11 +746,8 @@ async function verifyCleanup(config, deps, worker = null, finalizeWorker = true)
   if (!worker) return { ...local, worker_artifacts_removed: true };
   if (finalizeWorker) return { ...local, ...(await cleanupWorker(config, deps, worker)) };
   try {
-    await invokeSsm(
-      config,
-      deps,
-      `set -eu;[ -d '${worker.root}' ];! find '${worker.root}' -maxdepth 1 -type d -name 'probe-*' -print -quit|grep -q .;! pgrep -f -- '${worker.root}/probe-.*/profile' >/dev/null`,
-    );
+    const { root } = validatedWorker(config, worker);
+    await invokeSsm(config, deps, `set -eu;[ -d '${root}' ];! find '${root}' -maxdepth 1 -type d -name 'probe-*' -print -quit|grep -q .;set -- '${root}' scan;${WORKER_CLEANUP_SCRIPT}`);
     return { ...local, worker_artifacts_removed: true };
   } catch {
     return { ...local, worker_artifacts_removed: false };
@@ -683,13 +803,34 @@ async function recoverInterrupted(config, deps) {
   if (!state.interrupted && state.state !== 'recovery-required')
     throw new ControllerError('another Page Tamper experiment is active', 'OVERLAP', 5);
   const claim = await claimRecovery(config, state, deps);
-  const outputs = await validateDeploymentIdentity(config, deps);
-  const recovery = await recover(config, deps, outputs);
+  let recovery;
+  try {
+    if (state.worker === undefined || (state.worker === null && !deps.workerProbe))
+      throw new ControllerError('original worker identity is unavailable', 'WORKER_IDENTITY_INVALID', 5);
+    const originalWorker = state.worker === null ? null : validatedWorker(config, state.worker);
+    const outputs = await validateDeploymentIdentity(config, deps);
+    const originalCleanup = originalWorker
+      ? await cleanupWorker(config, { ...deps, signal: undefined }, originalWorker)
+      : { worker_artifacts_removed: true };
+    if (!originalCleanup.worker_artifacts_removed) {
+      recovery = { success: false, cleanup: originalCleanup, error: { code: 'RECOVERY_FAILED', message: 'original worker remains active or unverified' } };
+    } else {
+      const recoveryWorker = originalWorker && !deps.workerProbe
+        ? validatedWorker(config, await prepareWorker(config, deps, originalWorker.runId)) : null;
+      recovery = await recover(config, deps, outputs, recoveryWorker);
+    }
+    recovery.original_worker_cleanup = originalCleanup;
+  } catch (error) {
+    await preserveRecoveryLock(join(config.receiptDir, 'active.lock'),
+      { ...state, recovery: { success: false } }, error, false);
+    throw error;
+  }
   const receipt = {
     schema_version: 1,
     run_id: state.run_id,
     command: 'interruption-recovery',
     started_at: state.started_at,
+    worker: state.worker,
     ended_at: deps.now(),
     recovery,
     success: recovery.success,
@@ -701,9 +842,18 @@ async function recoverInterrupted(config, deps) {
     await preserveRecoveryLock(join(config.receiptDir, 'active.lock'), receipt, error);
     throw new ControllerError('recovery completed but evidence persistence failed', 'EVIDENCE_PERSISTENCE_FAILED', 5);
   }
-  if (!recovery.success) throw new ControllerError('interrupted run recovery failed', 'RECOVERY_FAILED', 5);
-  await releaseRecoveryClaim(config, claim, deps);
-  await rm(join(config.receiptDir, 'active.lock'));
+  if (!recovery.success) {
+    await preserveRecoveryLock(join(config.receiptDir, 'active.lock'), receipt,
+      new ControllerError('interrupted run recovery failed', 'RECOVERY_FAILED'), false);
+    throw new ControllerError('interrupted run recovery failed', 'RECOVERY_FAILED', 5);
+  }
+  try {
+    await releaseRecoveryClaim(config, claim, deps);
+    await rm(join(config.receiptDir, 'active.lock'));
+  } catch (error) {
+    await preserveRecoveryLock(join(config.receiptDir, 'active.lock'), receipt, error, false);
+    throw error;
+  }
   return receipt;
 }
 
@@ -713,12 +863,14 @@ export async function runHeader(config, deps, headerId, options = {}) {
   await recoverInterrupted(config, deps);
   const runId = deps.randomUUID();
   const startedAt = deps.now();
-  const lockPath = await acquireLock(config, runId, deps.now, 'run');
-  let worker = options.worker || null;
+  const worker = options.worker ? validatedWorker(config, options.worker)
+    : deps.workerProbe ? null : workerIdentity(config, { runId, root: `/tmp/xcsh-csd-${runId}` });
+  const lockPath = await acquireLock(config, runId, deps.now, 'run', worker);
   const finalizeWorker = options.finalizeWorker !== false;
   const receipt = {
     schema_version: 1,
     run_id: runId,
+    worker,
     command: 'run',
     header_id: headerId,
     started_at: startedAt,
@@ -729,9 +881,13 @@ export async function runHeader(config, deps, headerId, options = {}) {
     recovery: null,
   };
   let finalizationError;
+  let workerPrepared = Boolean(options.worker);
   const payloads = [];
   try {
-    if (!worker && !deps.workerProbe) worker = await prepareWorker(config, deps, runId);
+    if (worker && !options.worker) {
+      await prepareWorker(config, deps, runId);
+      workerPrepared = true;
+    }
     receipt.phases.control_reinforcement = {
       required: config.timings.reinforcementProfiles,
       completed: 0,
@@ -751,6 +907,7 @@ export async function runHeader(config, deps, headerId, options = {}) {
     );
     const expected = {
       namespace: config.namespace,
+      origin: new URL(config.target).origin,
       path: PAYMENT_PATH,
       headerId,
       windowStart,
@@ -788,7 +945,14 @@ export async function runHeader(config, deps, headerId, options = {}) {
     receipt.outcome = 'INVALID_TEST';
   } finally {
     try {
-      receipt.recovery = await recover(config, deps, outputs, worker, finalizeWorker);
+      if (worker && !workerPrepared) {
+        const originalCleanup = await cleanupWorker(config, { ...deps, signal: undefined }, worker);
+        receipt.recovery = originalCleanup.worker_artifacts_removed
+          ? { ...(await recover(config, deps, outputs,
+            validatedWorker(config, await prepareWorker(config, deps, worker.runId)), finalizeWorker)),
+            original_worker_cleanup: originalCleanup }
+          : { success: false, original_worker_cleanup: originalCleanup };
+      } else receipt.recovery = await recover(config, deps, outputs, worker, finalizeWorker);
       if (!receipt.recovery.success) receipt.outcome = 'INVALID_TEST';
     } catch (error) {
       receipt.recovery = {
@@ -820,11 +984,13 @@ export async function bootstrap(config, deps) {
   const outputs = await validateDeploymentIdentity(config, deps);
   await recoverInterrupted(config, deps);
   const finder = deps.randomUUID();
-  const lockPath = await acquireLock(config, finder, deps.now, 'bootstrap');
+  const worker = deps.workerProbe ? null : workerIdentity(config, { runId: finder, root: `/tmp/xcsh-csd-${finder}` });
+  const lockPath = await acquireLock(config, finder, deps.now, 'bootstrap', worker);
   const startedAt = deps.now();
   const receipt = {
     schema_version: 1,
     run_id: finder,
+    worker,
     command: 'bootstrap',
     started_at: startedAt,
     ended_at: null,
@@ -833,9 +999,13 @@ export async function bootstrap(config, deps) {
   };
   let primaryError;
   let finalizationError;
-  let worker = null;
+  let workerCleanupFailed = false;
+  let workerPrepared = false;
   try {
-    if (!deps.workerProbe) worker = await prepareWorker(config, deps, finder);
+    if (worker) {
+      await prepareWorker(config, deps, finder);
+      workerPrepared = true;
+    }
     const drift = await noDrift(config, deps);
     if (!drift.no_drift) throw new ControllerError('Terraform plan is not clean', 'DRIFT');
     const ready = await readiness(config, deps, outputs);
@@ -882,30 +1052,40 @@ export async function bootstrap(config, deps) {
   } catch (error) {
     primaryError = error;
     receipt.error = { code: error.code || 'BOOTSTRAP_FAILED', message: String(error.message).slice(0, 240) };
-    try {
-      receipt.recovery = await recover(config, deps, outputs);
-    } catch (recoveryError) {
-      receipt.recovery = {
-        success: false,
-        error: { code: recoveryError.code || 'RECOVERY_FAILED', message: String(recoveryError.message).slice(0, 240) },
-      };
+    if (worker && !workerPrepared) {
+      receipt.recovery = { success: false, error: { code: 'RECOVERY_FAILED', message: 'worker preparation incomplete; original root requires cleanup' } };
+    } else {
+      try {
+        receipt.recovery = await recover(config, deps, outputs, worker);
+      } catch (recoveryError) {
+        receipt.recovery = {
+          success: false,
+          error: { code: recoveryError.code || 'RECOVERY_FAILED', message: String(recoveryError.message).slice(0, 240) },
+        };
+      }
     }
   } finally {
     if (worker) {
       const cleanup = await cleanupWorker(config, { ...deps, signal: undefined }, worker);
       if (!cleanup.worker_artifacts_removed) {
+        workerCleanupFailed = true;
         const cleanupError = new ControllerError('worker cleanup failed', 'RECOVERY_FAILED');
         primaryError ||= cleanupError;
         receipt.error ||= { code: cleanupError.code, message: cleanupError.message };
         receipt.success = false;
+        receipt.recovery = { ...receipt.recovery, success: false, cleanup };
       }
     }
     receipt.ended_at = deps.now();
     const path = join(config.receiptDir, `bootstrap-${finder}${receipt.success ? '' : '-failed'}.json`);
     try {
       await atomicReceipt(path, receipt);
-      if (receipt.success || receipt.recovery?.success) await rm(lockPath);
-      else await preserveRecoveryLock(lockPath, receipt, primaryError || new Error('bootstrap recovery failed'));
+      if (!workerCleanupFailed && (receipt.success || receipt.recovery?.success)) await rm(lockPath);
+      else await preserveRecoveryLock(
+        lockPath, receipt,
+        workerCleanupFailed ? new ControllerError('worker cleanup failed', 'RECOVERY_FAILED') : primaryError || new Error('bootstrap recovery failed'),
+        !workerCleanupFailed,
+      );
     } catch (error) {
       await preserveRecoveryLock(lockPath, receipt, error);
       finalizationError = new ControllerError(
@@ -956,6 +1136,7 @@ export async function runSuite(config, deps) {
     schema_version: 1,
     run_id: suiteId,
     command: 'suite',
+    worker,
     started_at: startedAt,
     ended_at: deps.now(),
     results,
@@ -971,9 +1152,9 @@ export async function runSuite(config, deps) {
   if (!safetyPasses(cleanup)) {
     const lockPath = join(config.receiptDir, 'active.lock');
     try {
-      await acquireLock(config, suiteId, deps.now, 'suite-cleanup');
+      await acquireLock(config, suiteId, deps.now, 'suite-cleanup', worker);
     } catch (error) {
-      if (error.code !== 'OVERLAP') throw error;
+      throw error;
     }
     await preserveRecoveryLock(
       lockPath,
@@ -1005,6 +1186,8 @@ export async function status(config) {
       state: lock.state || 'active',
       interrupted: persistenceFailure || ownerDead || ageExpired,
       run_id: lock.run_id,
+      worker: lock.worker,
+      command: lock.command,
       started_at: lock.started_at,
       cleanup_required: true,
       evidence_persistence_failure: persistenceFailure,

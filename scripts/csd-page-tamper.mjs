@@ -23,18 +23,18 @@ Commands:
   status                     Report active or interrupted run state without exposing identities
 
 Required options (or matching environment variables):
-  --target URL               XCSH_CSD_PAGE_TAMPER_TARGET
-  --aws-profile NAME         AWS_PROFILE
-  --aws-region REGION        AWS_REGION
-  --aws-account ID           XCSH_CSD_AWS_ACCOUNT
-  --worker-instance ID       XCSH_CSD_WORKER_INSTANCE
-  --terraform-dir PATH       XCSH_CSD_TERRAFORM_DIR
-  --f5-api-url URL           XCSH_API_URL
-  XCSH_API_TOKEN             Required environment-only F5 API token (never printed or persisted)
-  --namespace NAME           XCSH_NAMESPACE
-  --lb-name NAME             XCSH_LB_NAME
-  --receipt-dir PATH         XCSH_CSD_PAGE_TAMPER_RECEIPT_DIR
-  --cdp-endpoint URL         XCSH_CDP_ENDPOINT (loopback; default http://127.0.0.1:9222)
+  --target URL                        XCSH_CSD_PAGE_TAMPER_TARGET
+  --aws-profile NAME                  AWS_PROFILE
+  --aws-region REGION                 AWS_REGION
+  --aws-account ID                    XCSH_CSD_AWS_ACCOUNT
+  --terraform-dir PATH                XCSH_CSD_TERRAFORM_DIR (CSD AWS root)
+  --traffic-generator-terraform-dir PATH  XCSH_CSD_TRAFFIC_GENERATOR_TERRAFORM_DIR
+  --f5-api-url URL                    XCSH_API_URL
+  XCSH_API_TOKEN                      Required environment-only F5 API token (never printed or persisted)
+  --namespace NAME                    XCSH_NAMESPACE
+  --lb-name NAME                      XCSH_LB_NAME
+  --receipt-dir PATH                  XCSH_CSD_PAGE_TAMPER_RECEIPT_DIR
+  --cdp-endpoint URL                  XCSH_CDP_ENDPOINT (loopback; default http://127.0.0.1:9222)
 
 Production timing defaults: 45m bootstrap, 15m reinforcement, 45m mixed,
 60s alert polling, 15m recovery, 12 reinforcement profiles, 20 mixed pairs,
@@ -49,8 +49,8 @@ const OPTION_NAMES = new Map([
   ['--aws-profile', 'awsProfile'],
   ['--aws-region', 'awsRegion'],
   ['--aws-account', 'awsAccount'],
-  ['--worker-instance', 'workerInstance'],
   ['--terraform-dir', 'terraformDir'],
+  ['--traffic-generator-terraform-dir', 'trafficGeneratorTerraformDir'],
   ['--f5-api-url', 'f5ApiUrl'],
   ['--namespace', 'namespace'],
   ['--lb-name', 'lbName'],
@@ -77,8 +77,8 @@ export function parseArgs(argv, env = process.env) {
     awsProfile: values.awsProfile || env.AWS_PROFILE,
     awsRegion: values.awsRegion || env.AWS_REGION,
     awsAccount: values.awsAccount || env.XCSH_CSD_AWS_ACCOUNT,
-    workerInstance: values.workerInstance || env.XCSH_CSD_WORKER_INSTANCE,
     terraformDir: values.terraformDir || env.XCSH_CSD_TERRAFORM_DIR,
+    trafficGeneratorTerraformDir: values.trafficGeneratorTerraformDir || env.XCSH_CSD_TRAFFIC_GENERATOR_TERRAFORM_DIR,
     f5ApiUrl: values.f5ApiUrl || env.XCSH_API_URL,
     f5ApiToken: env.XCSH_API_TOKEN,
     namespace: values.namespace || env.XCSH_NAMESPACE,
@@ -96,8 +96,8 @@ export function parseArgs(argv, env = process.env) {
           'awsProfile',
           'awsRegion',
           'awsAccount',
-          'workerInstance',
           'terraformDir',
+          'trafficGeneratorTerraformDir',
           'f5ApiUrl',
           'f5ApiToken',
           'namespace',

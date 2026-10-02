@@ -33,8 +33,8 @@ const config = (root, overrides = {}) => ({
   awsRegion: 'us-east-1',
   namespace: 'client-side-defense',
   lbName: 'client-side-defense',
-  workerInstance: 'i-0123456789abcdef0',
   terraformDir: join(root, 'terraform'),
+  trafficGeneratorTerraformDir: join(root, 'traffic-generator-aws'),
   receiptDir: join(root, 'receipts'),
   f5ApiUrl: 'https://f5-sales-demo.console.ves.volterra.io',
   f5ApiToken: 'secret-not-for-receipts',
@@ -58,9 +58,14 @@ const config = (root, overrides = {}) => ({
 async function workspace() {
   const root = await mkdtemp(join(tmpdir(), 'csd-page-tamper-test-'));
   await mkdir(join(root, 'terraform'), { recursive: true });
+  await mkdir(join(root, 'traffic-generator-aws'), { recursive: true });
   await writeFile(
     join(root, 'terraform', 'versions.tf'),
-    'bucket       = "terraform-tfstate-xc"\nkey          = "f5-sales-demo/client-side-defense.tfstate"\n',
+    'terraform {\n  backend "s3" {\n    bucket = "terraform-tfstate-xc"\n    key = "f5-sales-demo/client-side-defense.tfstate"\n  }\n}\n',
+  );
+  await writeFile(
+    join(root, 'traffic-generator-aws', 'versions.tf'),
+    'terraform {\n  backend "s3" {\n    bucket = "terraform-tfstate-xc"\n    key = "f5-sales-demo/traffic-generator-aws.tfstate"\n    region = "us-east-1"\n  }\n}\n',
   );
   return root;
 }
@@ -76,7 +81,7 @@ const outputs = {
   },
 };
 
-function executor({ driftCode = 0 } = {}) {
+function executor({ driftCode = 0, workerInstance = 'i-0123456789abcdef0' } = {}) {
   return async (argv) => {
     if (argv[0] === 'aws' && argv[1] === 'sts')
       return { code: 0, stdout: JSON.stringify({ Account: '280469140135' }), stderr: '' };
@@ -84,11 +89,13 @@ function executor({ driftCode = 0 } = {}) {
       return {
         code: 0,
         stdout: JSON.stringify({
-          Reservations: [{ Instances: [{ InstanceId: 'i-0123456789abcdef0', State: { Name: 'running' } }] }],
+          Reservations: [{ Instances: [{ InstanceId: workerInstance, State: { Name: 'running' } }] }],
         }),
         stderr: '',
       };
-    if (argv.includes('output')) return { code: 0, stdout: JSON.stringify(outputs), stderr: '' };
+    if (argv[0] === 'terraform' && argv.includes('-raw')) return { code: 0, stdout: `${workerInstance}\n`, stderr: '' };
+    if (argv[0] === 'terraform' && argv.includes('-json'))
+      return { code: 0, stdout: JSON.stringify(outputs), stderr: '' };
     if (argv.includes('plan')) return { code: driftCode, stdout: '', stderr: '' };
     throw new Error(`unexpected command: ${argv.join(' ')}`);
   };
@@ -190,6 +197,91 @@ test('deployment identity accepts only the reviewed deployment', async () => {
       (error) => error instanceof ControllerError && error.code === 'IDENTITY_MISMATCH',
     );
   }
+});
+
+test('worker identity comes only from the reviewed traffic-generator Terraform output', async () => {
+  const root = await workspace();
+  const calls = [];
+  const injected = deps({
+    executor: async (argv, options) => {
+      calls.push(argv);
+      return executor()(argv, options);
+    },
+  });
+  const runtimeConfig = config(root);
+  await validateDeploymentIdentity(runtimeConfig, injected);
+  assert.equal(runtimeConfig.workerInstance, 'i-0123456789abcdef0');
+  const workerOutput = calls.find(
+    (argv) => argv[0] === 'terraform' && argv.includes('-raw') && argv.includes('instance_id'),
+  );
+  assert.deepEqual(workerOutput, [
+    'terraform',
+    `-chdir=${runtimeConfig.trafficGeneratorTerraformDir}`,
+    'output',
+    '-raw',
+    'instance_id',
+  ]);
+  assert.equal(calls.findIndex((argv) => argv.includes('-raw')) < calls.findIndex((argv) => argv[1] === 'ec2'), true);
+});
+
+test('worker output mismatch and missing output fail closed before SSM', async () => {
+  const root = await workspace();
+  const mismatchCalls = [];
+  const mismatch = deps({
+    executor: async (argv, options) => {
+      mismatchCalls.push(argv);
+      if (argv[0] === 'terraform' && argv.includes('-raw'))
+        return { code: 0, stdout: 'i-aaaaaaaaaaaaaaaaa\n', stderr: '' };
+      return executor()(argv, options);
+    },
+  });
+  await assert.rejects(
+    validateDeploymentIdentity(config(root), mismatch),
+    (error) => error.code === 'IDENTITY_MISMATCH',
+  );
+  const describe = mismatchCalls.find((argv) => argv[1] === 'ec2');
+  assert.equal(describe[describe.indexOf('--instance-ids') + 1], 'i-aaaaaaaaaaaaaaaaa');
+  assert.equal(
+    mismatchCalls.some((argv) => argv[1] === 'ssm'),
+    false,
+  );
+
+  const missingCalls = [];
+  const missing = deps({
+    executor: async (argv) => {
+      missingCalls.push(argv);
+      return { code: 0, stdout: '', stderr: '' };
+    },
+  });
+  await assert.rejects(
+    validateDeploymentIdentity(config(root), missing),
+    (error) => error.code === 'WORKER_IDENTITY_INVALID',
+  );
+  assert.equal(missingCalls.length, 1);
+  assert.equal(missingCalls[0].includes('-raw'), true);
+});
+
+test('traffic-generator Terraform backend mismatch blocks output lookup', async () => {
+  const root = await workspace();
+  const runtimeConfig = config(root);
+  await writeFile(
+    join(runtimeConfig.trafficGeneratorTerraformDir, 'versions.tf'),
+    'terraform {\n  backend "s3" {\n    bucket = "wrong-bucket"\n    key = "f5-sales-demo/traffic-generator-aws.tfstate"\n    region = "us-east-1"\n  }\n}\n',
+  );
+  let commands = 0;
+  await assert.rejects(
+    validateDeploymentIdentity(
+      runtimeConfig,
+      deps({
+        executor: async () => {
+          commands++;
+          return { code: 0, stdout: '', stderr: '' };
+        },
+      }),
+    ),
+    (error) => error.code === 'IDENTITY_MISMATCH',
+  );
+  assert.equal(commands, 0);
 });
 
 test('history JSON strings parse and exact current/history matches dedupe', () => {
@@ -542,7 +634,7 @@ test('concurrent stale recovery is claimed by exactly one command', async () => 
       command: 'run',
       started_at: START,
       state: 'recovery-required',
-      worker: null,
+      worker_run_id: null,
     }),
   );
   let releaseRecovery;
@@ -595,7 +687,7 @@ test('successful interrupted recovery retains active state when owned claim rele
       command: 'run',
       started_at: START,
       state: 'recovery-required',
-      worker: null,
+      worker_run_id: null,
     }),
   );
   const injected = deps({
@@ -628,7 +720,7 @@ test('stale recovery claim takeover is exclusive under deterministic contention'
       command: 'run',
       started_at: START,
       state: 'recovery-required',
-      worker: null,
+      worker_run_id: null,
     }),
   );
 
@@ -1189,7 +1281,7 @@ test('F5 token is environment-only and exact API origin is mandatory', async () 
   );
 });
 
-const ownedWorker = (name = 'original-run') => ({
+const ownedWorker = (name = '00000000-0000-4000-8000-000000000004') => ({
   runId: name,
   root: `/tmp/xcsh-csd-${name}`,
   instance_id: 'i-0123456789abcdef0',
@@ -1223,6 +1315,142 @@ function simulatedSsm(onScript, result = probe()) {
   };
 }
 
+test('worker-enabled CLI receipts, status, stdout, and active lock omit raw identities', async () => {
+  const { main, parseArgs } = await import('../scripts/csd-page-tamper.mjs');
+  const root = await workspace();
+  const configValue = config(root);
+  const env = {
+    AWS_PROFILE: configValue.awsProfile,
+    AWS_REGION: configValue.awsRegion,
+    XCSH_CSD_AWS_ACCOUNT: configValue.awsAccount,
+    XCSH_CSD_TERRAFORM_DIR: configValue.terraformDir,
+    XCSH_CSD_TRAFFIC_GENERATOR_TERRAFORM_DIR: configValue.trafficGeneratorTerraformDir,
+    XCSH_API_URL: configValue.f5ApiUrl,
+    XCSH_API_TOKEN: 'secret-not-for-receipts',
+    XCSH_NAMESPACE: configValue.namespace,
+    XCSH_LB_NAME: configValue.lbName,
+    XCSH_CSD_PAGE_TAMPER_RECEIPT_DIR: configValue.receiptDir,
+  };
+  assert.throws(() => parseArgs(['run', '--worker-instance', 'i-0123456789abcdef0'], env), /unknown option/);
+  const parsed = parseArgs(['status'], env);
+  assert.equal(parsed.config.receiptDir, configValue.receiptDir);
+  assert.equal(Object.hasOwn(parsed.config, 'workerInstance'), false);
+
+  const commands = [];
+  let lockSnapshot;
+  let statusSnapshot;
+  const base = executor();
+  const ssm = simulatedSsm(async () => {
+    if (!lockSnapshot) {
+      lockSnapshot = JSON.parse(await readFile(join(configValue.receiptDir, 'active.lock'), 'utf8'));
+      statusSnapshot = await status(configValue);
+    }
+    return false;
+  });
+  let clock = Date.parse(START);
+  let sequence = 0;
+  let stdout = '';
+  const exitCode = await main(
+    [
+      'run',
+      '--header',
+      'x-content-type-options',
+      '--aws-profile',
+      configValue.awsProfile,
+      '--aws-region',
+      configValue.awsRegion,
+      '--aws-account',
+      configValue.awsAccount,
+      '--terraform-dir',
+      configValue.terraformDir,
+      '--traffic-generator-terraform-dir',
+      configValue.trafficGeneratorTerraformDir,
+      '--f5-api-url',
+      configValue.f5ApiUrl,
+      '--namespace',
+      configValue.namespace,
+      '--lb-name',
+      configValue.lbName,
+      '--receipt-dir',
+      configValue.receiptDir,
+    ],
+    {
+      env,
+      stdout: {
+        write: (value) => {
+          stdout += value;
+        },
+      },
+      stderr: { write: () => {} },
+      workerProbe: null,
+      executor: async (argv, options) => {
+        commands.push(argv);
+        return argv[1] === 'ssm' ? ssm(argv, options) : base(argv, options);
+      },
+      probe,
+      readiness: async () => ({
+        endpoint_health: true,
+        payment_health: true,
+        application_health: true,
+        lb_ready: true,
+        certificate_valid: true,
+      }),
+      alertSource: async () => [],
+      sleep: async (ms) => {
+        clock += ms;
+      },
+      now: () => new Date(clock).toISOString(),
+      nowMs: () => clock,
+      randomUUID: () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, '0')}`,
+    },
+  );
+  assert.equal(exitCode, 0);
+  const output = JSON.parse(stdout);
+  assert.ok(lockSnapshot);
+  assert.ok(statusSnapshot.active);
+  for (const serialized of [JSON.stringify(lockSnapshot), JSON.stringify(statusSnapshot), stdout]) {
+    assert.doesNotMatch(serialized, /i-0123456789abcdef0|280469140135|280469140135_Users|secret-not-for-receipts/);
+    assert.doesNotMatch(serialized, /"worker"|"instance_id"|"aws_account"|"aws_profile"|"hostname"|"pid"/);
+  }
+  assert.equal(lockSnapshot.worker_run_id, output.worker_run_id);
+  assert.equal(Object.hasOwn(output, 'worker'), false);
+  assert.equal(
+    commands.findIndex((argv) => argv[0] === 'terraform' && argv.includes('-raw')) <
+      commands.findIndex((argv) => argv[1] === 'ssm'),
+    true,
+  );
+  const receiptName = (await readdir(configValue.receiptDir)).find((name) => name.endsWith('.json'));
+  const receipt = JSON.parse(await readFile(join(configValue.receiptDir, receiptName), 'utf8'));
+  const receiptJson = JSON.stringify(receipt);
+  assert.doesNotMatch(receiptJson, /i-0123456789abcdef0|280469140135|280469140135_Users|secret-not-for-receipts/);
+  assert.equal(Object.hasOwn(receipt, 'worker'), false);
+});
+
+test('suite resolves its worker output before SSM worker preparation', async () => {
+  const root = await workspace();
+  const calls = [];
+  const base = executor();
+  const ssm = simulatedSsm(async () => false);
+  const injected = deps({
+    workerProbe: null,
+    executor: async (argv, options) => {
+      calls.push(argv);
+      return argv[1] === 'ssm' ? ssm(argv, options) : base(argv, options);
+    },
+    alertSource: async () => [],
+  });
+  const receipt = await runSuite(config(root), injected);
+  const resolveIndex = calls.findIndex((argv) => argv[0] === 'terraform' && argv.includes('-raw'));
+  const firstSsmIndex = calls.findIndex((argv) => argv[1] === 'ssm');
+  assert.ok(resolveIndex >= 0 && resolveIndex < firstSsmIndex);
+  assert.equal(receipt.worker_run_id, '00000000-0000-4000-8000-000000000001');
+  assert.equal(Object.hasOwn(receipt, 'worker'), false);
+  const suiteReceipt = JSON.parse(await readFile(join(root, 'receipts', `suite-${receipt.run_id}.json`), 'utf8'));
+  assert.equal(suiteReceipt.worker_run_id, receipt.worker_run_id);
+  assert.equal(Object.hasOwn(suiteReceipt, 'worker'), false);
+  assert.doesNotMatch(JSON.stringify(suiteReceipt), /i-0123456789abcdef0|280469140135_Users/);
+});
+
 test('bootstrap records original worker root before first SSM command, including failed creation', async () => {
   const root = await workspace();
   const base = executor();
@@ -1233,7 +1461,8 @@ test('bootstrap records original worker root before first SSM command, including
       if (argv[1] !== 'ssm') return base(argv, options);
       if (argv[2] === 'send-command') {
         const lock = JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8'));
-        assert.deepEqual(lock.worker, ownedWorker('00000000-0000-4000-8000-000000000001'));
+        assert.equal(lock.worker_run_id, ownedWorker('00000000-0000-4000-8000-000000000001').runId);
+        assert.equal(Object.hasOwn(lock, 'worker'), false);
         seen++;
         return { code: 1, stdout: '', stderr: '' };
       }
@@ -1268,7 +1497,8 @@ test('bootstrap partial preparation retains recorded root without starting fresh
   assert.match(scripts[2], /set -- '\/tmp\/xcsh-csd-00000000-0000-4000-8000-000000000001' cleanup/);
   assert.equal(scripts.filter((script) => script.includes('mkdir "$run"')).length, 1);
   const lock = JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8'));
-  assert.deepEqual(lock.worker, ownedWorker('00000000-0000-4000-8000-000000000001'));
+  assert.equal(lock.worker_run_id, ownedWorker('00000000-0000-4000-8000-000000000001').runId);
+  assert.equal(Object.hasOwn(lock, 'worker'), false);
   assert.equal(lock.state, 'recovery-required');
 });
 
@@ -1293,8 +1523,8 @@ test('bootstrap failure probes the recorded worker without creating an ephemeral
   assert.ok(controls >= 2);
   assert.equal(scripts.filter((script) => script.includes('mkdir "$run"')).length, 1);
   assert.equal(
-    JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8')).worker.root,
-    ownedWorker('00000000-0000-4000-8000-000000000001').root,
+    JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8')).worker_run_id,
+    ownedWorker('00000000-0000-4000-8000-000000000001').runId,
   );
 });
 
@@ -1348,7 +1578,8 @@ test('single header records root before failed preparation and cannot issue clea
       if (argv[1] !== 'ssm') return base(argv, options);
       if (argv[2] === 'send-command') {
         const lock = JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8'));
-        assert.deepEqual(lock.worker, ownedWorker('00000000-0000-4000-8000-000000000001'));
+        assert.equal(lock.worker_run_id, ownedWorker('00000000-0000-4000-8000-000000000001').runId);
+        assert.equal(Object.hasOwn(lock, 'worker'), false);
         commands++;
       }
       return { code: 1, stdout: '', stderr: '' };
@@ -1363,12 +1594,13 @@ test('single header records root before failed preparation and cannot issue clea
 
 test('single header persists shared worker root rather than header run id', async () => {
   const root = await workspace();
-  const shared = ownedWorker('shared-worker');
+  const shared = ownedWorker('00000000-0000-4000-8000-000000000002');
   let checked = false;
   const injected = deps({
     probe: async ({ headerId }) => {
       const lock = JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8'));
-      assert.deepEqual(lock.worker, shared);
+      assert.equal(lock.worker_run_id, shared.runId);
+      assert.equal(Object.hasOwn(lock, 'worker'), false);
       checked = true;
       return probe({ headerId });
     },
@@ -1384,7 +1616,7 @@ test('single header persists shared worker root rather than header run id', asyn
 test('interrupted recovery checks the original root before new controls and releases only after clean scan', async () => {
   const root = await workspace();
   await mkdir(join(root, 'receipts'), { recursive: true });
-  const original = ownedWorker('old-worker');
+  const original = ownedWorker('00000000-0000-4000-8000-000000000003');
   await writeFile(
     join(root, 'receipts', 'active.lock'),
     JSON.stringify({
@@ -1392,7 +1624,7 @@ test('interrupted recovery checks the original root before new controls and rele
       command: 'run',
       started_at: START,
       state: 'recovery-required',
-      worker: original,
+      worker_run_id: original.runId,
     }),
   );
   const base = executor();
@@ -1403,7 +1635,7 @@ test('interrupted recovery checks the original root before new controls and rele
       if (argv[1] !== 'ssm') return base(argv, options);
       if (argv[2] === 'send-command') {
         commandText = JSON.parse(argv[argv.indexOf('--parameters') + 1]).commands[0];
-        assert.match(commandText, /set -- '\/tmp\/xcsh-csd-old-worker' cleanup/);
+        assert.ok(commandText.includes(`set -- '${original.root}' cleanup`));
         assert.doesNotMatch(commandText, /kill -|pgrep|secret-not-for-receipts/);
         scanned = true;
         return { code: 0, stdout: JSON.stringify({ Command: { CommandId: 'scan-1' } }), stderr: '' };
@@ -1430,7 +1662,7 @@ test('interruption reuses recorded root and retains it if recovery preparation f
   for (const failPreparation of [false, true]) {
     const root = await workspace();
     await mkdir(join(root, 'receipts'), { recursive: true });
-    const original = ownedWorker('old-worker');
+    const original = ownedWorker('00000000-0000-4000-8000-000000000003');
     await writeFile(
       join(root, 'receipts', 'active.lock'),
       JSON.stringify({
@@ -1438,7 +1670,7 @@ test('interruption reuses recorded root and retains it if recovery preparation f
         command: 'run',
         started_at: START,
         state: 'recovery-required',
-        worker: original,
+        worker_run_id: original.runId,
       }),
     );
     const scripts = [];
@@ -1447,12 +1679,13 @@ test('interruption reuses recorded root and retains it if recovery preparation f
     const injected = deps({
       workerProbe: null,
       cleanup: null,
-      randomUUID: () => `generated-${++nextId}`,
+      randomUUID: () => `00000000-0000-4000-8000-${String(++nextId).padStart(12, '0')}`,
       executor: simulatedSsm(async (script) => {
         scripts.push(script);
         if (script.includes('mkdir "$run"') && script.includes(original.root)) {
           const lock = JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8'));
-          assert.deepEqual(lock.worker, original);
+          assert.equal(lock.worker_run_id, original.runId);
+          assert.equal(Object.hasOwn(lock, 'worker'), false);
           return failPreparation;
         }
         return false;
@@ -1468,7 +1701,8 @@ test('interruption reuses recorded root and retains it if recovery preparation f
         (error) => error.code === 'SSM_FAILED',
       );
       const lock = JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8'));
-      assert.deepEqual(lock.worker, original);
+      assert.equal(lock.worker_run_id, original.runId);
+      assert.equal(Object.hasOwn(lock, 'worker'), false);
       assert.equal(lock.state, 'recovery-required');
       assert.equal(controls, 0);
     } else {
@@ -1477,11 +1711,11 @@ test('interruption reuses recorded root and retains it if recovery preparation f
       assert.ok(controls >= 2);
       await assert.rejects(stat(join(root, 'receipts', 'active.lock')), /ENOENT/);
     }
-    assert.match(scripts[0], /set -- '\/tmp\/xcsh-csd-old-worker' cleanup/);
-    assert.match(scripts[1], /run='\/tmp\/xcsh-csd-old-worker';mkdir "\$run"/);
+    assert.ok(scripts[0].includes(`set -- '${original.root}' cleanup`));
+    assert.ok(scripts[1].includes(`run='${original.root}';mkdir "$run"`));
     if (!failPreparation) {
       const lastOldCleanup = scripts.findIndex(
-        (script, index) => index > 1 && script.includes("set -- '/tmp/xcsh-csd-old-worker' cleanup"),
+        (script, index) => index > 1 && script.includes(`set -- '${original.root}' cleanup`),
       );
       const nextRoot = scripts.findIndex(
         (script) => script.includes('mkdir "$run"') && !script.includes(original.root),
@@ -1491,12 +1725,12 @@ test('interruption reuses recorded root and retains it if recovery preparation f
   }
 });
 
-test('legacy or wrong worker identity fails closed without SSM or control probes', async () => {
-  for (const worker of [undefined, { ...ownedWorker('old-worker'), root: '/tmp/xcsh-csd-other-worker' }]) {
+test('legacy or invalid worker run references fail closed without SSM or control probes', async () => {
+  for (const workerRunId of [undefined, '../../unsafe']) {
     const root = await workspace();
     await mkdir(join(root, 'receipts'), { recursive: true });
     const record = { run_id: 'old-case', command: 'run', started_at: START, state: 'recovery-required' };
-    if (worker) record.worker = worker;
+    if (workerRunId !== undefined) record.worker_run_id = workerRunId;
     await writeFile(join(root, 'receipts', 'active.lock'), JSON.stringify(record));
     let touched = false;
     await assert.rejects(
@@ -1522,13 +1756,14 @@ test('legacy or wrong worker identity fails closed without SSM or control probes
     assert.equal(touched, false);
     const lock = JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8'));
     assert.equal(lock.state, 'recovery-required');
-    assert.equal(lock.worker?.root, worker?.root);
+    assert.equal(Object.hasOwn(lock, 'worker'), false);
   }
 });
 
 test('interrupted recovery stops on original-root live profile without fresh probes', async () => {
   const root = await workspace();
   await mkdir(join(root, 'receipts'), { recursive: true });
+  const original = ownedWorker('00000000-0000-4000-8000-000000000003');
   await writeFile(
     join(root, 'receipts', 'active.lock'),
     JSON.stringify({
@@ -1536,7 +1771,7 @@ test('interrupted recovery stops on original-root live profile without fresh pro
       command: 'run',
       started_at: START,
       state: 'recovery-required',
-      worker: ownedWorker('old-worker'),
+      worker_run_id: original.runId,
     }),
   );
   let probes = 0;
@@ -1555,7 +1790,7 @@ test('interrupted recovery stops on original-root live profile without fresh pro
           if (argv[2] === 'send-command') {
             cleanupCommands++;
             const script = JSON.parse(argv[argv.indexOf('--parameters') + 1]).commands[0];
-            assert.match(script, /set -- '\/tmp\/xcsh-csd-old-worker' cleanup/);
+            assert.ok(script.includes(`set -- '${original.root}' cleanup`));
             return { code: 0, stdout: JSON.stringify({ Command: { CommandId: 'still-running' } }), stderr: '' };
           }
           return { code: 0, stdout: JSON.stringify({ Status: 'Failed', ResponseCode: 42 }), stderr: '' };
@@ -1569,12 +1804,15 @@ test('interrupted recovery stops on original-root live profile without fresh pro
   assert.equal(probes, 0);
   const lock = JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8'));
   assert.equal(lock.state, 'recovery-required');
-  assert.deepEqual(lock.worker, ownedWorker('old-worker'));
+  assert.equal(lock.worker_run_id, original.runId);
+  assert.equal(Object.hasOwn(lock, 'worker'), false);
   assert.equal(lock.recovery_completed, false);
 });
 
 test('worker cleanup refuses a live profile or uncertain SSM and never signals a process', async () => {
   const root = await workspace();
+  const workerConfig = config(root);
+  await validateDeploymentIdentity(workerConfig, deps());
   const base = executor();
   let sends = 0;
   for (const responseCode of [1, 0]) {
@@ -1599,12 +1837,12 @@ test('worker cleanup refuses a live profile or uncertain SSM and never signals a
         };
       },
     });
-    assert.deepEqual(await cleanupWorker(config(root), injected, ownedWorker()), {
+    assert.deepEqual(await cleanupWorker(workerConfig, injected, ownedWorker()), {
       worker_artifacts_removed: responseCode === 0,
     });
   }
   const before = sends;
-  assert.deepEqual(await cleanupWorker(config(root), deps(), { ...ownedWorker(), root: '/tmp/xcsh-csd-other' }), {
+  assert.deepEqual(await cleanupWorker(workerConfig, deps(), { ...ownedWorker(), root: '/tmp/xcsh-csd-other' }), {
     worker_artifacts_removed: false,
   });
   assert.equal(sends, before);
@@ -1612,10 +1850,12 @@ test('worker cleanup refuses a live profile or uncertain SSM and never signals a
 
 test('self-owned worker probe rejects successful browser result when root cleanup fails', async () => {
   const root = await workspace();
+  const workerConfig = config(root);
+  await validateDeploymentIdentity(workerConfig, deps());
   const scripts = [];
   await assert.rejects(
     runWorkerProbe(
-      config(root),
+      workerConfig,
       deps({
         executor: simulatedSsm((script) => {
           scripts.push(script);
@@ -1633,6 +1873,8 @@ test('self-owned worker probe rejects successful browser result when root cleanu
 
 test('production worker keeps every current-source SSM command and parameters value within 4096 characters', async () => {
   const root = await workspace();
+  const workerConfig = config(root);
+  await validateDeploymentIdentity(workerConfig, deps());
   const calls = [];
   const result = probe();
   let commandId = 0;
@@ -1663,7 +1905,7 @@ test('production worker keeps every current-source SSM command and parameters va
       return () => (value += 100);
     })(),
   });
-  assert.deepEqual(await runWorkerProbe(config(root), injected, 'x-frame-options'), result);
+  assert.deepEqual(await runWorkerProbe(workerConfig, injected, 'x-frame-options'), result);
   assert.ok(calls.every(Array.isArray));
   const sendCalls = calls.filter((argv) => argv[2] === 'send-command');
   const parameters = sendCalls.map((argv) => argv[argv.indexOf('--parameters') + 1]);
@@ -1798,21 +2040,16 @@ test('no-drift uses a normal refresh-aware Terraform plan', async () => {
   assert.ok(plans.every((argv) => !argv.includes('-refresh-only')));
 });
 
-test('same-host dead recovery owner is reclaimed before stale timeout', async () => {
+test('stale recovery claims are reclaimed by age without persisting host or PID', async () => {
   const root = await workspace();
   const receiptDir = join(root, 'receipts');
   const claimDir = join(receiptDir, 'recovery.claim');
   await mkdir(claimDir, { recursive: true });
   await writeFile(
     join(claimDir, 'owner.json'),
-    JSON.stringify({
-      claim_id: 'dead-owner',
-      run_id: 'original-run',
-      claimed_at: START,
-      hostname: 'test-host',
-      pid: 4242,
-    }),
+    JSON.stringify({ claim_id: 'stale-claim', run_id: 'original-run', claimed_at: START }),
   );
+  await utimes(claimDir, new Date(0), new Date(0));
   await writeFile(
     join(receiptDir, 'active.lock'),
     JSON.stringify({
@@ -1820,31 +2057,27 @@ test('same-host dead recovery owner is reclaimed before stale timeout', async ()
       command: 'run',
       started_at: START,
       state: 'recovery-required',
-      worker: null,
+      worker_run_id: null,
     }),
   );
   const result = await runHeader(
     config(root, { timings: { ...config(root).timings, maximumCaseMs: 60 * 60_000 } }),
-    deps({ hostname: () => 'test-host', pid: () => 5000, isProcessAlive: (pid) => pid !== 4242 }),
+    deps(),
     'x-content-type-options',
   );
   assert.equal(result.recovery.success, true);
   await assert.rejects(stat(claimDir), /ENOENT/);
 });
 
-test('live, foreign, and legacy recovery owners remain age-gated', async () => {
-  for (const owner of [
-    { hostname: 'test-host', pid: 4242 },
-    { hostname: 'foreign-host', pid: 4242 },
-    { hostname: 'test-host' },
-  ]) {
+test('fresh recovery claims remain age-gated without host or PID metadata', async () => {
+  for (const claimId of ['live-claim', 'foreign-claim', 'legacy-claim']) {
     const root = await workspace();
     const receiptDir = join(root, 'receipts');
     const claimDir = join(receiptDir, 'recovery.claim');
     await mkdir(claimDir, { recursive: true });
     await writeFile(
       join(claimDir, 'owner.json'),
-      JSON.stringify({ claim_id: 'owner', run_id: 'original-run', claimed_at: START, ...owner }),
+      JSON.stringify({ claim_id: claimId, run_id: 'original-run', claimed_at: START }),
     );
     await writeFile(
       join(receiptDir, 'active.lock'),
@@ -1853,13 +2086,13 @@ test('live, foreign, and legacy recovery owners remain age-gated', async () => {
         command: 'run',
         started_at: START,
         state: 'recovery-required',
-        worker: null,
+        worker_run_id: null,
       }),
     );
     await assert.rejects(
       runHeader(
         config(root, { timings: { ...config(root).timings, maximumCaseMs: 60 * 60_000 } }),
-        deps({ hostname: () => 'test-host', isProcessAlive: () => true }),
+        deps(),
         'x-content-type-options',
       ),
       (error) => error.code === 'OVERLAP',

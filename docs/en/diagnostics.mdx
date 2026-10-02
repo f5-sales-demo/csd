@@ -1295,17 +1295,52 @@ can produce `ClientSideDefenseHttpHeaderModified` or `ClientSideDefenseHttpHeade
 [About Client-Side Defense](https://docs.cloud.f5.com/docs-v2/client-side-defense/concepts/about-csd) and
 [Configure Client-Side Defense](https://docs.cloud.f5.com/docs-v2/client-side-defense/how-tos/configure-csd).
 
-Issue #1231 supplies the fresh-context browser traffic runner dependency. Issue #1234 owns Page Tamper orchestration, evidence correlation, and restoration.
+Historical evidence must be interpreted narrowly. On 2026-09-23, a tenant
+`ClientSideDefenseHttpHeaderModified` record named `x-content-type-options`, `x-frame-options`, and
+`cache-control`, reported `modification=Added`, and included the exact protected path `/`. It proves
+detection for that event, not the Compromised semantic or an official monitored-header list. The
+2026-09-24 six-header global-value campaign is **INVALID TEST** for Compromised-trigger conclusions:
+it had no controlled baseline/comparison cohorts and alert review initially searched current alerts
+rather than history. Its later bounded negative search remains an observation, not proof of
+unsupported coverage.
 
-1. **Discover candidate coverage without asserting support.** Record the official documentation reviewed, the two alert names, and the candidate header. Confirm that the required alert endpoint or console view can search active, inactive, unprocessed, silenced, and inhibited states. If alert visibility is unavailable, do not run the mutation.
-2. **Establish the canonical baseline.** Capture the candidate header from the workstation and from a separate worker using raw HTTPS and a real browser. Require agreement on status, exact header value or absence, HTTP success, CSD script injection, and a browser `dip` POST.
-3. **Create a reviewed Terraform saved plan.** Change exactly one candidate header on exactly one Terraform-owned HTTP load balancer. Inspect the saved plan and require an exact single-LB action scope with no unrelated resource action. Never use API mutation against the Terraform-owned load balancer.
-4. **Apply and prove the mutation.** Apply only the reviewed saved plan, then repeat workstation and worker raw/browser observations until the exact changed value is present. Stop if another header or resource changed.
-5. **Generate bounded traffic.** Use #1231 to create fresh browser contexts. For every session, record timestamps, HTTP result, exact candidate-header value, injected CSD script, and `dip` POST evidence. Do not reuse contexts because baseline collection spans sessions and cycles.
-6. **Poll both alert names in every state.** Search `ClientSideDefenseHttpHeaderModified` and `ClientSideDefenseHttpHeaderCompromised` across active, inactive, unprocessed, silenced, and inhibited views for a declared bounded interval. Preserve raw identifying fields and timestamps needed to correlate the exact namespace, domain, load balancer, and campaign window.
-7. **Classify conservatively.** Use `DETECTED` only for a correlated alert from the one-header window; `NOT DETECTED WITHIN WINDOW` when mutation and traffic are proven but the bounded search is empty; `AMBIGUOUS` when attribution is not unique; and `INVALID TEST` when any required link is absent. A six-header simultaneous change cannot yield per-header attribution from a generic alert.
-8. **Restore immediately.** Create, review, and apply a new Terraform saved plan restoring the exact canonical value or absence. Re-prove canonical headers from workstation and worker raw/browser evidence, ready load-balancer and valid-certificate state, CSD injection, and `dip` telemetry.
-9. **Close only with integrity proof.** Require a final refresh-aware Terraform plan with no changes, removal of saved plans and worker resources, and a timestamped evidence record. Any residual drift, worker, mutation, or unmatched alert blocks completion.
+Issue #1241 owns the dedicated endpoint and deterministic controller. Use the permanent but
+inert-by-default `/csd-page-tamper/payment` endpoint; do not mutate the F5 Distributed Cloud load
+balancer or origin pool for an experiment.
+
+1. **Bootstrap the control baseline.** Require no Terraform drift, a ready load balancer, a valid certificate, healthy ordinary application traffic, and a healthy dedicated endpoint. From workstation and worker fresh browsers, prove HTTP `200`, all 12 exact candidate headers, all five empty synthetic fields, CSD injection, and a `dip` POST.
+   Run control-only traffic for 45 minutes while polling both current alerts and alert history. If deployment creates a correlated Modified/Added alert, wait for resolution and then require a 15-minute quiet period.
+2. **Reinforce control for 15 minutes.** Run 12 fresh profiles against the exact payment path without the selector. Every response must retain all 12 exact headers, CSD injection, and `dip` evidence.
+3. **Run one mixed cohort for up to 45 minutes.** Alternate fresh control profiles with tampered profiles at the identical URL. Only tampered profiles send `X-CSD-Page-Tamper: <header-id>`. Require the selected header absent, the other 11 exact, and at least 20 complete pairs unless the exact required alert arrives sooner.
+4. **Poll current and history every 60 seconds.** Parse JSON-string history entries. Correlate only records whose raw fields match the exact namespace, selected header case-insensitively, path `/csd-page-tamper/payment`, and experiment start window.
+   Preserve sanitized alert name, modification, lifecycle state, timestamps, display name, and description. Generic, wrong-path, stale, future, or adjacent alerts do not qualify.
+5. **Classify conservatively.** Use `COMPROMISED` only for an exact Compromised correlation; `MODIFIED_ONLY` for an exact Modified correlation without Compromised; `NO_ALERT_WITHIN_WINDOW` only when the complete evidence chain is valid but neither arrives; and `INVALID_TEST` for any baseline, cohort, telemetry, overlap, correlation, recovery, cleanup, readiness, or drift failure.
+6. **Apply the canary stop rule.** Run `X-Content-Type-Options` first. If it does not reach COMPROMISED, complete recovery, stop the suite, and diagnose the Modified/Compromised distinction. Do not claim the hypothesis succeeded.
+7. **Recover control-only traffic for 15 minutes.** Stop selector traffic and re-prove all 12 exact headers from workstation and worker, CSD injection, `dip`, endpoint and ordinary application health, load-balancer readiness, run-owned cleanup, and final refresh-aware Terraform no drift. Only then may another header start.
+
+Publish only sanitized receipts and measured outcomes. Until an executed case satisfies every gate, the
+dedicated mixed-cohort design is a hypothesis rather than proof of Compromised behavior.
+
+### Recorded live result: 2026-09-25/26
+
+The dedicated endpoint is deployed and bootstrap-proven. Exact-plan deployment made five additions,
+one task-definition replacement (`1 change, 1 destroy`), and zero F5 Distributed Cloud mutations.
+Bootstrap run `dd91ea9b-3da3-4fc8-b24b-c32cdba2e863` ran from
+`2026-09-25T21:40:23.373Z` to `2026-09-25T22:42:18.638Z` with `alerts=[]`. Endpoint and root
+health, all 12 exact canonical headers, five empty payment fields, CSD script presence, both healthy
+ALB target groups, `VIRTUAL_HOST_READY`, `CertificateValid`, readiness, and Terraform no drift
+were all observed.
+
+Canary run `69f30bd0-6dc2-4721-bb21-cae159032af2` ran from
+`2026-09-25T23:21:44.908Z` to `2026-09-26T00:38:11.806Z`. It completed 12/12 controls and
+20/20 mixed control/tampered pairs with valid telemetry and `alerts=[]`. No exact Modified or
+Compromised correlation appeared; current alerts returned zero and alert history returned an empty
+array. Classify this run only as **NO_ALERT_WITHIN_WINDOW**.
+
+Recovery proved 10 control pairs plus successful probes, readiness, cleanup, and Terraform no
+drift. The canary did not reach `COMPROMISED`, so the suite stopped as required and no remaining
+candidate header was run. The endpoint and test mechanics are validated; the Compromised hypothesis
+is not. Earlier controller-defect attempts were `INVALID_TEST` and are not product evidence.
 
 ## Quick Reference
 

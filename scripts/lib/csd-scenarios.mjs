@@ -20,6 +20,11 @@ export const REVIEWED_DESTINATION_HOSTS = Object.freeze([
   'ga.jspm.io',
 ]);
 
+export const APPROVED_CSD_COLLECTORS = Object.freeze([
+  Object.freeze({ host: 'us.gimp.zeronaught.com', path: '/__imp_apg__/api/dip/v1/dip' }),
+  Object.freeze({ host: 'csd.zeronaught.com', path: '/dip' }),
+]);
+
 const CDN_CANDIDATES = Object.freeze([
   DESTINATIONS.lodash,
   DESTINATIONS.moment,

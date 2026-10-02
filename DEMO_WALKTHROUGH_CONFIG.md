@@ -19,9 +19,13 @@ at in plain language**, **(3) connect it to the customer's concern**,
 3. **Demo App** (`docs/en/demo-website.mdx`) — open the AWS Juice Shop reference and orient the customer.
 4. **Proof chain** (`docs/en/diagnostics.mdx`) — confirm ECS steady state, healthy ALB target, log delivery, ready F5 virtual host, valid certificate, HTTP `301`, HTTPS `200`, and rendered Juice Shop.
 5. **Telemetry Beacons** (`docs/en/telemetry-beacons.mdx`) — show the injected `__imp_apg__` script and a browser `dip` request.
-6. **Trigger Detection** (`docs/en/trigger-detection.mdx`) — run `scripts/csd-traffic.mjs`, then inspect the sanitized Page/Runtime/Network/Log receipt, terminal outcomes, instrumentation evidence, and cleanup.
-7. **CSD Console** (`docs/en/csd-console.mdx`) — only after the receipt passes, query or show asynchronous CSD telemetry and label it observed, not observed, pending, or error without promising timing.
-8. **Terraform closeout, when Terraform owns the stack** (`docs/en/terraform/index.mdx`) — show a final refresh-aware plan with no drift.
+6. **Trigger Detection** (`docs/en/trigger-detection.mdx`) — run `scripts/csd-traffic.mjs`, then inspect the sanitized Page/Runtime/Network/Log receipt, terminal outcomes, instrumentation evidence, and cleanup. For the separate Page Tamper hypothesis, use the inert `/csd-page-tamper/payment` endpoint with control and tampered cohorts at the identical URL.
+   Do not mutate the F5 Distributed Cloud load balancer or origin pool.
+7. **Page Tamper evidence** (`docs/en/trigger-detection.mdx`, `docs/en/diagnostics.mdx`) — preserve the 2026-09-23 Modified evidence and mark the 2026-09-24 global campaign **INVALID TEST**.
+   Present the deployed, bootstrap-proven dedicated endpoint and valid 2026-09-25/26 XCTO canary: run `69f30bd0-6dc2-4721-bb21-cae159032af2`, 12/12 controls, 20/20 mixed pairs, valid telemetry, no correlated alert, and outcome `NO_ALERT_WITHIN_WINDOW`.
+   Show that recovery completed with 10 control pairs, probes, readiness, cleanup, and Terraform no drift. The canary did not reach `COMPROMISED`, so the stop rule was enforced and the remaining headers were not run. Do not present the Compromised hypothesis as validated, the canary as detected, or the absence of an alert as unsupported or failed product behavior.
+8. **CSD Console** (`docs/en/csd-console.mdx`) — only after the receipt passes, query or show asynchronous CSD telemetry and label it observed, not observed, pending, or error without promising timing.
+9. **Terraform closeout, when Terraform owns the stack** (`docs/en/terraform/index.mdx`) — after control-only recovery, show a final refresh-aware plan with no drift.
 
 Supporting pages: `docs/en/attack-scripts.mdx`, `docs/en/diagnostics.mdx`, `docs/en/demo/`, `docs/en/api-reference.mdx`, and `docs/en/references.mdx`.
 

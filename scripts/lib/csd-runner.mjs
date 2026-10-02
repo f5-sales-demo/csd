@@ -1,8 +1,19 @@
 import { randomUUID } from 'node:crypto';
 import { chmod, link, open, rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
-import { CliError, HELP, parseArgs, sanitizeEndpoint } from './csd-config.mjs';
 import {
+  CliError,
+  DOCUMENT_PROBE_FIELD_SELECTORS,
+  DOCUMENT_PROBE_HEADERS,
+  DOCUMENT_PROBE_PATH,
+  DOCUMENT_PROBE_SELECTOR_HEADER,
+  DOCUMENT_PROBE_SELECTOR_IDS,
+  HELP,
+  parseArgs,
+  sanitizeEndpoint,
+} from './csd-config.mjs';
+import {
+  APPROVED_CSD_COLLECTORS,
   buildPreDocumentBootstrap,
   buildScenario,
   getScenario,
@@ -116,7 +127,7 @@ function sanitizeUrl(value) {
     return '[invalid-url]';
   }
 }
-function documentResponseTracker(expectedOrigin, probe) {
+function documentResponseTracker(expectedOrigin, probe, includeValues = false) {
   if (!probe) return { event() {}, value: () => null };
   if (typeof probe.path !== 'string' || !probe.path.startsWith('/') || probe.path.includes('#'))
     throw new CliError(
@@ -148,9 +159,45 @@ function documentResponseTracker(expectedOrigin, probe) {
       throw new CliError('document response probe header is invalid', 2, 'INVALID_DOCUMENT_PROBE');
     return { name, expectedValue: header.expectedValue };
   });
+  const extraHeaders = new Map();
   let observed = null;
+  let selectedRequestId = null;
+  const allowlisted = (source = {}) => {
+    const received = new Map();
+    for (const [rawName, rawValue] of Object.entries(source)) {
+      const name = rawName.toLowerCase();
+      if (headers.some((header) => header.name === name)) received.set(name, String(rawValue));
+    }
+    return received;
+  };
+  const mergeHeaders = (received) => {
+    if (!observed) return;
+    for (const item of observed.headers) {
+      if (!received.has(item.name)) continue;
+      const observedValue = received.get(item.name);
+      item.present = true;
+      if (includeValues) item.observed_value = observedValue;
+      item.expected_match = observedValue === headers.find(({ name }) => name === item.name).expectedValue;
+    }
+  };
   return {
     event(method, params = {}) {
+      const requestId = String(params.requestId || '');
+      if (!requestId) return;
+      if (method === 'Network.requestWillBeSent' && params.type === 'Document' && params.redirectResponse) {
+        extraHeaders.delete(requestId);
+        if (selectedRequestId === requestId) {
+          selectedRequestId = null;
+          observed = null;
+        }
+        return;
+      }
+      if (method === 'Network.responseReceivedExtraInfo') {
+        const received = allowlisted(params.headers);
+        extraHeaders.set(requestId, received);
+        if (requestId === selectedRequestId) mergeHeaders(received);
+        return;
+      }
       if (method !== 'Network.responseReceived' || params.type !== 'Document') return;
       let url;
       try {
@@ -159,26 +206,35 @@ function documentResponseTracker(expectedOrigin, probe) {
         return;
       }
       if (url.origin !== expectedOrigin || `${url.pathname}${url.search}` !== probe.path) return;
-      const received = new Map(
-        Object.entries(params.response?.headers || {}).map(([name, value]) => [name.toLowerCase(), String(value)]),
-      );
+      selectedRequestId = requestId;
+      const received = allowlisted(params.response?.headers);
       observed = {
         path: probe.path,
         status: Number(params.response?.status),
         observed: true,
-        headers: headers.map(({ name, expectedValue }) => ({
-          name,
-          present: received.has(name),
-          expected_match: received.get(name) === expectedValue,
-        })),
+        headers: headers.map(({ name, expectedValue }) => {
+          const observedValue = received.get(name) ?? null;
+          return {
+            name,
+            present: observedValue !== null,
+            ...(includeValues ? { expected_value: expectedValue, observed_value: observedValue } : {}),
+            expected_match: observedValue === expectedValue,
+          };
+        }),
       };
+      mergeHeaders(extraHeaders.get(requestId) || new Map());
     },
     value: () =>
       observed || {
         path: probe.path,
         status: null,
         observed: false,
-        headers: headers.map(({ name }) => ({ name, present: false, expected_match: false })),
+        headers: headers.map(({ name, expectedValue }) => ({
+          name,
+          present: false,
+          ...(includeValues ? { expected_value: expectedValue, observed_value: null } : {}),
+          expected_match: false,
+        })),
       },
   };
 }
@@ -205,6 +261,9 @@ function navigationGuard(expectedOrigin) {
   };
 }
 
+const approvedCollector = (host, path) =>
+  APPROVED_CSD_COLLECTORS.some((collector) => collector.host === host && collector.path === path);
+
 function networkTracker() {
   const records = new Map();
   const ordered = [];
@@ -225,7 +284,8 @@ function networkTracker() {
           previous.status = Number(params.redirectResponse.status);
           previous.outcome = 'redirected';
         }
-        const reviewed = REVIEWED_DESTINATION_HOSTS.includes(url.hostname) || url.pathname.includes('/dip');
+        const reviewed =
+          REVIEWED_DESTINATION_HOSTS.includes(url.hostname) || approvedCollector(url.hostname, url.pathname);
         const record = reviewed
           ? {
               request_id: id,
@@ -275,7 +335,7 @@ async function evaluate(cdp, sessionId, expression, signal, awaitPromise = false
   if (result.exceptionDetails) throw new CliError('browser evaluation failed', 4, 'EVALUATION_FAILED');
   return result.result?.value;
 }
-async function waitForDocument(cdp, sessionId, options, expectedOrigin, preconditions, signal) {
+async function waitForDocument(cdp, sessionId, options, expectedOrigin, preconditions, signal, requireEmpty = false) {
   const deadline = Date.now() + options.timeoutMs;
   while (Date.now() < deadline) {
     const state = await evaluate(
@@ -286,7 +346,11 @@ async function waitForDocument(cdp, sessionId, options, expectedOrigin, precondi
       const sources = [];
       if (globalThis.__imp_apg__ && typeof globalThis.__imp_apg__ === 'object') sources.push('global');
       if (document.querySelector('script[src*="__imp_apg__"]')) sources.push('script');
-      return { href: location.href, ready: document.readyState, top: top === self, instrumentation_sources: sources, selectors_ready: selectors.map((selector) => Boolean(document.querySelector(selector))) };
+      const fields = selectors.map((selector) => {
+        const element = document.querySelector(selector);
+        return { selector, present: Boolean(element), empty: Boolean(element) && String(element.value ?? '').length === 0 };
+      });
+      return { href: location.href, ready: document.readyState, top: top === self, instrumentation_sources: sources, selectors_ready: fields.map(({ present }) => present), fields_present: fields.filter(({ present }) => present).map(({ selector }) => selector), fields_empty: fields.every(({ empty }) => empty) };
     })()`,
       signal,
     );
@@ -297,7 +361,12 @@ async function waitForDocument(cdp, sessionId, options, expectedOrigin, precondi
       if (!state.top) throw new CliError('protected document is not top frame', 4, 'NOT_TOP_FRAME');
       if (!state.instrumentation_sources?.length)
         throw new CliError('protected document is missing __imp_apg__ instrumentation', 4, 'INSTRUMENTATION_MISSING');
-      if (state.selectors_ready?.every(Boolean)) return state;
+      if (
+        requireEmpty
+          ? state.fields_present?.length === preconditions.length && state.fields_empty === true
+          : state.selectors_ready?.every(Boolean)
+      )
+        return state;
     }
     await sleep(50, signal);
   }
@@ -586,12 +655,198 @@ export async function runScenario(name, options, deps) {
     instrumentation: {
       imp_apg_present: Boolean(document),
       sources: document?.instrumentation_sources || [],
-      dip_observed: network.some((item) => item.path.includes('/dip')),
+      dip_observed: network.some(({ destination_host: host, path }) => approvedCollector(host, path)),
     },
     eventual_csd_evidence: null,
     expected_csd_evidence: definition.expectedEvidence,
     cleanup,
     success,
+  };
+}
+
+function validateDocumentProbeOptions(options) {
+  const allowedKeys = new Set(['target', 'selector', 'timeoutMs', 'settleMs']);
+  if (!options || typeof options !== 'object' || Array.isArray(options))
+    throw new CliError('document probe options are required', 2, 'INVALID_DOCUMENT_PROBE');
+  for (const key of Object.keys(options))
+    if (!allowedKeys.has(key))
+      throw new CliError(`document probe option is not allowed: ${key}`, 2, 'INVALID_DOCUMENT_PROBE');
+  let target;
+  try {
+    target = new URL(options.target);
+  } catch {
+    throw new CliError('document probe target must be the exact authorized URL', 2, 'INVALID_DOCUMENT_PROBE');
+  }
+  const authorized = new URL(DOCUMENT_PROBE_PATH, new URL('https://client-side-defense.f5-sales-demo.com/'));
+  if (
+    target.protocol !== 'https:' ||
+    target.username ||
+    target.password ||
+    (target.port && target.port !== '443') ||
+    target.hostname !== authorized.hostname ||
+    target.pathname !== DOCUMENT_PROBE_PATH ||
+    target.search ||
+    target.hash
+  )
+    throw new CliError('document probe target must be the exact authorized URL', 2, 'INVALID_DOCUMENT_PROBE');
+  if (
+    options.selector !== undefined &&
+    (typeof options.selector !== 'string' ||
+      options.selector.length === 0 ||
+      !DOCUMENT_PROBE_SELECTOR_IDS.includes(options.selector))
+  )
+    throw new CliError('document probe selector must be one nonempty valid selector ID', 2, 'INVALID_DOCUMENT_PROBE');
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const settleMs = options.settleMs ?? 10_000;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || !Number.isSafeInteger(settleMs) || settleMs < 0)
+    throw new CliError('document probe timing is invalid', 2, 'INVALID_DOCUMENT_PROBE');
+  return Object.freeze({ target: target.href, selector: options.selector, timeoutMs, settleMs });
+}
+
+export async function runDocumentProbe(input, deps) {
+  const options = validateDocumentProbeOptions(input);
+  if (!deps?.cdp) throw new CliError('document probe requires a CDP client', 3, 'CDP_REQUIRED');
+  const origin = new URL(options.target).origin;
+  const tracker = networkTracker();
+  const responseTracker = documentResponseTracker(
+    origin,
+    {
+      path: DOCUMENT_PROBE_PATH,
+      headers: DOCUMENT_PROBE_HEADERS.map(({ name, value }) => ({ name, expectedValue: value })),
+    },
+    true,
+  );
+  const navigation = navigationGuard(origin);
+  let contextId;
+  let targetId;
+  let sessionId;
+  let unsubscribe;
+  let document;
+  let primaryError;
+  const cleanup = { target_closed: false, context_disposed: false, listeners_removed: false, errors: [] };
+  try {
+    ({ browserContextId: contextId } = await deps.cdp.send('Target.createBrowserContext', {}, undefined, {
+      signal: deps.signal,
+    }));
+    ({ targetId } = await deps.cdp.send(
+      'Target.createTarget',
+      { url: 'about:blank', browserContextId: contextId },
+      undefined,
+      { signal: deps.signal },
+    ));
+    ({ sessionId } = await deps.cdp.send('Target.attachToTarget', { targetId, flatten: true }, undefined, {
+      signal: deps.signal,
+    }));
+    unsubscribe = deps.cdp.onEvent?.((event) => {
+      if (event.sessionId !== sessionId) return;
+      navigation.event(event.method, event.params);
+      if (event.method?.startsWith('Network.')) {
+        tracker.event(event.method, event.params);
+        responseTracker.event(event.method, event.params);
+      }
+    });
+    for (const method of ['Page.enable', 'Runtime.enable', 'Network.enable'])
+      await deps.cdp.send(method, {}, sessionId, { signal: deps.signal });
+    await deps.cdp.send(
+      'Network.setExtraHTTPHeaders',
+      { headers: options.selector ? { [DOCUMENT_PROBE_SELECTOR_HEADER]: options.selector } : {} },
+      sessionId,
+      { signal: deps.signal },
+    );
+    const result = await deps.cdp.send('Page.navigate', { url: options.target }, sessionId, { signal: deps.signal });
+    if (result.errorText) throw new CliError(`navigation failed: ${result.errorText}`, 4, 'NAVIGATION_FAILED');
+    document = await waitForDocument(
+      deps.cdp,
+      sessionId,
+      options,
+      origin,
+      DOCUMENT_PROBE_FIELD_SELECTORS,
+      deps.signal,
+      true,
+    );
+    const finalUrl = new URL(document.href);
+    if (`${finalUrl.pathname}${finalUrl.search}` !== DOCUMENT_PROBE_PATH)
+      throw new CliError('document navigation left the exact authorized path', 4, 'REDIRECT_PATH_DRIFT');
+    navigation.assert();
+    await evaluate(deps.cdp, sessionId, 'true', deps.signal);
+    await sleep(options.settleMs, deps.signal);
+    tracker.settle();
+    navigation.assert();
+  } catch (error) {
+    primaryError =
+      error instanceof CliError ? error : new CliError(error.message || String(error), 4, 'DOCUMENT_PROBE_FAILED');
+  } finally {
+    if (targetId)
+      try {
+        const result = await deps.cdp.send('Target.closeTarget', { targetId });
+        if (result.success === true) cleanup.target_closed = true;
+        else cleanup.errors.push('target-close');
+      } catch (error) {
+        cleanup.errors.push(error.code || 'target-close');
+      }
+    if (contextId)
+      try {
+        await deps.cdp.send('Target.disposeBrowserContext', { browserContextId: contextId });
+        cleanup.context_disposed = true;
+      } catch (error) {
+        cleanup.errors.push(error.code || 'context-dispose');
+      }
+    if (unsubscribe)
+      try {
+        unsubscribe();
+        cleanup.listeners_removed = true;
+      } catch {
+        cleanup.errors.push('listener-removal');
+      }
+  }
+  tracker.settle();
+  const response = responseTracker.value();
+  const network = tracker.values();
+  if (!primaryError && response.status !== 200)
+    primaryError = new CliError('document probe did not receive HTTP 200', 4, 'DOCUMENT_STATUS_FAILED');
+  const selectedHeader = options.selector ? response.headers.find(({ name }) => name === options.selector) : null;
+  const unexpectedHeaders = response.headers.filter(({ name, present, expected_match: match }) =>
+    options.selector === name ? present : !present || !match,
+  );
+  if (!primaryError && (!response.observed || unexpectedHeaders.length || (options.selector && !selectedHeader)))
+    primaryError = new CliError(
+      options.selector
+        ? 'tampered probe did not omit exactly the selected header'
+        : 'document probe response headers did not match the canonical baseline',
+      4,
+      'DOCUMENT_HEADERS_FAILED',
+    );
+  const dipObserved = network.some(
+    ({ destination_host: host, path, method, outcome }) =>
+      approvedCollector(host, path) && method === 'POST' && outcome === 'finished',
+  );
+  if (!primaryError && !dipObserved)
+    primaryError = new CliError(
+      'document probe did not observe a completed POST to the approved CSD collector',
+      4,
+      'DIP_MISSING',
+    );
+  if (!primaryError && cleanup.errors.length)
+    primaryError = new CliError(`document probe cleanup failed: ${cleanup.errors.join(', ')}`, 4, 'CLEANUP_FAILED');
+  return {
+    schema_version: 1,
+    mode: 'document-probe',
+    target: `${origin}${DOCUMENT_PROBE_PATH}`,
+    selector: options.selector ?? null,
+    status: primaryError ? 'failed' : 'passed',
+    error: primaryError ? { code: primaryError.code, message: primaryError.message } : null,
+    document: {
+      ...response,
+      fields_present: document?.fields_present || [],
+      fields_empty: document?.fields_empty === true,
+    },
+    instrumentation: {
+      imp_apg_present: Boolean(document),
+      sources: document?.instrumentation_sources || [],
+      dip_post_observed: dipObserved,
+    },
+    cleanup,
+    success: !primaryError,
   };
 }
 

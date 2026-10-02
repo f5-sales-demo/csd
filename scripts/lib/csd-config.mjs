@@ -5,6 +5,44 @@ export const DEFAULT_TARGET = 'https://client-side-defense.f5-sales-demo.com/';
 export const DEFAULT_CDP_ENDPOINT = 'http://127.0.0.1:9222';
 export const HELP = `Usage: node scripts/csd-traffic.mjs [options]\n\nModes:\n  --list                     List stable scenarios without connecting to CDP\n  --print-script SCENARIO    Print a canonical browser payload\n  --help                     Print this help\n\nExecution selectors (choose exactly one):\n  --scenario SCENARIO        Run a scenario (repeatable)\n  --all                      Run all scenarios\n\nExecution options:\n  --target HTTPS_URL         Protected target origin (default: ${DEFAULT_TARGET})\n  --allow-host HOSTNAME      Permit an exact additional HTTPS hostname (repeatable)\n  --cdp-endpoint URL         Loopback HTTP or WebSocket CDP endpoint\n  --timeout DURATION         Bounded operation timeout (default: 30s)\n  --settle DURATION          Browser-event collection period (default: 10s)\n  --receipt PATH|-           Atomically write receipt, or emit receipt JSON to stdout\n`;
 
+export const DOCUMENT_PROBE_PATH = '/csd-page-tamper/payment';
+export const DOCUMENT_PROBE_SELECTOR_HEADER = 'X-CSD-Page-Tamper';
+export const DOCUMENT_PROBE_HEADERS = Object.freeze([
+  Object.freeze({ id: 'cache-control', name: 'Cache-Control', value: 'no-store, max-age=0' }),
+  Object.freeze({ id: 'clear-site-data', name: 'Clear-Site-Data', value: '"cache"' }),
+  Object.freeze({
+    id: 'content-security-policy',
+    name: 'Content-Security-Policy',
+    value:
+      "default-src 'self' https://*.zeronaught.com; script-src 'self' https://*.zeronaught.com; connect-src 'self' https://*.zeronaught.com https://csd.zeronaught.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+  }),
+  Object.freeze({ id: 'cross-origin-embedder-policy', name: 'Cross-Origin-Embedder-Policy', value: 'credentialless' }),
+  Object.freeze({ id: 'cross-origin-opener-policy', name: 'Cross-Origin-Opener-Policy', value: 'same-origin' }),
+  Object.freeze({ id: 'cross-origin-resource-policy', name: 'Cross-Origin-Resource-Policy', value: 'same-origin' }),
+  Object.freeze({
+    id: 'permissions-policy',
+    name: 'Permissions-Policy',
+    value: 'camera=(), geolocation=(), microphone=(), payment=(self)',
+  }),
+  Object.freeze({ id: 'referrer-policy', name: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' }),
+  Object.freeze({
+    id: 'strict-transport-security',
+    name: 'Strict-Transport-Security',
+    value: 'max-age=31536000; includeSubDomains',
+  }),
+  Object.freeze({ id: 'x-content-type-options', name: 'X-Content-Type-Options', value: 'nosniff' }),
+  Object.freeze({ id: 'x-frame-options', name: 'X-Frame-Options', value: 'DENY' }),
+  Object.freeze({ id: 'x-permitted-cross-domain-policies', name: 'X-Permitted-Cross-Domain-Policies', value: 'none' }),
+]);
+export const DOCUMENT_PROBE_SELECTOR_IDS = Object.freeze(DOCUMENT_PROBE_HEADERS.map(({ id }) => id));
+export const DOCUMENT_PROBE_FIELD_SELECTORS = Object.freeze([
+  '[name="cardholder_name"]',
+  '[name="card_number"]',
+  '[name="expiry"]',
+  '[name="cvv"]',
+  '[name="billing_postal_code"]',
+]);
+
 export class CliError extends Error {
   constructor(message, exitCode = 2, code = 'CLI_ERROR') {
     super(message);

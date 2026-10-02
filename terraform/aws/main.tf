@@ -384,6 +384,7 @@ module "origin" {
   alb_subnet_ids              = aws_subnet.public[*].id
   task_subnet_ids             = aws_subnet.private[*].id
   public_exposure             = true
+  enable_page_tamper_endpoint = true
   allowed_ingress_cidrs       = local.regional_edge_origin_cidrs
   cloudwatch_logs_kms_key_arn = aws_kms_key.logs.arn
   alb_access_logs_bucket      = aws_s3_bucket.alb_logs.id

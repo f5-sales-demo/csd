@@ -177,45 +177,71 @@ multiple browser sessions and sequential cycles, and the baseline moves as obser
 
 Those official sources do not publish an exact list of monitored headers. The following entries are experiment candidates, not a supported-coverage statement. `Feature-Policy`, when present, is a distinct legacy response header and must not be treated as evidence for `Permissions-Policy`.
 
-Use only these classifications:
+Use only these classifications for the dedicated endpoint experiment:
 
-- **DETECTED** — a matching Page Tamper alert was retrieved and correlated to the one-header campaign window.
-- **NOT DETECTED WITHIN WINDOW** — the mutation and browser telemetry were proven, but no matching alert was retrieved during the bounded search. This does not prove unsupported behavior.
-- **AMBIGUOUS** — an alert or traffic signal exists, but timing, scope, or simultaneous changes prevent attribution.
-- **INVALID TEST** — the candidate was not mutated, or the mutation/traffic/restoration evidence chain is incomplete.
+- **COMPROMISED** — an exact `ClientSideDefenseHttpHeaderCompromised` record matches the namespace, selected header, `/csd-page-tamper/payment`, and experiment window.
+- **MODIFIED_ONLY** — an exact `ClientSideDefenseHttpHeaderModified` record matches the same fields, but no matching Compromised record arrives within the valid window.
+- **NO_ALERT_WITHIN_WINDOW** — the complete traffic and telemetry chain is valid, but neither exact alert arrives within the bounded window. This does not prove unsupported behavior.
+- **INVALID_TEST** — the baseline, cohort, telemetry, correlation, recovery, cleanup, readiness, or no-drift evidence chain is incomplete.
 
-### Candidate matrix
+### Verified historical evidence boundary
 
-| Candidate header | Canonical baseline before campaign | Tested mutation | Current classification | Evidence qualification |
-| --- | --- | --- | --- | --- |
-| `Content-Security-Policy` | Absent | `default-src * 'unsafe-inline' 'unsafe-eval' data: blob:` | NOT DETECTED WITHIN WINDOW | Exact mutation was observed in all 108 responses; no matching Page Tamper alert was returned in any searched state. |
-| `Strict-Transport-Security` | Absent | `max-age=60; includeSubDomains` | NOT DETECTED WITHIN WINDOW | Exact mutation was observed in all 108 responses; no matching Page Tamper alert was returned in any searched state. |
-| `X-Frame-Options` | `SAMEORIGIN` | `DENY` | NOT DETECTED WITHIN WINDOW | Exact mutation was observed in all 108 responses; no matching Page Tamper alert was returned in any searched state. |
-| `X-Content-Type-Options` | `nosniff` | `csd-test-invalid` | NOT DETECTED WITHIN WINDOW | Exact mutation was observed in all 108 responses; no matching Page Tamper alert was returned in any searched state. |
-| `Referrer-Policy` | Absent | `no-referrer` | NOT DETECTED WITHIN WINDOW | Exact mutation was observed in all 108 responses; no matching Page Tamper alert was returned in any searched state. |
-| `Permissions-Policy` | Absent | `geolocation=(), camera=(), microphone=()` | NOT DETECTED WITHIN WINDOW | Exact mutation was observed in all 108 responses; no matching Page Tamper alert was returned in any searched state. |
-| `Cache-Control` | Not recorded for an isolated test | Not mutated | INVALID TEST | Candidate only; no controlled mutation or attributable alert evidence. |
-| `Clear-Site-Data` | Not recorded for an isolated test | Not mutated | INVALID TEST | Candidate only; no controlled mutation or attributable alert evidence. |
-| `Cross-Origin-Embedder-Policy` | Not recorded for an isolated test | Not mutated | INVALID TEST | Candidate only; no controlled mutation or attributable alert evidence. |
-| `Cross-Origin-Opener-Policy` | Not recorded for an isolated test | Not mutated | INVALID TEST | Candidate only; no controlled mutation or attributable alert evidence. |
-| `Cross-Origin-Resource-Policy` | Not recorded for an isolated test | Not mutated | INVALID TEST | Candidate only; no controlled mutation or attributable alert evidence. |
-| `X-Permitted-Cross-Domain-Policies` | Not recorded for an isolated test | Not mutated | INVALID TEST | Candidate only; no controlled mutation or attributable alert evidence. |
+On 2026-09-23, a tenant `ClientSideDefenseHttpHeaderModified` alert identified
+`x-content-type-options`, `x-frame-options`, and `cache-control`, reported `modification=Added`, and
+included the exact protected path `/`. This proves response-header detection for that event only. It
+does not prove the Compromised trigger and does not establish a complete supported-header list.
 
-### 2026-09-24 lab observation
+### 2026-09-24 invalid experiment
 
-The bounded campaign ran from `2026-09-24T20:22:00.476Z` through `2026-09-24T20:30:11.388Z`. It
-produced 108 of 108 fresh browser sessions with HTTP `200`, the exact six simultaneous response-header
-mutations above, an injected CSD script, and a CSD `dip` POST. Searches of the documented alert endpoint
-across active, inactive, unprocessed, silenced, and inhibited states later returned no
-`ClientSideDefenseHttpHeaderModified` or `ClientSideDefenseHttpHeaderCompromised` alert matching the campaign.
+The campaign from `2026-09-24T20:22:00.476Z` through `2026-09-24T20:30:11.388Z` produced
+108 of 108 fresh browser sessions with HTTP `200`, six simultaneous global response-header value
+changes, an injected CSD script, and a CSD `dip` POST. Restoration completed at
+`2026-09-24T21:40:51Z`; workstation and worker checks agreed on canonical headers, the load
+balancer remained ready with a valid certificate, Terraform reported no changes, and no worker
+resources remained.
 
-Because all six headers changed simultaneously, a generic alert—had one been retrieved—would have been
-**AMBIGUOUS** for per-header attribution. No matching alert was retrieved within the searched states and
-window, so each tested header is currently **NOT DETECTED WITHIN WINDOW**. This is a bounded tenant observation,
-not proof that F5 does not monitor those headers.
+That campaign is **INVALID TEST** for Compromised-trigger conclusions. The load balancer changed all
+sessions together, so it provided neither an unchanged baseline cohort nor a simultaneous comparison
+cohort. Alert review also began with current alerts rather than alert history. Later searches across
+active, inactive, unprocessed, silenced, and inhibited states returned no matching Modified or
+Compromised record, but that bounded negative observation cannot establish per-header behavior or
+unsupported coverage.
 
-Restoration completed at `2026-09-24T21:40:51Z`. The live load balancer had `more_option` set to null,
-remained ready with a valid certificate, and returned the canonical state: `Content-Security-Policy`,
-`Strict-Transport-Security`, `Referrer-Policy`, and `Permissions-Policy` absent;
-`X-Frame-Options: SAMEORIGIN`; and `X-Content-Type-Options: nosniff`. Workstation plus worker raw HTTPS
-and browser evidence agreed, Terraform reported no changes, and no worker resources remained.
+### Dedicated endpoint hypothesis
+
+The controlled hypothesis uses the same URL for both cohorts:
+`/csd-page-tamper/payment`. Control browsers receive the canonical synthetic payment page with all 12
+candidate headers. Alternating tampered browsers send `X-CSD-Page-Tamper: <header-id>` and receive
+the identical page with exactly the selected header absent; ordinary requests remain unchanged.
+Individual experiments do not mutate the F5 Distributed Cloud load balancer or origin pool.
+
+Bootstrap first proves the baseline from workstation and worker browsers, including all 12 exact
+headers, the five empty synthetic fields, CSD injection, and `dip` telemetry. Each header then runs in
+a separate window with control reinforcement, alternating control/tampered pairs, exact current and
+history alert correlation, and control-only recovery. `X-Content-Type-Options` is the canary: if it
+does not reach COMPROMISED, recover and stop the suite for diagnosis. A result is not successful
+until recovery, cleanup, application health, load-balancer readiness, and final Terraform no drift
+also pass. This method remains an unproven hypothesis until live evidence satisfies those gates.
+
+### 2026-09-25/26 live result
+
+The dedicated endpoint was deployed by the exact saved Terraform plan (`5 add, 1 change, 1 destroy`
+for a task-definition replacement) with zero F5 Distributed Cloud mutations. Bootstrap run
+`dd91ea9b-3da3-4fc8-b24b-c32cdba2e863` ran from `2026-09-25T21:40:23.373Z` to
+`2026-09-25T22:42:18.638Z`. It returned `alerts=[]` and proved the endpoint and root healthy,
+all 12 canonical candidate headers exact, all five synthetic payment fields empty, the CSD script
+present, both ALB target groups healthy, load-balancer state `VIRTUAL_HOST_READY`, certificate
+state `CertificateValid`, and Terraform no drift.
+
+The valid `X-Content-Type-Options` canary run
+`69f30bd0-6dc2-4721-bb21-cae159032af2` ran from `2026-09-25T23:21:44.908Z` to
+`2026-09-26T00:38:11.806Z`. It completed 12 of 12 controls and 20 of 20 mixed pairs with
+valid telemetry. Neither an exact Modified nor Compromised alert correlated; `alerts=[]`, and the
+only correct outcome is **NO_ALERT_WITHIN_WINDOW**. Post-run current alerts returned zero and alert
+history returned an empty array.
+
+Recovery completed with 10 control pairs, successful probes, readiness, cleanup, and Terraform
+no drift. Because the canary did not reach `COMPROMISED`, the mandatory stop rule applied: the
+remaining candidate headers were not run by design. This result validates the dedicated endpoint
+and controlled test chain, but it does not validate the Compromised hypothesis, prove unsupported
+behavior, or establish a monitored-header list.

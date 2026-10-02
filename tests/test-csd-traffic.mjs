@@ -3,8 +3,14 @@ import { mkdtemp, readdir, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { CliError, parseArgs } from '../scripts/lib/csd-config.mjs';
-import { CdpClient, main, runScenario } from '../scripts/lib/csd-runner.mjs';
+import {
+  CliError,
+  DOCUMENT_PROBE_HEADERS,
+  DOCUMENT_PROBE_PATH,
+  DOCUMENT_PROBE_SELECTOR_IDS,
+  parseArgs,
+} from '../scripts/lib/csd-config.mjs';
+import { CdpClient, main, runDocumentProbe, runScenario } from '../scripts/lib/csd-runner.mjs';
 import {
   buildPreDocumentBootstrap,
   buildScenario,
@@ -91,6 +97,14 @@ function fakeCdp({
                 top: true,
                 instrumentation_sources: sources,
                 selectors_ready: [true, true, true, true, true],
+                fields_present: [
+                  '[name="cardholder_name"]',
+                  '[name="card_number"]',
+                  '[name="expiry"]',
+                  '[name="cvv"]',
+                  '[name="billing_postal_code"]',
+                ],
+                fields_empty: true,
                 ...state,
               },
             },
@@ -500,6 +514,195 @@ test('exact-path document probes expose only allowlisted header match evidence',
   assert.equal(serialized.includes('secret-value'), false);
   assert.equal(serialized.includes('private-cookie'), false);
   assert.equal(serialized.includes('COMPROMISED'), false);
+});
+
+test('document response probes merge allowlisted ExtraInfo headers by exact request ID in either event order', async () => {
+  const probe = {
+    path: '/probe',
+    headers: [{ name: 'clear-site-data', expectedValue: '"cache"' }],
+  };
+  for (const extraFirst of [false, true]) {
+    const response = {
+      method: 'Network.responseReceived',
+      params: {
+        requestId: 'protected-document',
+        type: 'Document',
+        response: { url: `${ORIGIN}/probe`, status: 200, headers: { Cookie: 'private-response-cookie' } },
+      },
+    };
+    const extra = {
+      method: 'Network.responseReceivedExtraInfo',
+      params: {
+        requestId: 'protected-document',
+        headers: { 'Clear-Site-Data': '"cache"', 'Set-Cookie': 'private-extra-cookie' },
+      },
+    };
+    const receipt = await runScenario('login-credential-skimmer', options({ documentResponseProbe: probe }), {
+      cdp: fakeCdp({
+        runtimeNetworkEvents: [
+          {
+            method: 'Network.responseReceivedExtraInfo',
+            params: { requestId: 'unrelated-document', headers: { 'Clear-Site-Data': '"cookies"' } },
+          },
+          ...(extraFirst ? [extra, response] : [response, extra]),
+        ],
+      }),
+    });
+    assert.deepEqual(receipt.protected_document.response_probe.headers, [
+      { name: 'clear-site-data', present: true, expected_match: true },
+    ]);
+    const serialized = JSON.stringify(receipt);
+    assert.equal(serialized.includes('private-response-cookie'), false);
+    assert.equal(serialized.includes('private-extra-cookie'), false);
+    assert.equal(serialized.includes('cookies'), false);
+  }
+});
+
+test('dedicated control and tampered document probes enforce canonical evidence and cleanup', async () => {
+  const responseHeaders = Object.fromEntries(DOCUMENT_PROBE_HEADERS.map(({ name, value }) => [name, value]));
+  const run = async (selector) => {
+    const headers = { ...responseHeaders };
+    if (selector) delete headers[DOCUMENT_PROBE_HEADERS.find(({ id }) => id === selector).name];
+    const cdp = fakeCdp({
+      redirectUrl: `${ORIGIN}${DOCUMENT_PROBE_PATH}`,
+      runtimeNetworkEvents: [
+        {
+          method: 'Network.responseReceived',
+          params: {
+            requestId: 'document',
+            type: 'Document',
+            response: {
+              url: `${ORIGIN}${DOCUMENT_PROBE_PATH}`,
+              status: 200,
+              headers: { ...headers, Authorization: 'Bearer secret', Cookie: 'private' },
+            },
+          },
+        },
+        {
+          method: 'Network.requestWillBeSent',
+          params: {
+            requestId: 'dip',
+            type: 'Fetch',
+            request: { method: 'POST', url: 'https://csd.zeronaught.com/dip', postData: 'private' },
+          },
+        },
+        { method: 'Network.loadingFinished', params: { requestId: 'dip' } },
+      ],
+    });
+    const receipt = await runDocumentProbe(
+      { target: `${ORIGIN}${DOCUMENT_PROBE_PATH}`, ...(selector ? { selector } : {}), timeoutMs: 500, settleMs: 0 },
+      { cdp },
+    );
+    return { receipt, cdp };
+  };
+  const control = await run();
+  assert.equal(control.receipt.success, true);
+  assert.equal(control.receipt.document.headers.length, 12);
+  assert.ok(control.receipt.document.headers.every(({ present, expected_match: match }) => present && match));
+  assert.equal(control.receipt.instrumentation.imp_apg_present, true);
+  assert.equal(control.receipt.instrumentation.dip_post_observed, true);
+  assert.equal(control.receipt.cleanup.target_closed, true);
+  assert.equal(control.receipt.cleanup.context_disposed, true);
+  assert.equal(control.receipt.cleanup.listeners_removed, true);
+  assert.deepEqual(control.cdp.calls.find(({ method }) => method === 'Network.setExtraHTTPHeaders').params.headers, {});
+  const selector = 'x-content-type-options';
+  const tampered = await run(selector);
+  assert.equal(tampered.receipt.success, true);
+  assert.equal(tampered.receipt.document.headers.filter(({ present }) => !present).length, 1);
+  assert.deepEqual(
+    tampered.receipt.document.headers.find(({ name }) => name === selector),
+    { name: selector, present: false, expected_value: 'nosniff', observed_value: null, expected_match: false },
+  );
+  assert.deepEqual(tampered.cdp.calls.find(({ method }) => method === 'Network.setExtraHTTPHeaders').params.headers, {
+    'X-CSD-Page-Tamper': selector,
+  });
+  const serialized = JSON.stringify(tampered.receipt);
+  assert.equal(serialized.includes('Bearer secret'), false);
+  assert.equal(serialized.includes('private'), false);
+  assert.equal(serialized.includes('discarded'), false);
+});
+
+test('document probe accepts only exact completed POST collector pairs', async () => {
+  const exact = `${ORIGIN}${DOCUMENT_PROBE_PATH}`;
+  const headers = Object.fromEntries(DOCUMENT_PROBE_HEADERS.map(({ name, value }) => [name, value]));
+  const run = (url, method = 'POST', finished = true) =>
+    runDocumentProbe(
+      { target: exact, timeoutMs: 500, settleMs: 0 },
+      {
+        cdp: fakeCdp({
+          redirectUrl: exact,
+          runtimeNetworkEvents: [
+            {
+              method: 'Network.responseReceived',
+              params: { requestId: 'document', type: 'Document', response: { url: exact, status: 200, headers } },
+            },
+            {
+              method: 'Network.requestWillBeSent',
+              params: { requestId: 'dip', type: 'Fetch', request: { method, url } },
+            },
+            ...(finished ? [{ method: 'Network.loadingFinished', params: { requestId: 'dip' } }] : []),
+          ],
+        }),
+      },
+    );
+  const live = await run('https://us.gimp.zeronaught.com/__imp_apg__/api/dip/v1/dip');
+  assert.equal(live.success, true);
+  assert.equal(live.instrumentation.dip_post_observed, true);
+  for (const [url, method, finished] of [
+    ['https://attacker.zeronaught.com/__imp_apg__/api/dip/v1/dip', 'POST', true],
+    ['https://us.gimp.zeronaught.com/__imp_apg__/api/dip/v1/dip-copy', 'POST', true],
+    ['https://us.gimp.zeronaught.com/__imp_apg__/api/dip/v1/dip', 'GET', true],
+    ['https://us.gimp.zeronaught.com/__imp_apg__/api/dip/v1/dip', 'POST', false],
+  ]) {
+    const rejected = await run(url, method, finished);
+    assert.equal(rejected.error.code, 'DIP_MISSING');
+    assert.equal(rejected.instrumentation.dip_post_observed, false);
+  }
+});
+
+test('dedicated document probe rejects path, query, origin, selector, and custom-header drift', async () => {
+  const exact = `${ORIGIN}${DOCUMENT_PROBE_PATH}`;
+  for (const input of [
+    { target: `${ORIGIN}/` },
+    { target: `${exact}?mode=test` },
+    { target: `https://outside.example${DOCUMENT_PROBE_PATH}` },
+    { target: exact, selector: 'unknown' },
+    { target: exact, selector: ['cache-control', 'x-frame-options'] },
+    { target: exact, headers: { Authorization: 'secret' } },
+  ])
+    await assert.rejects(
+      () => runDocumentProbe(input, { cdp: fakeCdp() }),
+      (error) => {
+        assert.equal(error.code, 'INVALID_DOCUMENT_PROBE');
+        return true;
+      },
+    );
+  assert.equal(DOCUMENT_PROBE_SELECTOR_IDS.length, 12);
+});
+
+test('dedicated document probe rejects redirect path drift and missing dip evidence', async () => {
+  const exact = `${ORIGIN}${DOCUMENT_PROBE_PATH}`;
+  const redirected = await runDocumentProbe(
+    { target: exact, timeoutMs: 500, settleMs: 0 },
+    { cdp: fakeCdp({ redirectUrl: `${ORIGIN}/wrong-path` }) },
+  );
+  assert.equal(redirected.error.code, 'REDIRECT_PATH_DRIFT');
+  const headers = Object.fromEntries(DOCUMENT_PROBE_HEADERS.map(({ name, value }) => [name, value]));
+  const noDip = await runDocumentProbe(
+    { target: exact, timeoutMs: 500, settleMs: 0 },
+    {
+      cdp: fakeCdp({
+        redirectUrl: exact,
+        runtimeNetworkEvents: [
+          {
+            method: 'Network.responseReceived',
+            params: { requestId: 'document', type: 'Document', response: { url: exact, status: 200, headers } },
+          },
+        ],
+      }),
+    },
+  );
+  assert.equal(noDip.error.code, 'DIP_MISSING');
 });
 
 test('document probes distinguish the exact pathname and query', async () => {

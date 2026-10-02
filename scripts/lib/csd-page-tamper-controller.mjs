@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { link, mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -38,6 +37,9 @@ const REVIEWED = Object.freeze({
   lbName: 'client-side-defense',
   backendBucket: 'terraform-tfstate-xc',
   backendKey: 'f5-sales-demo/client-side-defense.tfstate',
+  workerBackendBucket: 'terraform-tfstate-xc',
+  workerBackendKey: 'f5-sales-demo/traffic-generator-aws.tfstate',
+  workerBackendRegion: 'us-east-1',
 });
 const MODULE_NAMES = ['csd-config.mjs', 'csd-scenarios.mjs', 'csd-runner.mjs'];
 
@@ -89,6 +91,19 @@ const parseJson = (text, code) => {
   }
 };
 
+function backendSettings(source) {
+  const block = source.match(/(?:^|[\n{])[ \t]*backend\s+"s3"\s*\{([^}]*)\}/s)?.[1];
+  if (!block) return null;
+  const values = {};
+  for (const key of ['bucket', 'key', 'region']) {
+    const matches = [
+      ...block.matchAll(new RegExp(`^[ \\t]*${key}[ \\t]*=[ \\t]*"([^"]+)"[ \\t]*(?:#.*|\\/\\/.*)?$`, 'gm')),
+    ];
+    if (matches.length === 1) values[key] = matches[0][1];
+  }
+  return values;
+}
+
 export async function validateDeploymentIdentity(config, deps) {
   const target = new URL(config.target);
   assertValue(target.origin, REVIEWED.targetOrigin, 'target');
@@ -100,30 +115,49 @@ export async function validateDeploymentIdentity(config, deps) {
   assertValue(config.lbName, REVIEWED.lbName, 'load balancer');
   assertValue(new URL(config.f5ApiUrl).origin, REVIEWED.f5ApiOrigin, 'F5 API origin');
   const versions = await readFile(join(config.terraformDir, 'versions.tf'), 'utf8');
-  if (
-    !versions.includes(`bucket       = "${REVIEWED.backendBucket}"`) ||
-    !versions.includes(`key          = "${REVIEWED.backendKey}"`)
-  )
+  const csdBackend = backendSettings(versions);
+  if (csdBackend?.bucket !== REVIEWED.backendBucket || csdBackend?.key !== REVIEWED.backendKey)
     throw new ControllerError('Terraform backend does not match the reviewed deployment', 'IDENTITY_MISMATCH', 3);
+
+  const workerVersions = await readFile(join(config.trafficGeneratorTerraformDir, 'versions.tf'), 'utf8');
+  const workerBackend = backendSettings(workerVersions);
+  if (
+    workerBackend?.bucket !== REVIEWED.workerBackendBucket ||
+    workerBackend?.key !== REVIEWED.workerBackendKey ||
+    workerBackend?.region !== REVIEWED.workerBackendRegion
+  )
+    throw new ControllerError(
+      'traffic-generator Terraform backend does not match the reviewed worker state',
+      'IDENTITY_MISMATCH',
+      3,
+    );
+  const workerOutput = await command(
+    deps,
+    ['terraform', `-chdir=${config.trafficGeneratorTerraformDir}`, 'output', '-raw', 'instance_id'],
+    { env: deps.env, signal: deps.signal },
+  );
+  const workerInstance = workerOutput.trim();
+  if (!/^i-[0-9a-f]{8,17}$/.test(workerInstance))
+    throw new ControllerError(
+      'traffic-generator instance_id output is missing or invalid',
+      'WORKER_IDENTITY_INVALID',
+      5,
+    );
+  config.workerInstance = workerInstance;
+
   const caller = parseJson(
     await command(deps, ['aws', 'sts', 'get-caller-identity', '--profile', config.awsProfile, '--output', 'json']),
     'AWS_INVALID_JSON',
   );
   assertValue(String(caller.Account), REVIEWED.awsAccount, 'active AWS account');
   const worker = parseJson(
-    await command(deps, [
-      'aws',
-      'ec2',
-      'describe-instances',
-      '--instance-ids',
-      config.workerInstance,
-      ...awsBase(config),
-    ]),
+    await command(deps, ['aws', 'ec2', 'describe-instances', '--instance-ids', workerInstance, ...awsBase(config)]),
     'AWS_INVALID_JSON',
   );
   const instances = worker.Reservations?.flatMap(({ Instances = [] }) => Instances) || [];
-  if (instances.length !== 1 || instances[0].State?.Name !== 'running')
+  if (instances.length !== 1 || instances[0].InstanceId !== workerInstance || instances[0].State?.Name !== 'running')
     throw new ControllerError('worker instance is not the reviewed running worker', 'IDENTITY_MISMATCH', 3);
+
   const outputs = parseJson(
     await command(deps, ['terraform', `-chdir=${config.terraformDir}`, 'output', '-json'], {
       env: deps.env,
@@ -149,13 +183,14 @@ async function noDrift(config, deps) {
   return { checked: true, no_drift: result.code === 0 };
 }
 
+const SAFE_WORKER_RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function workerIdentity(config, worker) {
   if (worker === null) return null;
   const root = worker?.root;
   const runId = worker?.runId;
   if (
     typeof runId !== 'string' ||
-    !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,63}$/.test(runId) ||
+    !SAFE_WORKER_RUN_ID.test(runId) ||
     root !== `/tmp/xcsh-csd-${runId}` ||
     !/^i-[0-9a-f]{8,17}$/.test(config.workerInstance)
   )
@@ -187,14 +222,12 @@ async function acquireLock(config, runId, now, commandName, worker = null) {
     handle = await open(path, 'wx', 0o600);
     await handle.writeFile(
       `${JSON.stringify({
-        schema_version: 1,
+        schema_version: 2,
         run_id: runId,
         command: commandName,
-        worker: identity,
+        worker_run_id: identity?.runId || null,
         started_at: now(),
         state: 'active',
-        hostname: hostname(),
-        pid: process.pid,
       })}\n`,
     );
     await handle.sync();
@@ -223,11 +256,11 @@ async function atomicReceipt(path, value) {
 }
 async function preserveRecoveryLock(lockPath, receipt, error, evidencePersistenceFailure = true) {
   await atomicReplace(lockPath, {
-    schema_version: 1,
+    schema_version: 2,
     run_id: receipt.run_id,
     command: receipt.command,
+    worker_run_id: receipt.worker_run_id || null,
     started_at: receipt.started_at,
-    ...(Object.hasOwn(receipt, 'worker') ? { worker: receipt.worker } : {}),
     state: 'recovery-required',
     recovery_completed: receipt.recovery?.success === true,
     evidence_persistence_failure: evidencePersistenceFailure,
@@ -255,14 +288,12 @@ async function claimRecovery(config, state, deps) {
   const ownerPath = join(path, 'owner.json');
   const claimId = deps.randomUUID();
   const value = {
-    schema_version: 1,
+    schema_version: 2,
     claim_id: claimId,
     run_id: state.run_id,
     original_command: state.command || null,
     original_started_at: state.started_at,
     claimed_at: deps.now(),
-    hostname: deps.hostname(),
-    pid: deps.pid(),
   };
   return withRecoveryClaimGate(config, async () => {
     try {
@@ -271,16 +302,14 @@ async function claimRecovery(config, state, deps) {
       if (error.code !== 'EEXIST') throw error;
       const before = await stat(path).catch(() => null);
       const current = before ? JSON.parse(await readFile(ownerPath, 'utf8')) : null;
-      const sameHostDead =
-        current?.hostname === deps.hostname() && Number.isInteger(current?.pid) && !deps.isProcessAlive(current.pid);
-      if (!sameHostDead && (!before || deps.nowMs() - before.mtimeMs <= config.timings.maximumCaseMs))
+      if (!before || deps.nowMs() - before.mtimeMs <= config.timings.maximumCaseMs)
         throw new ControllerError('interrupted recovery is already claimed', 'OVERLAP', 5);
       const after = await stat(path).catch(() => null);
       if (!after || before.dev !== after.dev || before.ino !== after.ino || before.mtimeMs !== after.mtimeMs)
         throw new ControllerError('interrupted recovery claim changed during takeover', 'OVERLAP', 5);
       const preserved = join(
         config.receiptDir,
-        `recovery-claim-stale-${state.run_id}-${deps.nowMs()}-${current.claim_id}.json`,
+        `recovery-claim-stale-${state.run_id}-${deps.nowMs()}-${current?.claim_id || 'unknown'}.json`,
       );
       await writeFile(preserved, `${JSON.stringify(current, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
       await rm(path, { recursive: true });
@@ -825,13 +854,23 @@ async function recoverInterrupted(config, deps) {
   if (!state.active) return null;
   if (!state.interrupted && state.state !== 'recovery-required')
     throw new ControllerError('another Page Tamper experiment is active', 'OVERLAP', 5);
-  const claim = await claimRecovery(config, state, deps);
+  const activePath = join(config.receiptDir, 'active.lock');
+  const lock = JSON.parse(await readFile(activePath, 'utf8'));
+  const workerRunId = lock.worker_run_id;
+  if (
+    (workerRunId === null && !deps.workerProbe) ||
+    (workerRunId !== null && (typeof workerRunId !== 'string' || !SAFE_WORKER_RUN_ID.test(workerRunId)))
+  )
+    throw new ControllerError('original worker run reference is unavailable', 'WORKER_IDENTITY_INVALID', 5);
+  const recoveryState = { ...state, worker_run_id: workerRunId };
+  const claim = await claimRecovery(config, recoveryState, deps);
   let recovery;
   try {
-    if (state.worker === undefined || (state.worker === null && !deps.workerProbe))
-      throw new ControllerError('original worker identity is unavailable', 'WORKER_IDENTITY_INVALID', 5);
-    const originalWorker = state.worker === null ? null : validatedWorker(config, state.worker);
     const outputs = await validateDeploymentIdentity(config, deps);
+    const originalWorker =
+      workerRunId === null
+        ? null
+        : workerIdentity(config, { runId: workerRunId, root: `/tmp/xcsh-csd-${workerRunId}` });
     const originalCleanup = originalWorker
       ? await cleanupWorker(config, { ...deps, signal: undefined }, originalWorker)
       : { worker_artifacts_removed: true };
@@ -850,20 +889,15 @@ async function recoverInterrupted(config, deps) {
     }
     recovery.original_worker_cleanup = originalCleanup;
   } catch (error) {
-    await preserveRecoveryLock(
-      join(config.receiptDir, 'active.lock'),
-      { ...state, recovery: { success: false } },
-      error,
-      false,
-    );
+    await preserveRecoveryLock(activePath, { ...recoveryState, recovery: { success: false } }, error, false);
     throw error;
   }
   const receipt = {
     schema_version: 1,
     run_id: state.run_id,
+    worker_run_id: workerRunId,
     command: 'interruption-recovery',
     started_at: state.started_at,
-    worker: state.worker,
     ended_at: deps.now(),
     recovery,
     success: recovery.success,
@@ -872,12 +906,12 @@ async function recoverInterrupted(config, deps) {
   try {
     await atomicReceipt(path, receipt);
   } catch (error) {
-    await preserveRecoveryLock(join(config.receiptDir, 'active.lock'), receipt, error);
+    await preserveRecoveryLock(activePath, receipt, error);
     throw new ControllerError('recovery completed but evidence persistence failed', 'EVIDENCE_PERSISTENCE_FAILED', 5);
   }
   if (!recovery.success) {
     await preserveRecoveryLock(
-      join(config.receiptDir, 'active.lock'),
+      activePath,
       receipt,
       new ControllerError('interrupted run recovery failed', 'RECOVERY_FAILED'),
       false,
@@ -886,9 +920,9 @@ async function recoverInterrupted(config, deps) {
   }
   try {
     await releaseRecoveryClaim(config, claim, deps);
-    await rm(join(config.receiptDir, 'active.lock'));
+    await rm(activePath);
   } catch (error) {
-    await preserveRecoveryLock(join(config.receiptDir, 'active.lock'), receipt, error, false);
+    await preserveRecoveryLock(activePath, receipt, error, false);
     throw error;
   }
   return receipt;
@@ -910,7 +944,7 @@ export async function runHeader(config, deps, headerId, options = {}) {
   const receipt = {
     schema_version: 1,
     run_id: runId,
-    worker,
+    worker_run_id: worker?.runId || null,
     command: 'run',
     header_id: headerId,
     started_at: startedAt,
@@ -1037,7 +1071,7 @@ export async function bootstrap(config, deps) {
   const receipt = {
     schema_version: 1,
     run_id: finder,
-    worker,
+    worker_run_id: worker?.runId || null,
     command: 'bootstrap',
     started_at: startedAt,
     ended_at: null,
@@ -1158,10 +1192,12 @@ export async function bootstrap(config, deps) {
 }
 
 export async function runSuite(config, deps) {
+  await validateDeploymentIdentity(config, deps);
+  await recoverInterrupted(config, deps);
   const results = [];
   const suiteId = deps.randomUUID();
   const startedAt = deps.now();
-  const worker = deps.workerProbe ? null : await prepareWorker(config, deps);
+  const worker = deps.workerProbe ? null : await prepareWorker(config, deps, suiteId);
   let cleanup = { worker_artifacts_removed: true };
   let cleanupError = null;
   try {
@@ -1192,8 +1228,8 @@ export async function runSuite(config, deps) {
   const receipt = {
     schema_version: 1,
     run_id: suiteId,
+    worker_run_id: worker?.runId || null,
     command: 'suite',
-    worker,
     started_at: startedAt,
     ended_at: deps.now(),
     results,
@@ -1208,11 +1244,7 @@ export async function runSuite(config, deps) {
   await atomicReceipt(join(config.receiptDir, `suite-${suiteId}.json`), receipt);
   if (!safetyPasses(cleanup)) {
     const lockPath = join(config.receiptDir, 'active.lock');
-    try {
-      await acquireLock(config, suiteId, deps.now, 'suite-cleanup', worker);
-    } catch (error) {
-      throw error;
-    }
+    await acquireLock(config, suiteId, deps.now, 'suite-cleanup', worker);
     await preserveRecoveryLock(
       lockPath,
       { ...receipt, recovery: { success: false } },
@@ -1229,21 +1261,12 @@ export async function status(config) {
     const details = await stat(path);
     const persistenceFailure = lock.evidence_persistence_failure === true;
     const ageExpired = Date.now() - details.mtimeMs > config.timings.maximumCaseMs;
-    let ownerDead = false;
-    if (lock.hostname === hostname() && Number.isInteger(lock.pid)) {
-      try {
-        process.kill(lock.pid, 0);
-      } catch (error) {
-        ownerDead = error.code === 'ESRCH';
-      }
-    }
     return {
-      schema_version: 1,
+      schema_version: 2,
       active: true,
       state: lock.state || 'active',
-      interrupted: persistenceFailure || ownerDead || ageExpired,
+      interrupted: persistenceFailure || ageExpired || lock.state === 'recovery-required',
       run_id: lock.run_id,
-      worker: lock.worker,
       command: lock.command,
       started_at: lock.started_at,
       cleanup_required: true,
@@ -1252,7 +1275,7 @@ export async function status(config) {
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
     return {
-      schema_version: 1,
+      schema_version: 2,
       active: false,
       interrupted: false,
       cleanup_required: false,
@@ -1283,19 +1306,6 @@ export function createDependencies(overrides = {}) {
     now: overrides.now || (() => new Date().toISOString()),
     nowMs: overrides.nowMs || Date.now,
     randomUUID: overrides.randomUUID || randomUUID,
-    hostname: overrides.hostname || hostname,
-    pid: overrides.pid || (() => process.pid),
-    isProcessAlive:
-      overrides.isProcessAlive ||
-      ((value) => {
-        try {
-          process.kill(value, 0);
-          return true;
-        } catch (error) {
-          if (error.code === 'ESRCH') return false;
-          return true;
-        }
-      }),
     env: overrides.env || process.env,
     signal: overrides.signal,
     cdp: overrides.cdp,

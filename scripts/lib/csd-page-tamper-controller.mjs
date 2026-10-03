@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { createGzip } from 'node:zlib';
 import { DOCUMENT_PROBE_HEADERS, DOCUMENT_PROBE_PATH, DOCUMENT_PROBE_SELECTOR_IDS } from './csd-config.mjs';
 import { classifyAlerts, correlateAlertViews } from './csd-page-tamper-alerts.mjs';
+import { renderHeadedProbe, renderReservation, reservationLifetime } from './csd-page-tamper-reservation.mjs';
 import { CdpClient, runDocumentProbe } from './csd-runner.mjs';
 
 export const HEADER_VALUES = Object.freeze(
@@ -522,7 +523,64 @@ export async function cleanupWorker(config, deps, worker) {
   }
 }
 
+async function installWorkerFile(config, deps, path, body) {
+  const encoded = Buffer.from(body).toString('base64');
+  await invokeSsm(config, deps, `set -eu;umask 077;: >'${path}.b64'`);
+  for (let offset = 0; offset < encoded.length; offset += SSM_CHUNK_SIZE)
+    await invokeSsm(
+      config,
+      deps,
+      `set -eu;printf %s '${encoded.slice(offset, offset + SSM_CHUNK_SIZE)}' >>'${path}.b64'`,
+    );
+  await invokeSsm(config, deps, `set -eu;base64 -d '${path}.b64' >'${path}';chmod 700 '${path}';rm '${path}.b64'`);
+}
+
+async function reservationAction(config, deps, worker, action) {
+  if (deps.reservation) return deps.reservation(action);
+  const recoveryDeps = { ...deps, signal: undefined };
+  const { root, runId } = validatedWorker(config, worker);
+  if (action === 'arm') {
+    const guard = renderReservation({ runId, lifetimeSeconds: reservationLifetime(config.timings) });
+    await installWorkerFile(config, recoveryDeps, `${root}/reservation.py`, guard.script);
+  }
+  const path = action === 'arm' ? `${root}/reservation.py` : `/var/lib/xcsh-csd-reservation/${runId}/guard.py`;
+  return invokeSsm(config, recoveryDeps, `/usr/bin/python3 '${path}' '${action}'`, {
+    expectResult: action !== 'cleanup',
+  });
+}
+
+export async function runHeadedWorkerProbe(config, deps, headerId, worker) {
+  const { root, runId } = validatedWorker(config, worker);
+  if (config.reservationWorker) await reservationAction(config, deps, config.reservationWorker, 'verify');
+  const probeId = deps.randomUUID();
+  const entry = `import { CdpClient, runDocumentProbe } from '${root}/csd-runner.mjs';
+const body=await (await fetch('http://127.0.0.1:'+process.env.XCSH_PROBE_PORT+'/json/version')).json();
+const cdp=await CdpClient.connect(body.webSocketDebuggerUrl,${Number(config.probeTimeoutMs)},WebSocket);
+try{const args=await cdp.send('Browser.getBrowserCommandLine');const version=await cdp.send('Browser.getVersion');
+if(args.arguments.some(a=>a.startsWith('--headless'))||!args.arguments.includes('--user-data-dir=${root}/probe-${probeId}/profile')||version.product.includes('Headless'))throw new Error('headed browser provenance invalid');
+const result=await runDocumentProbe(${JSON.stringify(probeOptions(config, headerId))},{cdp});
+result._browser_evidence={arguments:args.arguments,product:version.product};console.log('XCSH_RESULT '+JSON.stringify(result));}finally{cdp.close();}`;
+  const path = `${root}/headed-${probeId}.py`;
+  await installWorkerFile(config, deps, path, renderHeadedProbe({ root, probeId, entry }));
+  const unit = `xcsh-csd-probe-${runId}-${probeId}.service`;
+  try {
+    return await invokeSsm(
+      config,
+      deps,
+      `systemd-run --quiet --wait --pipe --collect --unit='${unit}' --property=User=ubuntu --property=KillMode=control-group --property=RuntimeMaxSec=180s /usr/bin/python3 '${path}'`,
+      { expectResult: true },
+    );
+  } finally {
+    await invokeSsm(
+      config,
+      { ...deps, signal: undefined },
+      `set -eu;systemctl stop '${unit}' || [ "$(systemctl show '${unit}' -p LoadState --value)" = not-found ];rm -f '${path}'`,
+    );
+  }
+}
+
 export async function runWorkerProbe(config, deps, headerId = null, worker = null) {
+  if (config.browserMode === 'headed-xvfb') return runHeadedWorkerProbe(config, deps, headerId, worker);
   const owned = worker ? validatedWorker(config, worker) : await prepareWorker(config, deps);
   const probeId = deps.randomUUID();
   const probeRoot = `${owned.root}/probe-${probeId}`;
@@ -563,11 +621,28 @@ chmod 700 "$spawn";/usr/bin/setsid --fork "$spawn" "$pidfile" "$chrome" --headle
 }
 
 async function browserProbe(config, deps, headerId = null, location = 'workstation', worker = null) {
-  if (deps.probe) return deps.probe({ config, headerId, location, worker });
-  if (location === 'worker')
-    return deps.workerProbe
-      ? deps.workerProbe({ config, headerId, options: probeOptions(config, headerId), worker })
-      : runWorkerProbe(config, deps, headerId, worker);
+  if (config.placement === 'worker') location = 'worker';
+  let result;
+  if (deps.probe) result = await deps.probe({ config, headerId, location, worker });
+  else if (location === 'worker')
+    result = deps.workerProbe
+      ? await deps.workerProbe({ config, headerId, options: probeOptions(config, headerId), worker })
+      : await runWorkerProbe(config, deps, headerId, worker);
+  if (result) {
+    if (config.browserMode === 'headed-xvfb') {
+      const evidence = result.browser_provenance;
+      if (
+        evidence?.mode !== 'headed-xvfb' ||
+        evidence.placement !== 'worker' ||
+        !evidence.process_arguments_verified ||
+        !evidence.browser_arguments_verified ||
+        !evidence.owned_display_verified
+      )
+        throw new ControllerError('headed browser provenance cannot be verified', 'INVALID_TEST');
+      config.browserProvenance = evidence;
+    }
+    return result;
+  }
   const cdp = deps.cdp || (await connectCdp(config, deps));
   try {
     return await runDocumentProbe(probeOptions(config, headerId), { cdp, signal: deps.signal });
@@ -931,7 +1006,7 @@ async function recoverInterrupted(config, deps) {
 export async function runHeader(config, deps, headerId, options = {}) {
   if (!HEADER_IDS.includes(headerId)) throw new ControllerError(`unsupported header: ${headerId}`, 'INVALID_HEADER', 2);
   const outputs = await validateDeploymentIdentity(config, deps);
-  await recoverInterrupted(config, deps);
+  if (!options.lockPath) await recoverInterrupted(config, deps);
   const runId = deps.randomUUID();
   const startedAt = deps.now();
   const worker = options.worker
@@ -939,7 +1014,7 @@ export async function runHeader(config, deps, headerId, options = {}) {
     : deps.workerProbe
       ? null
       : workerIdentity(config, { runId, root: `/tmp/xcsh-csd-${runId}` });
-  const lockPath = await acquireLock(config, runId, deps.now, 'run', worker);
+  const lockPath = options.lockPath || (await acquireLock(config, runId, deps.now, 'run', worker));
   const finalizeWorker = options.finalizeWorker !== false;
   const receipt = {
     schema_version: 1,
@@ -1046,8 +1121,10 @@ export async function runHeader(config, deps, headerId, options = {}) {
     const path = join(config.receiptDir, `${receipt.started_at.replace(/[:.]/g, '-')}-${headerId}-${runId}.json`);
     try {
       await atomicReceipt(path, receipt);
-      if (receipt.recovery?.success) await rm(lockPath);
-      else await preserveRecoveryLock(lockPath, receipt, new ControllerError('recovery failed', 'RECOVERY_FAILED'));
+      if (!options.lockPath) {
+        if (receipt.recovery?.success) await rm(lockPath);
+        else await preserveRecoveryLock(lockPath, receipt, new ControllerError('recovery failed', 'RECOVERY_FAILED'));
+      }
     } catch (error) {
       await preserveRecoveryLock(lockPath, receipt, error);
       finalizationError = new ControllerError(
@@ -1061,12 +1138,14 @@ export async function runHeader(config, deps, headerId, options = {}) {
   return receipt;
 }
 
-export async function bootstrap(config, deps) {
+export async function bootstrap(config, deps, options = {}) {
   const outputs = await validateDeploymentIdentity(config, deps);
-  await recoverInterrupted(config, deps);
+  if (!options.lockPath) await recoverInterrupted(config, deps);
   const finder = deps.randomUUID();
-  const worker = deps.workerProbe ? null : workerIdentity(config, { runId: finder, root: `/tmp/xcsh-csd-${finder}` });
-  const lockPath = await acquireLock(config, finder, deps.now, 'bootstrap', worker);
+  const worker =
+    options.worker ||
+    (deps.workerProbe ? null : workerIdentity(config, { runId: finder, root: `/tmp/xcsh-csd-${finder}` }));
+  const lockPath = options.lockPath || (await acquireLock(config, finder, deps.now, 'bootstrap', worker));
   const startedAt = deps.now();
   const receipt = {
     schema_version: 1,
@@ -1081,9 +1160,9 @@ export async function bootstrap(config, deps) {
   let primaryError;
   let finalizationError;
   let workerCleanupFailed = false;
-  let workerPrepared = false;
+  let workerPrepared = Boolean(options.worker);
   try {
-    if (worker) {
+    if (worker && !options.worker) {
       await prepareWorker(config, deps, finder);
       workerPrepared = true;
     }
@@ -1152,7 +1231,7 @@ export async function bootstrap(config, deps) {
       }
     }
   } finally {
-    if (worker) {
+    if (worker && options.finalizeWorker !== false) {
       const cleanup = await cleanupWorker(config, { ...deps, signal: undefined }, worker);
       if (!cleanup.worker_artifacts_removed) {
         workerCleanupFailed = true;
@@ -1167,16 +1246,18 @@ export async function bootstrap(config, deps) {
     const path = join(config.receiptDir, `bootstrap-${finder}${receipt.success ? '' : '-failed'}.json`);
     try {
       await atomicReceipt(path, receipt);
-      if (!workerCleanupFailed && (receipt.success || receipt.recovery?.success)) await rm(lockPath);
-      else
-        await preserveRecoveryLock(
-          lockPath,
-          receipt,
-          workerCleanupFailed
-            ? new ControllerError('worker cleanup failed', 'RECOVERY_FAILED')
-            : primaryError || new Error('bootstrap recovery failed'),
-          !workerCleanupFailed,
-        );
+      if (!options.lockPath) {
+        if (!workerCleanupFailed && (receipt.success || receipt.recovery?.success)) await rm(lockPath);
+        else
+          await preserveRecoveryLock(
+            lockPath,
+            receipt,
+            workerCleanupFailed
+              ? new ControllerError('worker cleanup failed', 'RECOVERY_FAILED')
+              : primaryError || new Error('bootstrap recovery failed'),
+            !workerCleanupFailed,
+          );
+      }
     } catch (error) {
       await preserveRecoveryLock(lockPath, receipt, error);
       finalizationError = new ControllerError(
@@ -1189,6 +1270,64 @@ export async function bootstrap(config, deps) {
   if (finalizationError) throw finalizationError;
   if (primaryError) throw primaryError;
   return receipt;
+}
+
+export async function runCanary(config, deps) {
+  if (config.browserMode !== 'headed-xvfb' || config.placement !== 'worker')
+    throw new ControllerError('single canary requires headed-xvfb and worker placement', 'CLI_ERROR', 2);
+  await validateDeploymentIdentity(config, deps);
+  await recoverInterrupted(config, deps);
+  const runId = deps.randomUUID();
+  const identity = deps.workerProbe ? null : workerIdentity(config, { runId, root: `/tmp/xcsh-csd-${runId}` });
+  const lockPath = await acquireLock(config, runId, deps.now, 'canary', identity);
+  let worker = identity;
+  const guarded = { ...config, reservationWorker: identity };
+  let armed = false;
+  let result;
+  let error;
+  try {
+    if (worker) worker = await prepareWorker(config, deps, runId);
+    const guard = await reservationAction(guarded, deps, worker, 'arm');
+    if (!guard.armed || !guard.dispatch_drained) throw new ControllerError('reservation not verified', 'INVALID_TEST');
+    armed = true;
+    await bootstrap(guarded, deps, { worker, finalizeWorker: false, lockPath });
+    result = await runHeader(guarded, deps, 'x-content-type-options', { worker, finalizeWorker: false, lockPath });
+  } catch (failure) {
+    error = failure;
+  }
+  {
+    // Try restoration even when arming failed: a durable guard may already exist.
+    try {
+      const restore = await reservationAction(guarded, deps, worker, 'restore');
+      if (!restore.restored || !restore.original_states_preserved)
+        throw new ControllerError('dispatcher restoration unverified', 'RECOVERY_FAILED');
+      const cleanup = await verifyCleanup(guarded, { ...deps, signal: undefined }, worker);
+      if (!safetyPasses(cleanup)) throw new ControllerError('canary cleanup failed', 'RECOVERY_FAILED');
+      await reservationAction(guarded, deps, worker, 'cleanup');
+      if (result) result.reservation = { armed, restored: true, original_states_preserved: true };
+      if (result) result.browser_provenance = guarded.browserProvenance;
+      if (result) await atomicReceipt(join(config.receiptDir, `canary-${runId}.json`), result);
+      if (!result || result.recovery?.success) await rm(lockPath);
+      else throw new ControllerError('canary recovery failed', 'RECOVERY_FAILED');
+    } catch (failure) {
+      await mkdir(config.receiptDir, { recursive: true, mode: 0o700 });
+      await preserveRecoveryLock(
+        join(config.receiptDir, 'active.lock'),
+        {
+          run_id: runId,
+          worker_run_id: worker?.runId,
+          command: 'canary',
+          started_at: deps.now(),
+          recovery: { success: false },
+        },
+        failure,
+        false,
+      );
+      error = new ControllerError('canary restoration or cleanup unverified; lock retained', 'RECOVERY_FAILED', 5);
+    }
+  }
+  if (error) throw error;
+  return result;
 }
 
 export async function runSuite(config, deps) {
@@ -1314,6 +1453,7 @@ export function createDependencies(overrides = {}) {
     alertSource: overrides.alertSource,
     readiness: overrides.readiness,
     cleanup: overrides.cleanup,
+    reservation: overrides.reservation,
     readFile: overrides.readFile || readFile,
     remove: overrides.remove || rm,
     commandTimeoutMs: overrides.commandTimeoutMs || DEFAULT_TIMINGS.commandTimeoutMs,

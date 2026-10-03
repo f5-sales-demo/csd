@@ -2099,3 +2099,229 @@ test('fresh recovery claims remain age-gated without host or PID metadata', asyn
     );
   }
 });
+
+test('headed worker single canary is explicit and defaults remain unchanged', async () => {
+  const { parseArgs } = await import('../scripts/csd-page-tamper.mjs');
+  const env = {
+    AWS_PROFILE: '280469140135_Users',
+    AWS_REGION: 'us-east-1',
+    XCSH_CSD_AWS_ACCOUNT: '280469140135',
+    XCSH_CSD_TERRAFORM_DIR: '/fixture/csd',
+    XCSH_CSD_TRAFFIC_GENERATOR_TERRAFORM_DIR: '/fixture/tgen',
+    XCSH_API_URL: 'https://f5-sales-demo.console.ves.volterra.io',
+    XCSH_API_TOKEN: 'fixture',
+    XCSH_NAMESPACE: 'client-side-defense',
+    XCSH_LB_NAME: 'client-side-defense',
+    XCSH_CSD_PAGE_TAMPER_RECEIPT_DIR: '/fixture/receipts',
+  };
+  const result = parseArgs(['canary', '--browser-mode', 'headed-xvfb', '--placement', 'worker'], env);
+  assert.equal(result.config.browserMode, 'headed-xvfb');
+  assert.equal(result.config.placement, 'worker');
+  assert.equal(parseArgs(['run', '--header', 'x-content-type-options'], env).config.browserMode, 'headless');
+  assert.throws(
+    () => parseArgs(['canary', '--browser-mode', 'headed-xvfb', '--placement', 'workstation'], env),
+    /worker/,
+  );
+  assert.throws(() => parseArgs(['suite', '--browser-mode', 'headed-xvfb', '--placement', 'worker'], env), /canary/);
+});
+
+test('worker placement keeps every control and selector visit remote and fails closed on missing provenance', async () => {
+  const root = await workspace();
+  const locations = [];
+  const evidence = {
+    mode: 'headed-xvfb',
+    placement: 'worker',
+    process_arguments_verified: true,
+    browser_arguments_verified: true,
+    owned_display_verified: true,
+  };
+  const result = await runHeader(
+    config(root, { browserMode: 'headed-xvfb', placement: 'worker' }),
+    deps({
+      probe: ({ headerId, location }) => {
+        locations.push(location);
+        return { ...probe({ headerId }), browser_provenance: evidence };
+      },
+    }),
+    'x-content-type-options',
+  );
+  assert.equal(result.outcome, 'COMPROMISED');
+  assert.ok(locations.length > 2);
+  assert.ok(locations.every((location) => location === 'worker'));
+  const invalid = await runHeader(
+    config(await workspace(), { browserMode: 'headed-xvfb', placement: 'worker' }),
+    deps(),
+    'x-content-type-options',
+  );
+  assert.equal(invalid.outcome, 'INVALID_TEST');
+});
+
+test('persistent Linux reservation restores fixture states after normal, abort, hard kill and boot-trigger execution', {
+  skip: process.env.XCSH_CSD_LINUX_FIXTURES !== '1',
+  timeout: 180_000,
+}, async () => {
+  const { randomUUID } = await import('node:crypto');
+  const { renderReservation, reservationLifetime } = await import('../scripts/lib/csd-page-tamper-reservation.mjs');
+  assert.ok(reservationLifetime(DEFAULT_TIMINGS) > 3 * 60 * 60);
+  for (const scenario of ['normal', 'abort', 'kill', 'boot'])
+    for (const active of [false, true]) {
+      const enabled = scenario === 'kill' || scenario === 'boot';
+      const runId = randomUUID();
+      const name = `xcsh-csd-fixture-${runId}`;
+      const service = `${name}.service`;
+      const timer = `${name}.timer`;
+      const guard = renderReservation({
+        runId,
+        lifetimeSeconds: scenario === 'boot' ? 60 : 6,
+        service,
+        timer,
+        fixture: true,
+      });
+      const root = await mkdtemp(join(tmpdir(), 'csd-guard-fixture-'));
+      const script = join(root, 'guard.py');
+      await writeFile(script, guard.script);
+      const ctl = (...args) => {
+        const r = spawnSync('sudo', ['-n', 'systemctl', ...args], { encoding: 'utf8' });
+        assert.equal(r.status, 0, r.stderr);
+        return r.stdout.trim();
+      };
+      const run = (action) => {
+        const r = spawnSync('sudo', ['-n', 'python3', script, action], { encoding: 'utf8' });
+        assert.equal(r.status, 0, r.stderr);
+        return r.stdout;
+      };
+      await writeFile(
+        join(root, service),
+        '[Unit]\nDescription=Isolated CSD fixture\n[Service]\nType=simple\nExecStart=/usr/bin/sleep infinity\n[Install]\nWantedBy=multi-user.target\n',
+      );
+      await writeFile(
+        join(root, timer),
+        `[Timer]\nOnActiveSec=1h\nUnit=${service}\n[Install]\nWantedBy=timers.target\n`,
+      );
+      const install = spawnSync(
+        'sudo',
+        ['-n', 'install', '-m', '644', join(root, service), join(root, timer), '/etc/systemd/system/'],
+        { encoding: 'utf8' },
+      );
+      assert.equal(install.status, 0, install.stderr);
+      ctl('daemon-reload');
+      try {
+        if (enabled) {
+          ctl('enable', timer);
+          ctl('enable', service);
+        }
+        if (active) {
+          ctl('start', service);
+          ctl('start', timer);
+        }
+        assert.match(run('arm'), /"armed": true/);
+        assert.equal(ctl('show', timer, '-p', 'ActiveState', '--value'), 'inactive');
+        assert.equal(ctl('show', service, '-p', 'ActiveState', '--value'), 'inactive');
+        if (scenario === 'kill') {
+          const controller = spawnSync('sh', ['-c', 'kill -KILL $$']);
+          assert.equal(controller.signal, 'SIGKILL');
+          await new Promise((resolve) => setTimeout(resolve, 8000));
+        } else if (scenario === 'boot') {
+          // Exercise installed boot configuration on the running fixture host, not a host reboot.
+          const r = spawnSync('sudo', ['-n', 'rm', '-f', `/run/systemd/system/${guard.name}.timer.d/boot.conf`]);
+          assert.equal(r.status, 0);
+          ctl('daemon-reload');
+          ctl('restart', `${guard.name}.timer`);
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+        } else {
+          if (scenario === 'abort') assert.equal(spawnSync('sh', ['-c', 'kill -TERM $$']).signal, 'SIGTERM');
+          run('restore');
+        }
+        assert.equal(ctl('show', timer, '-p', 'UnitFileState', '--value'), enabled ? 'enabled' : 'disabled');
+        assert.equal(ctl('show', timer, '-p', 'ActiveState', '--value'), active ? 'active' : 'inactive');
+        assert.equal(ctl('show', service, '-p', 'ActiveState', '--value'), active ? 'active' : 'inactive');
+        assert.equal(ctl('show', service, '-p', 'UnitFileState', '--value'), enabled ? 'enabled' : 'disabled');
+        run('cleanup');
+      } finally {
+        ctl('disable', '--now', timer);
+        ctl('disable', '--now', service);
+        const cleanup = spawnSync('sudo', [
+          '-n',
+          'rm',
+          '-f',
+          `/etc/systemd/system/${timer}`,
+          `/etc/systemd/system/${service}`,
+        ]);
+        assert.equal(cleanup.status, 0);
+        ctl('daemon-reload');
+      }
+    }
+});
+
+test('Linux owned Xvfb Chrome fixture verifies real headed provenance and cleanup', {
+  skip: process.env.XCSH_CSD_LINUX_FIXTURES !== '1',
+  timeout: 60_000,
+}, async () => {
+  const { randomUUID } = await import('node:crypto');
+  const { renderHeadedProbe } = await import('../scripts/lib/csd-page-tamper-reservation.mjs');
+  const runId = randomUUID();
+  const root = `/tmp/xcsh-csd-${runId}`;
+  await mkdir(root, { mode: 0o700 });
+  const script = join(root, 'fixture.py');
+  // No production endpoint: local data fixture with the same CDP client as runDocumentProbe.
+  const client = new URL('../scripts/lib/csd-runner.mjs', import.meta.url).pathname;
+  const entry = `import { CdpClient } from '${client}';
+const v=await(await fetch('http://127.0.0.1:'+process.env.XCSH_PROBE_PORT+'/json/version')).json();
+const c=await CdpClient.connect(v.webSocketDebuggerUrl,10000,WebSocket);try{
+const args=await c.send('Browser.getBrowserCommandLine');const version=await c.send('Browser.getVersion');
+const target=await c.send('Target.createTarget',{url:'data:text/html,<title>isolated-fixture</title>'});
+await c.send('Target.closeTarget',{targetId:target.targetId});
+console.log('XCSH_RESULT '+JSON.stringify({success:true,_browser_evidence:{arguments:args.arguments,product:version.product}}));}finally{c.close();}`;
+  await writeFile(script, renderHeadedProbe({ root, entry }));
+  const r = spawnSync('python3', [script], { encoding: 'utf8', timeout: 45000 });
+  assert.equal(r.status, 0, r.stderr);
+  const result = JSON.parse(r.stdout.trim().slice(12));
+  assert.equal(result.browser_provenance.mode, 'headed-xvfb');
+  assert.equal(result.browser_provenance.owned_display_verified, true);
+  assert.deepEqual(
+    (await readdir(root)).filter((file) => file.startsWith('probe-')),
+    [],
+  );
+});
+
+test('single headed canary arms once across baseline and case and keeps alert outcomes separate', async () => {
+  const { runCanary } = await import('../scripts/lib/csd-page-tamper-controller.mjs');
+  for (const [name, outcome] of [
+    ['ClientSideDefenseHttpHeaderModified', 'MODIFIED_ONLY'],
+    ['ClientSideDefenseHttpHeaderCompromised', 'COMPROMISED'],
+  ]) {
+    const root = await workspace();
+    const actions = [];
+    const visits = [];
+    const c = config(root, { browserMode: 'headed-xvfb', placement: 'worker' });
+    const result = await runCanary(
+      c,
+      deps({
+        reservation: async (action) => {
+          actions.push(action);
+          return { armed: true, dispatch_drained: true, restored: true, original_states_preserved: true };
+        },
+        probe: ({ headerId, location }) => {
+          visits.push(location);
+          return {
+            ...probe({ headerId }),
+            browser_provenance: {
+              mode: 'headed-xvfb',
+              placement: 'worker',
+              process_arguments_verified: true,
+              browser_arguments_verified: true,
+              owned_display_verified: true,
+            },
+          };
+        },
+        alertSource: async () => [[alert(name)]],
+      }),
+    );
+    assert.equal(result.outcome, outcome);
+    assert.deepEqual(actions, ['arm', 'restore', 'cleanup']);
+    assert.ok(visits.every((location) => location === 'worker'));
+    assert.equal(result.reservation.restored, true);
+    assert.equal(result.browser_provenance.mode, 'headed-xvfb');
+    assert.equal((await status(c)).active, false);
+  }
+});

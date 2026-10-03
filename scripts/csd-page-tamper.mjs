@@ -8,6 +8,7 @@ import {
   DEFAULT_TIMINGS,
   HEADER_IDS,
   PAYMENT_PATH,
+  runCanary,
   runHeader,
   runSuite,
   status,
@@ -21,6 +22,8 @@ Commands:
   run --header HEADER_ID     Execute one bounded mixed-cohort experiment
   suite                      Run XCTO canary, then all remaining headers after canary success
   status                     Report active or interrupted run state without exposing identities
+  canary                     SINGLE XCTO baseline/canary/recovery with durable worker reservation
+  --browser-mode headed-xvfb --placement worker  Required explicit values for canary only
 
 Required options (or matching environment variables):
   --target URL                        XCSH_CSD_PAGE_TAMPER_TARGET
@@ -57,13 +60,15 @@ const OPTION_NAMES = new Map([
   ['--receipt-dir', 'receiptDir'],
   ['--cdp-endpoint', 'cdpEndpoint'],
   ['--header', 'header'],
+  ['--browser-mode', 'browserMode'],
+  ['--placement', 'placement'],
 ]);
 
 export function parseArgs(argv, env = process.env) {
   if (argv.includes('--help') || argv.includes('-h')) return { help: true };
   const command = argv[0];
-  if (!['bootstrap', 'run', 'suite', 'status'].includes(command))
-    throw new ControllerError('choose bootstrap, run, suite, or status', 'CLI_ERROR', 2);
+  if (!['bootstrap', 'run', 'suite', 'status', 'canary'].includes(command))
+    throw new ControllerError('choose bootstrap, run, suite, canary, or status', 'CLI_ERROR', 2);
   const values = {};
   for (let index = 1; index < argv.length; index += 2) {
     const name = argv[index];
@@ -73,6 +78,8 @@ export function parseArgs(argv, env = process.env) {
     values[OPTION_NAMES.get(name)] = argv[index + 1];
   }
   const config = {
+    browserMode: values.browserMode || 'headless',
+    placement: values.placement || 'mixed',
     target: values.target || env.XCSH_CSD_PAGE_TAMPER_TARGET || DEFAULT_TARGET,
     awsProfile: values.awsProfile || env.AWS_PROFILE,
     awsRegion: values.awsRegion || env.AWS_REGION,
@@ -109,6 +116,14 @@ export function parseArgs(argv, env = process.env) {
   if (command === 'run' && !values.header) throw new ControllerError('run requires --header', 'CLI_ERROR', 2);
   if (values.header && !HEADER_IDS.includes(values.header))
     throw new ControllerError(`unsupported header: ${values.header}`, 'CLI_ERROR', 2);
+  if (command === 'canary' && (values.browserMode !== 'headed-xvfb' || values.placement !== 'worker' || values.header))
+    throw new ControllerError(
+      'canary requires --browser-mode headed-xvfb --placement worker and no --header',
+      'CLI_ERROR',
+      2,
+    );
+  if (command !== 'canary' && (values.browserMode || values.placement))
+    throw new ControllerError('browser mode and placement options are canary-only', 'CLI_ERROR', 2);
   return { command, header: values.header, config };
 }
 
@@ -136,6 +151,7 @@ export async function main(argv = process.argv.slice(2), overrides = {}) {
     if (parsed.command === 'run') result = await runHeader(parsed.config, deps, parsed.header);
     if (parsed.command === 'suite') result = await runSuite(parsed.config, deps);
     if (parsed.command === 'status') result = await status(parsed.config);
+    if (parsed.command === 'canary') result = await runCanary(parsed.config, deps);
     stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     return result?.success === false || result?.outcome === 'INVALID_TEST' ? 4 : 0;
   } catch (error) {

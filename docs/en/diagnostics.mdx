@@ -1331,6 +1331,68 @@ instance from the authoritative Terraform output. `status` needs only the receip
 Publish only sanitized receipts and measured outcomes. Until an executed case satisfies every gate, the
 dedicated mixed-cohort design is a hypothesis rather than proof of Compromised behavior.
 
+### Explicit headed worker-only SINGLE XCTO canary
+
+Use this mode only for an authorized future experiment. It is not the suite and never advances
+to another header. Both control and selector visits execute on the Terraform-resolved worker.
+Existing `bootstrap`, `run`, and `suite` defaults and the suite's `COMPROMISED` gate are unchanged.
+
+Controller prerequisites: Node.js 22+, Terraform initialized in the two reviewed AWS roots, valid
+AWS profile `280469140135_Users` in account `280469140135`/`us-east-1`, and environment-only
+`XCSH_API_URL` and `XCSH_API_TOKEN`. Do not copy a token to the worker. Worker prerequisites:
+SSM inline execution, root systemd management, user `ubuntu`, Python 3, Node, Chrome, and Xvfb.
+The dispatcher must have stable `active` or `inactive` state, with enabled/disabled/static unit
+state; an in-progress oneshot (`activating`) or unsupported state fails closed before pausing.
+The timer must resolve to the verified `csd-continuous.service` definition.
+
+```bash
+node scripts/csd-page-tamper.mjs canary \
+  --browser-mode headed-xvfb --placement worker \
+  --target https://client-side-defense.f5-sales-demo.com/csd-page-tamper/payment \
+  --aws-profile 280469140135_Users --aws-region us-east-1 --aws-account 280469140135 \
+  --terraform-dir /data/robin-GIT/csd/terraform/aws \
+  --traffic-generator-terraform-dir /data/robin-GIT/traffic-generator/terraform/aws \
+  --namespace client-side-defense --lb-name client-side-defense \
+  --receipt-dir /data/robin-GIT/csd-canary-receipts
+```
+
+The command arms and verifies an owned persistent restoration timer **before** disabling/draining
+`csd-continuous.timer` and its service. It snapshots enabled and active states independently.
+A worker ownership lock prevents overlapping reservations. The timer remains disabled during
+the full baseline, quiet period, reinforcement, XCTO window and recovery. The default guard
+budget is 256 minutes: 45-minute baseline, up to 31 minutes quiet handling, 90-minute case
+deadline, two 15-minute recovery allowances and 60-minute command/cleanup margin. These are
+bounded test windows, not an F5 SLA. No timing shortcut is exposed by this CLI.
+
+Every fresh probe owns a separate Xvfb display and Chrome profile, with no headless argument.
+Linux process argv/environment and CDP browser arguments/product must prove the mode before
+the document visit. Receipts retain sanitized mode/placement/product and verification booleans,
+not raw arguments, display identifiers, process IDs, endpoint bodies or tokens. Failed proof is
+`INVALID_TEST`. Only `runDocumentProbe` supplies document and instrumentation evidence.
+
+Normal completion and abort restore exact original timer/service states and clean owned units,
+profiles and processes. Controller SIGKILL does not cancel the external deadline; worker reboot
+removes the runtime boot-trigger suppression and activates persistent restoration. Restoration
+stops only run-owned probe systemd units, verifies original states, and retries systemd failures.
+Worker unavailability delays restoration until it returns; permanent disk loss, broken systemd,
+changed service definitions or unavailable permissions cannot be guaranteed. Unverified recovery
+retains the controller lock and fails rather than reporting success. There is no manual dispatcher
+restart requirement. An interrupted lock remains invalid evidence even after automatic restoration.
+
+```bash
+node scripts/csd-page-tamper.mjs status --receipt-dir /data/robin-GIT/csd-canary-receipts
+```
+
+Linux fixture verification uses `XCSH_CSD_LINUX_FIXTURES=1 node --test tests/test-csd-page-tamper.mjs`.
+It exercises isolated service/timer states, normal release, abort, SIGKILL/deadline and installed
+boot-trigger execution, plus a local data-page headed Chrome probe. Boot-trigger execution on
+an already-running fixture host is not evidence of a physical host reboot. No live endpoint,
+production pause or selector attack is part of those tests.
+
+Outcomes remain separate: `MODIFIED_ONLY`, `COMPROMISED`, `NO_ALERT_WITHIN_WINDOW`, and
+`INVALID_TEST`. Candidate headers are not an F5 support list. No result for this new mode is
+claimed, and prior `NO_ALERT_WITHIN_WINDOW` evidence is unchanged.
+
 ### Recorded live result: 2026-09-25/26
 
 The dedicated endpoint is deployed and bootstrap-proven. Exact-plan deployment made five additions,

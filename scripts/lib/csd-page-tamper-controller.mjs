@@ -54,7 +54,13 @@ export class ControllerError extends Error {
 
 export function defaultExecutor(argv, { cwd, env, signal, timeoutMs = DEFAULT_TIMINGS.commandTimeoutMs } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(argv[0], argv.slice(1), { cwd, env, signal, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(argv[0], argv.slice(1), {
+      cwd,
+      env,
+      signal,
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     const stdout = [];
     const stderr = [];
     const timer = setTimeout(() => {
@@ -69,13 +75,20 @@ export function defaultExecutor(argv, { cwd, env, signal, timeoutMs = DEFAULT_TI
     });
     child.once('close', (code) => {
       clearTimeout(timer);
-      resolve({ code, stdout: Buffer.concat(stdout).toString(), stderr: Buffer.concat(stderr).toString() });
+      resolve({
+        code,
+        stdout: Buffer.concat(stdout).toString(),
+        stderr: Buffer.concat(stderr).toString(),
+      });
     });
   });
 }
 
 const command = async (deps, argv, options = {}) => {
-  const result = await deps.executor(argv, { ...options, timeoutMs: options.timeoutMs ?? deps.commandTimeoutMs });
+  const result = await deps.executor(argv, {
+    ...options,
+    timeoutMs: options.timeoutMs ?? deps.commandTimeoutMs,
+  });
   if (result.code !== 0) throw new ControllerError(`${basename(argv[0])} command failed`, 'EXTERNAL_COMMAND_FAILED');
   return result.stdout;
 };
@@ -243,13 +256,19 @@ async function acquireLock(config, runId, now, commandName, worker = null) {
 
 async function atomicReplace(path, value) {
   const temp = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
-  await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+  await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, {
+    mode: 0o600,
+    flag: 'wx',
+  });
   await rename(temp, path);
 }
 async function atomicReceipt(path, value) {
   const temp = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
   try {
-    await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+    await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, {
+      mode: 0o600,
+      flag: 'wx',
+    });
     await link(temp, path);
   } finally {
     await rm(temp, { force: true });
@@ -265,7 +284,10 @@ async function preserveRecoveryLock(lockPath, receipt, error, evidencePersistenc
     state: 'recovery-required',
     recovery_completed: receipt.recovery?.success === true,
     evidence_persistence_failure: evidencePersistenceFailure,
-    error: { code: error.code || 'RECEIPT_WRITE_FAILED', message: String(error.message).slice(0, 160) },
+    error: {
+      code: error.code || 'RECEIPT_WRITE_FAILED',
+      message: String(error.message).slice(0, 160),
+    },
   });
 }
 
@@ -312,11 +334,17 @@ async function claimRecovery(config, state, deps) {
         config.receiptDir,
         `recovery-claim-stale-${state.run_id}-${deps.nowMs()}-${current?.claim_id || 'unknown'}.json`,
       );
-      await writeFile(preserved, `${JSON.stringify(current, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+      await writeFile(preserved, `${JSON.stringify(current, null, 2)}\n`, {
+        mode: 0o600,
+        flag: 'wx',
+      });
       await rm(path, { recursive: true });
       await mkdir(path, { mode: 0o700 });
     }
-    await writeFile(ownerPath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+    await writeFile(ownerPath, `${JSON.stringify(value, null, 2)}\n`, {
+      mode: 0o600,
+      flag: 'wx',
+    });
     return { path, ownerPath, claimId };
   });
 }
@@ -365,7 +393,9 @@ async function connectCdp(config, deps) {
   const endpoint = new URL(config.cdpEndpoint);
   if (!['localhost', '127.0.0.1', '::1', '[::1]'].includes(endpoint.hostname))
     throw new ControllerError('CDP endpoint must be loopback', 'CDP_UNSAFE', 3);
-  const response = await deps.fetch(new URL('/json/version', endpoint), { signal: deps.signal });
+  const response = await deps.fetch(new URL('/json/version', endpoint), {
+    signal: deps.signal,
+  });
   if (!response.ok) throw new ControllerError('Chrome discovery failed', 'CDP_DISCOVERY_FAILED', 3);
   const websocket = new URL((await response.json()).webSocketDebuggerUrl);
   if (websocket.protocol !== 'ws:' || !['localhost', '127.0.0.1', '::1', '[::1]'].includes(websocket.hostname))
@@ -468,12 +498,19 @@ async function invokeSsm(config, deps, script, { expectResult = false } = {}) {
 }
 
 export async function prepareWorker(config, deps, runId = deps.randomUUID()) {
-  const { root } = workerIdentity(config, { runId, root: `/tmp/xcsh-csd-${runId}` });
+  const { root } = workerIdentity(config, {
+    runId,
+    root: `/tmp/xcsh-csd-${runId}`,
+  });
   const archive = await gzipBuffer(workerArchiveEntries(await workerSources(deps)));
   const encoded = archive.toString('base64');
   const sha256 = createHash('sha256').update(archive).digest('hex');
   const archivePath = `${root}/sources.gz`;
-  await invokeSsm(config, deps, `set -eu;umask 077;run='${root}';mkdir "$run";: >'${archivePath}.b64'`);
+  await invokeSsm(
+    config,
+    deps,
+    `set -eu;umask 077;[ "$(id -u ubuntu)" -ne 0 ];run='${root}';mkdir "$run";: >'${archivePath}.b64'`,
+  );
   for (let offset = 0; offset < encoded.length; offset += SSM_CHUNK_SIZE) {
     const chunk = encoded.slice(offset, offset + SSM_CHUNK_SIZE);
     await invokeSsm(config, deps, `set -eu;printf %s '${chunk}' >>'${archivePath}.b64'`);
@@ -523,7 +560,9 @@ export async function cleanupWorker(config, deps, worker) {
   }
 }
 
-async function installWorkerFile(config, deps, path, body) {
+async function installWorkerFile(config, deps, path, body, owner = 'root') {
+  if (!['root', 'ubuntu'].includes(owner))
+    throw new ControllerError('invalid worker file owner', 'WORKER_IDENTITY_INVALID');
   const encoded = Buffer.from(body).toString('base64');
   await invokeSsm(config, deps, `set -eu;umask 077;: >'${path}.b64'`);
   for (let offset = 0; offset < encoded.length; offset += SSM_CHUNK_SIZE)
@@ -532,7 +571,12 @@ async function installWorkerFile(config, deps, path, body) {
       deps,
       `set -eu;printf %s '${encoded.slice(offset, offset + SSM_CHUNK_SIZE)}' >>'${path}.b64'`,
     );
-  await invokeSsm(config, deps, `set -eu;base64 -d '${path}.b64' >'${path}';chmod 700 '${path}';rm '${path}.b64'`);
+  // Reservation scripts remain root-private; only the non-secret headed payload is owned by ubuntu.
+  await invokeSsm(
+    config,
+    deps,
+    `set -eu;umask 077;base64 -d '${path}.b64' >'${path}';chown ${owner}:${owner} '${path}';chmod 700 '${path}';rm '${path}.b64'`,
+  );
 }
 
 async function reservationAction(config, deps, worker, action) {
@@ -540,7 +584,10 @@ async function reservationAction(config, deps, worker, action) {
   const recoveryDeps = { ...deps, signal: undefined };
   const { root, runId } = validatedWorker(config, worker);
   if (action === 'arm') {
-    const guard = renderReservation({ runId, lifetimeSeconds: reservationLifetime(config.timings) });
+    const guard = renderReservation({
+      runId,
+      lifetimeSeconds: reservationLifetime(config.timings),
+    });
     await installWorkerFile(config, recoveryDeps, `${root}/reservation.py`, guard.script);
   }
   const path = action === 'arm' ? `${root}/reservation.py` : `/var/lib/xcsh-csd-reservation/${runId}/guard.py`;
@@ -561,13 +608,14 @@ if(args.arguments.some(a=>a.startsWith('--headless'))||!args.arguments.includes(
 const result=await runDocumentProbe(${JSON.stringify(probeOptions(config, headerId))},{cdp});
 result._browser_evidence={arguments:args.arguments,product:version.product};console.log('XCSH_RESULT '+JSON.stringify(result));}finally{cdp.close();}`;
   const path = `${root}/headed-${probeId}.py`;
-  await installWorkerFile(config, deps, path, renderHeadedProbe({ root, probeId, entry }));
+  await installWorkerFile(config, deps, path, renderHeadedProbe({ root, probeId, entry }), 'ubuntu');
   const unit = `xcsh-csd-probe-${runId}-${probeId}.service`;
   try {
     return await invokeSsm(
       config,
       deps,
-      `systemd-run --quiet --wait --pipe --collect --unit='${unit}' --property=User=ubuntu --property=KillMode=control-group --property=RuntimeMaxSec=180s /usr/bin/python3 '${path}'`,
+      // Ubuntu's installed Chrome profile permits user namespaces while Chrome retains its sandbox.
+      `systemd-run --quiet --wait --pipe --collect --unit='${unit}' --property=User=ubuntu --property=AppArmorProfile=chrome --property=KillMode=control-group --property=RuntimeMaxSec=180s /usr/bin/python3 '${path}'`,
       { expectResult: true },
     );
   } finally {
@@ -626,7 +674,12 @@ async function browserProbe(config, deps, headerId = null, location = 'workstati
   if (deps.probe) result = await deps.probe({ config, headerId, location, worker });
   else if (location === 'worker')
     result = deps.workerProbe
-      ? await deps.workerProbe({ config, headerId, options: probeOptions(config, headerId), worker })
+      ? await deps.workerProbe({
+          config,
+          headerId,
+          options: probeOptions(config, headerId),
+          worker,
+        })
       : await runWorkerProbe(config, deps, headerId, worker);
   if (result) {
     if (config.browserMode === 'headed-xvfb') {
@@ -645,7 +698,10 @@ async function browserProbe(config, deps, headerId = null, location = 'workstati
   }
   const cdp = deps.cdp || (await connectCdp(config, deps));
   try {
-    return await runDocumentProbe(probeOptions(config, headerId), { cdp, signal: deps.signal });
+    return await runDocumentProbe(probeOptions(config, headerId), {
+      cdp,
+      signal: deps.signal,
+    });
   } finally {
     if (!deps.cdp) cdp.close();
   }
@@ -945,7 +1001,10 @@ async function recoverInterrupted(config, deps) {
     const originalWorker =
       workerRunId === null
         ? null
-        : workerIdentity(config, { runId: workerRunId, root: `/tmp/xcsh-csd-${workerRunId}` });
+        : workerIdentity(config, {
+            runId: workerRunId,
+            root: `/tmp/xcsh-csd-${workerRunId}`,
+          });
     const originalCleanup = originalWorker
       ? await cleanupWorker(config, { ...deps, signal: undefined }, originalWorker)
       : { worker_artifacts_removed: true };
@@ -953,7 +1012,10 @@ async function recoverInterrupted(config, deps) {
       recovery = {
         success: false,
         cleanup: originalCleanup,
-        error: { code: 'RECOVERY_FAILED', message: 'original worker remains active or unverified' },
+        error: {
+          code: 'RECOVERY_FAILED',
+          message: 'original worker remains active or unverified',
+        },
       };
     } else {
       const recoveryWorker =
@@ -1062,7 +1124,11 @@ export async function runHeader(config, deps, headerId, options = {}) {
       windowStart,
       windowEnd: new Date(deadline).toISOString(),
     };
-    receipt.phases.mixed = { required_pairs: config.timings.minimumPairs, completed_pairs: 0, telemetry_valid: true };
+    receipt.phases.mixed = {
+      required_pairs: config.timings.minimumPairs,
+      completed_pairs: 0,
+      telemetry_valid: true,
+    };
     let compromised = false;
     let finalPolled = false;
     while (deps.nowMs() < deadline && !compromised) {
@@ -1090,7 +1156,10 @@ export async function runHeader(config, deps, headerId, options = {}) {
       compromised || receipt.phases.mixed.completed_pairs >= config.timings.minimumPairs,
     );
   } catch (error) {
-    receipt.error = { code: error.code || 'INVALID_TEST', message: String(error.message).slice(0, 240) };
+    receipt.error = {
+      code: error.code || 'INVALID_TEST',
+      message: String(error.message).slice(0, 240),
+    };
     receipt.outcome = 'INVALID_TEST';
   } finally {
     try {
@@ -1113,7 +1182,10 @@ export async function runHeader(config, deps, headerId, options = {}) {
     } catch (error) {
       receipt.recovery = {
         success: false,
-        error: { code: error.code || 'RECOVERY_FAILED', message: String(error.message).slice(0, 240) },
+        error: {
+          code: error.code || 'RECOVERY_FAILED',
+          message: String(error.message).slice(0, 240),
+        },
       };
       receipt.outcome = 'INVALID_TEST';
     }
@@ -1144,7 +1216,12 @@ export async function bootstrap(config, deps, options = {}) {
   const finder = deps.randomUUID();
   const worker =
     options.worker ||
-    (deps.workerProbe ? null : workerIdentity(config, { runId: finder, root: `/tmp/xcsh-csd-${finder}` }));
+    (deps.workerProbe
+      ? null
+      : workerIdentity(config, {
+          runId: finder,
+          root: `/tmp/xcsh-csd-${finder}`,
+        }));
   const lockPath = options.lockPath || (await acquireLock(config, finder, deps.now, 'bootstrap', worker));
   const startedAt = deps.now();
   const receipt = {
@@ -1211,11 +1288,17 @@ export async function bootstrap(config, deps, options = {}) {
     receipt.success = true;
   } catch (error) {
     primaryError = error;
-    receipt.error = { code: error.code || 'BOOTSTRAP_FAILED', message: String(error.message).slice(0, 240) };
+    receipt.error = {
+      code: error.code || 'BOOTSTRAP_FAILED',
+      message: String(error.message).slice(0, 240),
+    };
     if (worker && !workerPrepared) {
       receipt.recovery = {
         success: false,
-        error: { code: 'RECOVERY_FAILED', message: 'worker preparation incomplete; original root requires cleanup' },
+        error: {
+          code: 'RECOVERY_FAILED',
+          message: 'worker preparation incomplete; original root requires cleanup',
+        },
       };
     } else {
       try {
@@ -1237,7 +1320,10 @@ export async function bootstrap(config, deps, options = {}) {
         workerCleanupFailed = true;
         const cleanupError = new ControllerError('worker cleanup failed', 'RECOVERY_FAILED');
         primaryError ||= cleanupError;
-        receipt.error ||= { code: cleanupError.code, message: cleanupError.message };
+        receipt.error ||= {
+          code: cleanupError.code,
+          message: cleanupError.message,
+        };
         receipt.success = false;
         receipt.recovery = { ...receipt.recovery, success: false, cleanup };
       }
@@ -1291,40 +1377,47 @@ export async function runCanary(config, deps) {
     if (!guard.armed || !guard.dispatch_drained) throw new ControllerError('reservation not verified', 'INVALID_TEST');
     armed = true;
     await bootstrap(guarded, deps, { worker, finalizeWorker: false, lockPath });
-    result = await runHeader(guarded, deps, 'x-content-type-options', { worker, finalizeWorker: false, lockPath });
+    result = await runHeader(guarded, deps, 'x-content-type-options', {
+      worker,
+      finalizeWorker: false,
+      lockPath,
+    });
   } catch (failure) {
     error = failure;
   }
-  {
-    // Try restoration even when arming failed: a durable guard may already exist.
-    try {
-      const restore = await reservationAction(guarded, deps, worker, 'restore');
-      if (!restore.restored || !restore.original_states_preserved)
-        throw new ControllerError('dispatcher restoration unverified', 'RECOVERY_FAILED');
-      const cleanup = await verifyCleanup(guarded, { ...deps, signal: undefined }, worker);
-      if (!safetyPasses(cleanup)) throw new ControllerError('canary cleanup failed', 'RECOVERY_FAILED');
-      await reservationAction(guarded, deps, worker, 'cleanup');
-      if (result) result.reservation = { armed, restored: true, original_states_preserved: true };
-      if (result) result.browser_provenance = guarded.browserProvenance;
-      if (result) await atomicReceipt(join(config.receiptDir, `canary-${runId}.json`), result);
-      if (!result || result.recovery?.success) await rm(lockPath);
-      else throw new ControllerError('canary recovery failed', 'RECOVERY_FAILED');
-    } catch (failure) {
-      await mkdir(config.receiptDir, { recursive: true, mode: 0o700 });
-      await preserveRecoveryLock(
-        join(config.receiptDir, 'active.lock'),
-        {
-          run_id: runId,
-          worker_run_id: worker?.runId,
-          command: 'canary',
-          started_at: deps.now(),
-          recovery: { success: false },
-        },
-        failure,
-        false,
-      );
-      error = new ControllerError('canary restoration or cleanup unverified; lock retained', 'RECOVERY_FAILED', 5);
-    }
+  // Try restoration even when arming failed: a durable guard may already exist.
+  try {
+    const restore = await reservationAction(guarded, deps, worker, 'restore');
+    if (!restore.restored || !restore.original_states_preserved)
+      throw new ControllerError('dispatcher restoration unverified', 'RECOVERY_FAILED');
+    const cleanup = await verifyCleanup(guarded, { ...deps, signal: undefined }, worker);
+    if (!safetyPasses(cleanup)) throw new ControllerError('canary cleanup failed', 'RECOVERY_FAILED');
+    await reservationAction(guarded, deps, worker, 'cleanup');
+    if (result)
+      result.reservation = {
+        armed,
+        restored: true,
+        original_states_preserved: true,
+      };
+    if (result) result.browser_provenance = guarded.browserProvenance;
+    if (result) await atomicReceipt(join(config.receiptDir, `canary-${runId}.json`), result);
+    if (!result || result.recovery?.success) await rm(lockPath);
+    else throw new ControllerError('canary recovery failed', 'RECOVERY_FAILED');
+  } catch (failure) {
+    await mkdir(config.receiptDir, { recursive: true, mode: 0o700 });
+    await preserveRecoveryLock(
+      join(config.receiptDir, 'active.lock'),
+      {
+        run_id: runId,
+        worker_run_id: worker?.runId,
+        command: 'canary',
+        started_at: deps.now(),
+        recovery: { success: false },
+      },
+      failure,
+      false,
+    );
+    error = new ControllerError('canary restoration or cleanup unverified; lock retained', 'RECOVERY_FAILED', 5);
   }
   if (error) throw error;
   return result;
@@ -1344,7 +1437,10 @@ export async function runSuite(config, deps) {
       'x-content-type-options',
       ...HEADER_IDS.filter((item) => item !== 'x-content-type-options'),
     ]) {
-      const result = await runHeader(config, deps, headerId, { worker, finalizeWorker: false });
+      const result = await runHeader(config, deps, headerId, {
+        worker,
+        finalizeWorker: false,
+      });
       results.push({
         header_id: headerId,
         outcome: result.outcome,

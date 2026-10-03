@@ -84,12 +84,20 @@ const outputs = {
 function executor({ driftCode = 0, workerInstance = 'i-0123456789abcdef0' } = {}) {
   return async (argv) => {
     if (argv[0] === 'aws' && argv[1] === 'sts')
-      return { code: 0, stdout: JSON.stringify({ Account: '280469140135' }), stderr: '' };
+      return {
+        code: 0,
+        stdout: JSON.stringify({ Account: '280469140135' }),
+        stderr: '',
+      };
     if (argv[0] === 'aws' && argv[1] === 'ec2')
       return {
         code: 0,
         stdout: JSON.stringify({
-          Reservations: [{ Instances: [{ InstanceId: workerInstance, State: { Name: 'running' } }] }],
+          Reservations: [
+            {
+              Instances: [{ InstanceId: workerInstance, State: { Name: 'running' } }],
+            },
+          ],
         }),
         stderr: '',
       };
@@ -149,7 +157,10 @@ function deps(overrides = {}) {
       lb_ready: true,
       certificate_valid: true,
     }),
-    cleanup: async () => ({ worker_artifacts_removed: true, browser_artifacts_removed: true }),
+    cleanup: async () => ({
+      worker_artifacts_removed: true,
+      browser_artifacts_removed: true,
+    }),
     alertSource: async () => [[alert()]],
     sleep: async (ms) => {
       now += ms;
@@ -316,10 +327,15 @@ test('JSON encoded alert in unrelated description cannot become Page Tamper proo
     windowStart: START,
     windowEnd: '2026-09-25T12:01:00.000Z',
   };
-  const decoy = alert('UnrelatedAlert', { description: JSON.stringify(alert()) });
+  const decoy = alert('UnrelatedAlert', {
+    description: JSON.stringify(alert()),
+  });
   assert.deepEqual(correlateAlertViews({ current: [decoy], history: [] }, expected), []);
   assert.deepEqual(correlateAlertViews({ current: [], history: [JSON.stringify(decoy)] }, expected), []);
-  const history = JSON.stringify({ '@timestamp': START, alerts: [JSON.stringify(alert())] });
+  const history = JSON.stringify({
+    '@timestamp': START,
+    alerts: [JSON.stringify(alert())],
+  });
   assert.equal(correlateAlertViews({ current: [], history: [history] }, expected).length, 1);
   assert.equal(
     correlateAlertViews({ current: [{ data: JSON.stringify([alert()]) }], history: [] }, expected).length,
@@ -361,22 +377,47 @@ test('correlation rejects wrong path, header, namespace, stale, future, and gene
   };
   const invalid = [
     alert('OtherAlert'),
-    alert(undefined, { labels: { ...alert().labels, path: 'https://client-side-defense.f5-sales-demo.com/other' } }),
-    alert(undefined, { labels: { ...alert().labels, path: 'https://other.example/csd-page-tamper/payment' } }),
     alert(undefined, {
-      labels: { ...alert().labels, path: 'http://client-side-defense.f5-sales-demo.com/csd-page-tamper/payment' },
+      labels: {
+        ...alert().labels,
+        path: 'https://client-side-defense.f5-sales-demo.com/other',
+      },
     }),
-    alert(undefined, { labels: { ...alert().labels, path: '/csd-page-tamper/payment' } }),
+    alert(undefined, {
+      labels: {
+        ...alert().labels,
+        path: 'https://other.example/csd-page-tamper/payment',
+      },
+    }),
+    alert(undefined, {
+      labels: {
+        ...alert().labels,
+        path: 'http://client-side-defense.f5-sales-demo.com/csd-page-tamper/payment',
+      },
+    }),
+    alert(undefined, {
+      labels: { ...alert().labels, path: '/csd-page-tamper/payment' },
+    }),
     alert(undefined, { labels: { ...alert().labels, path: 'not a URL' } }),
-    alert(undefined, { labels: { ...alert().labels, header: 'x-frame-options' } }),
+    alert(undefined, {
+      labels: { ...alert().labels, header: 'x-frame-options' },
+    }),
     alert(undefined, { labels: { ...alert().labels, namespace: 'other' } }),
     alert(undefined, { startsAt: '2026-09-25T11:58:59.999Z' }),
     alert(undefined, { startsAt: '2026-09-25T12:01:00.001Z' }),
   ];
   assert.equal(correlateAlerts([invalid], expected).length, 0);
   assert.equal(
-    correlateAlerts([[alert(undefined, { labels: { ...alert().labels, header: 'X-CONTENT-TYPE-OPTIONS' } })]], expected)
-      .length,
+    correlateAlerts(
+      [
+        [
+          alert(undefined, {
+            labels: { ...alert().labels, header: 'X-CONTENT-TYPE-OPTIONS' },
+          }),
+        ],
+      ],
+      expected,
+    ).length,
     1,
   );
 });
@@ -413,12 +454,19 @@ test('live firing sentinel stays open until a real resolved history event', () =
     windowEnd: '2026-09-25T12:01:00.000Z',
   };
   const firing = alert('ClientSideDefenseHttpHeaderModified', {
-    labels: { ...alert().labels, header: 'x-content-type-options, x-frame-options, cache-control' },
+    labels: {
+      ...alert().labels,
+      header: 'x-content-type-options, x-frame-options, cache-control',
+    },
     startsAt: '2026-09-25T11:58:00.123456789Z',
     status: 'firing',
     endsAt: '0001-01-01T00:00:00Z',
   });
-  const resolved = { ...firing, status: 'resolved', endsAt: '2026-09-25T12:00:30.000Z' };
+  const resolved = {
+    ...firing,
+    status: 'resolved',
+    endsAt: '2026-09-25T12:00:30.000Z',
+  };
   const views = { current: [firing], history: [JSON.stringify(resolved)] };
   assert.deepEqual(
     correlateAlertViews(views, expected).map(({ state, ends_at }) => [state, ends_at]),
@@ -492,26 +540,47 @@ test('runHeader completes phases, correlation, recovery, receipt, and lock clean
 });
 
 test('bounded campaign rejects old matching current firing without manufacturing alert proof', async () => {
-  const old = alert(undefined, { startsAt: '2026-09-25T11:59:59.999Z', endsAt: '0001-01-01T00:00:00Z' });
-  const resolved = { ...old, status: 'resolved', endsAt: '2026-09-25T11:59:59.999Z' };
+  const old = alert(undefined, {
+    startsAt: '2026-09-25T11:59:59.999Z',
+    endsAt: '0001-01-01T00:00:00Z',
+  });
+  const resolved = {
+    ...old,
+    status: 'resolved',
+    endsAt: '2026-09-25T11:59:59.999Z',
+  };
   for (const current of [[old], []]) {
     const root = await workspace();
     const result = await runHeader(
-      config(root, { timings: { ...config(root).timings, mixedMs: 2, pollMs: 1 } }),
+      config(root, {
+        timings: { ...config(root).timings, mixedMs: 2, pollMs: 1 },
+      }),
       deps({
         alertSource: async () => ({
           current: [
             ...current,
             alert(undefined, {
-              labels: { ...alert().labels, path: 'https://other.example/csd-page-tamper/payment' },
+              labels: {
+                ...alert().labels,
+                path: 'https://other.example/csd-page-tamper/payment',
+              },
               startsAt: old.startsAt,
             }),
-            alert(undefined, { labels: { ...alert().labels, header: 'x-frame-options' }, startsAt: old.startsAt }),
             alert(undefined, {
-              labels: { ...alert().labels, path: 'https://client-side-defense.f5-sales-demo.com/other' },
+              labels: { ...alert().labels, header: 'x-frame-options' },
               startsAt: old.startsAt,
             }),
-            alert(undefined, { labels: { ...alert().labels, namespace: 'other' }, startsAt: old.startsAt }),
+            alert(undefined, {
+              labels: {
+                ...alert().labels,
+                path: 'https://client-side-defense.f5-sales-demo.com/other',
+              },
+              startsAt: old.startsAt,
+            }),
+            alert(undefined, {
+              labels: { ...alert().labels, namespace: 'other' },
+              startsAt: old.startsAt,
+            }),
           ],
           history: [resolved],
         }),
@@ -529,7 +598,9 @@ test('bounded campaign accepts in-window current and history once', async () => 
   const root = await workspace();
   const event = alert(undefined, { endsAt: '0001-01-01T00:00:00Z' });
   const result = await runHeader(
-    config(root, { timings: { ...config(root).timings, mixedMs: 2, pollMs: 1 } }),
+    config(root, {
+      timings: { ...config(root).timings, mixedMs: 2, pollMs: 1 },
+    }),
     deps({ alertSource: async () => ({ current: [event], history: [event] }) }),
     'x-content-type-options',
   );
@@ -541,7 +612,9 @@ test('bounded campaign accepts in-window current and history once', async () => 
 test('bounded telemetry exception remains INVALID_TEST rather than a no-alert result', async () => {
   const root = await workspace();
   const result = await runHeader(
-    config(root, { timings: { ...config(root).timings, mixedMs: 2, pollMs: 1 } }),
+    config(root, {
+      timings: { ...config(root).timings, mixedMs: 2, pollMs: 1 },
+    }),
     deps({
       alertSource: async () => {
         throw new ControllerError('alert polling failed', 'TELEMETRY_GAP');
@@ -585,7 +658,9 @@ test('deadline without required pairs is invalid and recovery still runs', async
     },
   });
   const result = await runHeader(
-    config(root, { timings: { ...config(root).timings, minimumPairs: 2, maximumCaseMs: 1 } }),
+    config(root, {
+      timings: { ...config(root).timings, minimumPairs: 2, maximumCaseMs: 1 },
+    }),
     injected,
     'x-content-type-options',
   );
@@ -603,7 +678,10 @@ test('failed run retains recovery-required lock when recovery fails', async () =
         calls += 1;
         return calls === 1 ? { success: false } : probe({ headerId });
       },
-      cleanup: async () => ({ worker_artifacts_removed: false, browser_artifacts_removed: true }),
+      cleanup: async () => ({
+        worker_artifacts_removed: false,
+        browser_artifacts_removed: true,
+      }),
     }),
     'x-content-type-options',
   );
@@ -710,7 +788,11 @@ test('stale recovery claim takeover is exclusive under deterministic contention'
   await mkdir(claimDir, { recursive: true });
   await writeFile(
     join(claimDir, 'owner.json'),
-    JSON.stringify({ claim_id: 'stale-owner', run_id: 'original-run', claimed_at: START }),
+    JSON.stringify({
+      claim_id: 'stale-owner',
+      run_id: 'original-run',
+      claimed_at: START,
+    }),
   );
   await utimes(claimDir, new Date(0), new Date(0));
   await writeFile(
@@ -802,16 +884,31 @@ test('bootstrap correlates object-shaped current and history API views without d
   const root = await workspace();
   let now = Date.parse(START);
   const currentAlert = alert();
-  const resolvedAlert = { ...currentAlert, status: 'resolved', endsAt: '2026-09-25T12:00:30.000Z' };
+  const resolvedAlert = {
+    ...currentAlert,
+    status: 'resolved',
+    endsAt: '2026-09-25T12:00:30.000Z',
+  };
   const result = await bootstrap(
-    config(root, { timings: { ...config(root).timings, bootstrapControlMs: 2, quietMs: 0, pollMs: 1 } }),
+    config(root, {
+      timings: {
+        ...config(root).timings,
+        bootstrapControlMs: 2,
+        quietMs: 0,
+        pollMs: 1,
+      },
+    }),
     deps({
       alertSource: null,
       fetch: async (url) => ({
         ok: true,
         json: async () =>
           new URL(url).pathname.endsWith('/history')
-            ? { alerts: [JSON.stringify(resolvedAlert)], total_hits: '1', scroll_id: '' }
+            ? {
+                alerts: [JSON.stringify(resolvedAlert)],
+                total_hits: '1',
+                scroll_id: '',
+              }
             : { data: JSON.stringify([currentAlert]) },
       }),
       sleep: async (ms) => {
@@ -835,7 +932,14 @@ test('production alert polling normalizes current and history without duplicate 
   const urls = [];
   const currentAlert = alert();
   const result = await bootstrap(
-    config(root, { timings: { ...config(root).timings, bootstrapControlMs: 2, quietMs: 0, pollMs: 1 } }),
+    config(root, {
+      timings: {
+        ...config(root).timings,
+        bootstrapControlMs: 2,
+        quietMs: 0,
+        pollMs: 1,
+      },
+    }),
     deps({
       alertSource: null,
       fetch: async (url) => {
@@ -844,7 +948,11 @@ test('production alert polling normalizes current and history without duplicate 
           ok: true,
           json: async () =>
             new URL(url).pathname.endsWith('/history')
-              ? { alerts: [], total_hits: '0', scroll_id: 'stable-zero-hit-cursor' }
+              ? {
+                  alerts: [],
+                  total_hits: '0',
+                  scroll_id: 'stable-zero-hit-cursor',
+                }
               : { data: JSON.stringify([currentAlert]) },
         };
       },
@@ -882,7 +990,14 @@ test('production history scroll reconciles 501 hits and stops despite a remainin
   const urls = [];
   const record = JSON.stringify(alert('ClientSideDefenseHttpHeaderModified'));
   const result = await bootstrap(
-    config(root, { timings: { ...config(root).timings, bootstrapControlMs: 1, quietMs: 0, pollMs: 1 } }),
+    config(root, {
+      timings: {
+        ...config(root).timings,
+        bootstrapControlMs: 1,
+        quietMs: 0,
+        pollMs: 1,
+      },
+    }),
     deps({
       alertSource: null,
       fetch: async (url, options) => {
@@ -892,7 +1007,11 @@ test('production history scroll reconciles 501 hits and stops despite a remainin
         const body = path.endsWith('/history/scroll')
           ? { alerts: [record], total_hits: '501', scroll_id: 'still-present' }
           : path.endsWith('/history')
-            ? { alerts: Array(500).fill(record), total_hits: '501', scroll_id: 'next-page' }
+            ? {
+                alerts: Array(500).fill(record),
+                total_hits: '501',
+                scroll_id: 'next-page',
+              }
             : { data: '[]' };
         return { ok: true, json: async () => body };
       },
@@ -917,7 +1036,14 @@ test('production telemetry fails closed on incomplete, repeated, malformed and H
     let scrollCalls = 0;
     await assert.rejects(
       bootstrap(
-        config(root, { timings: { ...config(root).timings, bootstrapControlMs: 1, quietMs: 0, pollMs: 1 } }),
+        config(root, {
+          timings: {
+            ...config(root).timings,
+            bootstrapControlMs: 1,
+            quietMs: 0,
+            pollMs: 1,
+          },
+        }),
         deps({
           alertSource: null,
           fetch: async (url) => {
@@ -925,7 +1051,11 @@ test('production telemetry fails closed on incomplete, repeated, malformed and H
             if (path.endsWith('/history/scroll')) scrollCalls += 1;
             if (failure === 'http-error' && path.endsWith('/history')) return { ok: false };
             const body = path.endsWith('/history/scroll')
-              ? { alerts: [JSON.stringify(alert())], total_hits: '3', scroll_id: 'same' }
+              ? {
+                  alerts: [JSON.stringify(alert())],
+                  total_hits: '3',
+                  scroll_id: 'same',
+                }
               : path.endsWith('/history')
                 ? failure === 'bad-total'
                   ? { alerts: [], total_hits: 'invalid', scroll_id: '' }
@@ -961,7 +1091,10 @@ test('suite final cleanup failure persists evidence and blocks new runs', async 
     deps({
       cleanup: async () => {
         cleanupCalls += 1;
-        return { worker_artifacts_removed: cleanupCalls <= HEADER_IDS.length, browser_artifacts_removed: true };
+        return {
+          worker_artifacts_removed: cleanupCalls <= HEADER_IDS.length,
+          browser_artifacts_removed: true,
+        };
       },
     }),
   );
@@ -987,7 +1120,10 @@ test('suite cleanup exception preserves completed results and recovery evidence'
       cleanup: async () => {
         cleanupCalls += 1;
         if (cleanupCalls > HEADER_IDS.length) throw new Error('cleanup token secret-not-for-receipts');
-        return { worker_artifacts_removed: true, browser_artifacts_removed: true };
+        return {
+          worker_artifacts_removed: true,
+          browser_artifacts_removed: true,
+        };
       },
     }),
   );
@@ -1023,7 +1159,12 @@ test('bootstrap emits repeated workstation and worker controls and gates all hea
   const polledHeaders = new Set();
   const result = await bootstrap(
     config(root, {
-      timings: { ...config(root).timings, bootstrapControlMs: 3, quietMs: 0, pollMs: 1 },
+      timings: {
+        ...config(root).timings,
+        bootstrapControlMs: 3,
+        quietMs: 0,
+        pollMs: 1,
+      },
     }),
     deps({
       probe: ({ headerId, location }) => {
@@ -1053,7 +1194,14 @@ test('bootstrap observes a full quiet period after a late firing alert', async (
   let now = Date.parse(START);
   let polls = 0;
   const result = await bootstrap(
-    config(root, { timings: { ...config(root).timings, bootstrapControlMs: 1, quietMs: 3, pollMs: 1 } }),
+    config(root, {
+      timings: {
+        ...config(root).timings,
+        bootstrapControlMs: 1,
+        quietMs: 3,
+        pollMs: 1,
+      },
+    }),
     deps({
       alertSource: async ({ headerId }) => {
         polls += 1;
@@ -1105,7 +1253,14 @@ test('bootstrap requires explicit resolution after firing omission before quiet 
     endsAt: new Date(Date.parse(START) + 2).toISOString(),
   };
   const result = await bootstrap(
-    config(root, { timings: { ...config(root).timings, bootstrapControlMs: 0, quietMs: 3, pollMs: 1 } }),
+    config(root, {
+      timings: {
+        ...config(root).timings,
+        bootstrapControlMs: 0,
+        quietMs: 3,
+        pollMs: 1,
+      },
+    }),
     deps({
       alertSource: async ({ headerId }) => {
         if (headerId !== HEADER_IDS[0]) return [];
@@ -1137,9 +1292,20 @@ test('bootstrap tracks an already-firing current alert until explicit history re
     labels: { ...alert().labels, header: HEADER_IDS[0] },
     startsAt: new Date(now - 60_000).toISOString(),
   });
-  const resolved = { ...oldFiring, status: 'resolved', endsAt: new Date(now + 2).toISOString() };
+  const resolved = {
+    ...oldFiring,
+    status: 'resolved',
+    endsAt: new Date(now + 2).toISOString(),
+  };
   const result = await bootstrap(
-    config(root, { timings: { ...config(root).timings, bootstrapControlMs: 0, quietMs: 3, pollMs: 1 } }),
+    config(root, {
+      timings: {
+        ...config(root).timings,
+        bootstrapControlMs: 0,
+        quietMs: 3,
+        pollMs: 1,
+      },
+    }),
     deps({
       alertSource: async ({ headerId }) => {
         if (headerId !== HEADER_IDS[0]) return { current: [], history: [] };
@@ -1205,7 +1371,11 @@ test('bootstrap retains lock after production SSM final cleanup fails despite su
         assert.ok(parameters.length <= 4096);
         lastCommand = JSON.parse(parameters).commands[0];
         if (lastCommand.includes('shutil.rmtree(root)')) cleanupCommands += 1;
-        return { code: 0, stdout: JSON.stringify({ Command: { CommandId: 'command-1' } }), stderr: '' };
+        return {
+          code: 0,
+          stdout: JSON.stringify({ Command: { CommandId: 'command-1' } }),
+          stderr: '',
+        };
       }
       if (argv[2] === 'get-command-invocation')
         return {
@@ -1251,7 +1421,9 @@ test('recovery emits repeated control pairs before final proof', async () => {
   let now = Date.parse(START);
   const locations = [];
   const result = await runHeader(
-    config(root, { timings: { ...config(root).timings, recoveryMs: 3, pollMs: 1 } }),
+    config(root, {
+      timings: { ...config(root).timings, recoveryMs: 3, pollMs: 1 },
+    }),
     deps({
       probe: ({ headerId, location }) => {
         locations.push({ headerId, location, now });
@@ -1299,7 +1471,13 @@ function simulatedSsm(onScript, result = probe()) {
     if (argv[2] === 'send-command') {
       const script = JSON.parse(argv[argv.indexOf('--parameters') + 1]).commands[0];
       pendingFailure = (await onScript(script)) === true;
-      return { code: 0, stdout: JSON.stringify({ Command: { CommandId: `cmd-${++commandId}` } }), stderr: '' };
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          Command: { CommandId: `cmd-${++commandId}` },
+        }),
+        stderr: '',
+      };
     }
     if (argv[2] === 'get-command-invocation')
       return {
@@ -1638,9 +1816,17 @@ test('interrupted recovery checks the original root before new controls and rele
         assert.ok(commandText.includes(`set -- '${original.root}' cleanup`));
         assert.doesNotMatch(commandText, /kill -|pgrep|secret-not-for-receipts/);
         scanned = true;
-        return { code: 0, stdout: JSON.stringify({ Command: { CommandId: 'scan-1' } }), stderr: '' };
+        return {
+          code: 0,
+          stdout: JSON.stringify({ Command: { CommandId: 'scan-1' } }),
+          stderr: '',
+        };
       }
-      return { code: 0, stdout: JSON.stringify({ Status: 'Success', ResponseCode: 0 }), stderr: '' };
+      return {
+        code: 0,
+        stdout: JSON.stringify({ Status: 'Success', ResponseCode: 0 }),
+        stderr: '',
+      };
     },
     probe: ({ headerId }) => {
       assert.equal(scanned, true);
@@ -1651,7 +1837,9 @@ test('interrupted recovery checks the original root before new controls and rele
   assert.equal(result.recovery.success, true);
   const recoveryName = (await readdir(join(root, 'receipts'))).find((name) => name.startsWith('recovery-old-case-'));
   const recoveryReceipt = JSON.parse(await readFile(join(root, 'receipts', recoveryName), 'utf8'));
-  assert.deepEqual(recoveryReceipt.recovery.original_worker_cleanup, { worker_artifacts_removed: true });
+  assert.deepEqual(recoveryReceipt.recovery.original_worker_cleanup, {
+    worker_artifacts_removed: true,
+  });
   assert.equal(scanned, true);
   assert.match(commandText, /arg\.startswith\(prefix\) and arg\.endswith\(b'\/profile'\)/);
   assert.match(commandText, /re\.fullmatch/);
@@ -1729,7 +1917,12 @@ test('legacy or invalid worker run references fail closed without SSM or control
   for (const workerRunId of [undefined, '../../unsafe']) {
     const root = await workspace();
     await mkdir(join(root, 'receipts'), { recursive: true });
-    const record = { run_id: 'old-case', command: 'run', started_at: START, state: 'recovery-required' };
+    const record = {
+      run_id: 'old-case',
+      command: 'run',
+      started_at: START,
+      state: 'recovery-required',
+    };
     if (workerRunId !== undefined) record.worker_run_id = workerRunId;
     await writeFile(join(root, 'receipts', 'active.lock'), JSON.stringify(record));
     let touched = false;
@@ -1791,9 +1984,19 @@ test('interrupted recovery stops on original-root live profile without fresh pro
             cleanupCommands++;
             const script = JSON.parse(argv[argv.indexOf('--parameters') + 1]).commands[0];
             assert.ok(script.includes(`set -- '${original.root}' cleanup`));
-            return { code: 0, stdout: JSON.stringify({ Command: { CommandId: 'still-running' } }), stderr: '' };
+            return {
+              code: 0,
+              stdout: JSON.stringify({
+                Command: { CommandId: 'still-running' },
+              }),
+              stderr: '',
+            };
           }
-          return { code: 0, stdout: JSON.stringify({ Status: 'Failed', ResponseCode: 42 }), stderr: '' };
+          return {
+            code: 0,
+            stdout: JSON.stringify({ Status: 'Failed', ResponseCode: 42 }),
+            stderr: '',
+          };
         },
       }),
       'x-content-type-options',
@@ -1828,11 +2031,18 @@ test('worker cleanup refuses a live profile or uncertain SSM and never signals a
           assert.ok(script.length <= 4096);
           assert.doesNotMatch(script, /pgrep|kill\s+-|os\.kill|secret-not-for-receipts/);
           assert.match(script, /scan\(\)[\s\S]*shutil\.rmtree\(root\)[\s\S]*scan\(\)/);
-          return { code: 0, stdout: JSON.stringify({ Command: { CommandId: 'scan-1' } }), stderr: '' };
+          return {
+            code: 0,
+            stdout: JSON.stringify({ Command: { CommandId: 'scan-1' } }),
+            stderr: '',
+          };
         }
         return {
           code: 0,
-          stdout: JSON.stringify({ Status: responseCode ? 'Failed' : 'Success', ResponseCode: responseCode }),
+          stdout: JSON.stringify({
+            Status: responseCode ? 'Failed' : 'Success',
+            ResponseCode: responseCode,
+          }),
           stderr: '',
         };
       },
@@ -1842,9 +2052,15 @@ test('worker cleanup refuses a live profile or uncertain SSM and never signals a
     });
   }
   const before = sends;
-  assert.deepEqual(await cleanupWorker(workerConfig, deps(), { ...ownedWorker(), root: '/tmp/xcsh-csd-other' }), {
-    worker_artifacts_removed: false,
-  });
+  assert.deepEqual(
+    await cleanupWorker(workerConfig, deps(), {
+      ...ownedWorker(),
+      root: '/tmp/xcsh-csd-other',
+    }),
+    {
+      worker_artifacts_removed: false,
+    },
+  );
   assert.equal(sends, before);
 });
 
@@ -1884,7 +2100,9 @@ test('production worker keeps every current-source SSM command and parameters va
       if (argv[2] === 'send-command')
         return {
           code: 0,
-          stdout: JSON.stringify({ Command: { CommandId: `cmd-${++commandId}` } }),
+          stdout: JSON.stringify({
+            Command: { CommandId: `cmd-${++commandId}` },
+          }),
           stderr: '',
         };
       if (argv[2] === 'get-command-invocation')
@@ -1958,7 +2176,14 @@ test('alert polling accumulates Modified evidence and performs a deadline poll',
   let polls = 0;
   let now = Date.parse(START);
   const result = await runHeader(
-    config(root, { timings: { ...config(root).timings, mixedMs: 2, maximumCaseMs: 2, pollMs: 1 } }),
+    config(root, {
+      timings: {
+        ...config(root).timings,
+        mixedMs: 2,
+        maximumCaseMs: 2,
+        pollMs: 1,
+      },
+    }),
     deps({
       alertSource: async () => {
         polls += 1;
@@ -1983,7 +2208,14 @@ test('production object polling accumulates current and history without duplicat
   let now = Date.parse(START);
   const firing = alert('ClientSideDefenseHttpHeaderModified');
   const result = await runHeader(
-    config(root, { timings: { ...config(root).timings, mixedMs: 2, maximumCaseMs: 2, pollMs: 1 } }),
+    config(root, {
+      timings: {
+        ...config(root).timings,
+        mixedMs: 2,
+        maximumCaseMs: 2,
+        pollMs: 1,
+      },
+    }),
     deps({
       alertSource: async () => {
         polls += 1;
@@ -2047,7 +2279,11 @@ test('stale recovery claims are reclaimed by age without persisting host or PID'
   await mkdir(claimDir, { recursive: true });
   await writeFile(
     join(claimDir, 'owner.json'),
-    JSON.stringify({ claim_id: 'stale-claim', run_id: 'original-run', claimed_at: START }),
+    JSON.stringify({
+      claim_id: 'stale-claim',
+      run_id: 'original-run',
+      claimed_at: START,
+    }),
   );
   await utimes(claimDir, new Date(0), new Date(0));
   await writeFile(
@@ -2061,7 +2297,9 @@ test('stale recovery claims are reclaimed by age without persisting host or PID'
     }),
   );
   const result = await runHeader(
-    config(root, { timings: { ...config(root).timings, maximumCaseMs: 60 * 60_000 } }),
+    config(root, {
+      timings: { ...config(root).timings, maximumCaseMs: 60 * 60_000 },
+    }),
     deps(),
     'x-content-type-options',
   );
@@ -2077,7 +2315,11 @@ test('fresh recovery claims remain age-gated without host or PID metadata', asyn
     await mkdir(claimDir, { recursive: true });
     await writeFile(
       join(claimDir, 'owner.json'),
-      JSON.stringify({ claim_id: claimId, run_id: 'original-run', claimed_at: START }),
+      JSON.stringify({
+        claim_id: claimId,
+        run_id: 'original-run',
+        claimed_at: START,
+      }),
     );
     await writeFile(
       join(receiptDir, 'active.lock'),
@@ -2091,7 +2333,9 @@ test('fresh recovery claims remain age-gated without host or PID metadata', asyn
     );
     await assert.rejects(
       runHeader(
-        config(root, { timings: { ...config(root).timings, maximumCaseMs: 60 * 60_000 } }),
+        config(root, {
+          timings: { ...config(root).timings, maximumCaseMs: 60 * 60_000 },
+        }),
         deps(),
         'x-content-type-options',
       ),
@@ -2149,7 +2393,10 @@ test('worker placement keeps every control and selector visit remote and fails c
   assert.ok(locations.length > 2);
   assert.ok(locations.every((location) => location === 'worker'));
   const invalid = await runHeader(
-    config(await workspace(), { browserMode: 'headed-xvfb', placement: 'worker' }),
+    config(await workspace(), {
+      browserMode: 'headed-xvfb',
+      placement: 'worker',
+    }),
     deps(),
     'x-content-type-options',
   );
@@ -2181,12 +2428,16 @@ test('persistent Linux reservation restores fixture states after normal, abort, 
       const script = join(root, 'guard.py');
       await writeFile(script, guard.script);
       const ctl = (...args) => {
-        const r = spawnSync('sudo', ['-n', 'systemctl', ...args], { encoding: 'utf8' });
+        const r = spawnSync('sudo', ['-n', 'systemctl', ...args], {
+          encoding: 'utf8',
+        });
         assert.equal(r.status, 0, r.stderr);
         return r.stdout.trim();
       };
       const run = (action) => {
-        const r = spawnSync('sudo', ['-n', 'python3', script, action], { encoding: 'utf8' });
+        const r = spawnSync('sudo', ['-n', 'python3', script, action], {
+          encoding: 'utf8',
+        });
         assert.equal(r.status, 0, r.stderr);
         return r.stdout;
       };
@@ -2273,7 +2524,10 @@ const target=await c.send('Target.createTarget',{url:'data:text/html,<title>isol
 await c.send('Target.closeTarget',{targetId:target.targetId});
 console.log('XCSH_RESULT '+JSON.stringify({success:true,_browser_evidence:{arguments:args.arguments,product:version.product}}));}finally{c.close();}`;
   await writeFile(script, renderHeadedProbe({ root, entry }));
-  const r = spawnSync('python3', [script], { encoding: 'utf8', timeout: 45000 });
+  const r = spawnSync('python3', [script], {
+    encoding: 'utf8',
+    timeout: 45000,
+  });
   assert.equal(r.status, 0, r.stderr);
   const result = JSON.parse(r.stdout.trim().slice(12));
   assert.equal(result.browser_provenance.mode, 'headed-xvfb');
@@ -2299,7 +2553,12 @@ test('single headed canary arms once across baseline and case and keeps alert ou
       deps({
         reservation: async (action) => {
           actions.push(action);
-          return { armed: true, dispatch_drained: true, restored: true, original_states_preserved: true };
+          return {
+            armed: true,
+            dispatch_drained: true,
+            restored: true,
+            original_states_preserved: true,
+          };
         },
         probe: ({ headerId, location }) => {
           visits.push(location);
@@ -2323,5 +2582,106 @@ test('single headed canary arms once across baseline and case and keeps alert ou
     assert.equal(result.reservation.restored, true);
     assert.equal(result.browser_provenance.mode, 'headed-xvfb');
     assert.equal((await status(c)).active, false);
+  }
+});
+
+test('Linux production headed launcher executes private root-installed payload as ubuntu', {
+  skip: process.env.XCSH_CSD_NONROOT_PROBE !== '1',
+  timeout: 120_000,
+}, async () => {
+  const { randomUUID } = await import('node:crypto');
+  const { prepareWorker, runHeadedWorkerProbe } = await import('../scripts/lib/csd-page-tamper-controller.mjs');
+  assert.equal(process.platform, 'linux');
+  const account = spawnSync('id', ['-u', 'ubuntu'], { encoding: 'utf8' });
+  assert.equal(account.status, 0, account.stderr);
+  assert.notEqual(account.stdout.trim(), '0');
+  const runId = randomUUID();
+  const root = `/tmp/xcsh-csd-${runId}`;
+  const workerConfig = config(root, {
+    workerInstance: 'i-0123456789abcdef0',
+    browserMode: 'headed-xvfb',
+    placement: 'worker',
+    probeTimeoutMs: 30_000,
+    probeSettleMs: 5_000,
+  });
+  let invocation;
+  const scripts = [];
+  const injected = createDependencies({
+    executor: async (argv) => {
+      assert.equal(argv[0], 'aws');
+      assert.equal(argv[1], 'ssm');
+      if (argv[2] === 'send-command') {
+        const parameters = JSON.parse(argv[argv.indexOf('--parameters') + 1]);
+        assert.ok(JSON.stringify(parameters).length <= 4096);
+        const script = parameters.commands[0];
+        scripts.push(script);
+        if (script.startsWith('systemd-run ')) {
+          const payload = await stat(join(root, script.match(/headed-[0-9a-f-]+\.py/)[0]));
+          assert.equal(payload.uid, Number(account.stdout.trim()));
+          assert.equal(payload.mode & 0o777, 0o700);
+        }
+        const result = spawnSync('sudo', ['-n', '/bin/sh', '-c', script], {
+          encoding: 'utf8',
+          timeout: 90_000,
+          env: { ...process.env, PATH: '/opt/node/bin:/usr/bin:/bin' },
+        });
+        invocation = {
+          Status: result.status === 0 ? 'Success' : 'Failed',
+          ResponseCode: result.status,
+          StandardOutputContent: result.stdout,
+          StandardErrorContent: result.stderr,
+        };
+        return {
+          code: 0,
+          stdout: JSON.stringify({ Command: { CommandId: randomUUID() } }),
+        };
+      }
+      assert.equal(argv[2], 'get-command-invocation');
+      return { code: 0, stdout: JSON.stringify(invocation) };
+    },
+  });
+  let worker;
+  try {
+    worker = await prepareWorker(workerConfig, injected, runId);
+    const directory = await stat(root);
+    assert.equal(directory.uid, Number(account.stdout.trim()));
+    assert.equal(directory.mode & 0o777, 0o700);
+    // Same decoded-root-file defect, independently verified with the actual ubuntu interpreter.
+    const denial = spawnSync(
+      'sudo',
+      [
+        '-n',
+        '/bin/sh',
+        '-c',
+        `umask 077; printf 'pass\\n' >'${root}/denied.py'; chmod 700 '${root}/denied.py'; sudo -u ubuntu -H /usr/bin/python3 '${root}/denied.py'`,
+      ],
+      { encoding: 'utf8' },
+    );
+    assert.equal(denial.status, 2);
+    assert.match(denial.stderr, /Permission denied/);
+    const result = await runHeadedWorkerProbe(workerConfig, injected, null, worker);
+    assert.equal(result.success, true, JSON.stringify(result.error));
+    assert.equal(result.selector, null);
+    assert.equal(result.document.status, 200);
+    assert.ok(result.document.headers.every((header) => header.present && header.expected_match));
+    assert.equal(result.instrumentation.dip_post_observed, true);
+    assert.deepEqual(result.cleanup.errors, []);
+    assert.equal(result.browser_provenance.mode, 'headed-xvfb');
+    assert.equal(result.browser_provenance.process_arguments_verified, true);
+    assert.equal(result.browser_provenance.browser_arguments_verified, true);
+    assert.equal(result.browser_provenance.owned_display_verified, true);
+    assert.doesNotMatch(result.browser_provenance.product, /Headless/);
+    assert.equal(
+      (await readdir(root)).some((name) => name.startsWith('probe-') || name.startsWith('headed-')),
+      false,
+    );
+    assert.equal(
+      scripts.some((script) => script.includes('/var/lib/xcsh-csd-reservation')),
+      false,
+    );
+    process.stdout.write('NONROOT_HEADED_CONTROL=passed PAYLOAD_PRIVATE=verified OWNED_CLEANUP=passed\n');
+  } finally {
+    assert.equal((await cleanupWorker(workerConfig, injected, worker)).worker_artifacts_removed, true);
+    await assert.rejects(stat(root), { code: 'ENOENT' });
   }
 });

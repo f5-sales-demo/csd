@@ -107,7 +107,7 @@ printf '%s' "$LB" | jq -e \
   --arg name "xXCSH_LB_NAMEx" \
   --arg namespace "xXCSH_NAMESPACEx" \
   --arg domain "xXCSH_DOMAINNAMEx" \
-  '.metadata.name == $name and .metadata.namespace == $namespace and (.spec.domains | index($domain) != null)' >/dev/null
+  '.metadata.name == $name and .metadata["namespace"] == $namespace and (.spec.domains | index($domain) != null)' >/dev/null
 test -n "$DNS_A"
 test "$DNS_A" = "$LB_VIPS"
 ```
@@ -514,7 +514,7 @@ curl -s \
   -H "Authorization: APIToken xXCSH_API_TOKENx" \
   "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/protected_domains" \
   | jq -e --arg name "xXCSH_DOMAINNAMEx" --arg namespace "xXCSH_NAMESPACEx" \
-    '.items[] | select(.name == $name and .namespace == $namespace) | {name, namespace, description}'
+    '.items[] | select(.name == $name and .["namespace"] == $namespace) | {name, namespace, description}'
 ```
 
 | Result                                                                               | Meaning                                                                             |
@@ -1626,6 +1626,84 @@ nor Compromised proof, neither an unsupported-feature conclusion nor a completed
 Headed/Xvfb execution alone did not resolve detection; headless mode is not an established cause.
 No PCI compliance certification or notification-delivery claim follows from these observations.
 
+### Recorded wire-correlated visibility pair: 2026-10-04
+
+A separate metadata-only observation on source
+`fa1d33ba02e686c549767cbf9ba7f79d1de9609f` used **exactly one control/tampered pair**,
+with a normal five-second settle per context. It used genuine headed
+`Chrome/154.0.8037.57` under Xvfb on Ubuntu, with the browser sandbox enabled and no
+certificate exceptions. Both visits used the same protected `/csd-page-tamper/payment` path;
+payment fields remained empty and CSD insertion was observed. This was a visibility probe,
+not another baseline, canary or alert-polling campaign.
+
+| Observed request | Control | Tampered |
+| --- | --- | --- |
+| Payment `GET`, Document | HTTP `200`, finished; wire selector absent; XCTO `nosniff` | HTTP `200`, finished; exact wire selector present; XCTO absent |
+| Naturally occurring same-path `HEAD`, Fetch | HTTP `200`, then canceled; wire selector absent; XCTO `nosniff` | HTTP `200`, then canceled; exact wire selector present; XCTO absent |
+| Approved `dip` `POST`, XHR | HTTP `200`, finished; wire selector absent | HTTP `200`, finished; exact wire selector present |
+| Approved `dip` `OPTIONS` | Not observed | HTTP `200`, finished; wire selector absent |
+
+All **nine** captured records (four control, five tampered, including favicon requests) had
+correlated request and response CDP `ExtraInfo`, redirect hop `0`, no cache or service-worker
+response, and no trace truncation. This is request-specific wire evidence, not merely a
+document-level header or configured browser selector.
+
+The natural `HEAD` is stronger evidence than the earlier document-only observation: its
+response also showed the control/tampered XCTO difference. **Its caller and cancellation cause
+remain unknown.** Same-origin Fetch does not attribute it to CSD JavaScript or a particular
+header collector. HTTP `200` followed by cancellation establishes network-visible response
+headers, not that a collector read, persisted or transported those headers.
+
+The selector was session-wide and also reached the tampered `dip` POST. The additional
+`OPTIONS` is consistent with custom-header CORS preflight, but causality was not proved.
+A completed HTTP `200` `dip` request is transport evidence only: it does **not** establish
+payload schema acceptance, security-header content, baseline eligibility or backend detection.
+No raw payload, body digest, vendor decoding or deobfuscation was used.
+
+Continuous traffic was not paused: committed counts advanced **2039 → 2040**, with its timer
+enabled and active before and after. Both browser contexts, targets, listeners and CDP session
+closed; the owned browser, display, unit, cgroup and inode-checked temporary worker root were
+cleaned. Private receipt/provenance/verification artifacts remain outside the repository with
+directory mode `0700` and file mode `0600`; receipt SHA-256:
+`e6d5921c19703e4bad87aed33c98c4626b2b7430436c07439a0772d3d0dfb313`.
+Earlier archives and the original working checkout were preserved. No infrastructure, IaC or
+continuous-control change occurred. This pair did not establish a new alert outcome and does
+not replace the valid `NO_ALERT_WITHIN_WINDOW` canary above.
+
+### Separate read-only notification audit: 2026-10-04
+
+The audit result is **PARTIAL**, not proof that the whole notification chain works. The following
+are observed configuration/status facts for the demo namespace, not an email-delivery test.
+No resource changes, verification emails, test notifications or new browser/cloud traffic were
+performed by the audit or this documentation publication.
+
+| Layer | Observation | Conclusion |
+| --- | --- | --- |
+| Tenant CSD enablement | `isConfigured=true`, `isEnabled=true` | PASS for configuration only |
+| Payment-page inclusion | Enabled LB, `js_insert_all_pages`, no page exclusion; protected root matches payment hostname | PASS for configured inclusion, not a fresh collector test |
+| Dedicated policy matcher | Enabled `csd-page-tamper-alert-policy`; sole Send route matches `^ClientSideDefenseHttpHeader(Modified\|Compromised)$` and references the dedicated receiver | PASS for both event-name matches; no preceding route shadows them |
+| Dedicated namespace assignment | `active_alert_policies` returned empty policy and status lists | FAIL: the dedicated policy exists but is not active in this namespace |
+| Dedicated receiver readiness | Enabled `csd-page-tamper-alert-receiver`, configured destination withheld; `Operational/Incomplete`, empty reason | FAIL readiness: exact cause unknown; do not assert that email is definitely unverified |
+| Existing system path | `system/client-side-defense-policy` Active, SECURITY_CSD group Send route; enabled system receiver `Operational/Success` with a historical condition timestamp | Existing configuration observed; actual delivery untested |
+| System namespace and header-event coverage | Effective inheritance and membership of both header events in the matched group not established | UNKNOWN; do not assume this path covers the local namespace or both events |
+| Timing, suppression and backend detection | No explicit notification interval override observed; suppression configuration not fully audited; no current matching header alert returned | UNKNOWN; not an end-to-end success |
+
+Current source declares the dedicated receiver and matcher in
+`terraform/aws/modules/csd-page-tamper-alerts/main.tf`, but no active-policy assignment in that
+module. Follow-up [configuration issue #1285](https://github.com/f5-sales-demo/csd/issues/1285)
+tracks assignment ownership, the receiver's exact readiness cause and separately authorized
+delivery validation. Remediate through the authoritative Terraform owner after reviewing
+dependencies and a saved plan; do not create parallel API/console ownership. Nothing here
+authorizes that remediation or a test email.
+
+**Notification routing and backend detection are separate.** These notification-chain gaps do
+not explain the absence of direct current/history header detections in the completed canary.
+Activating a policy routes generated alerts; it does not create a missing header event.
+The system path also prevents a blanket claim that all CSD notifications are disabled.
+Detection [investigation #1259](https://github.com/f5-sales-demo/csd/issues/1259) and the
+configuration issue remain open. PCI-oriented header-detection validation is still unmet;
+no certification, Modified-only, Compromised or completed matrix claim follows.
+
 #### Engineering questions before another experiment
 
 [Investigation #1259](https://github.com/f5-sales-demo/csd/issues/1259) remains open. The official
@@ -1633,18 +1711,23 @@ No PCI compliance certification or notification-delivery claim follows from thes
 describes server header collection, different end users and sequential moving-baseline cycles.
 It does not specify a session threshold, processing SLA or headed/Xvfb requirement.
 
-1. **Collector visibility:** which server requests supply the header baseline, and do they preserve
-   the browser's per-request selector? An independent fetch that always receives controls could
-   explain this result, but collector behavior is unknown and this is only a hypothesis.
-2. **Eligibility and cycles:** what evidence proves eligible distinct end users, persisted baseline
+1. **Collector attribution and reads:** which request and caller supply the persisted header
+   baseline? Does the observed same-path `HEAD` belong to that collector, and why is it canceled
+   after HTTP `200`? What proves that its wire-visible headers were actually read or persisted?
+   The new trace shows tampered headers on this `HEAD`; it does not identify the collector.
+2. **Payload acceptance:** what support-approved diagnostic proves header-bearing transport and
+   semantic/schema acceptance? Completed `dip` POSTs alone do not answer this, especially when
+   the session-wide selector also reaches the POST and an additional `OPTIONS` is observed.
+3. **Eligibility and cycles:** what evidence proves eligible distinct end users, persisted baseline
    and subsequent completed comparisons? Fresh contexts from the same worker/egress do not prove
    distinct end users; 20 mixed pairs do not establish a documented population threshold.
-3. **Watched headers and classification:** is XCTO omission eligible in this tenant/path and
-   entitlement? Which headers are monitored, and which exact raw fields distinguish Modified
-   from Compromised, addition from omission, and host/path/header attribution?
-4. **Next controlled test:** obtain a support/product-approved collector-visible change and
-   observable cycle/eligibility criteria before authorizing another bounded single-header test.
-   Do not extend the matrix or increase volume blindly. No further test is authorized by this record.
+4. **Watched headers and classification:** is XCTO omission eligible in this tenant/path and
+   entitlement? Which headers are required or monitored, and which exact alert fields distinguish
+   Modified from Compromised, addition from omission, and host/path/header attribution?
+5. **Next controlled test:** obtain engineering confirmation of collection/acceptance and a
+   support-approved change with observable cycle/eligibility criteria before authorizing another
+   bounded single-header test. Do not extend the matrix, repeat the two-hour campaign or increase
+   volume blindly. No further test is authorized by this record.
 
 ## Quick Reference
 

@@ -1313,10 +1313,11 @@ Before `bootstrap`, `run`, or `suite`, supply the initialized AWS root of the se
 `XCSH_CSD_TRAFFIC_GENERATOR_TERRAFORM_DIR`. The controller verifies its S3 backend is bucket
 `terraform-tfstate-xc`, key `f5-sales-demo/traffic-generator-aws.tfstate`, region `us-east-1`,
 then resolves `terraform output -raw instance_id`. Do not pass a worker instance ID. The worker
-must be running in the reviewed AWS account before any SSM command. Receipts, CLI JSON, status,
-and persistent recovery locks omit worker/account/profile IDs, hostnames, and PIDs; recovery keeps
-only the run UUID needed to reconstruct the temporary worker directory and re-resolves the current
-instance from the authoritative Terraform output. `status` needs only the receipt directory.
+must be running in the reviewed AWS account before any SSM command. Public receipts, CLI JSON
+and status omit worker/account/profile IDs, hostnames and PIDs. A new canary's **local-only,
+mode `0600`** `active.lock` includes the original worker binding to verify recovery ownership;
+do not publish it. Recovery re-resolves the current worker from authoritative Terraform output
+and requires it to match that binding. `status` needs only the receipt directory.
 
 1. **Bootstrap the control baseline.** Require no Terraform drift, a ready load balancer, a valid certificate, healthy ordinary application traffic, and a healthy dedicated endpoint. From workstation and worker fresh browsers, prove HTTP `200`, all 12 exact candidate headers, all five empty synthetic fields, CSD injection, and a `dip` POST.
    Run control-only traffic for 45 minutes while polling both current alerts and alert history. If deployment creates a correlated Modified/Added alert, wait for resolution and then require a 15-minute quiet period.
@@ -1370,18 +1371,75 @@ the document visit. Receipts retain sanitized mode/placement/product and verific
 not raw arguments, display identifiers, process IDs, endpoint bodies or tokens. Failed proof is
 `INVALID_TEST`. Only `runDocumentProbe` supplies document and instrumentation evidence.
 
-Normal completion and abort restore exact original timer/service states and clean owned units,
-profiles and processes. Controller SIGKILL does not cancel the external deadline; worker reboot
-removes the runtime boot-trigger suppression and activates persistent restoration. Restoration
-stops only run-owned probe systemd units, verifies original states, and retries systemd failures.
+Normal completion and abort restore the original durable enabled/disabled/static policy and
+timer dispatch state, then clean owned units, profiles and processes. A disabled-but-active timer
+returns to **disabled and active**, not enabled. Service `Type` and `RemainAfterExit` determine
+execution semantics: a timer-dispatched oneshot can transiently be `activating`, finish `inactive`,
+or be `active`; these are not durable enablement states. The pre-pause snapshot still rejects
+an already `activating` service. Recovery persists progress **before** resuming the timer and
+does not stop or restart the dispatcher again on cleanup or persistence retries.
+
+Controller SIGKILL does not cancel the external deadline; worker reboot removes the runtime
+boot-trigger suppression and activates persistent restoration. The guard stops only run-owned
+probe units during draining. Its original `state.json`, `guard.py`, ownership file and authority
+directories are root-owned and private (`0700`); probe profiles and processes belong to `ubuntu`,
+which cannot rewrite the restoration authority.
+
 Worker unavailability delays restoration until it returns; permanent disk loss, broken systemd,
-changed service definitions or unavailable permissions cannot be guaranteed. Unverified recovery
-retains the controller lock and fails rather than reporting success. There is no manual dispatcher
-restart requirement. An interrupted lock remains invalid evidence even after automatic restoration.
+changed service definitions or unavailable permissions cannot be guaranteed. Unverified restoration
+or cleanup retains the controller lock and fails rather than reporting success. There is no manual
+dispatcher restart requirement. An interrupted experiment remains invalid evidence even after
+automatic restoration.
 
 ```bash
 node scripts/csd-page-tamper.mjs status --receipt-dir /data/robin-GIT/csd-canary-receipts
 ```
+
+### Recover an interrupted canary without starting an experiment
+
+Use `recover-only` with the normal required reviewed configuration and environment-only
+authentication. Before running the command, set `AWS_PROFILE`, `AWS_REGION`, `XCSH_CSD_AWS_ACCOUNT`,
+`XCSH_CSD_TERRAFORM_DIR`, `XCSH_CSD_TRAFFIC_GENERATOR_TERRAFORM_DIR`, `XCSH_API_URL`,
+`XCSH_API_TOKEN`, `XCSH_NAMESPACE` and `XCSH_LB_NAME` to the reviewed deployment values described
+above. Keep the target configuration in `XCSH_CSD_PAGE_TAMPER_TARGET` when overriding the normal
+payment endpoint. Both Terraform roots must already be initialized; the original worker must be
+reachable with the required SSM and root permissions. Do not supply canary-only browser, placement,
+header or CDP flags.
+
+```bash
+node scripts/csd-page-tamper.mjs recover-only --receipt-dir '<RECEIPT_DIRECTORY>'
+```
+
+With no lock, this command returns a successful no-op without contacting the deployment or
+starting traffic. For an interrupted canary, it verifies the original worker/run ownership,
+restores dispatch and verifies owned cleanup, then stops. It never starts a fresh worker,
+reservation, baseline or canary. Keep `active.lock` until restoration, cleanup and recovery
+evidence persistence are verified; do not unlink it to bypass a failure.
+
+Missing original snapshot authority — including a historical `originalstate.json` or the current
+guard's `state.json` — cannot be reconstructed from the currently blocked runtime. Missing guard
+authority is likewise not permission to replace it. Only **preexisting**, root-owned, private,
+authoritative evidence from an independent verifier can support absent-state recovery. Do not
+fabricate that evidence, self-attest restoration, or guess original enabled/active states.
+
+The reservation contract in `scripts/lib/csd-page-tamper-reservation.mjs` uses
+`/var/lib/xcsh-csd-reservation/<RUN_ID>/restore-evidence.json`, contract
+`xcsh-csd-restore-evidence-v1`, with `externally_verified: true` and the exact original `reservation`
+snapshot at `phase: complete`. It binds `run_id`, service/timer identity, original states and
+service `Type`/`RemainAfterExit`. Replay still checks current durable dispatch and run-owned cleanup.
+Completed reservation cleanup replay uses the private parent evidence file
+`/var/lib/xcsh-csd-reservation/<RUN_ID>.restore-evidence.json` and additionally requires
+`cleanup_complete: true` plus absence of the owner, guard units and override.
+
+The controller independently verifies restoration before persisting root-private
+`/var/lib/xcsh-csd-recovery/<RUN_ID>/verified.json`. This record binds the original worker and
+snapshot and supports persistence retries after reservation cleanup; it is not a replacement
+snapshot generated from a failed guard. Retries recheck durable state and cleanup. These evidence
+sources have distinct contracts, not interchangeable receipts.
+
+The historical local interrupted receipt remains untouched and unrecovered by this change.
+If its original ownership cannot be established, recovery is **blocked**; preserve its lock.
+Do not treat that historical receipt as a new canary result.
 
 Linux fixture verification uses `XCSH_CSD_LINUX_FIXTURES=1 node --test tests/test-csd-page-tamper.mjs`.
 It exercises isolated service/timer states, normal release, abort, SIGKILL/deadline and installed
@@ -1389,9 +1447,11 @@ boot-trigger execution, plus a local data-page headed Chrome probe. Boot-trigger
 an already-running fixture host is not evidence of a physical host reboot. No live endpoint,
 production pause or selector attack is part of those tests.
 
-Outcomes remain separate: `MODIFIED_ONLY`, `COMPROMISED`, `NO_ALERT_WITHIN_WINDOW`, and
-`INVALID_TEST`. Candidate headers are not an F5 support list. No result for this new mode is
-claimed, and prior `NO_ALERT_WITHIN_WINDOW` evidence is unchanged.
+Linux fixture proof is not production health or restoration proof. The canary remains
+**NOT_TESTED** for this recovery change: no new valid baseline, tampering or alert-efficacy result
+is claimed. Outcomes remain separate: `MODIFIED_ONLY`, `COMPROMISED`, `NO_ALERT_WITHIN_WINDOW`,
+and `INVALID_TEST`. Candidate headers are not an F5 support list. Prior historical
+`NO_ALERT_WITHIN_WINDOW` evidence is unchanged.
 
 ### Recorded live result: 2026-09-25/26
 

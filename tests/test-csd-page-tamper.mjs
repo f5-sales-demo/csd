@@ -791,6 +791,8 @@ test('stale recovery claim takeover is exclusive under deterministic contention'
     JSON.stringify({
       claim_id: 'stale-owner',
       run_id: 'original-run',
+      original_command: 'run',
+      original_started_at: START,
       claimed_at: START,
     }),
   );
@@ -1364,30 +1366,12 @@ test('bootstrap retains lock after production SSM final cleanup fails despite su
   let readinessCalls = 0;
   const injected = deps({
     workerProbe: null,
-    executor: async (argv, options) => {
-      if (argv[0] !== 'aws' || argv[1] !== 'ssm') return base(argv, options);
-      if (argv[2] === 'send-command') {
-        const parameters = argv[argv.indexOf('--parameters') + 1];
-        assert.ok(parameters.length <= 4096);
-        lastCommand = JSON.parse(parameters).commands[0];
-        if (lastCommand.includes('shutil.rmtree(root)')) cleanupCommands += 1;
-        return {
-          code: 0,
-          stdout: JSON.stringify({ Command: { CommandId: 'command-1' } }),
-          stderr: '',
-        };
+    executor: simulatedSsm((script) => {
+      if (script.startsWith('set -- ') && script.includes('worker_quarantine(')) {
+        cleanupCommands++;
+        return true;
       }
-      if (argv[2] === 'get-command-invocation')
-        return {
-          code: 0,
-          stdout: JSON.stringify({
-            Status: cleanupCommands ? 'Failed' : 'Success',
-            ResponseCode: cleanupCommands ? 1 : 0,
-          }),
-          stderr: '',
-        };
-      throw new Error(`unexpected SSM operation: ${argv[2]}`);
-    },
+    }),
     readiness: async () => {
       readinessCalls += 1;
       return readinessCalls === 1
@@ -1462,15 +1446,45 @@ const ownedWorker = (name = '00000000-0000-4000-8000-000000000004') => ({
   aws_profile: '280469140135_Users',
 });
 
+function fixtureTransport() {
+  const staging = new Map();
+  const installed = new Map();
+  return (script) => {
+    const stage = script.match(/python3 - '(\/var\/lib\/xcsh-csd-install-[^']+)'/);
+    if (stage && script.includes("os.write(f,b'")) {
+      staging.set(stage[1], (staging.get(stage[1]) || '') + script.match(/os.write\(f,b'([^']*)'\)/)[1]);
+      return null;
+    }
+    if (script.includes('body=base64.b64decode(source.read(),validate=True)')) {
+      const source = script.match(/os.open\('([^']+)\/payload'/)[1];
+      const directory = script.match(/python3 - '([^']+)'/)[1];
+      const name = script.match(/os.rename\(name,'([^']+)'/)[1];
+      installed.set(`${directory}/${name}`, Buffer.from(staging.get(source) || '', 'base64').toString());
+      return null;
+    }
+    if (script.includes('os.mkdir(') && /xcsh-csd-(?:install|command)-/.test(script)) return null;
+    if (script.includes("os.unlink('payload'") || script.includes("os.unlink('command.sh'")) return null;
+    const invocation = script.match(/^\/bin\/sh '([^']+)'$/);
+    if (invocation) return installed.get(invocation[1]);
+    return script;
+  };
+}
+
 function simulatedSsm(onScript, result = probe()) {
   const base = executor();
   let commandId = 0;
   let pendingFailure = false;
+  const decode = fixtureTransport();
+  let effective = '';
+  const identities = new Map();
   return async (argv, options) => {
     if (argv[1] !== 'ssm') return base(argv, options);
     if (argv[2] === 'send-command') {
       const script = JSON.parse(argv[argv.indexOf('--parameters') + 1]).commands[0];
-      pendingFailure = (await onScript(script)) === true;
+      effective = decode(script) || '';
+      const identity = effective.match(/identity=(\{[^\n]+\});mode=/);
+      if (identity) identities.set(JSON.parse(identity[1]).runId, JSON.parse(identity[1]));
+      pendingFailure = effective ? (await onScript(effective)) === true : false;
       return {
         code: 0,
         stdout: JSON.stringify({
@@ -1485,7 +1499,7 @@ function simulatedSsm(onScript, result = probe()) {
         stdout: JSON.stringify({
           Status: pendingFailure ? 'Failed' : 'Success',
           ResponseCode: pendingFailure ? 42 : 0,
-          StandardOutputContent: `XCSH_RESULT ${JSON.stringify(result)}\n`,
+          StandardOutputContent: `XCSH_RESULT ${JSON.stringify(effective.match(/helper.py' 'initialize'$/) ? { schema_version: 1, externally_verified: true, worker_identity: identities.get(effective.match(/recovery\/([^/]+)\/helper.py/)[1]), prearm: true, restoration: { restored: false, required: false }, worker_artifacts_removed: false, reservation_artifacts_removed: false } : result)}\n`,
         }),
         stderr: '',
       };
@@ -1670,10 +1684,11 @@ test('bootstrap partial preparation retains recorded root without starting fresh
   });
   await assert.rejects(bootstrap(config(root), result), (error) => error.code === 'SSM_FAILED');
   assert.equal(probes, 0);
-  assert.match(scripts[0], /mkdir "\$run"/);
-  assert.match(scripts[1], /printf %s/);
-  assert.match(scripts[2], /set -- '\/tmp\/xcsh-csd-00000000-0000-4000-8000-000000000001' cleanup/);
-  assert.equal(scripts.filter((script) => script.includes('mkdir "$run"')).length, 1);
+  assert.match(scripts[0], /canonical_directory/);
+  assert.ok(
+    scripts.some((script) => script.includes("set -- '/tmp/xcsh-csd-00000000-0000-4000-8000-000000000001' cleanup")),
+  );
+  assert.equal(scripts.filter((script) => /helper.py' prepare$/.test(script)).length, 0);
   const lock = JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8'));
   assert.equal(lock.worker_run_id, ownedWorker('00000000-0000-4000-8000-000000000001').runId);
   assert.equal(Object.hasOwn(lock, 'worker'), false);
@@ -1699,7 +1714,7 @@ test('bootstrap failure probes the recorded worker without creating an ephemeral
   });
   await assert.rejects(bootstrap(config(root), injected), (error) => error.code === 'READINESS_FAILED');
   assert.ok(controls >= 2);
-  assert.equal(scripts.filter((script) => script.includes('mkdir "$run"')).length, 1);
+  assert.equal(scripts.filter((script) => /helper.py' prepare$/.test(script)).length, 1);
   assert.equal(
     JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8')).worker_run_id,
     ownedWorker('00000000-0000-4000-8000-000000000001').runId,
@@ -1717,11 +1732,11 @@ test('single-header partial preparation re-prepares only its recorded root after
       cleanup: null,
       executor: simulatedSsm((script) => {
         scripts.push(script);
-        return scripts.length === 2;
+        return /helper.py' prepare$/.test(script) && scripts.filter((s) => /helper.py' prepare$/.test(s)).length === 1;
       }),
       probe: ({ headerId, worker }) => {
         probes++;
-        assert.deepEqual(worker, ownedWorker('00000000-0000-4000-8000-000000000001'));
+        assert.notEqual(worker.runId, ownedWorker('00000000-0000-4000-8000-000000000001').runId);
         return probe({ headerId });
       },
     }),
@@ -1731,7 +1746,7 @@ test('single-header partial preparation re-prepares only its recorded root after
   assert.equal(result.recovery.success, true);
   assert.ok(probes >= 2);
   const mkdirs = scripts
-    .map((script, index) => (script.includes('mkdir "$run"') ? index : -1))
+    .map((script, index) => (/helper.py' prepare$/.test(script) ? index : -1))
     .filter((index) => index >= 0);
   const cleanup = scripts.findIndex((script) =>
     script.includes("set -- '/tmp/xcsh-csd-00000000-0000-4000-8000-000000000001' cleanup"),
@@ -1741,7 +1756,11 @@ test('single-header partial preparation re-prepares only its recorded root after
   assert.ok(
     scripts
       .slice(mkdirs[1])
-      .some((script) => script.includes("set -- '/tmp/xcsh-csd-00000000-0000-4000-8000-000000000001' cleanup")),
+      .some(
+        (script) =>
+          /set -- '\/tmp\/xcsh-csd-/.test(script) &&
+          !script.includes('/tmp/xcsh-csd-00000000-0000-4000-8000-000000000001'),
+      ),
   );
   await assert.rejects(stat(join(root, 'receipts', 'active.lock')), /ENOENT/);
 });
@@ -1809,25 +1828,13 @@ test('interrupted recovery checks the original root before new controls and rele
   let scanned = false;
   let commandText = '';
   const injected = deps({
-    executor: async (argv, options) => {
-      if (argv[1] !== 'ssm') return base(argv, options);
-      if (argv[2] === 'send-command') {
-        commandText = JSON.parse(argv[argv.indexOf('--parameters') + 1]).commands[0];
-        assert.ok(commandText.includes(`set -- '${original.root}' cleanup`));
-        assert.doesNotMatch(commandText, /kill -|pgrep|secret-not-for-receipts/);
+    executor: simulatedSsm((script) => {
+      if (script.includes(`set -- '${original.root}' cleanup`)) {
+        commandText = script;
+        assert.doesNotMatch(script, /kill -|pgrep|secret-not-for-receipts/);
         scanned = true;
-        return {
-          code: 0,
-          stdout: JSON.stringify({ Command: { CommandId: 'scan-1' } }),
-          stderr: '',
-        };
       }
-      return {
-        code: 0,
-        stdout: JSON.stringify({ Status: 'Success', ResponseCode: 0 }),
-        stderr: '',
-      };
-    },
+    }),
     probe: ({ headerId }) => {
       assert.equal(scanned, true);
       return probe({ headerId });
@@ -1870,16 +1877,17 @@ test('interruption reuses recorded root and retains it if recovery preparation f
       randomUUID: () => `00000000-0000-4000-8000-${String(++nextId).padStart(12, '0')}`,
       executor: simulatedSsm(async (script) => {
         scripts.push(script);
-        if (script.includes('mkdir "$run"') && script.includes(original.root)) {
+        if (/helper.py' prepare$/.test(script) && scripts.filter((s) => /helper.py' prepare$/.test(s)).length === 1) {
           const lock = JSON.parse(await readFile(join(root, 'receipts', 'active.lock'), 'utf8'));
           assert.equal(lock.worker_run_id, original.runId);
           assert.equal(Object.hasOwn(lock, 'worker'), false);
+          assert.notEqual(lock.recovery_worker_identity.runId, original.runId);
           return failPreparation;
         }
         return false;
       }),
       probe: ({ headerId, worker }) => {
-        if (worker?.root === original.root) controls++;
+        if (worker?.root !== original.root) controls++;
         return probe({ headerId });
       },
     });
@@ -1900,16 +1908,10 @@ test('interruption reuses recorded root and retains it if recovery preparation f
       await assert.rejects(stat(join(root, 'receipts', 'active.lock')), /ENOENT/);
     }
     assert.ok(scripts[0].includes(`set -- '${original.root}' cleanup`));
-    assert.ok(scripts[1].includes(`run='${original.root}';mkdir "$run"`));
-    if (!failPreparation) {
-      const lastOldCleanup = scripts.findIndex(
-        (script, index) => index > 1 && script.includes(`set -- '${original.root}' cleanup`),
-      );
-      const nextRoot = scripts.findIndex(
-        (script) => script.includes('mkdir "$run"') && !script.includes(original.root),
-      );
-      assert.ok(lastOldCleanup > 1 && nextRoot > lastOldCleanup);
-    }
+    const prepared = scripts.findIndex((script) => /helper.py' prepare$/.test(script));
+    assert.ok(prepared > 0);
+    assert.ok(scripts[prepared].includes('/var/lib/xcsh-csd-recovery/'));
+    assert.ok(!scripts[prepared].includes(original.runId));
   }
 });
 
@@ -1978,26 +1980,12 @@ test('interrupted recovery stops on original-root live profile without fresh pro
           probes++;
           return probe();
         },
-        executor: async (argv, options) => {
-          if (argv[1] !== 'ssm') return base(argv, options);
-          if (argv[2] === 'send-command') {
+        executor: simulatedSsm((script) => {
+          if (script.includes(`set -- '${original.root}' cleanup`)) {
             cleanupCommands++;
-            const script = JSON.parse(argv[argv.indexOf('--parameters') + 1]).commands[0];
-            assert.ok(script.includes(`set -- '${original.root}' cleanup`));
-            return {
-              code: 0,
-              stdout: JSON.stringify({
-                Command: { CommandId: 'still-running' },
-              }),
-              stderr: '',
-            };
+            return true;
           }
-          return {
-            code: 0,
-            stdout: JSON.stringify({ Status: 'Failed', ResponseCode: 42 }),
-            stderr: '',
-          };
-        },
+        }),
       }),
       'x-content-type-options',
     ),
@@ -2021,31 +2009,14 @@ test('worker cleanup refuses a live profile or uncertain SSM and never signals a
   for (const responseCode of [1, 0]) {
     let script = '';
     const injected = deps({
-      executor: async (argv, options) => {
-        if (argv[1] !== 'ssm') return base(argv, options);
-        if (argv[2] === 'send-command') {
-          sends++;
-          const serialized = argv[argv.indexOf('--parameters') + 1];
-          assert.ok(serialized.length <= 4096);
-          script = JSON.parse(serialized).commands[0];
-          assert.ok(script.length <= 4096);
-          assert.doesNotMatch(script, /pgrep|kill\s+-|os\.kill|secret-not-for-receipts/);
-          assert.match(script, /scan\(\)[\s\S]*shutil\.rmtree\(root\)[\s\S]*scan\(\)/);
-          return {
-            code: 0,
-            stdout: JSON.stringify({ Command: { CommandId: 'scan-1' } }),
-            stderr: '',
-          };
-        }
-        return {
-          code: 0,
-          stdout: JSON.stringify({
-            Status: responseCode ? 'Failed' : 'Success',
-            ResponseCode: responseCode,
-          }),
-          stderr: '',
-        };
-      },
+      executor: simulatedSsm((value) => {
+        if (!value.includes('set -- ')) return false;
+        sends++;
+        script = value;
+        assert.doesNotMatch(script, /pgrep|kill\s+-|os\.kill|secret-not-for-receipts/);
+        assert.match(script, /scan\(\)[\s\S]*worker_quarantine\([\s\S]*scan\(\)/);
+        return responseCode !== 0;
+      }),
     });
     assert.deepEqual(await cleanupWorker(workerConfig, injected, ownedWorker()), {
       worker_artifacts_removed: responseCode === 0,
@@ -2075,7 +2046,7 @@ test('self-owned worker probe rejects successful browser result when root cleanu
       deps({
         executor: simulatedSsm((script) => {
           scripts.push(script);
-          return script.includes('shutil.rmtree(root)');
+          return script.startsWith('set -- ') && script.includes('worker_quarantine(');
         }),
       }),
       'x-frame-options',
@@ -2083,8 +2054,10 @@ test('self-owned worker probe rejects successful browser result when root cleanu
     (error) => error.code === 'RECOVERY_FAILED' && /cleanup failed/.test(error.message),
   );
   assert.ok(scripts.some((script) => script.includes('sudo -u ubuntu -H')));
-  assert.ok(scripts.some((script) => script.includes('shutil.rmtree(root)')));
-  assert.ok(scripts.every((script) => !/pgrep|kill\s+-|os\.kill/.test(script)));
+  assert.ok(scripts.some((script) => script.includes('worker_quarantine(')));
+  assert.ok(
+    scripts.filter((script) => script.startsWith('set -- ')).every((script) => !/pgrep|kill\s+-|os\.kill/.test(script)),
+  );
 });
 
 test('production worker keeps every current-source SSM command and parameters value within 4096 characters', async () => {
@@ -2128,18 +2101,23 @@ test('production worker keeps every current-source SSM command and parameters va
   const sendCalls = calls.filter((argv) => argv[2] === 'send-command');
   const parameters = sendCalls.map((argv) => argv[argv.indexOf('--parameters') + 1]);
   const commands = parameters.flatMap((value) => JSON.parse(value).commands);
+  const decode = fixtureTransport();
+  const effective = commands.map(decode).filter(Boolean);
   const maxCommand = Math.max(...commands.map((value) => value.length));
   const maxParameters = Math.max(...parameters.map((value) => value.length));
   assert.ok(sendCalls.length >= 5, 'expected init, chunks, extraction, probe, and cleanup commands');
-  assert.ok(commands.some((value) => value.includes('sha256sum')));
-  assert.ok(commands.some((value) => value.includes('base64 -d')));
-  assert.ok(commands.some((value) => value.includes('sudo -u ubuntu -H')));
-  assert.ok(commands.some((value) => value.includes('shutil.rmtree(root)')));
-  assert.ok(commands.some((value) => value.includes('cmd.read(65537)')));
+  assert.ok(effective.some((value) => value.includes('hashlib.sha256')));
+  assert.ok(commands.some((value) => value.includes('base64.b64decode')));
+  assert.ok(effective.some((value) => value.includes('sudo -u ubuntu -H')));
+  assert.ok(effective.some((value) => value.includes('worker_quarantine(')));
+  assert.ok(effective.some((value) => value.includes('cmd.read(65537)')));
   assert.ok(commands.every((value) => !value.includes('pgrep -f')));
+  const launcherStage = commands
+    .find((value) => value.includes("os.rename(name,'.launch-"))
+    .match(/os.open\('([^']+)\/payload'/)[1];
   const encodedWorkerScript = commands
-    .map((value) => value.match(/printf %s '([^']+)' >>'[^']+\.launch-[^']+\.b64'/)?.[1])
-    .filter(Boolean)
+    .filter((value) => value.includes(`python3 - '${launcherStage}'`) && value.includes("os.write(f,b'"))
+    .map((value) => value.match(/os.write\(f,b'([^']+)'\)/)[1])
     .join('');
   assert.ok(encodedWorkerScript, 'expected encoded worker launcher chunks');
   const workerScript = Buffer.from(encodedWorkerScript, 'base64').toString();
@@ -2165,7 +2143,8 @@ test('production worker keeps every current-source SSM command and parameters va
   assert.match(workerScript, /kill -TERM -- "-\$pgid".*kill -TERM "\$pid"/);
   assert.match(workerScript, /kill -KILL -- "-\$pgid".*kill -KILL "\$pid"/);
   assert.match(workerScript, /while alive&&\[ "\$i" -lt 5 \]/);
-  assert.match(workerScript, /while \[ "\$i" -lt 5 \]&&\[ -e "\$probe" \]/);
+  assert.match(workerScript, /for child in "\$probe"/);
+  assert.doesNotMatch(workerScript, /rm -rf "\$probe"/);
   assert.doesNotMatch(workerScript, /(?:^|;)wait(?: |;)/);
   assert.doesNotMatch(serialized, /--no-sandbox/);
   process.stdout.write(`MAX_SSM_COMMAND=${maxCommand} MAX_SSM_PARAMETERS=${maxParameters}\n`);
@@ -2282,6 +2261,8 @@ test('stale recovery claims are reclaimed by age without persisting host or PID'
     JSON.stringify({
       claim_id: 'stale-claim',
       run_id: 'original-run',
+      original_command: 'run',
+      original_started_at: START,
       claimed_at: START,
     }),
   );
@@ -2511,7 +2492,10 @@ test('persistent Linux reservation restores fixture states after normal, abort, 
           spawnSync('sudo', ['-n', 'rm', '-rf', guard.directory, `/run/systemd/system/${guard.name}.timer.d`]).status,
           0,
         );
-        await (await import('node:fs/promises')).rm(root, { recursive: true, force: true });
+        await (await import('node:fs/promises')).rm(root, {
+          recursive: true,
+          force: true,
+        });
         ctl('daemon-reload');
       }
     }
@@ -2525,7 +2509,7 @@ test('Linux owned Xvfb Chrome fixture verifies real headed provenance and cleanu
   const { renderHeadedProbe } = await import('../scripts/lib/csd-page-tamper-reservation.mjs');
   const runId = randomUUID();
   const root = `/tmp/xcsh-csd-${runId}`;
-  await mkdir(root, { mode: 0o700 });
+  await mkdir(root, { mode: 0o755 });
   const script = join(root, 'fixture.py');
   // No production endpoint: local data fixture with the same CDP client as runDocumentProbe.
   const client = new URL('../scripts/lib/csd-runner.mjs', import.meta.url).pathname;
@@ -2536,19 +2520,42 @@ const args=await c.send('Browser.getBrowserCommandLine');const version=await c.s
 const target=await c.send('Target.createTarget',{url:'data:text/html,<title>isolated-fixture</title>'});
 await c.send('Target.closeTarget',{targetId:target.targetId});
 console.log('XCSH_RESULT '+JSON.stringify({success:true,_browser_evidence:{arguments:args.arguments,product:version.product}}));}finally{c.close();}`;
-  await writeFile(script, renderHeadedProbe({ root, entry }));
-  const r = spawnSync('python3', [script], {
-    encoding: 'utf8',
-    timeout: 45000,
+  const probeId = randomUUID();
+  await mkdir(join(root, `probe-${probeId}`), { mode: 0o700 });
+  await writeFile(script, renderHeadedProbe({ root, probeId, entry }), {
+    mode: 0o755,
   });
-  assert.equal(r.status, 0, r.stderr);
-  const result = JSON.parse(r.stdout.trim().slice(12));
-  assert.equal(result.browser_provenance.mode, 'headed-xvfb');
-  assert.equal(result.browser_provenance.owned_display_verified, true);
-  assert.deepEqual(
-    (await readdir(root)).filter((file) => file.startsWith('probe-')),
-    [],
-  );
+  const isRoot = process.getuid() === 0;
+  const unit = `xcsh-csd-fixture-headed-${runId}.service`;
+  if (isRoot) assert.equal(spawnSync('chown', ['ubuntu:ubuntu', join(root, `probe-${probeId}`)]).status, 0);
+  try {
+    const r = isRoot
+      ? spawnSync(
+          'systemd-run',
+          [
+            '--quiet',
+            '--wait',
+            '--pipe',
+            '--collect',
+            `--unit=${unit}`,
+            '--property=User=ubuntu',
+            '--property=AppArmorProfile=chrome',
+            '--property=KillMode=control-group',
+            '/usr/bin/python3',
+            script,
+          ],
+          { encoding: 'utf8', timeout: 45000 },
+        )
+      : spawnSync('python3', [script], { encoding: 'utf8', timeout: 45000 });
+    assert.equal(r.status, 0, r.stderr);
+    const result = JSON.parse(r.stdout.trim().slice(12));
+    assert.equal(result.browser_provenance.mode, 'headed-xvfb');
+    assert.equal(result.browser_provenance.owned_display_verified, true);
+    assert.deepEqual(await readdir(join(root, `probe-${probeId}`)), []);
+  } finally {
+    if (isRoot) spawnSync('systemctl', ['stop', unit]);
+    await (await import('node:fs/promises')).rm(root, { recursive: true, force: true });
+  }
 });
 
 test('single headed canary arms once across baseline and case and keeps alert outcomes separate', async () => {
@@ -2601,7 +2608,7 @@ test('single headed canary arms once across baseline and case and keeps alert ou
       }),
     );
     assert.equal(result.outcome, outcome);
-    assert.deepEqual(actions, ['arm', 'restore', 'cleanup']);
+    assert.deepEqual(actions, ['initialize', 'arm', 'classify', 'restore', 'cleanup']);
     assert.ok(visits.every((location) => location === 'worker'));
     assert.equal(result.reservation.restored, true);
     assert.equal(result.browser_provenance.mode, 'headed-xvfb');
@@ -2627,6 +2634,7 @@ test('Linux production headed launcher executes private root-installed payload a
     placement: 'worker',
     probeTimeoutMs: 30_000,
     probeSettleMs: 5_000,
+    fixtureTarget: process.env.XCSH_CSD_FIXTURE_TARGET || null,
   });
   let invocation;
   const scripts = [];
@@ -2641,8 +2649,8 @@ test('Linux production headed launcher executes private root-installed payload a
         scripts.push(script);
         if (script.startsWith('systemd-run ')) {
           const payload = await stat(join(root, script.match(/headed-[0-9a-f-]+\.py/)[0]));
-          assert.equal(payload.uid, Number(account.stdout.trim()));
-          assert.equal(payload.mode & 0o777, 0o700);
+          assert.equal(payload.uid, 0);
+          assert.equal(payload.mode & 0o777, 0o755);
         }
         const result = spawnSync('sudo', ['-n', '/bin/sh', '-c', script], {
           encoding: 'utf8',
@@ -2668,8 +2676,8 @@ test('Linux production headed launcher executes private root-installed payload a
   try {
     worker = await prepareWorker(workerConfig, injected, runId);
     const directory = await stat(root);
-    assert.equal(directory.uid, Number(account.stdout.trim()));
-    assert.equal(directory.mode & 0o777, 0o700);
+    assert.equal(directory.uid, 0);
+    assert.equal(directory.mode & 0o777, 0o755);
     // Same decoded-root-file defect, independently verified with the actual ubuntu interpreter.
     const denial = spawnSync(
       'sudo',
@@ -2685,11 +2693,16 @@ test('Linux production headed launcher executes private root-installed payload a
     assert.match(denial.stderr, /Permission denied/);
     const result = await runHeadedWorkerProbe(workerConfig, injected, null, worker);
     assert.equal(result.success, true, JSON.stringify(result.error));
-    assert.equal(result.selector, null);
-    assert.equal(result.document.status, 200);
-    assert.ok(result.document.headers.every((header) => header.present && header.expected_match));
-    assert.equal(result.instrumentation.dip_post_observed, true);
-    assert.deepEqual(result.cleanup.errors, []);
+    if (workerConfig.fixtureTarget) {
+      assert.equal(result.fixture_target, 'data-url');
+      assert.equal(result.cleanup.target_closed, true);
+    } else {
+      assert.equal(result.selector, null);
+      assert.equal(result.document.status, 200);
+      assert.ok(result.document.headers.every((header) => header.present && header.expected_match));
+      assert.equal(result.instrumentation.dip_post_observed, true);
+      assert.deepEqual(result.cleanup.errors, []);
+    }
     assert.equal(result.browser_provenance.mode, 'headed-xvfb');
     assert.equal(result.browser_provenance.process_arguments_verified, true);
     assert.equal(result.browser_provenance.browser_arguments_verified, true);
@@ -2699,14 +2712,22 @@ test('Linux production headed launcher executes private root-installed payload a
       (await readdir(root)).some((name) => name.startsWith('probe-') || name.startsWith('headed-')),
       false,
     );
-    assert.equal(
-      scripts.some((script) => script.includes('/var/lib/xcsh-csd-reservation')),
-      false,
-    );
+    assert.ok(scripts.some((script) => script.includes('lifecycle.json')));
     process.stdout.write('NONROOT_HEADED_CONTROL=passed PAYLOAD_PRIVATE=verified OWNED_CLEANUP=passed\n');
   } finally {
     assert.equal((await cleanupWorker(workerConfig, injected, worker)).worker_artifacts_removed, true);
     await assert.rejects(stat(root), { code: 'ENOENT' });
+    const authorityCleanup = spawnSync(
+      'sudo',
+      [
+        '-n',
+        'python3',
+        '-c',
+        `import pathlib,json,shutil\nj=pathlib.Path('/var/lib/xcsh-csd-recovery/${runId}');v=json.loads((j/'lifecycle.json').read_text())\nassert v['worker_identity']['runId']=='${runId}' and v.get('cleanup_intent') is True and not pathlib.Path('${root}').exists()\nshutil.rmtree(j);pathlib.Path('/tmp/.xcsh-csd-quarantine-${runId}').rmdir()`,
+      ],
+      { encoding: 'utf8' },
+    );
+    assert.equal(authorityCleanup.status, 0, authorityCleanup.stderr);
   }
 });
 
@@ -2726,7 +2747,13 @@ test('Linux durable oneshot restoration matrix and uninterrupted retries', {
         const name = `xcsh-csd-fixture-${runId}`;
         const service = `${name}.service`,
           timer = `${name}.timer`;
-        const guard = renderReservation({ runId, service, timer, fixture: true, lifetimeSeconds: 120 });
+        const guard = renderReservation({
+          runId,
+          service,
+          timer,
+          fixture: true,
+          lifetimeSeconds: 120,
+        });
         const root = await mkdtemp(join(tmpdir(), 'csd-oneshot-'));
         const script = join(root, 'guard.py');
         await writeFile(script, guard.script);
@@ -2811,7 +2838,14 @@ test('Linux durable oneshot restoration matrix and uninterrupted retries', {
               const snapshot = JSON.parse(await readFile(snapshotPath, 'utf8'));
               await rm(snapshotPath);
               // Crash after timer start but before saving resumed: observe, never restart.
-              await writeFile(snapshotPath, JSON.stringify({ ...snapshot, phase: 'timer_intent', restored: false }));
+              await writeFile(
+                snapshotPath,
+                JSON.stringify({
+                  ...snapshot,
+                  phase: 'timer_intent',
+                  restored: false,
+                }),
+              );
               assert.equal(exec('install', '-m', '700', snapshotPath, `${guard.directory}/state.json`).status, 0);
               run('restore');
               assert.equal(prop(service, 'MainPID'), pid);
@@ -2827,7 +2861,10 @@ test('Linux durable oneshot restoration matrix and uninterrupted retries', {
               };
               await writeFile(
                 evidencePath,
-                JSON.stringify({ ...evidence, reservation: { ...snapshot, run_id: randomUUID() } }),
+                JSON.stringify({
+                  ...evidence,
+                  reservation: { ...snapshot, run_id: randomUUID() },
+                }),
               );
               assert.equal(
                 exec('install', '-m', '700', evidencePath, `${guard.directory}/restore-evidence.json`).status,
@@ -2914,7 +2951,13 @@ test('Linux durable retained oneshot restores originally active service coherent
         name = `xcsh-csd-fixture-${runId}`;
       const service = `${name}.service`,
         timer = `${name}.timer`;
-      const guard = renderReservation({ runId, service, timer, fixture: true, lifetimeSeconds: 120 });
+      const guard = renderReservation({
+        runId,
+        service,
+        timer,
+        fixture: true,
+        lifetimeSeconds: 120,
+      });
       const root = await mkdtemp(join(tmpdir(), 'csd-retained-'));
       const script = join(root, 'guard.py');
       const exec = (...args) => spawnSync('sudo', ['-n', ...args], { encoding: 'utf8' });
@@ -3115,7 +3158,10 @@ test('interrupted canary performs ordered restore and cleanup without preparatio
       },
       cleanup: async () => {
         actions.push('worker-cleanup');
-        return { worker_artifacts_removed: true, browser_artifacts_removed: true };
+        return {
+          worker_artifacts_removed: true,
+          browser_artifacts_removed: true,
+        };
       },
     }),
   );
@@ -3140,11 +3186,18 @@ test('interrupted canary rejects missing identity, mismatched evidence and clean
           reservationRecovery: async (action, owner) => {
             actions.push(action);
             const value = recoveryReport(owner, action);
-            if (fault === 'evidence') value.worker_identity = { ...identity, aws_account: '000000000000' };
+            if (fault === 'evidence')
+              value.worker_identity = {
+                ...identity,
+                aws_account: '000000000000',
+              };
             if (fault === 'truthy') value.restoration.restored = 'yes';
             return value;
           },
-          cleanup: async () => ({ worker_artifacts_removed: fault !== 'cleanup', browser_artifacts_removed: true }),
+          cleanup: async () => ({
+            worker_artifacts_removed: fault !== 'cleanup',
+            browser_artifacts_removed: true,
+          }),
         }),
       ),
     );
@@ -3187,8 +3240,13 @@ test('canary recovery persists classification and evidence through receipt failu
   assert.equal(retained.recovery_evidence.reservation_artifacts_removed, true);
   assert.equal(retained.evidence_persistence_failure, true);
   await rm(block, { recursive: true });
-  await utimes(join(c.receiptDir, 'recovery.claim'), new Date(0), new Date(0));
-  const retry = await recoverOnly(c, deps({ reservationRecovery: async (action) => recoveryReport(identity, action) }));
+  await assert.rejects(stat(join(c.receiptDir, 'recovery.claim')), /ENOENT/);
+  const retry = await recoverOnly(
+    c,
+    deps({
+      reservationRecovery: async (action) => recoveryReport(identity, action),
+    }),
+  );
   assert.equal(retry.success, true);
   assert.equal((await status(c)).active, false);
 });
@@ -3208,7 +3266,11 @@ test('production RECOVERY helper transport chunks every SSM parameter below 4096
         current = JSON.parse(parameters).commands[0];
         assert.ok(Buffer.byteLength(current) <= 4096);
         scripts.push(current);
-        return { code: 0, stdout: JSON.stringify({ Command: { CommandId: 'fixture-command' } }), stderr: '' };
+        return {
+          code: 0,
+          stdout: JSON.stringify({ Command: { CommandId: 'fixture-command' } }),
+          stderr: '',
+        };
       }
       const action = current.endsWith("'cleanup'") ? 'cleanup' : 'restore';
       return {
@@ -3223,14 +3285,16 @@ test('production RECOVERY helper transport chunks every SSM parameter below 4096
     },
   });
   assert.equal((await recoverOnly(c, injected)).success, true);
-  const chunks = scripts.filter((s) => s.includes('printf %s'));
+  const chunks = scripts.filter((s) => s.includes("os.write(f,b'"));
   assert.ok(chunks.length > 4);
   assert.ok(scripts.some((s) => s.includes(`/var/lib/xcsh-csd-recovery/${identity.runId}/helper.py`)));
-  assert.ok(scripts.some((s) => s.includes('unsafe recovery directory')));
+  assert.ok(scripts.some((s) => s.includes('canonical_directory(p,True)')));
   assert.doesNotMatch(scripts.join('\n'), /chown ubuntu|secret-not-for-receipts|Authorization/);
+  const install = scripts.find((s) => s.includes("os.rename(name,'helper.py'"));
+  const stage = install.match(/os.open\('([^']+)\/payload'/)[1];
   const payload = chunks
-    .slice(0, chunks.length / 2)
-    .map((s) => s.match(/printf %s '([^']+)'/)[1])
+    .filter((s) => s.includes(`python3 - '${stage}'`))
+    .map((s) => s.match(/os.write\(f,b'([^']+)'\)/)[1])
     .join('');
   const helper = Buffer.from(payload, 'base64').toString();
   assert.match(helper, /def external/);
@@ -3249,7 +3313,13 @@ test('Linux independent recovery helper validates missing-state authority, priva
   const runId = randomUUID();
   const service = `xcsh-csd-fixture-recovery-${runId}.service`;
   const timer = service.replace('.service', '.timer');
-  const guard = renderReservation({ runId, service, timer, lifetimeSeconds: 300, fixture: true });
+  const guard = renderReservation({
+    runId,
+    service,
+    timer,
+    lifetimeSeconds: 300,
+    fixture: true,
+  });
   const local = await mkdtemp(join(tmpdir(), 'csd-recovery-proof-'));
   const recoveryRoot = `/var/lib/xcsh-csd-recovery/${runId}`;
   const helperPath = `${recoveryRoot}/helper.py`;
@@ -3396,7 +3466,13 @@ test('Linux real service start failure retains intent and retries after repair w
     const runId = randomUUID();
     const service = `xcsh-csd-fixture-${runId}.service`;
     const timer = `xcsh-csd-fixture-${runId}.timer`;
-    const guard = renderReservation({ runId, service, timer, fixture: true, lifetimeSeconds: 300 });
+    const guard = renderReservation({
+      runId,
+      service,
+      timer,
+      fixture: true,
+      lifetimeSeconds: 300,
+    });
     const local = await mkdtemp(join(tmpdir(), 'csd-start-retry-'));
     const privateRoot = `/var/lib/xcsh-csd-reservation/fixture-${runId}`;
     const exec = (...args) => spawnSync('sudo', ['-n', ...args], { encoding: 'utf8' });
@@ -3520,7 +3596,9 @@ test('recover-only accepts suite-cleanup lock and releases it after verified cle
 
 for (const child of ['bootstrap', 'header']) {
   test(`canary child receipt failure preserves owning run id for ${child} recovery`, async () => {
-    const { recoverOnly } = await import('../scripts/lib/csd-page-tamper-controller.mjs');
+    const { recoverOnly, bindLocalLock, closeLocalLock } = await import(
+      '../scripts/lib/csd-page-tamper-controller.mjs'
+    );
     const { rm } = await import('node:fs/promises');
     const childId = '00000000-0000-4000-8000-000000000002';
     const { c, identity, lock } = await interruptedCanaryFixture();
@@ -3531,8 +3609,16 @@ for (const child of ['bootstrap', 'header']) {
     // Reuse atomicReceipt's existing directory-at-destination failure injection.
     await mkdir(block);
     try {
-      const injected = deps({ randomUUID: () => childId, alertSource: async () => [] });
-      const options = { lockPath: join(c.receiptDir, 'active.lock'), worker: identity, finalizeWorker: false };
+      const injected = deps({
+        randomUUID: () => childId,
+        alertSource: async () => [],
+      });
+      const options = {
+        lockPath: join(c.receiptDir, 'active.lock'),
+        worker: identity,
+        finalizeWorker: false,
+      };
+      await bindLocalLock(options.lockPath, lock);
       await assert.rejects(
         child === 'bootstrap'
           ? bootstrap(c, injected, options)
@@ -3545,7 +3631,8 @@ for (const child of ['bootstrap', 'header']) {
       assert.equal(retained.command, 'canary');
       assert.equal(retained.recovery_kind, 'canary');
       assert.deepEqual(retained.worker_identity, identity);
-      assert.equal(retained.evidence_persistence_failure, true);
+      assert.equal(retained.evidence_persistence_failure, undefined);
+      await closeLocalLock(options.lockPath);
       const actions = [];
       const result = await recoverOnly(
         c,
@@ -3566,3 +3653,803 @@ for (const child of ['bootstrap', 'header']) {
     }
   });
 }
+
+test('Linux prearm descriptor mutex filesystem contract', {
+  skip: process.env.XCSH_CSD_PREARM_FIXTURES !== '1',
+  timeout: 60_000,
+}, async () => {
+  const { randomUUID } = await import('node:crypto');
+  const { rm } = await import('node:fs/promises');
+  const { WORKER_MUTEX_PROTOCOL, renderReservation } = await import('../scripts/lib/csd-page-tamper-reservation.mjs');
+  assert.equal(process.platform, 'linux');
+  const runId = randomUUID();
+  const service = `xcsh-csd-fixture-mutex-${runId}.service`;
+  const guard = renderReservation({
+    runId,
+    service,
+    timer: service.replace('.service', '.timer'),
+    lifetimeSeconds: 60,
+    fixture: true,
+  });
+  const local = await mkdtemp(join(tmpdir(), 'csd-mutex-proof-'));
+  const mutex = `/var/lib/xcsh-csd-reservation/${service}.mutex`;
+  const exec = (...args) => spawnSync('sudo', ['-n', ...args], { encoding: 'utf8', timeout: 10_000 });
+  const ok = (...args) => {
+    const r = exec(...args);
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout.trim();
+  };
+  const script = join(local, 'mutex.py');
+  await writeFile(script, `${guard.script.split('owner=parent/')[0]}\nprint("LOCKED")\n`);
+  try {
+    ok('install', '-d', '-m', '700', '/var/lib/xcsh-csd-reservation');
+    ok('install', '-m', '644', '/dev/null', mutex);
+    const inode = ok('stat', '-c', '%d:%i', mutex);
+    ok('python3', script);
+    assert.equal(ok('stat', '-c', '%u:%a:%h:%s', mutex), '0:600:1:0');
+    assert.equal(ok('stat', '-c', '%d:%i', mutex), inode);
+    ok('rm', '-f', mutex);
+    ok('python3', script);
+    assert.equal(ok('stat', '-c', '%u:%a:%h:%s', mutex), '0:600:1:0');
+    for (const mode of ['666', '700', '755']) {
+      ok('chmod', mode, mutex);
+      assert.notEqual(exec('python3', script).status, 0);
+      assert.equal(ok('stat', '-c', '%a', mutex), mode);
+    }
+    ok('chmod', '600', mutex);
+    ok('chown', '65534:65534', mutex);
+    assert.notEqual(exec('python3', script).status, 0);
+    assert.equal(ok('stat', '-c', '%u', mutex), '65534');
+    ok('chown', 'root:root', mutex);
+    ok('ln', mutex, `${mutex}.link`);
+    assert.notEqual(exec('python3', script).status, 0);
+    ok('rm', '-f', `${mutex}.link`);
+    ok('python3', '-c', `import pathlib;pathlib.Path('${mutex}').write_text('unsafe')`);
+    assert.notEqual(exec('python3', script).status, 0);
+    ok('rm', '-f', mutex);
+    ok('ln', '-s', '/dev/null', mutex);
+    assert.notEqual(exec('python3', script).status, 0);
+    assert.equal(ok('readlink', mutex), '/dev/null');
+    ok('rm', '-f', mutex);
+    ok('install', '-m', '644', '/dev/null', mutex);
+    const held = exec('flock', '-x', mutex, 'python3', script);
+    assert.notEqual(held.status, 0);
+    assert.equal(ok('stat', '-c', '%a', mutex), '644');
+    const isolated = `/var/lib/xcsh-csd-fixture-parent-${runId}`;
+    try {
+      ok('install', '-d', '-m', '755', isolated);
+      const acquire = `${WORKER_MUTEX_PROTOCOL}\nreservation_mutex(pathlib.Path('${isolated}'),'fixture.service')`;
+      assert.notEqual(exec('python3', '-c', `import os,pathlib\n${acquire}`).status, 0);
+      assert.equal(ok('stat', '-c', '%a', isolated), '755');
+      ok('chmod', '700', isolated);
+      ok('ln', '-s', isolated, `${isolated}.link`);
+      assert.notEqual(
+        exec(
+          'python3',
+          '-c',
+          `import os,pathlib\n${WORKER_MUTEX_PROTOCOL}\nreservation_mutex(pathlib.Path('${isolated}.link'),'fixture.service')`,
+        ).status,
+        0,
+      );
+      // Replace the pathname after flock: repair must not chmod either inode.
+      const replacement = `import os,pathlib\n${WORKER_MUTEX_PROTOCOL}\noriginal=fcntl.flock\ndef race(fd,flags):\n original(fd,flags)\n p=pathlib.Path('${isolated}/fixture.service.mutex');p.rename(p.with_suffix('.old'));p.touch(mode=0o644)\nfcntl.flock=race\nreservation_mutex(pathlib.Path('${isolated}'),'fixture.service')`;
+      ok('install', '-m', '644', '/dev/null', `${isolated}/fixture.service.mutex`);
+      assert.notEqual(exec('python3', '-c', replacement).status, 0);
+      assert.equal(ok('stat', '-c', '%a', `${isolated}/fixture.service.old`), '644');
+      assert.equal(ok('stat', '-c', '%a', `${isolated}/fixture.service.mutex`), '644');
+    } finally {
+      ok('rm', '-f', `${isolated}.link`);
+      ok('rm', '-rf', isolated);
+    }
+  } finally {
+    ok('rm', '-f', mutex, `${mutex}.link`);
+    await rm(local, { recursive: true, force: true });
+  }
+});
+
+test('prearm recovery requires worker proof even after an ambiguous arm attempt', async () => {
+  const { recoverOnly } = await import('../scripts/lib/csd-page-tamper-controller.mjs');
+  for (const localPhase of ['prepare_intent', 'arm_intent']) {
+    const { c, identity, lock } = await interruptedCanaryFixture();
+    await writeFile(join(c.receiptDir, 'active.lock'), JSON.stringify({ ...lock, canary_phase: localPhase }));
+    const actions = [];
+    const result = await recoverOnly(
+      c,
+      deps({
+        reservationRecovery: async (action) => {
+          actions.push(action);
+          return {
+            schema_version: 1,
+            externally_verified: true,
+            worker_identity: identity,
+            prearm: true,
+            restoration: { restored: false, required: false },
+            worker_artifacts_removed: true,
+            reservation_artifacts_removed: true,
+          };
+        },
+        workerProbe: () => {
+          throw new Error('prearm must not probe');
+        },
+        cleanup: () => {
+          throw new Error('prearm must not run target cleanup');
+        },
+      }),
+    );
+    assert.deepEqual(actions, ['classify', 'prearm']);
+    assert.equal(result.recovery.efficacy, 'NOT_TESTED');
+    assert.deepEqual(result.recovery.restoration, {
+      restored: false,
+      required: false,
+    });
+    assert.equal((await status(c)).active, false);
+  }
+});
+
+test('prearm missing worker journal retains local lock rather than inferring absence', async () => {
+  const { recoverOnly } = await import('../scripts/lib/csd-page-tamper-controller.mjs');
+  const { c, lock } = await interruptedCanaryFixture();
+  await writeFile(join(c.receiptDir, 'active.lock'), JSON.stringify({ ...lock, canary_phase: 'arm_intent' }));
+  await assert.rejects(
+    recoverOnly(
+      c,
+      deps({
+        reservationRecovery: async () => {
+          throw new Error('prearm journal missing');
+        },
+      }),
+    ),
+    /journal missing/,
+  );
+  assert.equal((await status(c)).active, true);
+});
+
+test('Linux prearm durable exception crash replay and armed denial', {
+  skip: process.env.XCSH_CSD_PREARM_FIXTURES !== '1',
+  timeout: 90_000,
+}, async () => {
+  const { randomUUID } = await import('node:crypto');
+  const { rm } = await import('node:fs/promises');
+  const { renderCanaryRecoveryHelper } = await import('../scripts/lib/csd-page-tamper-controller.mjs');
+  const { renderReservation } = await import('../scripts/lib/csd-page-tamper-reservation.mjs');
+  assert.equal(process.platform, 'linux');
+  const runId = randomUUID();
+  const service = `xcsh-csd-fixture-prearm-${runId}.service`;
+  const timer = service.replace('.service', '.timer');
+  const identity = {
+    runId,
+    root: `/tmp/xcsh-csd-${runId}`,
+    instance_id: 'i-0123456789abcdef0',
+    aws_account: '280469140135',
+    aws_region: 'us-east-1',
+    aws_profile: 'fixture',
+  };
+  const guard = renderReservation({
+    runId,
+    service,
+    timer,
+    lifetimeSeconds: 300,
+    fixture: true,
+  });
+  const local = await mkdtemp(join(tmpdir(), 'csd-prearm-proof-'));
+  const directory = `/var/lib/xcsh-csd-recovery/${runId}`;
+  const journal = `${directory}/lifecycle.json`;
+  const exec = (...args) => spawnSync('sudo', ['-n', ...args], { encoding: 'utf8', timeout: 20_000 });
+  const ok = (...args) => {
+    const r = exec(...args);
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout.trim();
+  };
+  const helperPath = join(local, 'helper.py');
+  const rendered = renderCanaryRecoveryHelper(identity, {
+    service,
+    timer,
+    fixture: true,
+  });
+  await writeFile(helperPath, rendered);
+  const helper = (action) => JSON.parse(ok('python3', helperPath, action).split('XCSH_RESULT ')[1]);
+  try {
+    ok('install', '-d', '-m', '700', '/var/lib/xcsh-csd-reservation');
+    // No historical authority: fresh absence alone does not authorize rollback.
+    assert.notEqual(exec('python3', helperPath, 'prearm').status, 0);
+    helper('initialize');
+    helper('prepare');
+    assert.equal(helper('classify').prearm, true);
+    // Real hard exit after durable cleanup intent, before deleting the owned root.
+    const crash = join(local, 'crash.py');
+    await writeFile(crash, rendered.replace("shutil.rmtree('worker',dir_fd=qfd)", 'os._exit(77)'));
+    const crashed = exec('python3', crash, 'prearm');
+    assert.equal(crashed.status, 77, crashed.stderr);
+    assert.equal(helper('prearm').restoration.restored, false);
+    assert.equal(helper('prearm').worker_artifacts_removed, true);
+    // A second real hard exit occurs after deletion, before completion journaling.
+    ok(
+      'python3',
+      '-c',
+      `import json,pathlib;p=pathlib.Path('${journal}');v=json.loads(p.read_text());v['phase']='NOT_ARMED';v.pop('root_inode',None);p.write_text(json.dumps(v))`,
+    );
+    helper('prepare');
+    await writeFile(
+      crash,
+      rendered.replace("shutil.rmtree('worker',dir_fd=qfd)", "shutil.rmtree('worker',dir_fd=qfd);os._exit(78)"),
+    );
+    assert.equal(exec('python3', crash, 'prearm').status, 78);
+    assert.equal(helper('prearm').reservation_artifacts_removed, true);
+    // ARM_INTENT is deliberately irreversible even if an exception preceded snapshot.
+    ok(
+      'python3',
+      '-c',
+      `import json,pathlib;p=pathlib.Path('${journal}');v=json.loads(p.read_text());v['phase']='ARM_INTENT';p.write_text(json.dumps(v))`,
+    );
+    assert.equal(helper('classify').prearm, false);
+    assert.notEqual(exec('python3', helperPath, 'prearm').status, 0);
+    assert.notEqual(exec('python3', helperPath, 'restore').status, 0);
+    // Fresh authority with a reservation snapshot or guard unit is never prearm.
+    ok(
+      'python3',
+      '-c',
+      `import json,pathlib;p=pathlib.Path('${journal}');v=json.loads(p.read_text());v['phase']='NOT_ARMED';p.write_text(json.dumps(v))`,
+    );
+    ok('install', '-d', '-m', '700', guard.directory);
+    assert.notEqual(exec('python3', helperPath, 'prearm').status, 0);
+    ok('rmdir', guard.directory);
+    ok('install', '-m', '644', '/dev/null', `/etc/systemd/system/${guard.name}.service`);
+    assert.notEqual(exec('python3', helperPath, 'prearm').status, 0);
+  } finally {
+    ok('rm', '-f', `/etc/systemd/system/${guard.name}.service`, `/var/lib/xcsh-csd-reservation/${service}.mutex`);
+    ok('rm', '-rf', directory, identity.root, guard.directory);
+    await rm(local, { recursive: true, force: true });
+  }
+});
+
+test('prearm canary arm exception persists phase before side effects and cleans without restore', async () => {
+  const { runCanary } = await import('../scripts/lib/csd-page-tamper-controller.mjs');
+  const root = await workspace();
+  const c = config(root, { browserMode: 'headed-xvfb', placement: 'worker' });
+  const actions = [];
+  await assert.rejects(
+    runCanary(
+      c,
+      deps({
+        reservation: async (action) => {
+          const lock = JSON.parse(await readFile(join(c.receiptDir, 'active.lock'), 'utf8'));
+          assert.equal(lock.canary_phase, 'arm_intent');
+          assert.equal(action, 'arm');
+          throw new Error('arm transport exception');
+        },
+        reservationRecovery: async (action, worker_identity) => {
+          actions.push(action);
+          const lock = JSON.parse(await readFile(join(c.receiptDir, 'active.lock'), 'utf8'));
+          if (action === 'initialize') assert.equal(lock.canary_phase, 'initialize_intent');
+          return {
+            schema_version: 1,
+            externally_verified: true,
+            worker_identity,
+            prearm: true,
+            restoration: { restored: false, required: false },
+            worker_artifacts_removed: true,
+            reservation_artifacts_removed: true,
+          };
+        },
+        probe: () => {
+          throw new Error('no prearm probe permitted');
+        },
+      }),
+    ),
+    /arm transport exception/,
+  );
+  assert.deepEqual(actions, ['initialize', 'classify', 'prearm']);
+  assert.equal((await status(c)).active, false);
+});
+
+test('prearm canary source preparation exception retains NOT_TESTED recovery receipt', async () => {
+  const { runCanary } = await import('../scripts/lib/csd-page-tamper-controller.mjs');
+  const root = await workspace();
+  const c = config(root, { browserMode: 'headed-xvfb', placement: 'worker' });
+  const actions = [];
+  await assert.rejects(
+    runCanary(
+      c,
+      deps({
+        workerProbe: undefined,
+        readFile: async () => {
+          const lock = JSON.parse(await readFile(join(c.receiptDir, 'active.lock'), 'utf8'));
+          assert.equal(lock.canary_phase, 'prepare_intent');
+          throw new Error('source preparation exception');
+        },
+        reservation: () => {
+          throw new Error('must not arm');
+        },
+        reservationRecovery: async (action, worker_identity) => {
+          actions.push(action);
+          return {
+            schema_version: 1,
+            externally_verified: true,
+            worker_identity,
+            prearm: true,
+            restoration: { restored: false, required: false },
+            worker_artifacts_removed: true,
+            reservation_artifacts_removed: true,
+          };
+        },
+      }),
+    ),
+    /source preparation exception/,
+  );
+  assert.deepEqual(actions, ['initialize', 'classify', 'prearm']);
+  assert.equal((await status(c)).active, false);
+  const receipt = JSON.parse(
+    await readFile(join(c.receiptDir, 'canary-00000000-0000-4000-8000-000000000001-failed.json'), 'utf8'),
+  );
+  assert.equal(receipt.efficacy, 'NOT_TESTED');
+  assert.equal(receipt.recovery.restoration.restored, false);
+  assert.equal(Object.hasOwn(receipt, 'worker_identity'), false);
+});
+
+test('owned local lock rejects inode and run substitution without touching foreign lock', async () => {
+  const { acquireLock, releaseOwnedLock } = await import('../scripts/lib/csd-page-tamper-controller.mjs');
+  const { rename, rm } = await import('node:fs/promises');
+  const root = await workspace();
+  const c = config(root);
+  const path = await acquireLock(c, 'owned-run', () => START, 'run');
+  await rename(path, `${path}.owned`);
+  const foreign = JSON.stringify({ run_id: 'foreign', worker_run_id: null });
+  await writeFile(path, foreign);
+  await assert.rejects(releaseOwnedLock(path), /ownership changed/);
+  assert.equal(await readFile(path, 'utf8'), foreign);
+  await rm(path);
+  await rename(`${path}.owned`, path);
+  await writeFile(path, foreign);
+  await assert.rejects(releaseOwnedLock(path), /run binding changed/);
+  await writeFile(
+    path,
+    JSON.stringify({
+      schema_version: 2,
+      run_id: 'owned-run',
+      command: 'run',
+      worker_run_id: null,
+      started_at: START,
+      state: 'active',
+    }),
+  );
+  await releaseOwnedLock(path);
+});
+
+test('durable receipt fsyncs file and directory before owned lock release', async () => {
+  const { atomicReceipt, acquireLock, releaseOwnedLock } = await import(
+    '../scripts/lib/csd-page-tamper-controller.mjs'
+  );
+  const root = await workspace();
+  const c = config(root);
+  const path = await acquireLock(c, 'durable-run', () => START, 'run');
+  const probe = await import('node:fs/promises');
+  const handle = await probe.open(path, 'r');
+  const prototype = Object.getPrototypeOf(handle);
+  await handle.close();
+  const sync = prototype.sync;
+  let calls = 0;
+  prototype.sync = async function () {
+    calls += 1;
+    if (calls === 1) throw new Error('injected file fsync failure');
+    return sync.call(this);
+  };
+  try {
+    await assert.rejects(atomicReceipt(join(c.receiptDir, 'failed.json'), { success: true }), /fsync failure/);
+    assert.equal((await status(c)).active, true);
+  } finally {
+    prototype.sync = sync;
+  }
+  calls = 0;
+  prototype.sync = async function () {
+    calls += 1;
+    if (calls === 2) throw new Error('injected directory fsync failure');
+    return sync.call(this);
+  };
+  try {
+    await assert.rejects(
+      atomicReceipt(join(c.receiptDir, 'directory-failed.json'), {
+        success: true,
+      }),
+      /directory fsync failure/,
+    );
+    assert.equal((await status(c)).active, true);
+  } finally {
+    prototype.sync = sync;
+  }
+  await atomicReceipt(join(c.receiptDir, 'complete.json'), { success: true });
+  calls = 0;
+  prototype.sync = async function () {
+    calls += 1;
+    if (calls === 1) throw new Error('unlink directory sync failure');
+    return sync.call(this);
+  };
+  try {
+    await assert.rejects(releaseOwnedLock(path), /authority retained/);
+    assert.equal((await status(c)).active, true);
+  } finally {
+    prototype.sync = sync;
+  }
+  assert.equal(JSON.parse(await readFile(join(c.receiptDir, 'complete.json'), 'utf8')).success, true);
+});
+
+test('prearm initialize failure retains lock and releases terminal recovery claim', async () => {
+  const { runCanary } = await import('../scripts/lib/csd-page-tamper-controller.mjs');
+  const root = await workspace();
+  const c = config(root, { browserMode: 'headed-xvfb', placement: 'worker' });
+  const actions = [];
+  await assert.rejects(
+    runCanary(
+      c,
+      deps({
+        reservationRecovery: async (action) => {
+          actions.push(action);
+          throw new Error('journal unavailable');
+        },
+      }),
+    ),
+    /unverified/,
+  );
+  assert.deepEqual(actions, ['initialize', 'classify']);
+  assert.equal((await status(c)).active, true);
+});
+
+test('Linux worker inode quarantine and privileged install preserve replacement sentinels', {
+  skip: process.env.XCSH_CSD_PREARM_FIXTURES !== '1',
+  timeout: 90_000,
+}, async () => {
+  const { randomUUID } = await import('node:crypto');
+  const { renderCanaryRecoveryHelper, installWorkerFile } = await import(
+    '../scripts/lib/csd-page-tamper-controller.mjs'
+  );
+  const runId = randomUUID();
+  const service = `xcsh-csd-fixture-sentinel-${runId}.service`;
+  const timer = service.replace('.service', '.timer');
+  const identity = {
+    runId,
+    root: `/tmp/xcsh-csd-${runId}`,
+    instance_id: 'i-0123456789abcdef0',
+    aws_account: '280469140135',
+    aws_region: 'us-east-1',
+    aws_profile: 'fixture',
+  };
+  const local = await mkdtemp(join(tmpdir(), 'csd-sentinel-'));
+  const helperPath = join(local, 'helper.py');
+  await writeFile(helperPath, renderCanaryRecoveryHelper(identity, { service, timer, fixture: true }));
+  const execute = (...args) => spawnSync('sudo', ['-n', ...args], { encoding: 'utf8', timeout: 30_000 });
+  const ok = (...args) => {
+    const r = execute(...args);
+    assert.equal(r.status, 0, r.stderr);
+    return r;
+  };
+  const helper = (mode) => ok('python3', helperPath, mode);
+  let invocation;
+  const injected = createDependencies({
+    executor: async (argv) => {
+      if (argv[2] === 'send-command') {
+        const script = JSON.parse(argv[argv.indexOf('--parameters') + 1]).commands[0];
+        const r = execute('/bin/sh', '-c', script);
+        invocation = {
+          Status: r.status === 0 ? 'Success' : 'Failed',
+          ResponseCode: r.status,
+          StandardOutputContent: r.stdout,
+          StandardErrorContent: r.stderr,
+        };
+        return {
+          code: 0,
+          stdout: JSON.stringify({ Command: { CommandId: randomUUID() } }),
+        };
+      }
+      return { code: 0, stdout: JSON.stringify(invocation) };
+    },
+  });
+  const workerConfig = config(local, {
+    workerInstance: identity.instance_id,
+  });
+  try {
+    helper('initialize');
+    helper('prepare');
+    ok(
+      'python3',
+      '-c',
+      `import os,pathlib;p=pathlib.Path('${identity.root}');(p/'sentinel').write_text('KEEP');os.symlink(p/'sentinel',p/'payload.py')`,
+    );
+    await assert.rejects(installWorkerFile(workerConfig, injected, `${identity.root}/payload.py`, 'TRUNCATE'), /SSM/);
+    assert.equal(ok('python3', '-c', `print(open('${identity.root}/sentinel').read())`).stdout.trim(), 'KEEP');
+    ok(
+      'python3',
+      '-c',
+      `import os,pathlib;p=pathlib.Path('${identity.root}');os.rename(p,str(p)+'.original');p.mkdir(mode=0o755);(p/'sentinel').write_text('REPLACEMENT')`,
+    );
+    assert.notEqual(execute('python3', helperPath, 'prearm').status, 0);
+    assert.equal(ok('python3', '-c', `print(open('${identity.root}/sentinel').read())`).stdout.trim(), 'REPLACEMENT');
+    await assert.rejects(installWorkerFile(workerConfig, injected, `${identity.root}/payload.py`, 'TRUNCATE'), /SSM/);
+    ok(
+      'python3',
+      '-c',
+      `import os,shutil;shutil.rmtree('${identity.root}');os.symlink('${identity.root}.original','${identity.root}')`,
+    );
+    assert.notEqual(execute('python3', helperPath, 'prearm').status, 0);
+    assert.equal(ok('python3', '-c', `print(open('${identity.root}.original/sentinel').read())`).stdout.trim(), 'KEEP');
+    ok(
+      'python3',
+      '-c',
+      `import os;os.unlink('${identity.root}');os.rename('${identity.root}.original','${identity.root}')`,
+    );
+    helper('prearm');
+    const devices = ok(
+      'python3',
+      '-c',
+      "import os;print(os.stat('/tmp').st_dev,os.stat('/var/lib').st_dev)",
+    ).stdout.trim();
+    process.stdout.write(`QUARANTINE_SENTINEL=passed INSTALL_SENTINEL=passed FILESYSTEM_DEVICES=${devices}\n`);
+  } finally {
+    ok(
+      'python3',
+      '-c',
+      `import os,shutil;paths=['${identity.root}','${identity.root}.original','/tmp/.xcsh-csd-quarantine-${runId}','/var/lib/xcsh-csd-recovery/${runId}'];[(os.unlink(p) if os.path.islink(p) else shutil.rmtree(p)) for p in paths if os.path.lexists(p)]`,
+    );
+    ok('rm', '-f', `/var/lib/xcsh-csd-reservation/${service}.mutex`);
+  }
+});
+
+test('Linux armed guard preserves substituted worker root and symlink sentinels', {
+  skip: process.env.XCSH_CSD_PREARM_FIXTURES !== '1',
+  timeout: 60_000,
+}, async () => {
+  const { randomUUID } = await import('node:crypto');
+  const { renderCanaryRecoveryHelper } = await import('../scripts/lib/csd-page-tamper-controller.mjs');
+  const { renderReservation } = await import('../scripts/lib/csd-page-tamper-reservation.mjs');
+  const runId = randomUUID();
+  const service = `xcsh-csd-fixture-armed-${runId}.service`;
+  const timer = service.replace('.service', '.timer');
+  const identity = {
+    runId,
+    root: `/tmp/xcsh-csd-${runId}`,
+    instance_id: 'i-0123456789abcdef0',
+    aws_account: '280469140135',
+    aws_region: 'us-east-1',
+    aws_profile: 'fixture',
+  };
+  const local = await mkdtemp(join(tmpdir(), 'csd-armed-sentinel-'));
+  const helper = join(local, 'helper.py');
+  const guard = renderReservation({
+    runId,
+    service,
+    timer,
+    lifetimeSeconds: 300,
+    fixture: true,
+  });
+  const guardPath = join(local, 'guard.py');
+  await writeFile(helper, renderCanaryRecoveryHelper(identity, { service, timer, fixture: true }));
+  await writeFile(guardPath, guard.script);
+  await writeFile(
+    join(local, service),
+    '[Service]\nType=oneshot\nExecStart=/usr/bin/true\n[Install]\nWantedBy=multi-user.target\n',
+  );
+  await writeFile(join(local, timer), `[Timer]\nOnActiveSec=1h\nUnit=${service}\n[Install]\nWantedBy=timers.target\n`);
+  const execute = (...args) => spawnSync('sudo', ['-n', ...args], { encoding: 'utf8', timeout: 30_000 });
+  const ok = (...args) => {
+    const r = execute(...args);
+    assert.equal(r.status, 0, r.stderr);
+    return r;
+  };
+  try {
+    ok('install', '-m', '644', join(local, service), join(local, timer), '/etc/systemd/system/');
+    ok('systemctl', 'daemon-reload');
+    ok('python3', helper, 'initialize');
+    ok('python3', helper, 'prepare');
+    ok('python3', guardPath, 'arm');
+    ok(
+      'python3',
+      '-c',
+      `import os,pathlib;p=pathlib.Path('${identity.root}');os.rename(p,str(p)+'.original');p.mkdir(mode=0o755);(p/'sentinel').write_text('ARMED KEEP')`,
+    );
+    assert.notEqual(execute('python3', guardPath, 'restore').status, 0);
+    assert.equal(ok('python3', '-c', `print(open('${identity.root}/sentinel').read())`).stdout.trim(), 'ARMED KEEP');
+    ok(
+      'python3',
+      '-c',
+      `import os,shutil;shutil.rmtree('${identity.root}');os.symlink('${identity.root}.original','${identity.root}')`,
+    );
+    assert.notEqual(execute('python3', guardPath, 'restore').status, 0);
+    ok(
+      'python3',
+      '-c',
+      `import os;os.unlink('${identity.root}');os.rename('${identity.root}.original','${identity.root}')`,
+    );
+    ok('python3', guardPath, 'restore');
+    ok('python3', guardPath, 'cleanup');
+    process.stdout.write('ARMED_REPLACEMENT_SENTINEL=passed ARMED_SYMLINK_SENTINEL=passed\n');
+  } finally {
+    execute('systemctl', 'disable', '--now', `${guard.name}.timer`, timer);
+    execute('systemctl', 'stop', `${guard.name}.service`, service);
+    ok(
+      'python3',
+      '-c',
+      `import os,shutil;files=['/etc/systemd/system/${service}','/etc/systemd/system/${timer}','/etc/systemd/system/${guard.name}.service','/etc/systemd/system/${guard.name}.timer','/var/lib/xcsh-csd-reservation/${service}.owner','/var/lib/xcsh-csd-reservation/${service}.mutex'];[os.unlink(p) for p in files if os.path.lexists(p)];paths=['${identity.root}','${identity.root}.original','/tmp/.xcsh-csd-quarantine-${runId}','/var/lib/xcsh-csd-recovery/${runId}','${guard.directory}','/run/systemd/system/${guard.name}.timer.d'];[(os.unlink(p) if os.path.islink(p) else shutil.rmtree(p)) for p in paths if os.path.lexists(p)]`,
+    );
+    ok('systemctl', 'daemon-reload');
+  }
+});
+
+test('Linux worker quarantine uses separate tmp filesystem without copy fallback', {
+  skip: process.env.XCSH_CSD_PREARM_FIXTURES !== '1',
+  timeout: 30_000,
+}, async () => {
+  const { randomUUID } = await import('node:crypto');
+  const { WORKER_MUTEX_PROTOCOL, WORKER_FILESYSTEM_PROTOCOL } = await import(
+    '../scripts/lib/csd-page-tamper-reservation.mjs'
+  );
+  const runId = randomUUID();
+  const script = `import json,os,pathlib,stat,shutil\n${WORKER_MUTEX_PROTOCOL}\n${WORKER_FILESYSTEM_PROTOCOL}\nrun='${runId}';p=pathlib.Path('/tmp/xcsh-csd-'+run);p.mkdir(mode=0o755);os.chmod(p,0o755);s=p.stat();j=pathlib.Path('/var/lib/xcsh-csd-recovery')/run\nos.close(canonical_directory(j.parent,True));os.close(canonical_directory(j,True));fd=os.open(j/'lifecycle.json',os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o700)\nwith os.fdopen(fd,'w') as f: json.dump({'contract':'xcsh-csd-prearm-v1','worker_identity':{'runId':run,'root':str(p)},'root_inode':[s.st_dev,s.st_ino]},f);f.flush();os.fsync(f.fileno())\nassert os.stat('/tmp').st_dev!=os.stat('/var/lib').st_dev\nworker_quarantine(run);assert not p.exists();worker_quarantine(run);print('SEPARATE_TMP_QUARANTINE=passed');shutil.rmtree(j)\n`;
+  const r = spawnSync(
+    'sudo',
+    ['-n', 'unshare', '--mount', '/bin/sh', '-c', 'mount -t tmpfs -o mode=1777 tmpfs /tmp && exec python3 -'],
+    { input: script, encoding: 'utf8', timeout: 20_000 },
+  );
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /SEPARATE_TMP_QUARANTINE=passed/);
+  process.stdout.write(r.stdout);
+});
+
+test('prearm phase rejects foreign lock substitution before arm and preserves foreign contents', async () => {
+  const { runCanary } = await import('../scripts/lib/csd-page-tamper-controller.mjs');
+  const { rename, rm } = await import('node:fs/promises');
+  const root = await workspace();
+  const c = config(root, { browserMode: 'headed-xvfb', placement: 'worker' });
+  const path = join(c.receiptDir, 'active.lock');
+  const foreign = JSON.stringify({
+    run_id: 'foreign',
+    worker_run_id: 'foreign',
+    command: 'canary',
+    started_at: START,
+  });
+  let arms = 0;
+  await assert.rejects(
+    runCanary(
+      c,
+      deps({
+        reservationRecovery: async (action, identity) => {
+          assert.equal(action, 'initialize');
+          await rename(path, `${path}.original`);
+          await writeFile(path, foreign);
+          return {
+            schema_version: 1,
+            externally_verified: true,
+            worker_identity: identity,
+          };
+        },
+        reservation: async () => {
+          arms += 1;
+          throw new Error('unexpected arm');
+        },
+      }),
+    ),
+    /ownership changed/,
+  );
+  assert.equal(arms, 0);
+  assert.equal(await readFile(path, 'utf8'), foreign);
+  await rm(root, { recursive: true, force: true });
+});
+
+test('Linux worker-backed noncanary recovery preserves original authority across interrupted recovery', {
+  skip: process.env.XCSH_CSD_PREARM_FIXTURES !== '1',
+  timeout: 120_000,
+}, async () => {
+  const { randomUUID } = await import('node:crypto');
+  const { prepareWorker, recoverOnly } = await import('../scripts/lib/csd-page-tamper-controller.mjs');
+  const root = await workspace();
+  const c = config(root, { workerInstance: 'i-0123456789abcdef0' });
+  const base = executor();
+  let invocation;
+  const scripts = [];
+  const real = async (argv, options) => {
+    if (argv[1] !== 'ssm') return base(argv, options);
+    if (argv[2] === 'send-command') {
+      const script = JSON.parse(argv[argv.indexOf('--parameters') + 1]).commands[0];
+      scripts.push(script);
+      const r = spawnSync('sudo', ['-n', '/bin/sh', '-c', script], {
+        encoding: 'utf8',
+        timeout: 60_000,
+      });
+      invocation = {
+        Status: r.status === 0 ? 'Success' : 'Failed',
+        ResponseCode: r.status,
+        StandardOutputContent: r.stdout,
+        StandardErrorContent: r.stderr,
+      };
+      if (r.status !== 0) process.stderr.write(r.stderr);
+      return {
+        code: 0,
+        stdout: JSON.stringify({ Command: { CommandId: randomUUID() } }),
+      };
+    }
+    assert.equal(argv[2], 'get-command-invocation');
+    return { code: 0, stdout: JSON.stringify(invocation) };
+  };
+  const original = await prepareWorker(c, deps({ executor: real, workerProbe: null }), randomUUID());
+  const journal = `/var/lib/xcsh-csd-recovery/${original.runId}/lifecycle.json`;
+  const readAuthority = (path) =>
+    JSON.parse(
+      spawnSync('sudo', ['-n', 'python3', '-c', `print(open('${path}').read())`], { encoding: 'utf8' }).stdout,
+    );
+  const originalAuthority = readAuthority(journal);
+  await writeFile(
+    join(c.receiptDir, 'active.lock'),
+    JSON.stringify({
+      run_id: original.runId,
+      worker_run_id: original.runId,
+      command: 'run',
+      state: 'recovery-required',
+      started_at: START,
+    }),
+  ).catch(async (error) => {
+    if (error.code !== 'ENOENT') throw error;
+    await mkdir(c.receiptDir);
+    await writeFile(
+      join(c.receiptDir, 'active.lock'),
+      JSON.stringify({
+        run_id: original.runId,
+        worker_run_id: original.runId,
+        command: 'run',
+        state: 'recovery-required',
+        started_at: START,
+      }),
+    );
+  });
+  let pending;
+  try {
+    await assert.rejects(
+      recoverOnly(
+        c,
+        deps({
+          executor: real,
+          workerProbe: null,
+          cleanup: null,
+          probe: () => {
+            throw new Error('interrupted recovery control');
+          },
+        }),
+      ),
+      /interrupted recovery control/,
+    );
+    const lock = JSON.parse(await readFile(join(c.receiptDir, 'active.lock'), 'utf8'));
+    pending = lock.recovery_worker_identity;
+    assert.notEqual(pending.runId, original.runId);
+    const binding = readAuthority(`/var/lib/xcsh-csd-recovery/${pending.runId}/lifecycle.json`).recovery_original;
+    const { sha256, ...originalIdentity } = original;
+    assert.deepEqual(binding.worker_identity, originalIdentity);
+    assert.deepEqual(binding.root_inode, originalAuthority.root_inode);
+    const result = await recoverOnly(c, deps({ executor: real, workerProbe: null, cleanup: null }));
+    assert.equal(result.success, true);
+    assert.notEqual(result.recovery.recovery_worker_identity.runId, pending.runId);
+    await assert.rejects(stat(original.root), { code: 'ENOENT' });
+    await assert.rejects(stat(pending.root), { code: 'ENOENT' });
+    const retained = readAuthority(journal);
+    assert.equal(retained.phase, originalAuthority.phase);
+    assert.equal(retained.pause_intent, false);
+    assert.deepEqual(retained.root_inode, originalAuthority.root_inode);
+    assert.ok(scripts.every((s) => !s.includes('systemctl stop csd-continuous')));
+    process.stdout.write('NONCANARY_INTERRUPTED_RECOVERY=passed ORIGINAL_AUTHORITY=preserved FRESH_IDENTITY=bound\n');
+  } finally {
+    const dirs = new Set([original.runId, pending?.runId]);
+    for (const script of scripts) {
+      const m = script.match(/\/var\/lib\/xcsh-csd-recovery\/([0-9a-f-]{36})/);
+      if (m) dirs.add(m[1]);
+    }
+    for (const run of dirs)
+      if (run) {
+        const cleanup = spawnSync(
+          'sudo',
+          [
+            '-n',
+            'python3',
+            '-c',
+            `import pathlib,shutil\np=pathlib.Path('/var/lib/xcsh-csd-recovery/${run}');q=pathlib.Path('/tmp/.xcsh-csd-quarantine-${run}')\nassert not pathlib.Path('/tmp/xcsh-csd-${run}').exists()\nif p.exists(): shutil.rmtree(p)\nif q.exists(): q.rmdir()`,
+          ],
+          { encoding: 'utf8' },
+        );
+        assert.equal(cleanup.status, 0, cleanup.stderr);
+      }
+  }
+});

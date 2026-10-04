@@ -87,6 +87,7 @@ export class CdpClient {
     return () => this.listeners.delete(listener);
   }
   send(method, params = {}, sessionId, { signal } = {}) {
+    if (signal?.aborted) return Promise.reject(new CliError('operation aborted', 3, 'ABORTED'));
     if (this.closed) return Promise.reject(new CliError('Chrome DevTools connection is closed', 3, 'CDP_CLOSED'));
     const id = this.nextId++;
     return new Promise((resolveSend, reject) => {
@@ -239,6 +240,180 @@ function documentResponseTracker(expectedOrigin, probe, includeValues = false) {
   };
 }
 
+// Retain only projected facts; CDP IDs are private correlation keys, never receipt identifiers.
+export function createHeaderVisibilityTracker(expectedOrigin) {
+  const groups = new Map();
+  const ordered = [];
+  let truncated = false;
+  const safeUrl = (value) => {
+    try {
+      const url = new URL(value);
+      if (url.protocol !== 'https:' || url.username || url.password) return null;
+      if (
+        url.origin !== expectedOrigin &&
+        !APPROVED_CSD_COLLECTORS.some(({ host, path }) => url.origin === `https://${host}` && url.pathname === path)
+      )
+        return null;
+      return { origin: url.origin, path: url.pathname };
+    } catch {
+      return null;
+    }
+  };
+  const status = (value) => (Number.isInteger(value) && value >= 100 && value <= 599 ? value : null);
+  const bits = (headers, name, expected) => {
+    const key = Object.keys(headers || {}).find((key) => key.toLowerCase() === name);
+    return { present: key !== undefined, exact_match: key !== undefined && headers[key] === expected };
+  };
+  const source = (initiator) => {
+    const frame = initiator?.url ? initiator : initiator?.stack?.callFrames?.[0];
+    const url = safeUrl(frame?.url);
+    if (!url) return null;
+    return {
+      ...url,
+      line: Number.isSafeInteger(frame.lineNumber) && frame.lineNumber >= 0 ? frame.lineNumber : null,
+      column: Number.isSafeInteger(frame.columnNumber) && frame.columnNumber >= 0 ? frame.columnNumber : null,
+    };
+  };
+  const response = (hop, value, extraExpected) => {
+    if (!hop) return;
+    hop.expected = typeof extraExpected === 'boolean' ? extraExpected : null;
+    if (hop.record)
+      Object.assign(hop.record, {
+        status: status(value?.status),
+        from_disk_cache: value?.fromDiskCache === true,
+        from_service_worker: value?.fromServiceWorker === true,
+        response_xcto: bits(value?.headers, 'x-content-type-options', 'nosniff'),
+      });
+  };
+  return {
+    event(method, params = {}) {
+      const id = params.requestId;
+      if (typeof id !== 'string' || !id) return;
+      if (!groups.has(id)) {
+        if (groups.size >= 512) {
+          truncated = true;
+          return;
+        }
+        groups.set(id, { hops: [], requestExtras: [], responseExtras: [] });
+      }
+      const group = groups.get(id);
+      const previous = group.hops.at(-1);
+      if (method === 'Network.requestWillBeSent') {
+        if (group.hops.length >= 32 || ordered.length >= 512) {
+          truncated = true;
+          group.ambiguous = true;
+          return;
+        }
+        if (previous) {
+          response(previous, params.redirectResponse, params.redirectHasExtraInfo);
+          if (previous.record) previous.record.completion = 'redirected';
+        }
+        const url = safeUrl(params.request?.url);
+        const record = url
+          ? {
+              ordinal: ordered.length + 1,
+              redirect_hop: group.hops.length,
+              ...url,
+              collector: APPROVED_CSD_COLLECTORS.some(
+                ({ host, path }) => url.origin === `https://${host}` && url.path === path,
+              ),
+              method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].includes(params.request?.method)
+                ? params.request.method
+                : 'Other',
+              resource_type: [
+                'Document',
+                'Script',
+                'XHR',
+                'Fetch',
+                'Image',
+                'Stylesheet',
+                'Font',
+                'Preflight',
+              ].includes(params.type)
+                ? params.type
+                : 'Other',
+              initiator: source(params.initiator),
+              status: null,
+              from_disk_cache: null,
+              from_service_worker: null,
+              served_from_cache: false,
+              response_xcto: null,
+              completion: 'pending',
+              failure: null,
+            }
+          : null;
+        if (record) ordered.push(record);
+        group.hops.push({ record, expected: null });
+      } else if (method === 'Network.requestWillBeSentExtraInfo') {
+        if (group.requestExtras.length < 32)
+          group.requestExtras.push(
+            bits(params.headers, DOCUMENT_PROBE_SELECTOR_HEADER.toLowerCase(), 'x-content-type-options'),
+          );
+        else {
+          truncated = true;
+          group.ambiguous = true;
+        }
+      } else if (method === 'Network.responseReceivedExtraInfo') {
+        if (group.responseExtras.length < 32)
+          group.responseExtras.push({
+            xcto: bits(params.headers, 'x-content-type-options', 'nosniff'),
+            status: status(params.statusCode),
+          });
+        else {
+          truncated = true;
+          group.ambiguous = true;
+        }
+      } else if (method === 'Network.responseReceived') {
+        response(previous, params.response, params.hasExtraInfo);
+      } else if (previous?.record) {
+        if (method === 'Network.requestServedFromCache') previous.record.served_from_cache = true;
+        if (method === 'Network.loadingFinished') previous.record.completion = 'finished';
+        if (method === 'Network.loadingFailed') {
+          previous.record.completion = 'failed';
+          previous.record.failure =
+            params.canceled === true ? 'canceled' : params.blockedReason ? 'blocked' : 'network-failed';
+        }
+      }
+    },
+    value() {
+      const projections = new Map();
+      for (const group of groups.values()) {
+        // Request ExtraInfo has no hop-presence flag. Partial FIFO is not trustworthy.
+        const requestKnown = !group.ambiguous && group.requestExtras.length === group.hops.length;
+        const eligible = group.hops.filter(({ expected }) => expected === true);
+        const responseKnown =
+          !group.ambiguous &&
+          group.hops.every(({ expected }) => expected !== null) &&
+          eligible.length === group.responseExtras.length;
+        for (const [index, hop] of group.hops.entries()) {
+          if (!hop.record) continue;
+          const extra = responseKnown && hop.expected === true ? group.responseExtras[eligible.indexOf(hop)] : null;
+          projections.set(hop.record, {
+            ...hop.record,
+            wire_selector: requestKnown ? group.requestExtras[index] : null,
+            request_extra_info: requestKnown ? 'correlated' : group.requestExtras.length ? 'ambiguous' : 'missing',
+            wire_xcto: extra?.xcto ?? null,
+            wire_status: extra?.status ?? null,
+            response_extra_info:
+              hop.expected === false
+                ? 'not-emitted'
+                : extra
+                  ? 'correlated'
+                  : group.responseExtras.length
+                    ? 'ambiguous'
+                    : 'missing',
+          });
+        }
+      }
+      return {
+        requests: ordered.map((record) => structuredClone(projections.get(record))),
+        truncated,
+        collector_semantic_acceptance: 'not-observed',
+      };
+    },
+  };
+}
+
 function navigationGuard(expectedOrigin) {
   let error = null;
   const inspect = (value) => {
@@ -315,18 +490,41 @@ function networkTracker() {
   };
 }
 
+// Race even non-cooperative operations, checking before invoking any side effect.
+export function withAbort(action, signal) {
+  return new Promise((resolve, reject) => {
+    const abort = () => finish(reject, new CliError('operation aborted', 3, 'ABORTED'));
+    const finish = (callback, value) => {
+      signal?.removeEventListener('abort', abort);
+      callback(value);
+    };
+    if (signal?.aborted) return abort();
+    signal?.addEventListener('abort', abort, { once: true });
+    Promise.resolve()
+      .then(() => {
+        if (signal?.aborted) throw new CliError('operation aborted', 3, 'ABORTED');
+        return action();
+      })
+      .then(
+        (value) => (signal?.aborted ? abort() : finish(resolve, value)),
+        (error) => finish(reject, error),
+      );
+  });
+}
 const sleep = (ms, signal) =>
   new Promise((done, reject) => {
+    const abort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+      reject(new CliError('operation aborted', 3, 'ABORTED'));
+    };
+    if (signal?.aborted) return reject(new CliError('operation aborted', 3, 'ABORTED'));
     if (!ms) return done();
-    const timer = setTimeout(done, ms);
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer);
-        reject(new CliError('operation aborted', 3, 'ABORTED'));
-      },
-      { once: true },
-    );
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', abort);
+      done();
+    }, ms);
+    signal?.addEventListener('abort', abort, { once: true });
   });
 async function evaluate(cdp, sessionId, expression, signal, awaitPromise = false) {
   const result = await cdp.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise }, sessionId, {
@@ -335,7 +533,16 @@ async function evaluate(cdp, sessionId, expression, signal, awaitPromise = false
   if (result.exceptionDetails) throw new CliError('browser evaluation failed', 4, 'EVALUATION_FAILED');
   return result.result?.value;
 }
-async function waitForDocument(cdp, sessionId, options, expectedOrigin, preconditions, signal, requireEmpty = false) {
+async function waitForDocument(
+  cdp,
+  sessionId,
+  options,
+  expectedOrigin,
+  preconditions,
+  signal,
+  requireEmpty = false,
+  observeOnly = false,
+) {
   const deadline = Date.now() + options.timeoutMs;
   while (Date.now() < deadline) {
     const state = await evaluate(
@@ -359,6 +566,7 @@ async function waitForDocument(cdp, sessionId, options, expectedOrigin, precondi
       if (final.origin !== expectedOrigin)
         throw new CliError('redirected document origin drifted from authorized target', 4, 'REDIRECT_HOST_DRIFT');
       if (!state.top) throw new CliError('protected document is not top frame', 4, 'NOT_TOP_FRAME');
+      if (observeOnly) return state;
       if (!state.instrumentation_sources?.length)
         throw new CliError('protected document is missing __imp_apg__ instrumentation', 4, 'INSTRUMENTATION_MISSING');
       if (
@@ -707,20 +915,24 @@ export async function runDocumentProbe(input, deps) {
   const options = validateDocumentProbeOptions(input);
   if (!deps?.cdp) throw new CliError('document probe requires a CDP client', 3, 'CDP_REQUIRED');
   const origin = new URL(options.target).origin;
-  const tracker = networkTracker();
-  const responseTracker = documentResponseTracker(
-    origin,
-    {
-      path: DOCUMENT_PROBE_PATH,
-      headers: DOCUMENT_PROBE_HEADERS.map(({ name, value }) => ({ name, expectedValue: value })),
-    },
-    true,
-  );
+  const metadata = deps.captureMetadata === true ? createHeaderVisibilityTracker(origin) : null;
+  const tracker = metadata ? { event() {}, settle() {}, values: () => [] } : networkTracker();
+  const responseTracker = metadata
+    ? { event() {}, value: () => null }
+    : documentResponseTracker(
+        origin,
+        {
+          path: DOCUMENT_PROBE_PATH,
+          headers: DOCUMENT_PROBE_HEADERS.map(({ name, value }) => ({ name, expectedValue: value })),
+        },
+        true,
+      );
   const navigation = navigationGuard(origin);
   let contextId;
   let targetId;
   let sessionId;
   let unsubscribe;
+  let metadataSnapshot;
   let document;
   let primaryError;
   const cleanup = { target_closed: false, context_disposed: false, listeners_removed: false, errors: [] };
@@ -743,6 +955,7 @@ export async function runDocumentProbe(input, deps) {
       if (event.method?.startsWith('Network.')) {
         tracker.event(event.method, event.params);
         responseTracker.event(event.method, event.params);
+        metadata?.event(event.method, event.params);
       }
     });
     for (const method of ['Page.enable', 'Runtime.enable', 'Network.enable'])
@@ -763,6 +976,7 @@ export async function runDocumentProbe(input, deps) {
       DOCUMENT_PROBE_FIELD_SELECTORS,
       deps.signal,
       true,
+      Boolean(metadata),
     );
     const finalUrl = new URL(document.href);
     if (`${finalUrl.pathname}${finalUrl.search}` !== DOCUMENT_PROBE_PATH)
@@ -776,9 +990,34 @@ export async function runDocumentProbe(input, deps) {
     primaryError =
       error instanceof CliError ? error : new CliError(error.message || String(error), 4, 'DOCUMENT_PROBE_FAILED');
   } finally {
+    const removeListeners = () => {
+      if (!unsubscribe) return;
+      try {
+        unsubscribe();
+        cleanup.listeners_removed = true;
+      } catch {
+        cleanup.errors.push('listener-removal');
+      }
+      unsubscribe = undefined;
+    };
+    let cleanupAbort;
+    let cleanupTimer;
+    if (metadata) {
+      metadataSnapshot = metadata.value();
+      removeListeners();
+      cleanupAbort = new AbortController();
+      cleanupTimer = setTimeout(() => cleanupAbort.abort(), deps.cleanupGraceMs ?? 1000);
+    }
+    const cleanupSend = (method, params) =>
+      metadata
+        ? withAbort(
+            () => deps.cdp.send(method, params, undefined, { signal: cleanupAbort.signal }),
+            cleanupAbort.signal,
+          )
+        : deps.cdp.send(method, params);
     if (targetId)
       try {
-        const result = await deps.cdp.send('Target.closeTarget', { targetId });
+        const result = await cleanupSend('Target.closeTarget', { targetId });
         if (result.success === true) cleanup.target_closed = true;
         else cleanup.errors.push('target-close');
       } catch (error) {
@@ -786,20 +1025,51 @@ export async function runDocumentProbe(input, deps) {
       }
     if (contextId)
       try {
-        await deps.cdp.send('Target.disposeBrowserContext', { browserContextId: contextId });
+        await cleanupSend('Target.disposeBrowserContext', { browserContextId: contextId });
         cleanup.context_disposed = true;
       } catch (error) {
         cleanup.errors.push(error.code || 'context-dispose');
       }
-    if (unsubscribe)
-      try {
-        unsubscribe();
-        cleanup.listeners_removed = true;
-      } catch {
-        cleanup.errors.push('listener-removal');
-      }
+    clearTimeout(cleanupTimer);
+    removeListeners();
   }
   tracker.settle();
+  if (metadata)
+    return {
+      schema_version: 1,
+      mode: 'header-visibility-observation',
+      target: options.target,
+      selector: options.selector ?? null,
+      document: { observed: Boolean(document), fields_empty: document?.fields_empty === true },
+      instrumentation: { imp_apg_present: Boolean(document?.instrumentation_sources?.length) },
+      metadata_visibility: metadataSnapshot,
+      error: primaryError
+        ? {
+            code: [
+              'NAVIGATION_FAILED',
+              'REDIRECT_HOST_DRIFT',
+              'REDIRECT_PATH_DRIFT',
+              'NOT_TOP_FRAME',
+              'SELECTOR_TIMEOUT',
+              'ABORTED',
+              'CDP_TIMEOUT',
+              'CDP_CLOSED',
+              'CDP_ERROR',
+            ].includes(primaryError.code)
+              ? primaryError.code
+              : 'DOCUMENT_PROBE_FAILED',
+          }
+        : cleanup.errors.length
+          ? { code: 'CLEANUP_FAILED' }
+          : null,
+      cleanup: {
+        target_closed: cleanup.target_closed,
+        context_disposed: cleanup.context_disposed,
+        listeners_removed: cleanup.listeners_removed,
+        failed: cleanup.errors.length > 0,
+      },
+      success: !primaryError && cleanup.errors.length === 0,
+    };
   const response = responseTracker.value();
   const network = tracker.values();
   if (!primaryError && response.status !== 200)

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { link, mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
@@ -240,6 +240,7 @@ async function acquireLock(config, runId, now, commandName, worker = null) {
         run_id: runId,
         command: commandName,
         worker_run_id: identity?.runId || null,
+        ...(commandName === 'canary' ? { recovery_kind: 'canary', worker_identity: identity } : {}),
         started_at: now(),
         state: 'active',
       })}\n`,
@@ -275,12 +276,14 @@ async function atomicReceipt(path, value) {
   }
 }
 async function preserveRecoveryLock(lockPath, receipt, error, evidencePersistenceFailure = true) {
+  const previous = JSON.parse(await readFile(lockPath, 'utf8'));
   await atomicReplace(lockPath, {
+    ...previous,
     schema_version: 2,
-    run_id: receipt.run_id,
-    command: receipt.command,
-    worker_run_id: receipt.worker_run_id || null,
-    started_at: receipt.started_at,
+    run_id: previous.run_id,
+    command: previous.command,
+    worker_run_id: previous.worker_run_id ?? receipt.worker_run_id ?? null,
+    started_at: previous.started_at,
     state: 'recovery-required',
     recovery_completed: receipt.recovery?.success === true,
     evidence_persistence_failure: evidencePersistenceFailure,
@@ -309,7 +312,7 @@ async function withRecoveryClaimGate(config, callback) {
 async function claimRecovery(config, state, deps) {
   const path = join(config.receiptDir, 'recovery.claim');
   const ownerPath = join(path, 'owner.json');
-  const claimId = deps.randomUUID();
+  const claimId = state.command === 'canary' ? randomBytes(16).toString('hex') : deps.randomUUID();
   const value = {
     schema_version: 2,
     claim_id: claimId,
@@ -564,7 +567,7 @@ async function installWorkerFile(config, deps, path, body, owner = 'root') {
   if (!['root', 'ubuntu'].includes(owner))
     throw new ControllerError('invalid worker file owner', 'WORKER_IDENTITY_INVALID');
   const encoded = Buffer.from(body).toString('base64');
-  await invokeSsm(config, deps, `set -eu;umask 077;: >'${path}.b64'`);
+  await invokeSsm(config, deps, `set -eu;umask 077;: >'${path}.b64';chmod 700 '${path}.b64'`);
   for (let offset = 0; offset < encoded.length; offset += SSM_CHUNK_SIZE)
     await invokeSsm(
       config,
@@ -980,6 +983,211 @@ async function sleep(deps, ms) {
   if (ms > 0) await deps.sleep(ms, deps.signal);
 }
 
+// Root-private recovery evidence survives removal of the reservation authority.
+export function renderCanaryRecoveryHelper(
+  identity,
+  { service = 'csd-continuous.service', timer = 'csd-continuous.timer', fixture = false } = {},
+) {
+  if (
+    !SAFE_WORKER_RUN_ID.test(identity.runId) ||
+    identity.root !== `/tmp/xcsh-csd-${identity.runId}` ||
+    (!fixture && (service !== 'csd-continuous.service' || timer !== 'csd-continuous.timer')) ||
+    (fixture &&
+      (!/^xcsh-csd-fixture-[a-z0-9-]+\.service$/.test(service) || !/^xcsh-csd-fixture-[a-z0-9-]+\.timer$/.test(timer)))
+  )
+    throw new ControllerError('invalid recovery helper identity', 'WORKER_IDENTITY_INVALID');
+  return `#!/usr/bin/python3
+import json,os,pathlib,stat,subprocess,sys,tempfile
+identity=${JSON.stringify(identity)};mode=sys.argv[1];run=identity['runId']
+service=${JSON.stringify(service)};timer=${JSON.stringify(timer)}
+root=pathlib.Path('/var/lib/xcsh-csd-reservation')/run
+owner=root.parent/(service+'.owner')
+parent=pathlib.Path('/var/lib/xcsh-csd-recovery');directory=parent/run;path=directory/'verified.json'
+def private(p,d=False):
+ s=p.lstat()
+ if s.st_uid!=0 or stat.S_IMODE(s.st_mode)!=0o700 or not (stat.S_ISDIR(s.st_mode) if d else stat.S_ISREG(s.st_mode)) or (not d and s.st_nlink!=1): raise RuntimeError('non-private recovery authority')
+private(root.parent,True)
+def save(value):
+ for p in (parent,directory): p.mkdir(mode=0o700,exist_ok=True);private(p,True)
+ fd,temporary=tempfile.mkstemp(prefix='.verified-',dir=directory);os.fchmod(fd,0o700)
+ with os.fdopen(fd,'w') as out: json.dump(value,out);out.flush();os.fsync(out.fileno())
+ os.replace(temporary,path)
+ fd=os.open(directory,os.O_DIRECTORY);os.fsync(fd);os.close(fd)
+def state(unit):
+ result=subprocess.run(['systemctl','show',unit,'--property=LoadState,ActiveState,UnitFileState,Type,RemainAfterExit,Triggers'],capture_output=True,text=True)
+ values=dict(line.split('=',1) for line in result.stdout.splitlines() if '=' in line)
+ if not values: raise RuntimeError('systemd observation unavailable')
+ return values
+def validate(original,complete=False):
+ if original.get('run_id')!=run or original.get('service')!=service or original.get('timer')!=timer: raise RuntimeError('original identity mismatch')
+ if original.get('phase') not in ('draining','prepared','service_intent','service_resumed','timer_intent','resumed','complete') or (complete and original['phase']!='complete'): raise RuntimeError('original phase mismatch')
+ for unit in (service,timer):
+  prior=original.get(unit,{})
+  if prior.get('ActiveState') not in ('active','inactive') or prior.get('UnitFileState') not in ('enabled','disabled','static'): raise RuntimeError('invalid original state')
+ if not original[service].get('Type') or original[service].get('RemainAfterExit') not in ('yes','no') or service not in original[timer].get('Triggers','').split(): raise RuntimeError('invalid original dispatch policy')
+def verify(original):
+ validate(original,True)
+ for unit in (service,timer):
+  prior=original[unit];actual=state(unit)
+  if actual.get('LoadState')!='loaded' or actual.get('UnitFileState')!=prior['UnitFileState']: raise RuntimeError('dispatch policy changed')
+  allowed={prior['ActiveState']}
+  if unit==timer:
+   if service not in actual.get('Triggers','').split(): raise RuntimeError('timer target changed')
+  else:
+   if any(actual.get(k)!=prior[k] for k in ('Type','RemainAfterExit')): raise RuntimeError('service semantics changed')
+   if original[timer]['ActiveState']=='active': allowed={'active','activating','inactive'}
+   elif prior['ActiveState']=='active' and prior['Type']=='oneshot' and prior['RemainAfterExit']=='no': allowed={'inactive'}
+  if actual.get('ActiveState') not in allowed: raise RuntimeError('original dispatch state unverified')
+def probe_cleanup():
+ if os.path.lexists(identity['root']): raise RuntimeError('worker root remains')
+ prefix=('--user-data-dir='+identity['root']+'/probe-').encode()
+ for process in pathlib.Path('/proc').iterdir():
+  if not process.name.isdecimal(): continue
+  try: argv=(process/'cmdline').read_bytes().split(b'\\0')
+  except FileNotFoundError: continue
+  if any(arg.startswith(prefix) for arg in argv): raise RuntimeError('owned browser remains')
+def external(p):
+ private(p);e=json.loads(p.read_text())
+ if e.get('contract')!='xcsh-csd-restore-evidence-v1' or e.get('externally_verified') is not True: raise RuntimeError('external evidence unavailable')
+ original=e.get('reservation',{});verify(original);probe_cleanup();return original
+record=None
+if os.path.lexists(path):
+ private(parent,True);private(directory,True);private(path)
+ record=json.loads(path.read_text())
+ if record.get('schema_version')!=1 or record.get('externally_verified') is not True or record.get('worker_identity')!=identity or record.get('restoration')!={'restored':True,'original_states_preserved':True}: raise RuntimeError('recovery evidence identity mismatch')
+if os.path.lexists(root):
+ private(root.parent,True);private(root,True);private(root/'guard.py');private(owner)
+ if owner.read_text()!=run: raise RuntimeError('reservation ownership mismatch')
+ if mode=='restore':
+  snapshot=root/'state.json'
+  if os.path.lexists(snapshot):
+   private(snapshot);original=json.loads(snapshot.read_text());validate(original)
+  else:
+   original=external(root/'restore-evidence.json')
+   guard=state('xcsh-csd-restore-'+run+'.timer')
+   if guard.get('LoadState')!='not-found' and (guard.get('ActiveState')!='inactive' or guard.get('UnitFileState')!='disabled'): raise RuntimeError('guard is not disarmed')
+  result=subprocess.run(['/usr/bin/python3',str(root/'guard.py'),'restore'],capture_output=True,text=True,check=True)
+  reports=[json.loads(line[len('XCSH_RESULT '):]) for line in result.stdout.splitlines() if line.startswith('XCSH_RESULT ')]
+  if len(reports)!=1 or reports[0].get('restored') is not True or reports[0].get('original_states_preserved') is not True: raise RuntimeError('guard restoration unverified')
+  if os.path.lexists(snapshot):
+   private(snapshot);completed=json.loads(snapshot.read_text());verify(completed)
+   if any(completed.get(k)!=original.get(k) for k in ('run_id','service','timer',service,timer)): raise RuntimeError('original snapshot changed')
+   original=completed
+  verify(original)
+  record={'schema_version':1,'externally_verified':True,'worker_identity':identity,'original':original,'restoration':{'restored':True,'original_states_preserved':True}}
+  save(record)
+elif record is None: raise RuntimeError('durable restoration authority unavailable')
+if not os.path.lexists(root) and os.path.lexists(owner): raise RuntimeError('reservation owner remains without original authority')
+if record is None: raise RuntimeError('verified restoration evidence unavailable')
+verify(record['original'])
+if not os.path.lexists(root):
+ probe_cleanup()
+ name='xcsh-csd-restore-'+run
+ for suffix in ('service','timer'):
+  if os.path.lexists(pathlib.Path('/etc/systemd/system',name+'.'+suffix)) or state(name+'.'+suffix).get('LoadState')!='not-found': raise RuntimeError('guard unit remains')
+ if os.path.lexists(pathlib.Path('/run/systemd/system',name+'.timer.d')): raise RuntimeError('guard override remains')
+if mode=='cleanup':
+ probe_cleanup();record['worker_artifacts_removed']=True;save(record)
+ if root.exists(): subprocess.run(['/usr/bin/python3',str(root/'guard.py'),'cleanup'],capture_output=True,text=True,check=True)
+ name='xcsh-csd-restore-'+run
+ if os.path.lexists(root) or os.path.lexists(owner): raise RuntimeError('reservation remains')
+ for suffix in ('service','timer'):
+  unit=name+'.'+suffix
+  if os.path.lexists(pathlib.Path('/etc/systemd/system',unit)) or state(unit).get('LoadState')!='not-found': raise RuntimeError('guard unit remains')
+ if os.path.lexists(pathlib.Path('/run/systemd/system',name+'.timer.d')): raise RuntimeError('guard override remains')
+ verify(record['original']);probe_cleanup();record['reservation_artifacts_removed']=True;save(record)
+elif mode!='restore': raise RuntimeError('invalid recovery action')
+print('XCSH_RESULT '+json.dumps(record))
+`;
+}
+
+async function canaryReservationRecovery(config, deps, worker, action) {
+  const identity = validatedWorker(config, worker);
+  if (deps.reservationRecovery) return deps.reservationRecovery(action, identity);
+  const recoveryDeps = { ...deps, signal: undefined };
+  const directory = `/var/lib/xcsh-csd-recovery/${identity.runId}`;
+  const path = `${directory}/helper.py`;
+  const check = `import os,pathlib,stat\nroot=pathlib.Path('${directory}')\nfor p in (root.parent,root):\n if not os.path.lexists(p): p.mkdir(mode=0o700)\n s=p.lstat()\n if s.st_uid!=0 or stat.S_IMODE(s.st_mode)!=0o700 or not stat.S_ISDIR(s.st_mode): raise RuntimeError('unsafe recovery directory')\nfor p in (root/'helper.py',root/'helper.py.b64'):\n if os.path.lexists(p):\n  s=p.lstat()\n  if s.st_uid!=0 or stat.S_IMODE(s.st_mode)!=0o700 or not stat.S_ISREG(s.st_mode) or s.st_nlink!=1: raise RuntimeError('unsafe recovery helper')`;
+  await invokeSsm(config, recoveryDeps, `set -eu\n/usr/bin/python3 - <<'PY'\n${check}\nPY`);
+  await installWorkerFile(config, recoveryDeps, path, renderCanaryRecoveryHelper(identity));
+  await invokeSsm(config, recoveryDeps, `set -eu\n/usr/bin/python3 - <<'PY'\n${check}\nPY`);
+  return invokeSsm(config, recoveryDeps, `/usr/bin/python3 '${path}' '${action}'`, { expectResult: true });
+}
+
+async function recoverCanary(config, deps, lock, activePath) {
+  if (lock.run_id !== lock.worker_run_id || !SAFE_WORKER_RUN_ID.test(lock.run_id))
+    throw new ControllerError('canary run ownership is unavailable', 'WORKER_IDENTITY_INVALID', 5);
+  const worker = validatedWorker(config, lock.worker_identity);
+  if (worker.runId !== lock.run_id)
+    throw new ControllerError('canary worker ownership differs from lock', 'WORKER_IDENTITY_INVALID', 5);
+  const restoration = await canaryReservationRecovery(config, deps, worker, 'restore');
+  if (
+    restoration.schema_version !== 1 ||
+    JSON.stringify(validatedWorker(config, restoration.worker_identity)) !== JSON.stringify(worker)
+  )
+    throw new ControllerError('restoration evidence ownership mismatch', 'WORKER_IDENTITY_INVALID', 5);
+  if (
+    restoration.externally_verified !== true ||
+    restoration.restoration?.restored !== true ||
+    restoration.restoration?.original_states_preserved !== true
+  )
+    throw new ControllerError('dispatcher restoration unverified', 'RECOVERY_FAILED', 5);
+  const cleanup = await verifyCleanup(config, { ...deps, signal: undefined }, worker);
+  if (!safetyPasses(cleanup)) throw new ControllerError('canary worker cleanup unverified', 'RECOVERY_FAILED', 5);
+  await atomicReplace(activePath, {
+    ...lock,
+    recovery_kind: 'canary',
+    recovery_evidence: restoration,
+    worker_cleanup: cleanup,
+  });
+  const evidence = await canaryReservationRecovery(config, deps, worker, 'cleanup');
+  if (
+    evidence.schema_version !== 1 ||
+    JSON.stringify(validatedWorker(config, evidence.worker_identity)) !== JSON.stringify(worker)
+  )
+    throw new ControllerError('cleanup evidence ownership mismatch', 'WORKER_IDENTITY_INVALID', 5);
+  if (
+    evidence.externally_verified !== true ||
+    evidence.restoration?.restored !== true ||
+    evidence.restoration?.original_states_preserved !== true ||
+    evidence.worker_artifacts_removed !== true ||
+    evidence.reservation_artifacts_removed !== true
+  )
+    throw new ControllerError('canary reservation cleanup unverified', 'RECOVERY_FAILED', 5);
+  await atomicReplace(activePath, {
+    ...lock,
+    recovery_kind: 'canary',
+    recovery_evidence: evidence,
+    worker_cleanup: cleanup,
+  });
+  return { success: true, restoration: evidence.restoration, cleanup, reservation_cleanup: true };
+}
+
+export async function recoverOnly(config, deps) {
+  for (const key of [
+    'awsProfile',
+    'awsRegion',
+    'awsAccount',
+    'terraformDir',
+    'trafficGeneratorTerraformDir',
+    'f5ApiUrl',
+    'f5ApiToken',
+    'namespace',
+    'lbName',
+    'receiptDir',
+  ])
+    if (!config[key]) throw new ControllerError(`missing required configuration: ${key}`, 'CLI_ERROR', 2);
+  if (
+    config.header ||
+    (config.browserMode && config.browserMode !== 'headless') ||
+    (config.placement && config.placement !== 'mixed')
+  )
+    throw new ControllerError('recover-only rejects experiment and browser options', 'CLI_ERROR', 2);
+  // A no-lock recovery must not contact deployment, browsers, traffic, or UUID sources.
+  if (!(await status(config)).active) return { schema_version: 1, command: 'recover-only', success: true, no_op: true };
+  return recoverInterrupted(config, deps);
+}
+
 async function recoverInterrupted(config, deps) {
   const state = await status(config);
   if (!state.active) return null;
@@ -987,6 +1195,11 @@ async function recoverInterrupted(config, deps) {
     throw new ControllerError('another Page Tamper experiment is active', 'OVERLAP', 5);
   const activePath = join(config.receiptDir, 'active.lock');
   const lock = JSON.parse(await readFile(activePath, 'utf8'));
+  if (
+    !['canary', 'bootstrap', 'run', 'suite', 'suite-cleanup'].includes(lock.command) &&
+    lock.recovery_kind !== 'canary'
+  )
+    throw new ControllerError('interrupted run kind cannot be proven', 'WORKER_IDENTITY_INVALID', 5);
   const workerRunId = lock.worker_run_id;
   if (
     (workerRunId === null && !deps.workerProbe) ||
@@ -998,33 +1211,37 @@ async function recoverInterrupted(config, deps) {
   let recovery;
   try {
     const outputs = await validateDeploymentIdentity(config, deps);
-    const originalWorker =
-      workerRunId === null
-        ? null
-        : workerIdentity(config, {
-            runId: workerRunId,
-            root: `/tmp/xcsh-csd-${workerRunId}`,
-          });
-    const originalCleanup = originalWorker
-      ? await cleanupWorker(config, { ...deps, signal: undefined }, originalWorker)
-      : { worker_artifacts_removed: true };
-    if (!originalCleanup.worker_artifacts_removed) {
-      recovery = {
-        success: false,
-        cleanup: originalCleanup,
-        error: {
-          code: 'RECOVERY_FAILED',
-          message: 'original worker remains active or unverified',
-        },
-      };
+    if (lock.recovery_kind === 'canary' || lock.command === 'canary') {
+      recovery = await recoverCanary(config, deps, lock, activePath);
     } else {
-      const recoveryWorker =
-        originalWorker && !deps.workerProbe
-          ? validatedWorker(config, await prepareWorker(config, deps, originalWorker.runId))
-          : null;
-      recovery = await recover(config, deps, outputs, recoveryWorker);
+      const originalWorker =
+        workerRunId === null
+          ? null
+          : workerIdentity(config, {
+              runId: workerRunId,
+              root: `/tmp/xcsh-csd-${workerRunId}`,
+            });
+      const originalCleanup = originalWorker
+        ? await cleanupWorker(config, { ...deps, signal: undefined }, originalWorker)
+        : { worker_artifacts_removed: true };
+      if (!originalCleanup.worker_artifacts_removed) {
+        recovery = {
+          success: false,
+          cleanup: originalCleanup,
+          error: {
+            code: 'RECOVERY_FAILED',
+            message: 'original worker remains active or unverified',
+          },
+        };
+      } else {
+        const recoveryWorker =
+          originalWorker && !deps.workerProbe
+            ? validatedWorker(config, await prepareWorker(config, deps, originalWorker.runId))
+            : null;
+        recovery = await recover(config, deps, outputs, recoveryWorker);
+      }
+      recovery.original_worker_cleanup = originalCleanup;
     }
-    recovery.original_worker_cleanup = originalCleanup;
   } catch (error) {
     await preserveRecoveryLock(activePath, { ...recoveryState, recovery: { success: false } }, error, false);
     throw error;
@@ -1364,7 +1581,7 @@ export async function runCanary(config, deps) {
   await validateDeploymentIdentity(config, deps);
   await recoverInterrupted(config, deps);
   const runId = deps.randomUUID();
-  const identity = deps.workerProbe ? null : workerIdentity(config, { runId, root: `/tmp/xcsh-csd-${runId}` });
+  const identity = workerIdentity(config, { runId, root: `/tmp/xcsh-csd-${runId}` });
   const lockPath = await acquireLock(config, runId, deps.now, 'canary', identity);
   let worker = identity;
   const guarded = { ...config, reservationWorker: identity };
@@ -1372,7 +1589,7 @@ export async function runCanary(config, deps) {
   let result;
   let error;
   try {
-    if (worker) worker = await prepareWorker(config, deps, runId);
+    if (!deps.workerProbe) worker = await prepareWorker(config, deps, runId);
     const guard = await reservationAction(guarded, deps, worker, 'arm');
     if (!guard.armed || !guard.dispatch_drained) throw new ControllerError('reservation not verified', 'INVALID_TEST');
     armed = true;
@@ -1387,12 +1604,8 @@ export async function runCanary(config, deps) {
   }
   // Try restoration even when arming failed: a durable guard may already exist.
   try {
-    const restore = await reservationAction(guarded, deps, worker, 'restore');
-    if (!restore.restored || !restore.original_states_preserved)
-      throw new ControllerError('dispatcher restoration unverified', 'RECOVERY_FAILED');
-    const cleanup = await verifyCleanup(guarded, { ...deps, signal: undefined }, worker);
-    if (!safetyPasses(cleanup)) throw new ControllerError('canary cleanup failed', 'RECOVERY_FAILED');
-    await reservationAction(guarded, deps, worker, 'cleanup');
+    const lock = JSON.parse(await readFile(lockPath, 'utf8'));
+    await recoverCanary(guarded, deps, lock, lockPath);
     if (result)
       result.reservation = {
         armed,
@@ -1550,6 +1763,7 @@ export function createDependencies(overrides = {}) {
     readiness: overrides.readiness,
     cleanup: overrides.cleanup,
     reservation: overrides.reservation,
+    reservationRecovery: overrides.reservationRecovery,
     readFile: overrides.readFile || readFile,
     remove: overrides.remove || rm,
     commandTimeoutMs: overrides.commandTimeoutMs || DEFAULT_TIMINGS.commandTimeoutMs,

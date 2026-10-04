@@ -8,6 +8,7 @@ import {
   DEFAULT_TIMINGS,
   HEADER_IDS,
   PAYMENT_PATH,
+  recoverOnly,
   runCanary,
   runHeader,
   runSuite,
@@ -15,13 +16,14 @@ import {
 } from './lib/csd-page-tamper-controller.mjs';
 
 const DEFAULT_TARGET = `https://client-side-defense.f5-sales-demo.com${PAYMENT_PATH}`;
-export const HELP = `Usage: node scripts/csd-page-tamper.mjs <bootstrap|run|suite|status> [options]
+export const HELP = `Usage: node scripts/csd-page-tamper.mjs <bootstrap|run|suite|canary|recover-only|status> [options]
 
 Commands:
   bootstrap                  Validate identity, no drift, readiness, browsers, and baseline
   run --header HEADER_ID     Execute one bounded mixed-cohort experiment
   suite                      Run XCTO canary, then all remaining headers after canary success
   status                     Report active or interrupted run state without exposing identities
+  recover-only               Restore an interrupted run and STOP; no fresh experiment
   canary                     SINGLE XCTO baseline/canary/recovery with durable worker reservation
   --browser-mode headed-xvfb --placement worker  Required explicit values for canary only
 
@@ -67,8 +69,8 @@ const OPTION_NAMES = new Map([
 export function parseArgs(argv, env = process.env) {
   if (argv.includes('--help') || argv.includes('-h')) return { help: true };
   const command = argv[0];
-  if (!['bootstrap', 'run', 'suite', 'status', 'canary'].includes(command))
-    throw new ControllerError('choose bootstrap, run, suite, canary, or status', 'CLI_ERROR', 2);
+  if (!['bootstrap', 'run', 'suite', 'status', 'canary', 'recover-only'].includes(command))
+    throw new ControllerError('choose bootstrap, run, suite, canary, recover-only, or status', 'CLI_ERROR', 2);
   const values = {};
   for (let index = 1; index < argv.length; index += 2) {
     const name = argv[index];
@@ -77,6 +79,8 @@ export function parseArgs(argv, env = process.env) {
       throw new ControllerError(`${name} requires a value`, 'CLI_ERROR', 2);
     values[OPTION_NAMES.get(name)] = argv[index + 1];
   }
+  if (command === 'recover-only' && ['header', 'browserMode', 'placement', 'cdpEndpoint'].some((key) => key in values))
+    throw new ControllerError('recover-only rejects experiment and browser options', 'CLI_ERROR', 2);
   const config = {
     browserMode: values.browserMode || 'headless',
     placement: values.placement || 'mixed',
@@ -152,6 +156,7 @@ export async function main(argv = process.argv.slice(2), overrides = {}) {
     if (parsed.command === 'suite') result = await runSuite(parsed.config, deps);
     if (parsed.command === 'status') result = await status(parsed.config);
     if (parsed.command === 'canary') result = await runCanary(parsed.config, deps);
+    if (parsed.command === 'recover-only') result = await recoverOnly(parsed.config, deps);
     stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     return result?.success === false || result?.outcome === 'INVALID_TEST' ? 4 : 0;
   } catch (error) {

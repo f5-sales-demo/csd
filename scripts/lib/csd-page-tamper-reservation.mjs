@@ -29,6 +29,116 @@ export const RESTORE_EVIDENCE_CONTRACT = Object.freeze({
     'original UnitFileState and timer ActiveState; service Type/RemainAfterExit and coherent timer-owned execution',
 });
 
+// Kept identical in the guard, worker cleanup and independent recovery helper.
+export const WORKER_MUTEX_PROTOCOL = `import fcntl,stat
+def canonical_directory(path,create=False):
+ path=pathlib.Path(path)
+ fd=os.open('/',os.O_RDONLY|os.O_DIRECTORY)
+ try:
+  for part in path.parts[1:]:
+   try: child=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
+   except FileNotFoundError:
+    if not create or part!=path.name: raise
+    os.mkdir(part,0o700,dir_fd=fd);os.fsync(fd)
+    child=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
+   s=os.fstat(child)
+   if s.st_uid!=0 or stat.S_IMODE(s.st_mode)&0o022: raise RuntimeError('unsafe mutex ancestor')
+   os.close(fd);fd=child
+  s=os.fstat(fd)
+  if stat.S_IMODE(s.st_mode)!=0o700: raise RuntimeError('unsafe mutex parent')
+  return fd
+ except:
+  os.close(fd);raise
+def reservation_mutex(parent,service):
+ parent_fd=canonical_directory(parent,True)
+ name=service+'.mutex'
+ try:
+  try: fd=os.open(name,os.O_RDWR|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=parent_fd);os.fsync(parent_fd)
+  except FileExistsError: fd=os.open(name,os.O_RDWR|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=parent_fd)
+  try:
+   def checked():
+    s=os.fstat(fd);p=os.stat(name,dir_fd=parent_fd,follow_symlinks=False)
+    if not stat.S_ISREG(s.st_mode) or s.st_uid!=0 or s.st_nlink!=1 or s.st_size!=0 or stat.S_IMODE(s.st_mode) not in (0o600,0o644) or (s.st_dev,s.st_ino)!=(p.st_dev,p.st_ino): raise RuntimeError('unsafe reservation mutex')
+    current=canonical_directory(parent)
+    try:
+     if (os.fstat(current).st_dev,os.fstat(current).st_ino)!=(os.fstat(parent_fd).st_dev,os.fstat(parent_fd).st_ino): raise RuntimeError('mutex parent replaced')
+    finally: os.close(current)
+    return s
+   checked()
+   fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+   if stat.S_IMODE(checked().st_mode)==0o644: os.fchmod(fd,0o600);os.fsync(fd)
+   checked()
+   return fd
+  except: os.close(fd);raise
+ finally: os.close(parent_fd)
+`;
+
+// Same-filesystem quarantine is private even when /tmp is a separate mount.
+export const WORKER_FILESYSTEM_PROTOCOL = `import shutil,tempfile
+def worker_authority(run):
+ journal=pathlib.Path('/var/lib/xcsh-csd-recovery')/run/'lifecycle.json'
+ os.close(canonical_directory(journal.parent.parent));os.close(canonical_directory(journal.parent))
+ fd=os.open(journal,os.O_RDONLY|os.O_NOFOLLOW)
+ try:
+  s=os.fstat(fd)
+  if not stat.S_ISREG(s.st_mode) or s.st_uid!=0 or s.st_nlink!=1 or stat.S_IMODE(s.st_mode)!=0o700: raise RuntimeError('worker authority unsafe')
+  with os.fdopen(os.dup(fd)) as f: value=json.load(f)
+ finally: os.close(fd)
+ if value.get('contract')!='xcsh-csd-prearm-v1' or value.get('worker_identity',{}).get('runId')!=run or value.get('worker_identity',{}).get('root')!='/tmp/xcsh-csd-'+run: raise RuntimeError('worker authority mismatch')
+ return journal,value
+def worker_directory(run):
+ journal,value=worker_authority(run);p=pathlib.Path('/tmp/xcsh-csd-'+run)
+ fd=os.open(p,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW);s=os.fstat(fd)
+ if s.st_uid!=0 or stat.S_IMODE(s.st_mode)!=0o755 or value.get('root_inode')!=[s.st_dev,s.st_ino] or [p.lstat().st_dev,p.lstat().st_ino]!=[s.st_dev,s.st_ino]: os.close(fd);raise RuntimeError('worker root ownership unavailable')
+ return fd
+def worker_quarantine(run):
+ journal,value=worker_authority(run);root=pathlib.Path('/tmp/xcsh-csd-'+run)
+ parent_fd=os.open('/tmp',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+ try:
+  parent=os.fstat(parent_fd)
+  if parent.st_uid!=0 or not parent.st_mode & stat.S_ISVTX: raise RuntimeError('unsafe worker parent')
+  qname='.xcsh-csd-quarantine-'+run
+  try: os.mkdir(qname,0o700,dir_fd=parent_fd);os.fsync(parent_fd)
+  except FileExistsError: pass
+  qfd=os.open(qname,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parent_fd);q=os.fstat(qfd)
+  try:
+   if q.st_uid!=0 or stat.S_IMODE(q.st_mode)!=0o700: raise RuntimeError('unsafe worker quarantine')
+   if value.get('quarantine_inode') not in (None,[q.st_dev,q.st_ino]): raise RuntimeError('worker quarantine replaced')
+   if value.get('quarantine_inode') is None:
+    if not os.path.lexists(root) and value.get('root_inode'): raise RuntimeError('worker disappeared without cleanup authority')
+    value['quarantine_inode']=[q.st_dev,q.st_ino]
+    fd,tmp=tempfile.mkstemp(prefix='.quarantine-',dir=journal.parent);os.fchmod(fd,0o700)
+    with os.fdopen(fd,'w') as f: json.dump(value,f);f.flush();os.fsync(f.fileno())
+    os.replace(tmp,journal);jfd=os.open(journal.parent,os.O_DIRECTORY|os.O_NOFOLLOW);os.fsync(jfd);os.close(jfd)
+   def exists(name,fd):
+    try: return os.stat(name,dir_fd=fd,follow_symlinks=False)
+    except FileNotFoundError: return None
+   source=exists(root.name,parent_fd);saved=exists('worker',qfd)
+   if source and saved: raise RuntimeError('ambiguous worker cleanup roots')
+   candidate=source or saved
+   if candidate:
+    import pwd
+    try: worker_uid=pwd.getpwnam('ubuntu').pw_uid
+    except KeyError: worker_uid=-1
+    if not stat.S_ISDIR(candidate.st_mode) or candidate.st_uid not in (0,worker_uid) or stat.S_IMODE(candidate.st_mode) not in (0o700,0o755) or value.get('root_inode')!=[candidate.st_dev,candidate.st_ino]: raise RuntimeError('worker root ownership unavailable')
+    if source: os.rename(root.name,'worker',src_dir_fd=parent_fd,dst_dir_fd=qfd);os.fsync(parent_fd);os.fsync(qfd)
+    saved=exists('worker',qfd)
+    if value.get('root_inode')!=[saved.st_dev,saved.st_ino]: raise RuntimeError('worker root replaced during cleanup')
+    if not shutil.rmtree.avoids_symlink_attacks: raise RuntimeError('descriptor cleanup unavailable')
+    value['cleanup_intent']=True
+    fd,tmp=tempfile.mkstemp(prefix='.cleanup-',dir=journal.parent);os.fchmod(fd,0o700)
+    with os.fdopen(fd,'w') as f: json.dump(value,f);f.flush();os.fsync(f.fileno())
+    os.replace(tmp,journal);jfd=os.open(journal.parent,os.O_DIRECTORY|os.O_NOFOLLOW);os.fsync(jfd);os.close(jfd)
+    shutil.rmtree('worker',dir_fd=qfd);os.fsync(qfd)
+   elif value.get('root_inode') and not value.get('cleanup_intent'): raise RuntimeError('worker disappeared without cleanup intent')
+   value['cleanup_intent']=True
+   fd,tmp=tempfile.mkstemp(prefix='.cleanup-',dir=journal.parent);os.fchmod(fd,0o700)
+   with os.fdopen(fd,'w') as f: json.dump(value,f);f.flush();os.fsync(f.fileno())
+   os.replace(tmp,journal);jfd=os.open(journal.parent,os.O_DIRECTORY|os.O_NOFOLLOW);os.fsync(jfd);os.close(jfd)
+  finally: os.close(qfd)
+ finally: os.close(parent_fd)
+`;
+
 export function renderReservation({
   runId,
   lifetimeSeconds,
@@ -59,19 +169,14 @@ timer=${JSON.stringify(timer)}
 name=${JSON.stringify(name)}
 run_id=${JSON.stringify(runId)}
 lifetime=${lifetimeSeconds}
-import fcntl
-parent=root.parent;parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+${WORKER_MUTEX_PROTOCOL}
+${WORKER_FILESYSTEM_PROTOCOL}
+parent=root.parent
+mutex=reservation_mutex(parent,service)
 def private(path,directory=False):
  s=path.lstat()
- if path.is_symlink() or s.st_uid!=0 or s.st_mode & 0o777!=0o700 or (directory and not path.is_dir()) or (not directory and not path.is_file()): raise RuntimeError('unsafe reservation file: '+str(path))
-# A preexisting root-owned parent may come from install -d (default 0755).
-parent_fd=os.open(parent,os.O_DIRECTORY|os.O_NOFOLLOW)
-if os.fstat(parent_fd).st_uid!=0: os.close(parent_fd);raise RuntimeError('unsafe reservation parent owner')
-os.fchmod(parent_fd,0o700);os.close(parent_fd)
+ if path.is_symlink() or s.st_uid!=0 or s.st_mode & 0o777!=0o700 or s.st_nlink!=1 and not directory or (directory and not path.is_dir()) or (not directory and not path.is_file()): raise RuntimeError('unsafe reservation file: '+str(path))
 private(parent,True)
-mutex_path=parent/(service+'.mutex')
-fd=os.open(mutex_path,os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o700);os.close(fd);private(mutex_path)
-mutex=mutex_path.open('a');fcntl.flock(mutex,fcntl.LOCK_EX)
 owner=parent/(service+'.owner')
 def owned():
  private(root,True);private(root/'guard.py');private(owner)
@@ -117,11 +222,13 @@ def verify_probe_cleanup(remove=False):
   try: argv=(process/'cmdline').read_bytes().split(b'\\0')
   except FileNotFoundError: continue
   if any(arg.startswith(('--user-data-dir='+str(probe_root)+'/probe-').encode()) for arg in argv): raise RuntimeError('owned browser remains active')
- if probe_root.exists():
+ if os.path.lexists(probe_root):
   if not remove: raise RuntimeError('owned probe cleanup not verified')
-  import shutil
-  shutil.rmtree(probe_root)
- if probe_root.exists(): raise RuntimeError('owned probe cleanup not verified')
+  if ${fixture ? 'True' : 'False'} and not os.path.lexists(pathlib.Path('/var/lib/xcsh-csd-recovery')/run_id/'lifecycle.json'):
+   # Fixture-only historical guard matrix never prepares a worker root.
+   raise RuntimeError('fixture worker root lacks inode authority')
+  worker_quarantine(run_id)
+ if os.path.lexists(probe_root): raise RuntimeError('owned probe cleanup not verified')
 def load():
  cleaned=not root.exists()
  if not cleaned:
@@ -188,6 +295,19 @@ def restore():
   if state(name+'.timer')['ActiveState']!='inactive' or state(name+'.timer')['UnitFileState']!='disabled': raise RuntimeError('guard not disarmed')
  value['phase']='complete';value['restored']=True;save(value)
  print('XCSH_RESULT '+json.dumps({'restored':True,'original_states_preserved':True}))
+journal=pathlib.Path('/var/lib/xcsh-csd-recovery')/run_id/'lifecycle.json'
+def arm_phase(phase,pause=False):
+ if ${fixture ? 'True' : 'False'} and not os.path.lexists(journal): return
+ os.close(canonical_directory(journal.parent.parent));os.close(canonical_directory(journal.parent))
+ private(journal);authority=json.loads(journal.read_text())
+ if authority.get('contract')!='xcsh-csd-prearm-v1' or authority.get('worker_identity',{}).get('runId')!=run_id or authority.get('worker_identity',{}).get('root')!='/tmp/xcsh-csd-'+run_id or authority.get('service')!=service or authority.get('timer')!=timer: raise RuntimeError('prearm authority mismatch')
+ if phase=='ARM_INTENT' and (authority.get('phase')!='NOT_ARMED' or authority.get('pause_intent') is not False): raise RuntimeError('prearm authority consumed')
+ authority['phase']=phase;authority['pause_intent']=pause
+ import tempfile
+ fd,temporary=tempfile.mkstemp(prefix='.arm-',dir=journal.parent);os.fchmod(fd,0o700)
+ with os.fdopen(fd,'w') as out: json.dump(authority,out);out.flush();os.fsync(out.fileno())
+ os.replace(temporary,journal)
+ fd=os.open(journal.parent,os.O_DIRECTORY|os.O_NOFOLLOW);os.fsync(fd);os.close(fd)
 mode=sys.argv[1]
 if mode=='arm':
  if root.exists(): raise RuntimeError('reservation already exists')
@@ -196,6 +316,7 @@ if mode=='arm':
   data=state(unit)
   if data.get('LoadState')!='loaded' or data.get('ActiveState') not in ('active','inactive') or data.get('UnitFileState') not in ('enabled','disabled','static'): raise RuntimeError('unsupported original unit state')
  if service not in state(timer).get('Triggers','').split(): raise RuntimeError('timer target mismatch')
+ arm_phase('ARM_INTENT')
  root.mkdir(parents=True,mode=0o700)
  value={unit:state(unit) for unit in (service,timer)}
  value.update(run_id=run_id,service=service,timer=timer,phase='draining',restored=False,expires_at=time.time()+lifetime);save(value)
@@ -213,6 +334,7 @@ if mode=='arm':
  ctl('daemon-reload');ctl('enable','--now',name+'.timer')
  if state(name+'.timer')['ActiveState']!='active' or state(name+'.timer')['UnitFileState']!='enabled': raise RuntimeError('guard not armed')
  # No production stop before the independently managed guard has been verified.
+ arm_phase('PAUSE_INTENT',True)
  ctl('disable','--now',timer)
  if value[service]['UnitFileState']=='enabled': ctl('disable',service)
  ctl('stop',service)
@@ -251,7 +373,7 @@ export function renderHeadedProbe({ root, probeId = randomUUID(), entry, timeout
 import json,os,pathlib,shutil,signal,subprocess,sys,time
 root=pathlib.Path(${JSON.stringify(root)})
 probe=root/${JSON.stringify(`probe-${probeId}`)}
-probe.mkdir(mode=0o700)
+if not probe.is_dir() or probe.is_symlink() or probe.stat().st_uid!=os.getuid(): raise RuntimeError('owned probe workspace unavailable')
 profile=probe/'profile';profile.mkdir(mode=0o700)
 chrome=next((shutil.which(c) for c in ('/opt/chrome/chrome','google-chrome-stable','google-chrome','chromium') if shutil.which(c)),None)
 node=shutil.which('/opt/node/bin/node') or shutil.which('node')
@@ -264,7 +386,9 @@ def cleanup():
    os.killpg(p.pid,signal.SIGTERM)
    try: p.wait(timeout=5)
    except subprocess.TimeoutExpired: os.killpg(p.pid,signal.SIGKILL);p.wait(timeout=5)
- shutil.rmtree(probe)
+ for child in probe.iterdir():
+  if child.is_dir() and not child.is_symlink(): shutil.rmtree(child)
+  else: child.unlink()
 def abort(signum,frame): raise RuntimeError('owned probe interrupted')
 signal.signal(signal.SIGTERM,abort);signal.signal(signal.SIGINT,abort)
 try:
@@ -286,7 +410,14 @@ try:
  if any(a.startswith(b'--headless') for a in argv) or ('--user-data-dir='+str(profile)).encode() not in argv or ('DISPLAY='+display).encode() not in environment or x.poll() is not None: raise RuntimeError('headed process provenance invalid')
  (probe/'entry.mjs').write_text(${JSON.stringify(entry)})
  result=subprocess.run([node,str(probe/'entry.mjs')],env=dict(env,XCSH_PROBE_PORT=port),capture_output=True,text=True,timeout=${timeoutSeconds})
- if result.returncode: raise RuntimeError('probe failed')
+ if result.returncode:
+  # Only the bounded exception summary is emitted, never captured source/stack lines.
+  import re
+  summaries=re.findall(r'^(?:[A-Za-z]+Error|Error): ([^\\r\\n]+)$',result.stderr,re.M)
+  detail=summaries[-1] if summaries else 'entry exited '+str(result.returncode)
+  detail=re.sub(r'https?://\\S+|data:\\S+|(?:APIToken|Bearer)\\s+\\S+','[redacted]',detail)
+  detail=re.sub(r'(?i)(?:token|password|secret|cookie|authorization)[=: ]+[^,; ]+','[redacted]',detail)
+  raise RuntimeError('probe entry failed: '+detail[:240])
  lines=[line for line in result.stdout.splitlines() if line.startswith('XCSH_RESULT ')]
  if len(lines)!=1: raise RuntimeError('probe evidence invalid')
  value=json.loads(lines[0][12:])

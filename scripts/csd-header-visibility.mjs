@@ -2,13 +2,16 @@
 import { lstat, open } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { DOCUMENT_PROBE_SELECTOR_IDS } from './lib/csd-config.mjs';
 import { CdpClient, CliError, runDocumentProbe, withAbort } from './lib/csd-runner.mjs';
 
 export const TARGET = 'https://client-side-defense.f5-sales-demo.com/csd-page-tamper/payment';
 export const CLEANUP_GRACE_MS = 1000;
-export const HELP = `Usage: node scripts/csd-header-visibility.mjs --cdp-endpoint http://127.0.0.1:PORT --expected-profile /absolute/owned/profile [--timeout-ms 30000] [--settle-ms 5000] [--artifact /private/receipt.json]
-Observe exactly one control then one x-content-type-options omission in fresh contexts.
-No collector semantic acceptance, baseline eligibility, or CSD alert inference.
+export const HELP = `Usage: node scripts/csd-header-visibility.mjs --cdp-endpoint http://127.0.0.1:PORT --expected-profile /absolute/owned/profile [--selector x-content-type-options|x-frame-options|cache-control] [--scope session|document|same-origin] [--control matched|passive] [--debugger-attribution true|false] [--timeout-ms 30000] [--settle-ms 5000] [--artifact /private/receipt.json]
+Observe exactly one control then one selected frozen-header omission in fresh contexts.
+Defaults: session scope, matched interception, x-content-type-options, debugger attribution false.
+Use a separate --control passive invocation for timing comparison; never a third visit.
+No collector schema acceptance, baseline eligibility, or CSD alert inference.
 `;
 const fail = (code) => new CliError(code, 2, code);
 const bounds = (options) => {
@@ -29,7 +32,19 @@ const bounds = (options) => {
     resolve(options.expectedProfile) !== options.expectedProfile
   )
     throw fail('PROFILE_REQUIRED');
-  return { ...options, timeoutMs, settleMs };
+  const selector = options.selector ?? 'x-content-type-options';
+  const scope = options.scope ?? 'session';
+  const control = options.control ?? 'matched';
+  const debuggerAttribution = options.debuggerAttribution ?? false;
+  if (
+    !['x-content-type-options', 'x-frame-options', 'cache-control'].includes(selector) ||
+    !DOCUMENT_PROBE_SELECTOR_IDS.includes(selector)
+  )
+    throw fail('INVALID_SELECTOR');
+  if (!['session', 'document', 'same-origin'].includes(scope)) throw fail('INVALID_SCOPE');
+  if (!['matched', 'passive'].includes(control)) throw fail('INVALID_CONTROL');
+  if (typeof debuggerAttribution !== 'boolean') throw fail('INVALID_DEBUGGER_ATTRIBUTION');
+  return { ...options, timeoutMs, settleMs, selector, scope, control, debuggerAttribution };
 };
 export function parseArgs(argv) {
   if (argv.length === 1 && argv[0] === '--help') return { help: true };
@@ -39,12 +54,20 @@ export function parseArgs(argv) {
     '--timeout-ms': 'timeoutMs',
     '--settle-ms': 'settleMs',
     '--artifact': 'artifact',
+    '--selector': 'selector',
+    '--scope': 'scope',
+    '--control': 'control',
+    '--debugger-attribution': 'debuggerAttribution',
   };
   const options = {};
   for (let i = 0; i < argv.length; i += 2) {
     const key = names[argv[i]];
     if (!key || options[key] !== undefined || !argv[i + 1]) throw fail('INVALID_ARGUMENT');
     options[key] = ['timeoutMs', 'settleMs'].includes(key) ? Number(argv[i + 1]) : argv[i + 1];
+    if (key === 'debuggerAttribution') {
+      if (!['true', 'false'].includes(argv[i + 1])) throw fail('INVALID_DEBUGGER_ATTRIBUTION');
+      options[key] = argv[i + 1] === 'true';
+    }
   }
   const result = bounds(options);
   let endpoint;
@@ -64,7 +87,12 @@ export function parseArgs(argv) {
     endpoint.password
   )
     throw fail('INVALID_ENDPOINT');
-  if (result.artifact && !isAbsolute(result.artifact)) throw fail('INVALID_ARTIFACT');
+  if (result.artifact) {
+    const repository = resolve(new URL('..', import.meta.url).pathname);
+    const artifact = resolve(result.artifact);
+    if (!isAbsolute(result.artifact) || artifact === repository || artifact.startsWith(`${repository}/`))
+      throw fail('INVALID_ARTIFACT');
+  }
   return result;
 }
 
@@ -83,6 +111,12 @@ export async function runBoundedPair(input, deps) {
     mode: 'header-visibility-pair',
     target: TARGET,
     browser_provenance: null,
+    selected_header: options.selector,
+    requested_scope: options.scope,
+    control_interception: options.control,
+    debugger_attribution: options.debuggerAttribution,
+    schema_acceptance: 'UNKNOWN',
+    started_at: new Date().toISOString(),
     observations: [],
     success: false,
     collector_semantic_acceptance: 'not-observed',
@@ -94,6 +128,8 @@ export async function runBoundedPair(input, deps) {
       withAbort(() => deps.cdp.send(method, params, sessionId, { signal }), signal),
   };
   try {
+    const uid = (deps.getuid || process.getuid)?.();
+    if (!Number.isInteger(uid) || uid === 0) throw fail('NONROOT_REQUIRED');
     const info = await cdp.send('Browser.getBrowserCommandLine');
     const version = await cdp.send('Browser.getVersion');
     const args = info.arguments;
@@ -109,6 +145,14 @@ export async function runBoundedPair(input, deps) {
           '--disable-seccomp-filter-sandbox',
           '--single-process',
           '--in-process-gpu',
+          '--ignore-certificate-errors',
+          '--ignore-certificate-errors-spki-list',
+          '--allow-insecure-localhost',
+          '--disable-web-security',
+          '--allow-running-insecure-content',
+          '--disable-site-isolation-trials',
+          '--disable-features',
+          '--unsafely-treat-insecure-origin-as-secure',
         ].some((flag) => arg === flag || arg.startsWith(`${flag}=`)),
       ) ||
       args.filter((arg) => arg.startsWith('--user-data-dir')).length !== 1 ||
@@ -119,7 +163,7 @@ export async function runBoundedPair(input, deps) {
     )
       throw fail('BROWSER_PROVENANCE_FAILED');
     const stat = await withAbort(() => (deps.lstat || lstat)(options.expectedProfile), abort.signal);
-    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.())
+    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== uid || (stat.mode & 0o777) !== 0o700)
       throw fail('PROFILE_NOT_OWNED');
     receipt.browser_provenance = {
       headed_arguments_verified: true,
@@ -127,7 +171,7 @@ export async function runBoundedPair(input, deps) {
       sandbox_disable_flags_absent: true,
       owned_profile_verified: true,
     };
-    for (const selector of [undefined, 'x-content-type-options']) {
+    for (const selector of [undefined, options.selector]) {
       if (abort.signal.aborted || Date.now() >= deadline) throw fail('PAIR_TIMEOUT');
       const observation = await runDocumentProbe(
         {
@@ -136,17 +180,26 @@ export async function runBoundedPair(input, deps) {
           timeoutMs: Math.max(1, deadline - Date.now()),
           settleMs: options.settleMs,
         },
-        { cdp, captureMetadata: true, signal: abort.signal, cleanupGraceMs: CLEANUP_GRACE_MS },
+        {
+          cdp,
+          captureMetadata: true,
+          signal: abort.signal,
+          cleanupGraceMs: CLEANUP_GRACE_MS,
+          selectorScope: options.scope,
+          selectedHeader: options.selector,
+          interceptRequests: Boolean(selector) || options.control === 'matched',
+          debuggerAttribution: options.debuggerAttribution,
+        },
       );
       receipt.observations.push(observation);
-      if (observation.cleanup.failed) break;
+      if (!observation.success || observation.cleanup.failed) break;
     }
     receipt.success = receipt.observations.length === 2 && receipt.observations.every(({ success }) => success);
   } catch (error) {
     receipt.error = {
       code: abort.signal.aborted
         ? 'PAIR_TIMEOUT'
-        : ['BROWSER_PROVENANCE_FAILED', 'PROFILE_NOT_OWNED'].includes(error.code)
+        : ['BROWSER_PROVENANCE_FAILED', 'PROFILE_NOT_OWNED', 'NONROOT_REQUIRED'].includes(error.code)
           ? error.code
           : 'PAIR_FAILED',
     };
@@ -166,6 +219,7 @@ export async function runBoundedPair(input, deps) {
       clearTimeout(closeTimer);
     }
   }
+  receipt.ended_at = new Date().toISOString();
   return receipt;
 }
 

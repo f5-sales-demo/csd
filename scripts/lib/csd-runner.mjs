@@ -240,8 +240,47 @@ function documentResponseTracker(expectedOrigin, probe, includeValues = false) {
   };
 }
 
+const VISIBILITY_HEADERS = Object.freeze(['x-content-type-options', 'x-frame-options', 'cache-control']);
+
+function visibilityHeader(selectedHeader) {
+  if (!VISIBILITY_HEADERS.includes(selectedHeader))
+    throw new CliError('selected header is not an approved visibility header', 2, 'INVALID_DOCUMENT_PROBE');
+  return DOCUMENT_PROBE_HEADERS.find(({ id }) => id === selectedHeader);
+}
+
+export function selectorRequestAllowed({ url, method, resourceType } = {}, target, scope) {
+  if (!['session', 'document', 'same-origin'].includes(scope) || method === 'OPTIONS' || resourceType === 'Preflight')
+    return false;
+  try {
+    const request = new URL(url);
+    const expected = new URL(target);
+    if (request.protocol !== 'https:' || request.username || request.password) return false;
+    if (scope === 'session') return true;
+    // Raw equality rejects queries, fragments, credentials and normalization aliases.
+    if (
+      typeof url !== 'string' ||
+      url !== target ||
+      request.search ||
+      request.hash ||
+      expected.search ||
+      expected.hash ||
+      expected.username ||
+      expected.password ||
+      request.origin !== expected.origin ||
+      expected.pathname !== DOCUMENT_PROBE_PATH
+    )
+      return false;
+    return scope === 'document'
+      ? method === 'GET' && resourceType === 'Document'
+      : method === 'GET' || method === 'HEAD';
+  } catch {
+    return false;
+  }
+}
+
 // Retain only projected facts; CDP IDs are private correlation keys, never receipt identifiers.
-export function createHeaderVisibilityTracker(expectedOrigin) {
+export function createHeaderVisibilityTracker(expectedOrigin, selectedHeader = 'x-content-type-options') {
+  const selected = visibilityHeader(selectedHeader);
   const groups = new Map();
   const ordered = [];
   let truncated = false;
@@ -261,9 +300,12 @@ export function createHeaderVisibilityTracker(expectedOrigin) {
   };
   const status = (value) => (Number.isInteger(value) && value >= 100 && value <= 599 ? value : null);
   const bits = (headers, name, expected) => {
-    const key = Object.keys(headers || {}).find((key) => key.toLowerCase() === name);
-    return { present: key !== undefined, exact_match: key !== undefined && headers[key] === expected };
+    if (!headers || typeof headers !== 'object' || Array.isArray(headers)) return null;
+    const keys = Object.keys(headers).filter((key) => key.toLowerCase() === name);
+    if (keys.length > 1 || (keys.length === 1 && typeof headers[keys[0]] !== 'string')) return null;
+    return { present: keys.length === 1, exact_match: keys.length === 1 && headers[keys[0]] === expected };
   };
+  const selectedBits = (headers) => bits(headers, selected.id, selected.value);
   const source = (initiator) => {
     const frame = initiator?.url ? initiator : initiator?.stack?.callFrames?.[0];
     const url = safeUrl(frame?.url);
@@ -283,6 +325,7 @@ export function createHeaderVisibilityTracker(expectedOrigin) {
         from_disk_cache: value?.fromDiskCache === true,
         from_service_worker: value?.fromServiceWorker === true,
         response_xcto: bits(value?.headers, 'x-content-type-options', 'nosniff'),
+        response_selected_header: selectedBits(value?.headers),
       });
   };
   return {
@@ -305,6 +348,7 @@ export function createHeaderVisibilityTracker(expectedOrigin) {
           return;
         }
         if (previous) {
+          if (!params.redirectResponse || params.redirectResponse.url !== previous.requestUrl) group.ambiguous = true;
           response(previous, params.redirectResponse, params.redirectHasExtraInfo);
           if (previous.record) previous.record.completion = 'redirected';
         }
@@ -338,17 +382,16 @@ export function createHeaderVisibilityTracker(expectedOrigin) {
               from_service_worker: null,
               served_from_cache: false,
               response_xcto: null,
+              response_selected_header: null,
               completion: 'pending',
               failure: null,
             }
           : null;
         if (record) ordered.push(record);
-        group.hops.push({ record, expected: null });
+        group.hops.push({ record, expected: null, requestUrl: params.request?.url });
       } else if (method === 'Network.requestWillBeSentExtraInfo') {
         if (group.requestExtras.length < 32)
-          group.requestExtras.push(
-            bits(params.headers, DOCUMENT_PROBE_SELECTOR_HEADER.toLowerCase(), 'x-content-type-options'),
-          );
+          group.requestExtras.push(bits(params.headers, DOCUMENT_PROBE_SELECTOR_HEADER.toLowerCase(), selectedHeader));
         else {
           truncated = true;
           group.ambiguous = true;
@@ -357,6 +400,7 @@ export function createHeaderVisibilityTracker(expectedOrigin) {
         if (group.responseExtras.length < 32)
           group.responseExtras.push({
             xcto: bits(params.headers, 'x-content-type-options', 'nosniff'),
+            selectedHeader: selectedBits(params.headers),
             status: status(params.statusCode),
           });
         else {
@@ -364,6 +408,7 @@ export function createHeaderVisibilityTracker(expectedOrigin) {
           group.ambiguous = true;
         }
       } else if (method === 'Network.responseReceived') {
+        if (!previous || params.response?.url !== previous.requestUrl) group.ambiguous = true;
         response(previous, params.response, params.hasExtraInfo);
       } else if (previous?.record) {
         if (method === 'Network.requestServedFromCache') previous.record.served_from_cache = true;
@@ -393,6 +438,7 @@ export function createHeaderVisibilityTracker(expectedOrigin) {
             wire_selector: requestKnown ? group.requestExtras[index] : null,
             request_extra_info: requestKnown ? 'correlated' : group.requestExtras.length ? 'ambiguous' : 'missing',
             wire_xcto: extra?.xcto ?? null,
+            wire_selected_header: extra?.selectedHeader ?? null,
             wire_status: extra?.status ?? null,
             response_extra_info:
               hop.expected === false
@@ -915,7 +961,18 @@ export async function runDocumentProbe(input, deps) {
   const options = validateDocumentProbeOptions(input);
   if (!deps?.cdp) throw new CliError('document probe requires a CDP client', 3, 'CDP_REQUIRED');
   const origin = new URL(options.target).origin;
-  const metadata = deps.captureMetadata === true ? createHeaderVisibilityTracker(origin) : null;
+  const scope = deps.selectorScope;
+  if (scope !== undefined && !['session', 'document', 'same-origin'].includes(scope))
+    throw new CliError('selector scope is invalid', 2, 'INVALID_DOCUMENT_PROBE');
+  for (const name of ['interceptRequests', 'debuggerAttribution'])
+    if (deps[name] !== undefined && typeof deps[name] !== 'boolean')
+      throw new CliError('diagnostic dependency option is invalid', 2, 'INVALID_DOCUMENT_PROBE');
+  const header = deps.selectedHeader ?? 'x-content-type-options';
+  visibilityHeader(header);
+  const scoped = scope !== undefined;
+  const intercept = deps.interceptRequests ?? scoped;
+  const extended = scoped || intercept || deps.debuggerAttribution === true;
+  const metadata = deps.captureMetadata === true ? createHeaderVisibilityTracker(origin, header) : null;
   const tracker = metadata ? { event() {}, settle() {}, values: () => [] } : networkTracker();
   const responseTracker = metadata
     ? { event() {}, value: () => null }
@@ -936,6 +993,139 @@ export async function runDocumentProbe(input, deps) {
   let document;
   let primaryError;
   const cleanup = { target_closed: false, context_disposed: false, listeners_removed: false, errors: [] };
+  const graceMs = Math.min(1000, Math.max(1, Number.isSafeInteger(deps.cleanupGraceMs) ? deps.cleanupGraceMs : 1000));
+  const pauses = new Map();
+  const scripts = [];
+  let scriptsTruncated = false;
+  let stopping = false;
+  let fetchAttempted = false;
+  let inflightResumes = 0;
+  let resumeFailed = false;
+  let cleanupDeadline = Infinity;
+  let disablePending;
+  if (extended)
+    Object.assign(cleanup, { fetch_disabled: !intercept, paused_requests_resumed: true, inflight_resume_count: 0 });
+  const boundedSend = async (method, params, ownedSession = sessionId, milliseconds = graceMs) => {
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), Math.max(1, milliseconds));
+    try {
+      return await withAbort(() => deps.cdp.send(method, params, ownedSession, { signal: abort.signal }), abort.signal);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const disableFetch = () => {
+    if (disablePending) return disablePending;
+    disablePending = (async () => {
+      try {
+        await boundedSend(
+          'Fetch.disable',
+          {},
+          sessionId,
+          Math.min(graceMs / 4, Math.max(1, cleanupDeadline - Date.now())),
+        );
+        cleanup.fetch_disabled = true;
+      } catch {
+        if (!cleanup.errors.includes('fetch-disable')) cleanup.errors.push('fetch-disable');
+      } finally {
+        disablePending = undefined;
+      }
+    })();
+    return disablePending;
+  };
+  const abortPause = async (id) => {
+    try {
+      await boundedSend('Fetch.failRequest', { requestId: id, errorReason: 'Aborted' }, sessionId, graceMs / 4);
+    } catch {
+      await disableFetch();
+    }
+  };
+  const resume = async (params, overflow = false) => {
+    const id = params.requestId;
+    inflightResumes += 1;
+    try {
+      const strippedHeaders = Object.entries(params.request?.headers || {})
+        .filter(([name]) => name.toLowerCase() !== DOCUMENT_PROBE_SELECTOR_HEADER.toLowerCase())
+        .map(([name, value]) => ({ name, value: String(value) }));
+      const headers = [...strippedHeaders];
+      if (
+        !stopping &&
+        !deps.signal?.aborted &&
+        options.selector &&
+        selectorRequestAllowed(
+          { ...params.request, resourceType: params.resourceType },
+          options.target,
+          scope ?? 'session',
+        )
+      )
+        headers.push({ name: DOCUMENT_PROBE_SELECTOR_HEADER, value: options.selector });
+      try {
+        await boundedSend('Fetch.continueRequest', { requestId: id, headers }, sessionId, graceMs / 4);
+      } catch {
+        // Retry only the stripped override; never restore an original selector.
+        resumeFailed = true;
+        try {
+          await boundedSend(
+            'Fetch.continueRequest',
+            { requestId: id, headers: strippedHeaders },
+            sessionId,
+            graceMs / 4,
+          );
+        } catch {
+          await abortPause(id);
+        }
+      }
+    } catch {
+      resumeFailed = true;
+      await abortPause(id);
+    } finally {
+      inflightResumes -= 1;
+      if (!overflow) pauses.delete(id);
+    }
+  };
+  const pause = (params = {}) => {
+    if (typeof params.requestId !== 'string' || !params.requestId) {
+      resumeFailed = true;
+      void disableFetch();
+      return;
+    }
+    if (pauses.has(params.requestId)) {
+      resumeFailed = true;
+      stopping = true;
+      void disableFetch();
+      return;
+    }
+    if (pauses.size >= 512) {
+      resumeFailed = true;
+      stopping = true;
+      void disableFetch();
+      // Disabling Fetch resumes overflow pauses without retaining unbounded per-request work.
+      return;
+    }
+    // Reserve the ID before any asynchronous continuation; neither IDs nor headers are projected.
+    pauses.set(params.requestId, null);
+    pauses.set(params.requestId, resume(params));
+  };
+  const scriptParsed = (params = {}) => {
+    try {
+      const url = new URL(params.url);
+      if (
+        url.protocol !== 'https:' ||
+        url.username ||
+        url.password ||
+        (url.origin !== origin &&
+          !APPROVED_CSD_COLLECTORS.some(({ host, path }) => url.origin === `https://${host}` && url.pathname === path))
+      )
+        return;
+      if (scripts.length >= 512) {
+        scriptsTruncated = true;
+        return;
+      }
+      scripts.push({ origin: url.origin, path: url.pathname });
+    } catch {
+      // Invalid or inline script locations are not attribution evidence.
+    }
+  };
   try {
     ({ browserContextId: contextId } = await deps.cdp.send('Target.createBrowserContext', {}, undefined, {
       signal: deps.signal,
@@ -951,21 +1141,44 @@ export async function runDocumentProbe(input, deps) {
     }));
     unsubscribe = deps.cdp.onEvent?.((event) => {
       if (event.sessionId !== sessionId) return;
-      navigation.event(event.method, event.params);
-      if (event.method?.startsWith('Network.')) {
-        tracker.event(event.method, event.params);
-        responseTracker.event(event.method, event.params);
-        metadata?.event(event.method, event.params);
+      if (intercept && event.method === 'Fetch.requestPaused') {
+        pause(event.params);
+        return;
+      }
+      if (deps.debuggerAttribution === true && event.method === 'Debugger.scriptParsed') scriptParsed(event.params);
+      try {
+        navigation.event(event.method, event.params);
+        if (event.method?.startsWith('Network.')) {
+          tracker.event(event.method, event.params);
+          responseTracker.event(event.method, event.params);
+          metadata?.event(event.method, event.params);
+        }
+      } catch (error) {
+        if (!metadata) throw error;
+        primaryError = new CliError('metadata event failed', 4, 'DOCUMENT_PROBE_FAILED');
       }
     });
     for (const method of ['Page.enable', 'Runtime.enable', 'Network.enable'])
       await deps.cdp.send(method, {}, sessionId, { signal: deps.signal });
     await deps.cdp.send(
       'Network.setExtraHTTPHeaders',
-      { headers: options.selector ? { [DOCUMENT_PROBE_SELECTOR_HEADER]: options.selector } : {} },
+      {
+        headers:
+          !scoped && !intercept && options.selector ? { [DOCUMENT_PROBE_SELECTOR_HEADER]: options.selector } : {},
+      },
       sessionId,
       { signal: deps.signal },
     );
+    if (deps.debuggerAttribution === true)
+      await deps.cdp.send('Debugger.enable', {}, sessionId, { signal: deps.signal });
+    if (intercept) {
+      if (!unsubscribe)
+        throw new CliError('request interception requires event subscription', 4, 'DOCUMENT_PROBE_FAILED');
+      fetchAttempted = true;
+      await deps.cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] }, sessionId, {
+        signal: deps.signal,
+      });
+    }
     const result = await deps.cdp.send('Page.navigate', { url: options.target }, sessionId, { signal: deps.signal });
     if (result.errorText) throw new CliError(`navigation failed: ${result.errorText}`, 4, 'NAVIGATION_FAILED');
     document = await waitForDocument(
@@ -987,8 +1200,27 @@ export async function runDocumentProbe(input, deps) {
     tracker.settle();
     navigation.assert();
   } catch (error) {
-    primaryError =
-      error instanceof CliError ? error : new CliError(error.message || String(error), 4, 'DOCUMENT_PROBE_FAILED');
+    primaryError = metadata
+      ? new CliError(
+          'document probe failed',
+          4,
+          [
+            'NAVIGATION_FAILED',
+            'REDIRECT_HOST_DRIFT',
+            'REDIRECT_PATH_DRIFT',
+            'NOT_TOP_FRAME',
+            'SELECTOR_TIMEOUT',
+            'ABORTED',
+            'CDP_TIMEOUT',
+            'CDP_CLOSED',
+            'CDP_ERROR',
+          ].includes(error?.code)
+            ? error.code
+            : 'DOCUMENT_PROBE_FAILED',
+        )
+      : error instanceof CliError
+        ? error
+        : new CliError(error?.message || 'document probe failed', 4, 'DOCUMENT_PROBE_FAILED');
   } finally {
     const removeListeners = () => {
       if (!unsubscribe) return;
@@ -1002,14 +1234,28 @@ export async function runDocumentProbe(input, deps) {
     };
     let cleanupAbort;
     let cleanupTimer;
-    if (metadata) {
-      metadataSnapshot = metadata.value();
-      removeListeners();
+    stopping = true;
+    if (metadata) metadataSnapshot = metadata.value();
+    if (deps.debuggerAttribution === true && metadataSnapshot)
+      metadataSnapshot.debugger_attribution = { scripts: structuredClone(scripts), truncated: scriptsTruncated };
+    if (metadata || extended) {
       cleanupAbort = new AbortController();
-      cleanupTimer = setTimeout(() => cleanupAbort.abort(), deps.cleanupGraceMs ?? 1000);
+      cleanupDeadline = Date.now() + graceMs;
+      cleanupTimer = setTimeout(() => cleanupAbort.abort(), graceMs);
+    }
+    if (fetchAttempted) {
+      // Keep the listener installed while draining and disabling; late pauses still need continuation.
+      while (inflightResumes && Date.now() < cleanupDeadline - graceMs / 2)
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      await disableFetch();
+      while (inflightResumes && Date.now() < cleanupDeadline - graceMs / 4)
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      cleanup.inflight_resume_count = inflightResumes;
+      cleanup.paused_requests_resumed = inflightResumes === 0 && pauses.size === 0 && !resumeFailed;
+      if (!cleanup.paused_requests_resumed) cleanup.errors.push('request-resume');
     }
     const cleanupSend = (method, params) =>
-      metadata
+      metadata || extended
         ? withAbort(
             () => deps.cdp.send(method, params, undefined, { signal: cleanupAbort.signal }),
             cleanupAbort.signal,
@@ -1021,16 +1267,22 @@ export async function runDocumentProbe(input, deps) {
         if (result.success === true) cleanup.target_closed = true;
         else cleanup.errors.push('target-close');
       } catch (error) {
-        cleanup.errors.push(error.code || 'target-close');
+        cleanup.errors.push('target-close');
       }
     if (contextId)
       try {
         await cleanupSend('Target.disposeBrowserContext', { browserContextId: contextId });
         cleanup.context_disposed = true;
       } catch (error) {
-        cleanup.errors.push(error.code || 'context-dispose');
+        cleanup.errors.push('context-dispose');
       }
     clearTimeout(cleanupTimer);
+    if (fetchAttempted) {
+      cleanup.inflight_resume_count = inflightResumes;
+      cleanup.paused_requests_resumed = inflightResumes === 0 && pauses.size === 0 && !resumeFailed;
+      if (!cleanup.paused_requests_resumed && !cleanup.errors.includes('request-resume'))
+        cleanup.errors.push('request-resume');
+    }
     removeListeners();
   }
   tracker.settle();
@@ -1066,6 +1318,13 @@ export async function runDocumentProbe(input, deps) {
         target_closed: cleanup.target_closed,
         context_disposed: cleanup.context_disposed,
         listeners_removed: cleanup.listeners_removed,
+        ...(extended
+          ? {
+              fetch_disabled: cleanup.fetch_disabled,
+              paused_requests_resumed: cleanup.paused_requests_resumed,
+              inflight_resume_count: cleanup.inflight_resume_count,
+            }
+          : {}),
         failed: cleanup.errors.length > 0,
       },
       success: !primaryError && cleanup.errors.length === 0,

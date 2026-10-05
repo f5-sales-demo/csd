@@ -1670,6 +1670,94 @@ Earlier archives and the original working checkout were preserved. No infrastruc
 continuous-control change occurred. This pair did not establish a new alert outcome and does
 not replace the valid `NO_ALERT_WITHIN_WINDOW` canary above.
 
+### Bounded selector-scope diagnostics (new usage; not a live result)
+
+These commands attach to an independently owned, non-root, headed Chrome with its sandbox
+enabled, a private profile (`0700`) and loopback CDP. Replace `PORT` and `/private/PROFILE`
+with that browser's actual values; do not reuse or stop the continuous-control browser/display.
+Sandbox-, security- or certificate-disabling flags are rejected. This publication does not
+claim a live execution of the new scopes.
+
+Each invocation performs **one control, then one treatment only**: at most 30 seconds total
+observation, normally five seconds settling per visit, with a separate one-second cleanup
+budget. No third visit or automatic matrix follows. Stop subsequent work on any failed
+observation, ambiguous isolation or cleanup failure. Owned paused requests must be resumed
+and owned-session Fetch disabled before targets close.
+
+Start with XCTO and matched interception; evaluate one scope change at a time:
+
+```bash
+node scripts/csd-header-visibility.mjs \
+  --cdp-endpoint http://127.0.0.1:PORT --expected-profile /private/PROFILE \
+  --selector x-content-type-options --scope document --control matched \
+  --debugger-attribution false --timeout-ms 30000 --settle-ms 5000
+
+node scripts/csd-header-visibility.mjs \
+  --cdp-endpoint http://127.0.0.1:PORT --expected-profile /private/PROFILE \
+  --selector x-content-type-options --scope same-origin --control matched \
+  --debugger-attribution false --timeout-ms 30000 --settle-ms 5000
+```
+
+`document` selects only **GET Document** at the exact protected payment URL; natural HEADs
+remain selector-free. `same-origin` selects only that exact payment **GET/HEAD**, not every
+resource on the origin. Other paths, origins and redirect destinations are excluded.
+Neither scope selects collector/DIP requests or OPTIONS/preflight. The natural HEAD's
+caller remains UNKNOWN unless independently attributed; do not generate a synthetic HEAD.
+
+`session` retains the session-wide comparison, including possible selector transport to
+approved DIP POSTs, but never OPTIONS/preflight. That DIP difference is a confounder, not
+proof of isolation. All intercepted controls strip the selector case-insensitively; scoped
+treatments strip it everywhere outside their selected requests. Request-stage interception
+is limited to diagnostic-owned sessions, never response-header mutation.
+
+Defaults are `--selector x-content-type-options`, `--scope session`, `--control matched`
+and `--debugger-attribution false`. `matched` intercepts both visits identically; `passive`
+leaves only the control unintercepted while retaining treatment interception. Compare a
+passive control only by deliberately repeating a separate invocation with the same selector
+and scope, for example after reviewing the matched document pair:
+
+```bash
+node scripts/csd-header-visibility.mjs \
+  --cdp-endpoint http://127.0.0.1:PORT --expected-profile /private/PROFILE \
+  --selector x-content-type-options --scope document --control passive \
+  --debugger-attribution false --timeout-ms 30000 --settle-ms 5000
+```
+
+This repetition is another two-visit diagnostic, not an extra visit in the first pair.
+Fresh contexts do not establish fresh, different end users or baseline eligibility.
+Interpret completion timing and preflight differences conservatively.
+
+Only after XCTO one-factor analysis, choose a **new explicit step**, not a suite, using
+`--selector x-frame-options` (XFO) or `--selector cache-control` with the same reviewed scope
+and control. These three selectors reuse frozen repository baseline definitions; they are
+**not an F5-monitored-header list**. The independent XCTO canary/matrix stop rule above still
+applies; these diagnostics neither advance that matrix nor establish an alert outcome.
+
+`--debugger-attribution true` is a separate opt-in to allowlisted script source-origin/path
+metadata from `Debugger.enable`/`scriptParsed`, not source bodies, stacks, arguments,
+breakpoints or vendor patches. Metadata alone does not identify the header collector.
+Do not persist raw bodies, headers, browser arguments or stacks. Actual-wire request and
+response CDP `ExtraInfo` are the evidence, not intended headers or Fetch overrides.
+Keep `wire_xcto` for the default and distinguish `wire_selected_header` from
+`response_selected_header` for the chosen frozen baseline. Missing or ambiguous correlation
+is **UNKNOWN**, never inferred absence. Collector HTTP `200` is transport evidence, not
+semantic acceptance, baseline eligibility or detection.
+
+**Separate delayed API observation:** after a valid network permutation, the user's requested
+one-hour **TEST_ALLOWANCE** may be observed through external API polling; it is not a vendor
+SLA and does not keep Chrome open for an hour. Record the permutation and observation start/end
+in UTC, account for carryover from earlier permutations, and correlate namespace, exact payment
+path, selected header and timestamps. Read current alerts plus complete, bounded, paginated
+history through EOF; an incomplete/truncated/erroring history is not a complete observation.
+Do not claim alert absence before the entire window and complete reads finish. Eligibility
+remains UNKNOWN without independent evidence; lack of an attributable event is not proof
+that an eligible comparison occurred. Keep this observation separate from historical canary
+outcomes and stop further permutations when the diagnostic fails.
+
+**Connected packet capture remains blocked:** ownership of a connected five-tuple or exclusive
+interface has not been proved. No ambient or destination-only capture helper is implemented;
+shared traffic and encrypted packets cannot establish exclusive header or payload evidence.
+
 ### Separate read-only notification audit: 2026-10-04
 
 The audit result is **PARTIAL**, not proof that the whole notification chain works. The following

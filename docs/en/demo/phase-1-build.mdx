@@ -22,6 +22,8 @@ The API and Terraform workflows build the same logical architecture, but they ar
 
 Require numeric ports and DNS-label resource names before the first request:
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_NAMESPACE XCSH_LB_NAME XCSH_ORIGIN_POOL_NAME XCSH_ORIGIN_KIND XCSH_ORIGIN_HOSTNAME XCSH_ORIGIN_IP XCSH_ORIGIN_PORT XCSH_HC_NAME">
+
 ```bash
 case "${XCSH_API_URL:-}" in
   https://*) ;;
@@ -80,7 +82,11 @@ case "${XCSH_ORIGIN_KIND:-}" in
 esac
 ```
 
+</div>
+
 Create a local, secret-free session ledger only when the configured path is absent. If a ledger already exists, never replace, truncate, or reinitialize it: validate it completely and resume only that exact matching API session. [Phase 4](/csd/en/demo/phase-4-teardown/) uses `resources` as its only deletion allowlist. `outcomes` is an append-only request journal; it never grants deletion authority.
+
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_NAMESPACE XCSH_LB_NAME XCSH_DOMAINNAME XCSH_ORIGIN_POOL_NAME XCSH_HC_NAME">
 
 ```bash
 export CSD_API_SESSION_FILE="${CSD_API_SESSION_FILE:-.csd-api-session.json}"
@@ -228,6 +234,8 @@ ledger_record() {
 }
 ```
 
+</div>
+
 Call `ledger_outcome` immediately after **every** GET, POST, or PUT result, before another API request.
 Record `unknown` for transport errors, malformed bodies, ambiguous `5xx` responses, or any response whose identity cannot be proven, then stop.
 Call `ledger_record` exactly once per resource: `pre-existing` after an exact matching GET or `409`, `created` after a successful create, and `unknown` after a conflicting result.
@@ -242,6 +250,8 @@ All requests below are native `xcsh_api` operations. Substitute current values f
 
 GET the exact namespace:
 
+<div data-xcsh-context="json">
+
 ```json
 {
   "method": "GET",
@@ -250,7 +260,11 @@ GET the exact namespace:
 }
 ```
 
+</div>
+
 After a matching response, call `ledger_outcome GET namespace "$XCSH_NAMESPACE" "$XCSH_NAMESPACE" match` and record it as `pre-existing`. After `404`, call the same helper with `absent`, then create it:
+
+<div data-xcsh-context="json">
 
 ```json
 {
@@ -263,13 +277,17 @@ After a matching response, call `ledger_outcome GET namespace "$XCSH_NAMESPACE" 
 }
 ```
 
+</div>
+
 Immediately journal the POST and record ownership. A successful create is `created`; `409` is `pre-existing`; any other ambiguous or conflicting result is `unknown` and stops the workflow. Re-read the exact namespace, journal that GET, and require the expected name.
 
 ## Step 2: Read or Create the Protected Domain
 
-The DNS-label resource name is `client-side-defense`; the protected value is the eTLD+1 root in `XCSH_ROOT_DOMAIN`. These are different identifiers.
+The DNS-label resource name is `<XCSH_NAMESPACE>`; the protected value is the eTLD+1 root in `XCSH_ROOT_DOMAIN`. These are different identifiers.
 
 First list the collection:
+
+<div data-xcsh-context="json">
 
 ```json
 {
@@ -279,7 +297,11 @@ First list the collection:
 }
 ```
 
-Journal the list GET. Select only the item whose top-level `name` is exactly `client-side-defense`. If found, perform the individual GET before comparing its full spec:
+</div>
+
+Journal the list GET. Select only the item whose top-level `name` is exactly `<XCSH_NAMESPACE>`. If found, perform the individual GET before comparing its full spec:
+
+<div data-xcsh-context="json">
 
 ```json
 {
@@ -292,7 +314,11 @@ Journal the list GET. Select only the item whose top-level `name` is exactly `cl
 }
 ```
 
+</div>
+
 Journal the exact GET. If its `metadata.name`, namespace, and `spec.protected_domain` match, record `pre-existing` and continue without modifying it. A conflict is `unknown` and blocks the build. If the list contained no exact name, create it:
+
+<div data-xcsh-context="json">
 
 ```json
 {
@@ -309,11 +335,15 @@ Journal the exact GET. If its `metadata.name`, namespace, and `spec.protected_do
 }
 ```
 
+</div>
+
 Journal the POST immediately. Record `created` only after a successful create; record `409` as `pre-existing`; record any uncertain result as `unknown` and stop. Then run and journal the individual GET and require the exact name and protected root.
 
 ## Step 3: Optionally Create a Healthcheck
 
 If `XCSH_HC_NAME` is empty, create no healthcheck, add no healthcheck ledger resource, and omit `spec.healthcheck` from every origin-pool body. Otherwise GET `/api/config/namespaces/{namespace}/healthchecks/{name}`, journal its outcome, and create only after `404`:
+
+<div data-xcsh-context="json">
 
 ```json
 {
@@ -339,6 +369,8 @@ If `XCSH_HC_NAME` is empty, create no healthcheck, add no healthcheck ledger res
 }
 ```
 
+</div>
+
 Journal the POST, then record its ownership exactly once. Read and journal the exact object; require the expected name, path, and thresholds. If quota is exhausted, do not delete unrelated healthchecks: leave `XCSH_HC_NAME` empty and continue only if no healthcheck resource was created or recorded.
 
 ## Step 4: Read or Create the Origin Pool
@@ -351,6 +383,8 @@ Choose exactly one clean create body. The `port` value is a JSON number, not a q
 
 ### `public_name` origin
 
+<div data-xcsh-context="json">
+
 ```json
 {
   "method": "POST",
@@ -358,7 +392,7 @@ Choose exactly one clean create body. The `port` value is a JSON number, not a q
   "params": { "namespace": "<XCSH_NAMESPACE>" },
   "payload": {
     "metadata": {
-      "name": "<XCSH_ORIGIN_POOL>",
+      "name": "<XCSH_ORIGIN_POOL_NAME>",
       "namespace": "<XCSH_NAMESPACE>"
     },
     "spec": {
@@ -371,7 +405,11 @@ Choose exactly one clean create body. The `port` value is a JSON number, not a q
 }
 ```
 
+</div>
+
 ### `public_ip` origin
+
+<div data-xcsh-context="json">
 
 ```json
 {
@@ -380,7 +418,7 @@ Choose exactly one clean create body. The `port` value is a JSON number, not a q
   "params": { "namespace": "<XCSH_NAMESPACE>" },
   "payload": {
     "metadata": {
-      "name": "<XCSH_ORIGIN_POOL>",
+      "name": "<XCSH_ORIGIN_POOL_NAME>",
       "namespace": "<XCSH_NAMESPACE>"
     },
     "spec": {
@@ -393,7 +431,11 @@ Choose exactly one clean create body. The `port` value is a JSON number, not a q
 }
 ```
 
+</div>
+
 Replace `80` with the validated numeric value of `XCSH_ORIGIN_PORT` without quotes. When `XCSH_HC_NAME` is non-empty, add this sibling to the selected `spec`; otherwise omit it entirely:
+
+<div data-xcsh-context="json">
 
 ```json
 "healthcheck": [
@@ -404,6 +446,8 @@ Replace `80` with the validated numeric value of `XCSH_ORIGIN_PORT` without quot
 ]
 ```
 
+</div>
+
 Journal the POST immediately and record `created` only for a successful create. Record `409` as `pre-existing`, never `created`; an ambiguous response is `unknown` and stops. Read and journal the exact pool. Require one server of the selected kind, the exact endpoint, a numeric matching port, and either the one expected healthcheck reference or no `healthcheck` field.
 
 ### Clean Origin-Pool Replace
@@ -412,17 +456,19 @@ Only a pool recorded as `created` by this session may exercise PUT. Build the re
 
 #### Replace a `public_name` pool
 
+<div data-xcsh-context="json">
+
 ```json
 {
   "method": "PUT",
   "path": "/api/config/namespaces/{namespace}/origin_pools/{name}",
   "params": {
     "namespace": "<XCSH_NAMESPACE>",
-    "name": "<XCSH_ORIGIN_POOL>"
+    "name": "<XCSH_ORIGIN_POOL_NAME>"
   },
   "payload": {
     "metadata": {
-      "name": "<XCSH_ORIGIN_POOL>",
+      "name": "<XCSH_ORIGIN_POOL_NAME>",
       "namespace": "<XCSH_NAMESPACE>"
     },
     "spec": {
@@ -435,7 +481,11 @@ Only a pool recorded as `created` by this session may exercise PUT. Build the re
 }
 ```
 
+</div>
+
 #### Replace a `public_ip` pool
+
+<div data-xcsh-context="json">
 
 ```json
 {
@@ -443,11 +493,11 @@ Only a pool recorded as `created` by this session may exercise PUT. Build the re
   "path": "/api/config/namespaces/{namespace}/origin_pools/{name}",
   "params": {
     "namespace": "<XCSH_NAMESPACE>",
-    "name": "<XCSH_ORIGIN_POOL>"
+    "name": "<XCSH_ORIGIN_POOL_NAME>"
   },
   "payload": {
     "metadata": {
-      "name": "<XCSH_ORIGIN_POOL>",
+      "name": "<XCSH_ORIGIN_POOL_NAME>",
       "namespace": "<XCSH_NAMESPACE>"
     },
     "spec": {
@@ -460,6 +510,8 @@ Only a pool recorded as `created` by this session may exercise PUT. Build the re
 }
 ```
 
+</div>
+
 In the selected body, replace `80` with the validated numeric `XCSH_ORIGIN_PORT` without quotes.
 When `XCSH_HC_NAME` is non-empty, add the `healthcheck` sibling shown above; otherwise omit it entirely.
 Journal the PUT as `replaced`, then read and journal the exact pool and repeat all checks.
@@ -469,11 +521,13 @@ The linked [Phase 4 API teardown](/csd/en/demo/phase-4-teardown/#delete-in-rever
 
 ## Step 5: Create and Replace One HTTPS Load Balancer
 
-The unsuffixed load balancer name is `XCSH_LB_NAME`; the reference value is `client-side-defense`. Do not create `-http` and `-https` variants.
+The unsuffixed load balancer name is `XCSH_LB_NAME`; the reference value is `<XCSH_NAMESPACE>`. Do not create `-http` and `-https` variants.
 
 GET `/api/config/namespaces/{namespace}/http_loadbalancers/{name}` and journal the result. An exact existing object is `pre-existing` and stops this build; a conflict is `unknown` and stops; only `404` permits POST.
 
 The catalog requires `metadata.name`, `metadata.namespace`, and `spec.domains`. The body below adds only the requested HTTPS, advertisement, route, and CSD choices; it omits server-default TLS and load-balancing fields.
+
+<div data-xcsh-context="json">
 
 ```json
 {
@@ -493,7 +547,7 @@ The catalog requires `metadata.name`, `metadata.namespace`, and `spec.domains`. 
         {
           "pool": {
             "namespace": "<XCSH_NAMESPACE>",
-            "name": "<XCSH_ORIGIN_POOL>"
+            "name": "<XCSH_ORIGIN_POOL_NAME>"
           },
           "weight": 1,
           "priority": 1
@@ -507,13 +561,17 @@ The catalog requires `metadata.name`, `metadata.namespace`, and `spec.domains`. 
 }
 ```
 
-Journal the POST immediately. Record `created` only for a successful create, with `spec: {"domain":"<XCSH_DOMAINNAME>","origin_pool":"<XCSH_ORIGIN_POOL>"}`. Record `409` as `pre-existing`; record ambiguity as `unknown` and stop.
+</div>
+
+Journal the POST immediately. Record `created` only for a successful create, with `spec: {"domain":"<XCSH_DOMAINNAME>","origin_pool":"<XCSH_ORIGIN_POOL_NAME>"}`. Record `409` as `pre-existing`; record ambiguity as `unknown` and stop.
 
 GET and journal the exact load balancer. Verify the unsuffixed name, the single expected domain, HTTPS auto-cert with redirect enabled, public-default-VIP advertisement, one expected origin-pool reference with weight and priority `1`, and all-pages CSD injection.
 
 ### Clean Load-Balancer PUT
 
 Require the ledger to identify this exact load balancer as `created`. Exercise replace with a fresh body containing only the same metadata and spec used for POST:
+
+<div data-xcsh-context="json">
 
 ```json
 {
@@ -536,7 +594,7 @@ Require the ledger to identify this exact load balancer as `created`. Exercise r
         {
           "pool": {
             "namespace": "<XCSH_NAMESPACE>",
-            "name": "<XCSH_ORIGIN_POOL>"
+            "name": "<XCSH_ORIGIN_POOL_NAME>"
           },
           "weight": 1,
           "priority": 1
@@ -549,6 +607,8 @@ Require the ledger to identify this exact load balancer as `created`. Exercise r
   }
 }
 ```
+
+</div>
 
 Journal the PUT as `replaced`. Do not PUT a server response wholesale. GET and journal the exact load balancer again, then repeat all six checks. [Phase 4](/csd/en/demo/phase-4-teardown/#delete-in-reverse-dependency-order) deletes only its ledger-created entry and verifies `404` before deleting the pool.
 

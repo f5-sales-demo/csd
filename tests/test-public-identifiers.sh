@@ -283,7 +283,7 @@ if missing:
     raise SystemExit(f"FAIL: .env.example lacks required XCSH keys: {sorted(missing)}")
 if values["XCSH_CSD_DEPLOYMENT_MODE"] not in {"api", "terraform"}:
     raise SystemExit("FAIL: deployment mode must select api or terraform ownership")
-if values["XCSH_LB_NAME"] != "client-side-defense":
+if values["XCSH_LB_NAME"] != "demo-app":
     raise SystemExit("FAIL: XCSH_LB_NAME must be the unsuffixed canonical load balancer name")
 if values["XCSH_ORIGIN_KIND"] != "public_name":
     raise SystemExit("FAIL: XCSH_ORIGIN_KIND must default to public_name")
@@ -451,9 +451,9 @@ if not re.search(r"origin\.example\.com.*192\.0\.2\.\*.*198\.51\.100\.\*.*203\.0
 
 diagnostics = (root / "docs/en/diagnostics.mdx").read_text()
 marker_contract = [
-    r"APPLICATION_MARKER='xXCSH_APPLICATION_MARKERx'",
+    r"APPLICATION_MARKER='<XCSH_APPLICATION_MARKER>'",
     r"XCSH_APPLICATION_MARKER is required for every scenario",
-    r"replace-with-application-marker.*replace-with-azure-application-marker.*xXCSH_APPLICATION_MARKERx",
+    r"replace-with-application-marker.*replace-with-azure-application-marker.*<XCSH_APPLICATION_MARKER>",
     r"grep -Fqi \"\$APPLICATION_MARKER\"",
 ]
 for pattern in marker_contract:

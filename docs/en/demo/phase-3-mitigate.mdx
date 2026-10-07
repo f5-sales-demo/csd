@@ -27,6 +27,8 @@ For Terraform ownership, change the repository configuration, review a fresh pla
 
 Before capturing the "before" snapshot, use the Phase 1 `CSD_API_SESSION_FILE`, `ledger_outcome`, and `ledger_record` helpers in the same shell. Normalize the current API URL, derive its tenant identity, resolve the ledger path, and validate the exact API URL, tenant, namespace, and domain before any request:
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_NAMESPACE XCSH_LB_NAME XCSH_DOMAINNAME XCSH_ORIGIN_POOL_NAME XCSH_HC_NAME">
+
 ```bash
 case "${XCSH_API_URL:-}" in https://*) ;; *) exit 1 ;; esac
 while [ "${XCSH_API_URL%/}" != "$XCSH_API_URL" ]; do
@@ -103,23 +105,33 @@ jq -e --arg api_url "$XCSH_API_URL" --arg tenant_hostname "$XCSH_TENANT_HOSTNAME
 }
 ```
 
+</div>
+
 List mitigated domains. If the count is not `0`, stop and use Phase 4 to remove only mitigation entries recorded as `created` by their originating session. Baseline cleanup must never guess names or delete unrecorded resources.
+
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
 
 ```bash
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/mitigated_domains" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/mitigated_domains" \
   | jq '{count: (.items | length)}'
 ```
 
+</div>
+
 ### Confirm the Phase 2 Entry Gate
+
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
 
 ```bash
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/detected_domains" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/detected_domains" \
   | jq '{total_domains: .domain_summary.totalDomains.count, domains: [.domains_list[]? | {domain, category}]}'
 ```
+
+</div>
 
 ### Evidence
 
@@ -159,7 +171,7 @@ Use `navigate_page` with `initScript` so required browser functions are preserve
 
 Operators without browser automation tools run the simulation manually using the same procedure as [Phase 2 — Step 8: Attack Simulation](/csd/en/demo/phase-2-attack/#step-8-attack-simulation):
 
-1. Navigate to `https://xXCSH_DOMAINNAMEx/#/login`
+1. Navigate to `https://<XCSH_DOMAINNAME>/#/login`
 2. Enter synthetic markers in the Email and Password fields (do not submit)
 3. Open DevTools and select the **Console** and **Network** tabs
 4. Run the Combined Detection Script from [Trigger Detection](/csd/en/trigger-detection/#run-the-combined-simulation-script)
@@ -170,7 +182,7 @@ Operators without browser automation tools run the simulation manually using the
 | Check | Expected (Before Mitigation) | Status |
 | --- | --- | --- |
 | Protected application | Loaded over HTTPS | PASS / FAIL |
-| HTTP redirect | `http://xXCSH_DOMAINNAMEx/` returns `301`; do not execute the simulation over HTTP | PASS / FAIL |
+| HTTP redirect | `http://<XCSH_DOMAINNAME>/` returns `301`; do not execute the simulation over HTTP | PASS / FAIL |
 | Candidate script requests | Record the observed subset and result for each | PASS / FAIL |
 | Synthetic fetch requests | Record the observed browser result for each | PASS / FAIL |
 | Console output | `[CSD Demo] Simulation complete` | PASS / FAIL |
@@ -194,6 +206,8 @@ Review the file before continuing. An empty target list blocks mitigation becaus
 
 For each reviewed pair, GET the exact DNS-label name first, then append exactly one ledger outcome before processing the next pair. A successful POST is `created`; an exact GET or `409` is `pre-existing`; timeout, malformed response, conflict, or ambiguous `5xx` is `unknown` and stops the phase. A `409` is never evidence that this session created the object.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
+
 ```bash
 mitigate_domain() {
   name=$1 domain=$2
@@ -202,7 +216,7 @@ mitigate_domain() {
   body=$(mktemp) || return 1
 
   code=$(curl -sS -o "$body" -w '%{http_code}' \
-    -H "Authorization: APIToken xXCSH_API_TOKENx" \
+    -H "Authorization: APIToken <XCSH_API_TOKEN>" \
     "$base/$name") || code=000
 
   case "$code" in
@@ -223,7 +237,7 @@ mitigate_domain() {
     404)
       ledger_outcome GET mitigated_domain "$XCSH_NAMESPACE" "$name" absent || return 1
       code=$(curl -sS -o "$body" -w '%{http_code}' -X POST \
-        -H "Authorization: APIToken xXCSH_API_TOKENx" \
+        -H "Authorization: APIToken <XCSH_API_TOKEN>" \
         -H "Content-Type: application/json" \
         -d "$(jq -cn --arg name "$name" --arg ns "$XCSH_NAMESPACE" --arg domain "$domain" \
           '{metadata:{name:$name,namespace:$ns},spec:{mitigated_domain:$domain}}')" \
@@ -246,7 +260,7 @@ mitigate_domain() {
         409)
           ledger_outcome POST mitigated_domain "$XCSH_NAMESPACE" "$name" conflict || return 1
           code=$(curl -sS -o "$body" -w '%{http_code}' \
-            -H "Authorization: APIToken xXCSH_API_TOKENx" \
+            -H "Authorization: APIToken <XCSH_API_TOKEN>" \
             "$base/$name") || code=000
           if [ "$code" = 200 ] && jq -e --arg name "$name" --arg ns "$XCSH_NAMESPACE" \
             --arg domain "$domain" '
@@ -290,18 +304,24 @@ done <"$CSD_API_SESSION_DIR/observed-mitigation-targets.tsv"
 [ "$target_count" -gt 0 ] || { echo "STOP: no observed mitigation targets"; exit 1; }
 ```
 
+</div>
+
 Do not retry a missing or failed item by POSTing blindly: the ledger's uniqueness rule prevents rewriting ownership history. Resolve the `unknown` entry first and start a new reviewed session if necessary.
 
 ## Step 4: Verify Mitigations Applied
 
 List all mitigated domains and reconcile the reviewed targets against the collection and ledger:
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
+
 ```bash
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/mitigated_domains" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/mitigated_domains" \
   | jq '{count: (.items | length), items: [.items[]? | {name: .metadata.name, domain: .spec.mitigated_domain}]}'
 ```
+
+</div>
 
 <Aside type="note">
 Collection output confirms configuration state only. It does not establish ownership or browser enforcement, and unrelated pre-existing entries may be present.
@@ -332,7 +352,7 @@ API list membership and counters confirm configuration. A mitigation PASS requir
 
 ### After-Mitigation Manual Execution
 
-1. Navigate to `https://xXCSH_DOMAINNAMEx/#/login`.
+1. Navigate to `https://<XCSH_DOMAINNAME>/#/login`.
 2. Enter the same synthetic markers used in the baseline.
 3. Open DevTools and preserve the Network log.
 4. Run the same Combined Detection Script.
@@ -366,23 +386,31 @@ Compare only the reviewed domains observed in the Step 2 baseline:
 
 ### Verify Post-Mitigation Configuration Data
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
+
 ```bash
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/detected_domains" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/detected_domains" \
   | jq '{summary: {total: .domain_summary.totalDomains.count, mitigated: .domain_summary.mitigatedDomains.count, action_needed: .domain_summary.actionNeededCount.count}, domains: [.domains_list[]? | {domain, status, category}]}'
 ```
+
+</div>
+
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
 
 ```bash
 NOW=$(date +%s)
 START=$(( NOW - 86400 ))
 curl -s -X POST \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
   -H "Content-Type: application/json" \
   -d "{\"startTime\": \"$START\", \"endTime\": \"$NOW\"}" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/scripts" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/scripts" \
   | jq '{total: (.scripts | length), scripts: [.scripts[]? | {script_name, risk_level}]}'
 ```
+
+</div>
 
 These API results may lag and are informational after configuration is applied. They do not override browser enforcement evidence.
 

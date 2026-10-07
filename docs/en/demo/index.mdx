@@ -11,7 +11,7 @@ import { Aside, Steps } from "@astrojs/starlight/components";
 This guide covers the direct API ownership mode for a complete Client-Side Defense exercise.
 Terraform users must follow the [Terraform deployment group](/csd/en/terraform/) instead. Both
 modes create the same logical architecture: one origin pool and one HTTPS auto-certificate HTTP
-load balancer named `client-side-defense` for `client-side-defense.f5-sales-demo.com`, with HTTP
+load balancer named `<XCSH_NAMESPACE>` for `<XCSH_DOMAINNAME>`, with HTTP
 redirect and CSD JavaScript insertion on all pages.
 
 The AWS reference supplies the Application Load Balancer hostname through the origin pool's
@@ -40,6 +40,8 @@ Before the API build, inspect the exact load balancer, origin pool, optional hea
 
 Exact detail GETs are authoritative for configuration and ownership classification. List endpoints are discovery summaries only: configuration lists expose `items[].name` and may omit `get_spec`, so use a discovered name with its detail GET before classifying an object. Do not reduce protected or mitigated domains to global counts.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_CSD_DEPLOYMENT_MODE XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE XCSH_LB_NAME XCSH_ORIGIN_POOL_NAME XCSH_HC_NAME">
+
 ```bash
 case "${XCSH_CSD_DEPLOYMENT_MODE:-}" in
   api) ;;
@@ -48,30 +50,32 @@ case "${XCSH_CSD_DEPLOYMENT_MODE:-}" in
 esac
 
 curl -sS -o /dev/null -w 'load_balancer %{http_code}\n' \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/config/namespaces/xXCSH_NAMESPACEx/http_loadbalancers/xXCSH_LB_NAMEx"
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/config/namespaces/<XCSH_NAMESPACE>/http_loadbalancers/<XCSH_LB_NAME>"
 curl -sS -o /dev/null -w 'origin_pool %{http_code}\n' \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/config/namespaces/xXCSH_NAMESPACEx/origin_pools/xXCSH_ORIGIN_POOLx"
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/config/namespaces/<XCSH_NAMESPACE>/origin_pools/<XCSH_ORIGIN_POOL_NAME>"
 if [ -n "${XCSH_HC_NAME:-}" ]; then
   curl -sS -o /dev/null -w 'healthcheck %{http_code}\n' \
-    -H "Authorization: APIToken xXCSH_API_TOKENx" \
-    "xXCSH_API_URLx/api/config/namespaces/xXCSH_NAMESPACEx/healthchecks/xXCSH_HC_NAMEx"
+    -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+    "<XCSH_API_URL>/api/config/namespaces/<XCSH_NAMESPACE>/healthchecks/<XCSH_HC_NAME>"
 fi
 curl -sS -o /dev/null -w 'protected_domain %{http_code}\n' \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/protected_domains/xXCSH_LB_NAMEx"
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/protected_domains/<XCSH_LB_NAME>"
 
 # Discovery only: list summaries identify candidate names; detail GETs classify them.
-MITIGATED_LIST=$(curl -sS -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/mitigated_domains")
+MITIGATED_LIST=$(curl -sS -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/mitigated_domains")
 printf '%s' "$MITIGATED_LIST" | jq '[.items[]? | {name, get_spec}]'
 printf '%s' "$MITIGATED_LIST" | jq -er '.items[]?.name' | while IFS= read -r name; do
-  curl -sS -H "Authorization: APIToken xXCSH_API_TOKENx" \
-    "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/mitigated_domains/$name" \
+  curl -sS -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+    "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/mitigated_domains/$name" \
     | jq '{name: .metadata.name, mitigated_domain: .spec.mitigated_domain}'
 done
 ```
+
+</div>
 
 Any exact detail GET returning `200` for an object not recorded by the current run's ledger is pre-existing and blocks creation. Any `403`, unexpected response, duplicate candidate name, missing required detail, or ambiguous ownership is `unknown` and blocks mutation.
 
@@ -100,10 +104,12 @@ These checks confirm the execution host can reach the F5 XC API and the credenti
 
 #### PF-T0-1: API Connectivity
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN">
+
 ```bash
 HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' --connect-timeout 10 --max-time 15 \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/web/namespaces")
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/web/namespaces")
 echo "{\"http_code\": $HTTP_CODE}" | jq '{
   check: "PF-T0-1",
   http_code: .http_code,
@@ -123,12 +129,16 @@ echo "{\"http_code\": $HTTP_CODE}" | jq '{
 }'
 ```
 
+</div>
+
 #### PF-T0-2: Namespace Access
+
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
 
 ```bash
 HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/config/namespaces/xXCSH_NAMESPACEx/http_loadbalancers")
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/config/namespaces/<XCSH_NAMESPACE>/http_loadbalancers")
 echo "{\"http_code\": $HTTP_CODE}" | jq '{
   check: "PF-T0-2",
   http_code: .http_code,
@@ -148,12 +158,16 @@ echo "{\"http_code\": $HTTP_CODE}" | jq '{
 }'
 ```
 
+</div>
+
 #### PF-T0-3: CSD API Access
+
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
 
 ```bash
 HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/status")
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/status")
 echo "{\"http_code\": $HTTP_CODE}" | jq '{
   check: "PF-T0-3",
   http_code: .http_code,
@@ -173,11 +187,15 @@ echo "{\"http_code\": $HTTP_CODE}" | jq '{
 }'
 ```
 
+</div>
+
 #### PF-T0-4: Read-Only Access Matrix
 
 Establish the deployment owner before any mutation. `XCSH_CSD_DEPLOYMENT_MODE` must be exactly `api` or `terraform`. In API mode, use GET requests on the namespace and required list/detail endpoints to establish access and classify each target as absent, pre-existing, or unknown. In Terraform mode, stop this API workflow and use only the configured Terraform backend and state.
 
 Do not infer write permission by deleting a nonexistent object or calling namespace cascade deletion. Those requests are mutations and are not valid readiness probes. A successful read proves visibility only; mutation authorization is established by the approved Phase 1 operation and its response.
+
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_CSD_DEPLOYMENT_MODE XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE XCSH_LB_NAME XCSH_ORIGIN_POOL_NAME XCSH_HC_NAME">
 
 ```bash
 case "${XCSH_CSD_DEPLOYMENT_MODE:-}" in
@@ -213,6 +231,8 @@ else
 fi
 ```
 
+</div>
+
 Treat `403` as FAIL for required resources, `404` as absence only for an exact detail endpoint, and unexpected responses as UNKNOWN. For the mitigated-domain list, use only `items[].name` and documented `get_spec` summary data; follow every relevant name with its exact detail GET before evaluating spec or ownership. Do not mutate to refine an UNKNOWN result.
 
 ### T1: Quotas &amp; Capacity
@@ -225,11 +245,13 @@ Query the tenant-wide quota usage endpoint and compute a deterministic PASS/WARN
 
 The gate defines a `demo_needs` array that specifies how many of each object kind the demo will consume, whether the kind is required, and the minimum needed for the demo to proceed. The jq filter compares `remaining` against `needed` and computes the `status` field deterministically — no operator interpretation required.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN">
+
 ```bash
 # Step 1: Fetch quota data
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/web/namespaces/system/quota/usage?namespace=system" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/web/namespaces/system/quota/usage?namespace=system" \
   > /tmp/quota.json
 
 # Step 2: Compute gate status
@@ -270,6 +292,8 @@ jq '
     }
 ' /tmp/quota.json
 ```
+
+</div>
 
 **Gate output** — the `gate` field is the single deterministic verdict:
 
@@ -328,10 +352,12 @@ These checks verify tenant-level services that the demo depends on.
 
 #### PF-T2-1: CSD Tenant Status
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
+
 ```bash
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/status" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/status" \
   | jq '{
     check: "PF-T2-1",
     configured: .isConfigured,
@@ -346,12 +372,16 @@ curl -s \
   }'
 ```
 
+</div>
+
 #### PF-T2-2: DNS Zone Exists
+
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_ROOT_DOMAIN">
 
 ```bash
 HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/config/dns/namespaces/system/dns_zones/xXCSH_ROOT_DOMAINx")
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/config/dns/namespaces/system/dns_zones/<XCSH_ROOT_DOMAIN>")
 echo "{\"http_code\": $HTTP_CODE}" | jq '{
   check: "PF-T2-2",
   http_code: .http_code,
@@ -372,14 +402,18 @@ echo "{\"http_code\": $HTTP_CODE}" | jq '{
 }'
 ```
 
+</div>
+
 #### PF-T2-3: DNS Managed Records Configuration
 
 Only run if PF-T2-2 returned `200` (F5 XC DNS zone exists). Read and report the current setting; readiness must not update the shared DNS zone.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_ROOT_DOMAIN">
+
 ```bash
 curl -sS \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/config/dns/namespaces/system/dns_zones/xXCSH_ROOT_DOMAINx" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/config/dns/namespaces/system/dns_zones/<XCSH_ROOT_DOMAIN>" \
   | jq '{
     check: "PF-T2-3",
     managed_records: (.spec.primary.allow_http_lb_managed_records // false),
@@ -387,6 +421,8 @@ curl -sS \
     detail: (if .spec.primary.allow_http_lb_managed_records == true then "LB-managed DNS records enabled" else "Managed records disabled; choose the documented external/manual DNS path or obtain separately approved DNS-owner change control" end)
   }'
 ```
+
+</div>
 
 Do not automatically PUT the zone. A shared DNS change requires separate approval from its established owner, a reviewed complete spec containing only permitted metadata and spec fields, and post-change verification.
 
@@ -398,8 +434,10 @@ Do not automatically PUT the zone. A shared DNS change requires separate approva
 
 #### PF-T2-4: DNS Nameserver Authority
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_ROOT_DOMAIN">
+
 ```bash
-NS_RECORDS=$(dig +short NS xXCSH_ROOT_DOMAINx)
+NS_RECORDS=$(dig +short NS <XCSH_ROOT_DOMAIN>)
 echo "$NS_RECORDS" | jq -Rs '{
   check: "PF-T2-4",
   nameservers: (split("\n") | map(select(length > 0))),
@@ -418,11 +456,15 @@ echo "$NS_RECORDS" | jq -Rs '{
 }'
 ```
 
+</div>
+
 ### T3: Origin Health
 
 These checks verify the backend application is reachable.
 
 **Origin contract guard:** validate the owner, representation, exclusivity, port, application marker, and placeholders before connectivity checks.
+
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_CSD_DEPLOYMENT_MODE XCSH_ORIGIN_KIND XCSH_ORIGIN_HOSTNAME XCSH_ORIGIN_IP XCSH_APPLICATION_MARKER XCSH_ORIGIN_PORT">
 
 ```bash
 case "${XCSH_CSD_DEPLOYMENT_MODE:-}" in api|terraform) ;; *) echo "FAIL: invalid deployment mode"; exit 1;; esac
@@ -446,7 +488,11 @@ case "${XCSH_ORIGIN_PORT:-}" in ''|*[!0-9]*) echo "FAIL: origin port must be an 
 [ "$XCSH_ORIGIN_PORT" -ge 1 ] && [ "$XCSH_ORIGIN_PORT" -le 65535 ] || { echo "FAIL: origin port out of range"; exit 1; }
 ```
 
+</div>
+
 #### PF-T3-1: Origin Server Connectivity
+
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_ORIGIN_PORT">
 
 ```bash
 HTTP_CODE=$(curl -s -o /dev/null -w '%\{http_code\}' --connect-timeout 10 --max-time 15 \
@@ -464,6 +510,8 @@ echo "{\"http_code\": $HTTP_CODE}" | jq '{
 }'
 ```
 
+</div>
+
 <Aside type="note">
 Example hostname and TEST-NET address values are deliberately non-routable placeholders. Replace the selected origin value with an independently supplied, authorized API-mode origin before running connectivity tests. `XCSH_ORIGIN_PORT` must remain an integer.
 </Aside>
@@ -472,10 +520,14 @@ Example hostname and TEST-NET address values are deliberately non-routable place
 
 Only run if PF-T3-1 returned a valid HTTP status:
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_ORIGIN_PORT">
+
 ```bash
 curl -s --max-time 10 "http://$ORIGIN_VALUE:$XCSH_ORIGIN_PORT/" \
   | grep -qi '</html>' && echo "PASS: HTML content" || echo "WARN: No HTML detected"
 ```
+
+</div>
 
 | Result | Status | Remediation |
 | --- | --- | --- |
@@ -511,10 +563,12 @@ balancer certificate state when present; otherwise verify it after Phase 1 creat
 
 Run only if the load balancer exists from a prior API-owned deployment:
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE XCSH_LB_NAME">
+
 ```bash
 CERT_BODY=$(curl -s -w '\n%\{http_code\}' \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/config/namespaces/xXCSH_NAMESPACEx/http_loadbalancers/xXCSH_LB_NAMEx")
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/config/namespaces/<XCSH_NAMESPACE>/http_loadbalancers/<XCSH_LB_NAME>")
 CERT_HTTP=$(echo "$CERT_BODY" | tail -1)
 CERT_JSON=$(echo "$CERT_BODY" | sed '$d')
 
@@ -541,6 +595,8 @@ else
   }'
 fi
 ```
+
+</div>
 
 ### Readiness Report Format
 
@@ -637,12 +693,12 @@ Resolve and validate the environment before any API request:
 | Variable | Required | Default | Placeholder (reject) |
 | --- | --- | --- | --- |
 | `XCSH_CSD_DEPLOYMENT_MODE` | **Yes** | `api` | anything except `api` or `terraform` |
-| `XCSH_API_TOKEN` | **API mode** | — | `example-api-token` |
-| `XCSH_API_URL` | **API mode** | — | `https://example-tenant.console.ves.volterra.io` |
-| `XCSH_NAMESPACE` | **Yes** | `client-side-defense` | — |
-| `XCSH_DOMAINNAME` | **Yes** | `client-side-defense.f5-sales-demo.com` | — |
-| `XCSH_ROOT_DOMAIN` | **Yes** | `f5-sales-demo.com` | — |
-| `XCSH_LB_NAME` | **Yes** | `client-side-defense` | — |
+| `XCSH_API_TOKEN` | **API mode** | — | `<XCSH_API_TOKEN>` |
+| `XCSH_API_URL` | **API mode** | — | `https://example-corp.console.ves.volterra.io` |
+| `XCSH_NAMESPACE` | **Yes** | `<XCSH_NAMESPACE>` | — |
+| `XCSH_DOMAINNAME` | **Yes** | `<XCSH_DOMAINNAME>` | — |
+| `XCSH_ROOT_DOMAIN` | **Yes** | `<XCSH_ROOT_DOMAIN>` | — |
+| `XCSH_LB_NAME` | **Yes** | `<XCSH_NAMESPACE>` | — |
 | `XCSH_EMAIL` | **Yes** | — | `user@example.com` |
 | `XCSH_ORIGIN_KIND` | **API mode** | `public_name` | anything except `public_name` or `public_ip` |
 | `XCSH_ORIGIN_HOSTNAME` | Conditional | — | `origin.example.com` |
@@ -667,7 +723,7 @@ The AI assistant operates in one of three modes during the demo:
 - Every API call, verification query, and shell command **must come
   verbatim from the phase files** (Phase 1–4) or from the Pre-flight
   Check section above
-- Substitute only `xTOKENx` placeholders with resolved variable values
+- Substitute only `<TOKEN>` placeholders with resolved variable values
 - Do not construct API endpoints, jq filters, or cURL commands from
   general knowledge or inference
 - If a needed command is not documented, stop and report to the operator:
@@ -774,7 +830,7 @@ If any step returns FAIL, stop and report the failure with the relevant troubles
 
 - An **F5 XC API token** — generate one under **Administration** &rarr; **Credentials** &rarr; **API Credentials**
 - `curl` and `jq` installed locally
-- Access to namespace `client-side-defense` with permissions for one origin pool, one HTTP load balancer, and the protected domain; healthcheck permission is optional
+- Access to namespace `<XCSH_NAMESPACE>` with permissions for one origin pool, one HTTP load balancer, and the protected domain; healthcheck permission is optional
 
 ## Environment Setup
 
@@ -784,74 +840,52 @@ Create a `.env` file with your environment values. A template is provided in the
 cp .env.example .env
 ```
 
-Edit `.env` with your actual values:
+Use the personalized exports from the form in this Bash session. To create a private
+`.env`, save the exports shown in the copied block; restrict the file to mode
+`0600` and keep it out of Git. Credentials remain environment-only for Terraform.
 
-```bash title=".env"
-# Required — environment and owner
-XCSH_API_TOKEN=example-api-token
-XCSH_API_URL=https://example-tenant.console.ves.volterra.io
-XCSH_EMAIL=user@example.com
-XCSH_CSD_DEPLOYMENT_MODE=api
-XCSH_NAMESPACE=client-side-defense
-XCSH_LB_NAME=client-side-defense
-XCSH_DOMAINNAME=client-side-defense.f5-sales-demo.com
-XCSH_ROOT_DOMAIN=f5-sales-demo.com
-
-# API-owned origin: independent input, never Terraform/AWS state
-XCSH_ORIGIN_KIND=public_name
-XCSH_ORIGIN_HOSTNAME=origin.example.com
-XCSH_ORIGIN_IP=
-# Set a stable scenario-specific marker for non-reference API or Azure deployments.
-XCSH_APPLICATION_MARKER=OWASP Juice Shop
-XCSH_ORIGIN_POOL=csd-juice-shop
-XCSH_ORIGIN_PORT=80
-
-# Empty means omit the optional healthcheck
-XCSH_HC_NAME=
-```
-
-<Aside type="caution">
-The `.env` file contains your API token. It is listed in `.gitignore` and must never be committed to version control.
-</Aside>
-
-Source the file to load variables into your shell session:
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_CSD_DEPLOYMENT_MODE XCSH_API_URL XCSH_API_TOKEN XCSH_EMAIL XCSH_NAMESPACE XCSH_LB_NAME XCSH_DOMAINNAME XCSH_ROOT_DOMAIN XCSH_ORIGIN_POOL_NAME XCSH_ORIGIN_KIND XCSH_ORIGIN_HOSTNAME XCSH_ORIGIN_IP XCSH_APPLICATION_MARKER XCSH_ORIGIN_PORT XCSH_HC_NAME">
 
 ```bash
-set -a && source .env && set +a
+# Canonical browser setup; keep API and Terraform ownership exclusive.
+export XCSH_API_URL='<XCSH_API_URL>'
+export XCSH_API_TOKEN='<XCSH_API_TOKEN>'
+export XCSH_NAMESPACE='<XCSH_NAMESPACE>'
+export XCSH_LB_NAME='<XCSH_LB_NAME>'
+export XCSH_DOMAINNAME='<XCSH_DOMAINNAME>'
+# Map the guide field into the existing CSD lifecycle interface.
+export XCSH_ORIGIN_POOL="$XCSH_ORIGIN_POOL_NAME"
 ```
 
-<Aside type="tip">
-If your API token contains `/` or `=` characters, wrap the value in single quotes in `.env` (e.g., `XCSH_API_TOKEN='abc/def='`) to prevent shell interpretation issues when sourcing.
+</div>
 
-Some container runtimes and secret managers inject literal quote characters into environment variable values. If API calls return `401 Unauthorized` despite a valid token, strip stray quotes before use:
+If loading a saved private configuration, preserve literal credential characters:
 
 ```bash
-export XCSH_API_TOKEN=$(echo "$XCSH_API_TOKEN" | tr -d "'")
+set -a
+source .env
+set +a
 ```
-
-</Aside>
-
-Each `xTOKENx` placeholder in the cURL commands maps directly to an environment variable — for example, `xXCSH_API_TOKENx` corresponds to `$XCSH_API_TOKEN`. You can substitute these values using the interactive form at the top of the page, or let an AI assistant like Claude Code read your `.env` and build the commands for you.
 
 ## Placeholder Tokens
 
 | Token | Default | Description |
 | --- | --- | --- |
-| `xXCSH_CSD_DEPLOYMENT_MODEx` | `api` | Exclusive lifecycle owner: `api` or `terraform` |
-| `xXCSH_API_URLx` | `https://example-tenant.console.ves.volterra.io` | XC Console API URL; example value is rejected |
-| `xXCSH_API_TOKENx` | `example-api-token` | API credential token; example value is rejected |
-| `xXCSH_EMAILx` | `user@example.com` | CSD notification email; example value is rejected |
-| `xXCSH_NAMESPACEx` | `client-side-defense` | Namespace |
-| `xXCSH_LB_NAMEx` | `client-side-defense` | Single HTTP Load Balancer name |
-| `xXCSH_DOMAINNAMEx` | `client-side-defense.f5-sales-demo.com` | FQDN to protect |
-| `xXCSH_ROOT_DOMAINx` | `f5-sales-demo.com` | Root domain (eTLD+1) |
-| `xXCSH_ORIGIN_KINDx` | `public_name` | Exactly `public_name` or `public_ip` |
-| `xXCSH_ORIGIN_HOSTNAMEx` | `origin.example.com` | Independent API origin hostname; example value is rejected |
-| `xXCSH_ORIGIN_IPx` | empty | Independent API origin IP; TEST-NET values are rejected |
-| `xXCSH_APPLICATION_MARKERx` | `OWASP Juice Shop` | Required application/scenario marker, independent of origin representation; non-reference API and Azure scenarios must set a stable value |
-| `xXCSH_ORIGIN_POOLx` | `csd-juice-shop` | Origin pool name |
-| `xXCSH_ORIGIN_PORTx` | `80` | Integer origin port |
-| `xXCSH_HC_NAMEx` | empty | Optional healthcheck; empty means omitted |
+| `<XCSH_CSD_DEPLOYMENT_MODE>` | `api` | Exclusive lifecycle owner: `api` or `terraform` |
+| `<XCSH_API_URL>` | `https://example-corp.console.ves.volterra.io` | XC Console API URL; example value is rejected |
+| `<XCSH_API_TOKEN>` | `<XCSH_API_TOKEN>` | API credential token; example value is rejected |
+| `<XCSH_EMAIL>` | `user@example.com` | CSD notification email; example value is rejected |
+| `<XCSH_NAMESPACE>` | `<XCSH_NAMESPACE>` | Namespace |
+| `<XCSH_LB_NAME>` | `<XCSH_NAMESPACE>` | Single HTTP Load Balancer name |
+| `<XCSH_DOMAINNAME>` | `<XCSH_DOMAINNAME>` | FQDN to protect |
+| `<XCSH_ROOT_DOMAIN>` | `<XCSH_ROOT_DOMAIN>` | Root domain (eTLD+1) |
+| `<XCSH_ORIGIN_KIND>` | `public_name` | Exactly `public_name` or `public_ip` |
+| `<XCSH_ORIGIN_HOSTNAME>` | `origin.example.com` | Independent API origin hostname; example value is rejected |
+| `<XCSH_ORIGIN_IP>` | empty | Independent API origin IP; TEST-NET values are rejected |
+| `<XCSH_APPLICATION_MARKER>` | `OWASP Juice Shop` | Required application/scenario marker, independent of origin representation; non-reference API and Azure scenarios must set a stable value |
+| `<XCSH_ORIGIN_POOL_NAME>` | `csd-juice-shop` | Origin pool name |
+| `<XCSH_ORIGIN_PORT>` | `80` | Integer origin port |
+| `<XCSH_HC_NAME>` | empty | Optional healthcheck; empty means omitted |
 
 <Aside type="tip">
 **Tenant is automatic**: The tenant identifier is derived from your API URL (e.g., `f5-amer-ent` from `https://f5-amer-ent.console.ves.volterra.io`). You do not need to supply it — the platform populates tenant references automatically when creating objects.
@@ -892,21 +926,21 @@ Values are resolved using the deterministic protocol defined in [AI Assistant Ex
 
 | Token | Description | Default |
 | --- | --- | --- |
-| `xXCSH_CSD_DEPLOYMENT_MODEx` | Exclusive lifecycle owner | `api` |
-| `xXCSH_API_URLx` | XC Console API URL | (user-provided) |
-| `xXCSH_API_TOKENx` | API credential token | (user-provided) |
-| `xXCSH_EMAILx` | CSD notification email | (user-provided) |
-| `xXCSH_NAMESPACEx` | Namespace | `client-side-defense` |
-| `xXCSH_LB_NAMEx` | Single HTTP Load Balancer name | `client-side-defense` |
-| `xXCSH_DOMAINNAMEx` | FQDN to protect | `client-side-defense.f5-sales-demo.com` |
-| `xXCSH_ROOT_DOMAINx` | Root domain (eTLD+1) | `f5-sales-demo.com` |
-| `xXCSH_ORIGIN_KINDx` | Origin representation | `public_name` |
-| `xXCSH_ORIGIN_HOSTNAMEx` | API-owned hostname origin | (required for `public_name`) |
-| `xXCSH_ORIGIN_IPx` | API-owned IP origin | (required for `public_ip`) |
-| `xXCSH_APPLICATION_MARKERx` | Application/scenario content marker, independent of origin representation | `OWASP Juice Shop`; set a stable value for non-reference API and Azure scenarios |
-| `xXCSH_ORIGIN_POOLx` | Origin pool name | `csd-juice-shop` |
-| `xXCSH_ORIGIN_PORTx` | Integer origin server port | `80` |
-| `xXCSH_HC_NAMEx` | Optional healthcheck name | empty (omit) |
+| `<XCSH_CSD_DEPLOYMENT_MODE>` | Exclusive lifecycle owner | `api` |
+| `<XCSH_API_URL>` | XC Console API URL | (user-provided) |
+| `<XCSH_API_TOKEN>` | API credential token | (user-provided) |
+| `<XCSH_EMAIL>` | CSD notification email | (user-provided) |
+| `<XCSH_NAMESPACE>` | Namespace | `<XCSH_NAMESPACE>` |
+| `<XCSH_LB_NAME>` | Single HTTP Load Balancer name | `<XCSH_NAMESPACE>` |
+| `<XCSH_DOMAINNAME>` | FQDN to protect | `<XCSH_DOMAINNAME>` |
+| `<XCSH_ROOT_DOMAIN>` | Root domain (eTLD+1) | `<XCSH_ROOT_DOMAIN>` |
+| `<XCSH_ORIGIN_KIND>` | Origin representation | `public_name` |
+| `<XCSH_ORIGIN_HOSTNAME>` | API-owned hostname origin | (required for `public_name`) |
+| `<XCSH_ORIGIN_IP>` | API-owned IP origin | (required for `public_ip`) |
+| `<XCSH_APPLICATION_MARKER>` | Application/scenario content marker, independent of origin representation | `OWASP Juice Shop`; set a stable value for non-reference API and Azure scenarios |
+| `<XCSH_ORIGIN_POOL_NAME>` | Origin pool name | `csd-juice-shop` |
+| `<XCSH_ORIGIN_PORT>` | Integer origin server port | `80` |
+| `<XCSH_HC_NAME>` | Optional healthcheck name | empty (omit) |
 
 ### oneOf Choice Groups
 
@@ -980,23 +1014,31 @@ If the load balancer `state` remains `VIRTUAL_HOST_PENDING_A_RECORD` after [Phas
 
 1. **Verify DNS zone exists** (F5 XC managed DNS only):
 
+   <div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_ROOT_DOMAIN">
+
    ```bash
    curl -s \
-     -H "Authorization: APIToken xXCSH_API_TOKENx" \
-     "xXCSH_API_URLx/api/config/dns/namespaces/system/dns_zones/xXCSH_ROOT_DOMAINx" \
+     -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+     "<XCSH_API_URL>/api/config/dns/namespaces/system/dns_zones/<XCSH_ROOT_DOMAIN>" \
      | jq '.metadata.name'
    ```
+
+   </div>
 
    A `404` means the DNS zone has not been created in F5 XC.
 
 2. **Check `allow_http_lb_managed_records`** — if the zone exists but the LB is pending, managed records may be disabled:
 
+   <div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_ROOT_DOMAIN">
+
    ```bash
    curl -s \
-     -H "Authorization: APIToken xXCSH_API_TOKENx" \
-     "xXCSH_API_URLx/api/config/dns/namespaces/system/dns_zones/xXCSH_ROOT_DOMAINx" \
+     -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+     "<XCSH_API_URL>/api/config/dns/namespaces/system/dns_zones/<XCSH_ROOT_DOMAIN>" \
      | jq '.spec.primary.allow_http_lb_managed_records'
    ```
+
+   </div>
 
    If `false` or `null`, do not change it during readiness. Follow the [DNS recovery guidance](/csd/en/demo/phase-1-build/#step-6-dns-certificate-and-origin-recovery), and obtain separate approval from the established DNS-zone owner before any reviewed update.
 
@@ -1004,9 +1046,13 @@ If the load balancer `state` remains `VIRTUAL_HOST_PENDING_A_RECORD` after [Phas
 
 4. **Verify resolution** — after fixing DNS, confirm:
 
+   <div data-xcsh-context="shell" data-xcsh-fields="XCSH_DOMAINNAME">
+
    ```bash
-   dig +short xXCSH_DOMAINNAMEx A
+   dig +short <XCSH_DOMAINNAME> A
    ```
+
+   </div>
 
    If the A record resolves, the LB transitions to `VIRTUAL_HOST_READY`. Poll every 30 seconds, up to 4 iterations (2 minutes total). If still `VIRTUAL_HOST_PENDING_A_RECORD` after 2 minutes, re-check DNS propagation and report to operator.
 

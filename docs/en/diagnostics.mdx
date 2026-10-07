@@ -20,7 +20,7 @@ Set up your environment variables as described in [API Automation &mdash; Enviro
 set -a && source .env && set +a
 ```
 
-All commands below use the `xTOKENx` placeholder format. Substitute with your environment variables (`$XCSH_API_TOKEN`, `$XCSH_NAMESPACE`, etc.) or use the interactive form at the top of the page.
+All commands below use the `<TOKEN>` placeholder format. Substitute with your environment variables (`$XCSH_API_TOKEN`, `$XCSH_NAMESPACE`, etc.) or use the interactive form at the top of the page.
 
 <Aside type="caution">
 Choose one ownership mode. Never run the API create/update/delete workflow against resources present in Terraform state.
@@ -96,21 +96,25 @@ DNS is the foundation — if the domain does not resolve to the load balancer VI
 
 **What it proves:** Every A record for the exact protected domain resolves to a VIP currently reported by the exact load balancer in the expected namespace.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE XCSH_LB_NAME XCSH_DOMAINNAME">
+
 ```bash
 LB=$(curl -fsS \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/config/namespaces/xXCSH_NAMESPACEx/http_loadbalancers/xXCSH_LB_NAMEx")
-DNS_A=$(dig +short xXCSH_DOMAINNAMEx A | sort -u)
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/config/namespaces/<XCSH_NAMESPACE>/http_loadbalancers/<XCSH_LB_NAME>")
+DNS_A=$(dig +short <XCSH_DOMAINNAME> A | sort -u)
 LB_VIPS=$(printf '%s' "$LB" | jq -r '.spec.dns_info[]?.ip_address // empty' | sort -u)
 
 printf '%s' "$LB" | jq -e \
-  --arg name "xXCSH_LB_NAMEx" \
-  --arg namespace "xXCSH_NAMESPACEx" \
-  --arg domain "xXCSH_DOMAINNAMEx" \
+  --arg name "<XCSH_LB_NAME>" \
+  --arg namespace "<XCSH_NAMESPACE>" \
+  --arg domain "<XCSH_DOMAINNAME>" \
   '.metadata.name == $name and .metadata["namespace"] == $namespace and (.spec.domains | index($domain) != null)' >/dev/null
 test -n "$DNS_A"
 test "$DNS_A" = "$LB_VIPS"
 ```
+
+</div>
 
 | Result                                                                                                                          | Meaning                                                                       |
 | ------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
@@ -127,12 +131,16 @@ A returned IP by itself is not proof: it must equal the current VIP set on the n
 
 **What it proves:** The exact challenge owner has the record type and value required by the selected DNS ownership mode.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_DOMAINNAME">
+
 ```bash
-ACME_OWNER="_acme-challenge.xXCSH_DOMAINNAMEx"
+ACME_OWNER="_acme-challenge.<XCSH_DOMAINNAME>"
 ACME_CNAME=$(dig +short "$ACME_OWNER" CNAME)
 ACME_TXT=$(dig +short "$ACME_OWNER" TXT)
 printf 'owner=%s\nCNAME=%s\nTXT=%s\n' "$ACME_OWNER" "$ACME_CNAME" "$ACME_TXT"
 ```
+
+</div>
 
 | Result                                                                                                                                   | Meaning                              |
 | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
@@ -146,9 +154,13 @@ Do not accept any non-empty CNAME or TXT as PASS. Compare the observed value wit
 
 **What it proves:** Whether F5 XC is the authoritative DNS provider for the root domain.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_ROOT_DOMAIN">
+
 ```bash
-dig +short NS xXCSH_ROOT_DOMAINx
+dig +short NS <XCSH_ROOT_DOMAIN>
 ```
+
+</div>
 
 | Result                                                 | Meaning                                               |
 | ------------------------------------------------------ | ----------------------------------------------------- |
@@ -161,12 +173,16 @@ dig +short NS xXCSH_ROOT_DOMAINx
 
 **What it proves:** The F5 XC DNS zone allows automatic record creation for load balancers (F5 XC managed DNS only).
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_ROOT_DOMAIN">
+
 ```bash
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/config/dns/namespaces/system/dns_zones/xXCSH_ROOT_DOMAINx" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/config/dns/namespaces/system/dns_zones/<XCSH_ROOT_DOMAIN>" \
   | jq '.spec.primary.allow_http_lb_managed_records'
 ```
+
+</div>
 
 | Result                             | Meaning                                              |
 | ---------------------------------- | ---------------------------------------------------- |
@@ -192,12 +208,16 @@ The single load balancer named by `XCSH_LB_NAME` terminates HTTPS and redirects 
 
 **What it proves:** The automatic TLS certificate has been issued on the load balancer.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE XCSH_LB_NAME">
+
 ```bash
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/config/namespaces/xXCSH_NAMESPACEx/http_loadbalancers/xXCSH_LB_NAMEx" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/config/namespaces/<XCSH_NAMESPACE>/http_loadbalancers/<XCSH_LB_NAME>" \
   | jq '.spec.cert_state'
 ```
+
+</div>
 
 | Result                                                                          | Meaning                                                                                |
 | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
@@ -209,10 +229,12 @@ curl -s \
 
 **What it proves:** The certificate metadata and ACME records correspond to the configured domain.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE XCSH_LB_NAME">
+
 ```bash
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/config/namespaces/xXCSH_NAMESPACEx/http_loadbalancers/xXCSH_LB_NAMEx" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/config/namespaces/<XCSH_NAMESPACE>/http_loadbalancers/<XCSH_LB_NAME>" \
   | jq '{
     cert_state: .spec.cert_state,
     auto_cert_info: .spec.auto_cert_info,
@@ -220,14 +242,20 @@ curl -s \
   }'
 ```
 
+</div>
+
 ### TLS-3: Live TLS Handshake
 
 **What it proves:** A client can complete TLS to the protected domain with a valid certificate.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_DOMAINNAME">
+
 ```bash
-curl -sv "https://xXCSH_DOMAINNAMEx/" 2>&1 \
+curl -sv "https://<XCSH_DOMAINNAME>/" 2>&1 \
   | grep -E 'SSL connection|subject:|expire date:|issuer:'
 ```
+
+</div>
 
 | Result                                                             | Meaning                                                 |
 | ------------------------------------------------------------------ | ------------------------------------------------------- |
@@ -244,12 +272,16 @@ All checks in this layer read the same unsuffixed load balancer object.
 
 **What it proves:** The virtual host is deployed and ready.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE XCSH_LB_NAME">
+
 ```bash
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/config/namespaces/xXCSH_NAMESPACEx/http_loadbalancers/xXCSH_LB_NAMEx" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/config/namespaces/<XCSH_NAMESPACE>/http_loadbalancers/<XCSH_LB_NAME>" \
   | jq '.spec.state'
 ```
+
+</div>
 
 | Result                                  | Meaning                                                        |
 | --------------------------------------- | -------------------------------------------------------------- |
@@ -260,12 +292,16 @@ curl -s \
 
 **What it proves:** The LB serves the expected domain with automatic HTTPS and HTTP redirect enabled.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE XCSH_LB_NAME">
+
 ```bash
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/config/namespaces/xXCSH_NAMESPACEx/http_loadbalancers/xXCSH_LB_NAMEx" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/config/namespaces/<XCSH_NAMESPACE>/http_loadbalancers/<XCSH_LB_NAME>" \
   | jq '{domains: .spec.domains, https_auto_cert: .spec.https_auto_cert, http_redirect: .spec.https_auto_cert.http_redirect}'
 ```
+
+</div>
 
 | Result                                                     | Meaning                                       |
 | ---------------------------------------------------------- | --------------------------------------------- |
@@ -276,15 +312,19 @@ curl -s \
 
 **What it proves:** Client-Side Defense injects JavaScript on all pages.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE XCSH_LB_NAME">
+
 ```bash
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/config/namespaces/xXCSH_NAMESPACEx/http_loadbalancers/xXCSH_LB_NAMEx" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/config/namespaces/<XCSH_NAMESPACE>/http_loadbalancers/<XCSH_LB_NAME>" \
   | jq '{
     csd_enabled: (if .spec.client_side_defense then true else false end),
     js_policy: .spec.client_side_defense.policy
   }'
 ```
+
+</div>
 
 | Result                                                          | Meaning                                       |
 | --------------------------------------------------------------- | --------------------------------------------- |
@@ -295,21 +335,27 @@ curl -s \
 
 **What it proves:** The LB references the expected origin pool.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE XCSH_LB_NAME">
+
 ```bash
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/config/namespaces/xXCSH_NAMESPACEx/http_loadbalancers/xXCSH_LB_NAMEx" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/config/namespaces/<XCSH_NAMESPACE>/http_loadbalancers/<XCSH_LB_NAME>" \
   | jq '.spec.default_route_pools[] | {pool: .pool.name, namespace: .pool.namespace, weight, priority}'
 ```
+
+</div>
 
 ### LB-5: Deployment Status
 
 **What it proves:** The virtual host, VIP, certificate, and route configuration are reported by the same LB object.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE XCSH_LB_NAME">
+
 ```bash
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/config/namespaces/xXCSH_NAMESPACEx/http_loadbalancers/xXCSH_LB_NAMEx" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/config/namespaces/<XCSH_NAMESPACE>/http_loadbalancers/<XCSH_LB_NAME>" \
   | jq '{
     name: .metadata.name,
     state: .spec.state,
@@ -323,6 +369,8 @@ curl -s \
   }'
 ```
 
+</div>
+
 ---
 
 ## Layer 4: Origin Pool
@@ -333,14 +381,16 @@ The origin pool supports either an AWS ALB hostname (`public_name`) or an Azure/
 
 **What it proves:** The configured oneOf origin kind and value match the intended backend.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE XCSH_ORIGIN_POOL_NAME XCSH_ORIGIN_KIND XCSH_ORIGIN_HOSTNAME XCSH_ORIGIN_IP">
+
 ```bash
 ORIGIN_POOL=$(curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/config/namespaces/xXCSH_NAMESPACEx/origin_pools/xXCSH_ORIGIN_POOLx")
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/config/namespaces/<XCSH_NAMESPACE>/origin_pools/<XCSH_ORIGIN_POOL_NAME>")
 
-case "xXCSH_ORIGIN_KINDx" in
+case "<XCSH_ORIGIN_KIND>" in
   public_name)
-    echo "$ORIGIN_POOL" | jq --arg expected "xXCSH_ORIGIN_HOSTNAMEx" '{
+    echo "$ORIGIN_POOL" | jq --arg expected "<XCSH_ORIGIN_HOSTNAME>" '{
       name: .metadata.name,
       origin_kind: "public_name",
       origin: [.spec.origin_servers[] | .public_name.dns_name],
@@ -349,7 +399,7 @@ case "xXCSH_ORIGIN_KINDx" in
     }'
     ;;
   public_ip)
-    echo "$ORIGIN_POOL" | jq --arg expected "xXCSH_ORIGIN_IPx" '{
+    echo "$ORIGIN_POOL" | jq --arg expected "<XCSH_ORIGIN_IP>" '{
       name: .metadata.name,
       origin_kind: "public_ip",
       origin: [.spec.origin_servers[] | .public_ip.ip],
@@ -360,6 +410,8 @@ case "xXCSH_ORIGIN_KINDx" in
   *) echo "FAIL: XCSH_ORIGIN_KIND must be public_name or public_ip" >&2; exit 1 ;;
 esac
 ```
+
+</div>
 
 | Result                                                                                        | Meaning                                              |
 | --------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
@@ -386,15 +438,19 @@ An empty array is valid when no optional healthcheck was selected.
 
 **What it proves:** The origin responds from the operator's current network. It does not prove F5 XC-to-origin health.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_ORIGIN_KIND XCSH_ORIGIN_HOSTNAME XCSH_ORIGIN_IP XCSH_ORIGIN_PORT">
+
 ```bash
-case "xXCSH_ORIGIN_KINDx" in
-  public_name) ORIGIN_URL="http://xXCSH_ORIGIN_HOSTNAMEx:xXCSH_ORIGIN_PORTx/" ;;
-  public_ip)   ORIGIN_URL="http://xXCSH_ORIGIN_IPx:xXCSH_ORIGIN_PORTx/" ;;
+case "<XCSH_ORIGIN_KIND>" in
+  public_name) ORIGIN_URL="http://<XCSH_ORIGIN_HOSTNAME>:<XCSH_ORIGIN_PORT>/" ;;
+  public_ip)   ORIGIN_URL="http://<XCSH_ORIGIN_IP>:<XCSH_ORIGIN_PORT>/" ;;
   *) echo "FAIL: invalid XCSH_ORIGIN_KIND" >&2; exit 1 ;;
 esac
 
 curl -sS -o /dev/null -w '%{http_code}\n' "$ORIGIN_URL"
 ```
+
+</div>
 
 <Aside type="note">
   A successful direct request proves only client-to-origin reachability. F5 XC may use a different path, source address,
@@ -411,10 +467,12 @@ Health checks monitor backend availability. They are optional for CSD but useful
 
 **What it proves:** The healthcheck exists with the correct type, path, timing, and thresholds.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE XCSH_HC_NAME">
+
 ```bash
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/config/namespaces/xXCSH_NAMESPACEx/healthchecks/xXCSH_HC_NAMEx" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/config/namespaces/<XCSH_NAMESPACE>/healthchecks/<XCSH_HC_NAME>" \
   | jq '{
     name: .metadata.name,
     type: (if .spec.http_health_check then "HTTP" elif .spec.tcp_health_check then "TCP" else "unknown" end),
@@ -427,6 +485,8 @@ curl -s \
   }'
 ```
 
+</div>
+
 | Result                                                            | Meaning                                                                                                                                         |
 | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | **PASS** &mdash; shows HTTP type with path `/` and expected `200` | Healthcheck configured correctly                                                                                                                |
@@ -436,10 +496,12 @@ curl -s \
 
 **What it proves:** Enumerates all healthchecks in the namespace to verify naming and count.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
+
 ```bash
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/config/namespaces/xXCSH_NAMESPACEx/healthchecks" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/config/namespaces/<XCSH_NAMESPACE>/healthchecks" \
   | jq -r '
     ["NAME", "NAMESPACE", "DESCRIPTION"],
     (.items[] | [
@@ -449,6 +511,8 @@ curl -s \
     ])
     | @tsv' | column -t
 ```
+
+</div>
 
 <Aside type="note">
   The list endpoint returns summary data only (name, namespace, description). To see full configuration details (type,
@@ -465,12 +529,16 @@ CSD must be enabled at the tenant level and have the JavaScript injection tag co
 
 **What it proves:** CSD is configured and enabled for the tenant.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
+
 ```bash
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/status" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/status" \
   | jq '{isConfigured, isEnabled}'
 ```
+
+</div>
 
 | Result                                 | Meaning                                                             |
 | -------------------------------------- | ------------------------------------------------------------------- |
@@ -482,12 +550,16 @@ curl -s \
 
 **What it proves:** The CSD JavaScript injection tag is generated and ready for injection.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
+
 ```bash
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/js_configuration" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/js_configuration" \
   | jq '{has_script_tag: (.scriptTag | length > 0)}'
 ```
+
+</div>
 
 | Result                                   | Meaning                                                                          |
 | ---------------------------------------- | -------------------------------------------------------------------------------- |
@@ -498,24 +570,32 @@ curl -s \
 
 **What it proves:** Shows the full script tag for verification or manual injection.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
+
 ```bash
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/js_configuration" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/js_configuration" \
   | jq '.scriptTag'
 ```
+
+</div>
 
 ### CSD-4: Protected Domain Registration
 
 **What it proves:** The exact protected-domain name and namespace match the expected application.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE XCSH_DOMAINNAME">
+
 ```bash
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/protected_domains" \
-  | jq -e --arg name "xXCSH_DOMAINNAMEx" --arg namespace "xXCSH_NAMESPACEx" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/protected_domains" \
+  | jq -e --arg name "<XCSH_DOMAINNAME>" --arg namespace "<XCSH_NAMESPACE>" \
     '.items[] | select(.name == $name and .["namespace"] == $namespace) | {name, namespace, description}'
 ```
+
+</div>
 
 | Result                                                                               | Meaning                                                                             |
 | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
@@ -526,22 +606,24 @@ curl -s \
 
 **What it proves:** The protected HTTPS response is the expected scenario application and contains the injected CSD path. `XCSH_CSD_DEPLOYMENT_MODE` selects ownership (`api` or `terraform`) only; it never selects AWS or Azure evidence.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_CSD_DEPLOYMENT_MODE XCSH_DOMAINNAME XCSH_APPLICATION_MARKER">
+
 ```bash
-case "xXCSH_CSD_DEPLOYMENT_MODEx" in
+case "<XCSH_CSD_DEPLOYMENT_MODE>" in
   api|terraform) ;;
   *) echo "FAIL: XCSH_CSD_DEPLOYMENT_MODE must be api or terraform" >&2; exit 1 ;;
 esac
 
-APPLICATION_MARKER='xXCSH_APPLICATION_MARKERx'
+APPLICATION_MARKER='<XCSH_APPLICATION_MARKER>'
 test -n "$APPLICATION_MARKER" || { echo "FAIL: XCSH_APPLICATION_MARKER is required for every scenario" >&2; exit 1; }
 case "$APPLICATION_MARKER" in
-  'replace-with-application-marker'|'replace-with-azure-application-marker'|'xXCSH_APPLICATION_MARKERx')
+  'replace-with-application-marker'|'replace-with-azure-application-marker'|'<XCSH_APPLICATION_MARKER>')
     echo "FAIL: replace the XCSH_APPLICATION_MARKER documentation placeholder" >&2
     exit 1
     ;;
 esac
 
-APPLICATION_HTML=$(curl -fsS "https://xXCSH_DOMAINNAMEx/")
+APPLICATION_HTML=$(curl -fsS "https://<XCSH_DOMAINNAME>/")
 printf '%s' "$APPLICATION_HTML" | grep -Fqi "$APPLICATION_MARKER" \
   && echo "PASS: expected application rendered" \
   || { echo "FAIL: expected application marker missing" >&2; exit 1; }
@@ -549,6 +631,8 @@ printf '%s' "$APPLICATION_HTML" | grep -q '__imp_apg__' \
   && echo "PASS: __imp_apg__ injected" \
   || { echo "FAIL: __imp_apg__ missing" >&2; exit 1; }
 ```
+
+</div>
 
 Both assertions must succeed. `XCSH_APPLICATION_MARKER` always identifies the expected
 application/scenario independently of `XCSH_ORIGIN_KIND`. The repository reference defaults to
@@ -568,17 +652,21 @@ Verify that live traffic is reaching the load balancer and being processed corre
 
 **What it proves:** Traffic is reaching the load balancer. Zero results means no traffic is arriving.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
+
 ```bash
 curl -s -X POST \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{
     "start_time": "'"$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)"'",
     "end_time": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"
   }' \
-  "xXCSH_API_URLx/api/data/namespaces/xXCSH_NAMESPACEx/access_logs/aggregation" \
+  "<XCSH_API_URL>/api/data/namespaces/<XCSH_NAMESPACE>/access_logs/aggregation" \
   | jq '{total_requests: .total_hits}'
 ```
+
+</div>
 
 | Result                                                                 | Meaning                                                                                                                          |
 | ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
@@ -594,9 +682,11 @@ curl -s -X POST \
 
 **What it proves:** The breakdown of response status codes reveals error patterns.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
+
 ```bash
 curl -s -X POST \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{
     "start_time": "'"$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)"'",
@@ -604,7 +694,7 @@ curl -s -X POST \
     "sort": "DESCENDING",
     "limit": 100
   }' \
-  "xXCSH_API_URLx/api/data/namespaces/xXCSH_NAMESPACEx/access_logs" \
+  "<XCSH_API_URL>/api/data/namespaces/<XCSH_NAMESPACE>/access_logs" \
   | jq -r '
     [.logs[] | fromjson | .rsp_code_class]
     | group_by(.) | map({class: .[0], count: length})
@@ -612,6 +702,8 @@ curl -s -X POST \
     | ["STATUS_CLASS", "COUNT"], (.[] | [.class, .count])
     | @tsv' | column -t
 ```
+
+</div>
 
 <Aside type="note">
   The aggregation endpoint does not support `terms` bucketing &mdash; `aggs` always returns empty. This command fetches
@@ -639,11 +731,13 @@ The `downstream_remote_disconnect` class indicates the client closed the connect
 
 **What it proves:** A recent request for the protected domain was recorded after the validation request.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE XCSH_DOMAINNAME">
+
 ```bash
 VALIDATION_START=$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-5M +%Y-%m-%dT%H:%M:%SZ)
-curl -fsS "https://xXCSH_DOMAINNAMEx/" >/dev/null
+curl -fsS "https://<XCSH_DOMAINNAME>/" >/dev/null
 curl -s -X POST \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{
     "start_time": "'"$VALIDATION_START"'",
@@ -651,10 +745,12 @@ curl -s -X POST \
     "sort": "DESCENDING",
     "limit": 100
   }' \
-  "xXCSH_API_URLx/api/data/namespaces/xXCSH_NAMESPACEx/access_logs" \
-  | jq -e --arg domain "xXCSH_DOMAINNAMEx" \
+  "<XCSH_API_URL>/api/data/namespaces/<XCSH_NAMESPACE>/access_logs" \
+  | jq -e --arg domain "<XCSH_DOMAINNAME>" \
     '[.logs[] | fromjson | select((.authority // .host // .req_host) == $domain)] | first | {timestamp: .["@timestamp"], method, path: .req_path, status: .rsp_code}'
 ```
+
+</div>
 
 PASS requires a matching event inside this time window for the exact protected host. Old namespace traffic or an unrelated host is not application evidence. Field availability can vary by log schema; inspect one parsed event and select the documented host field if none of `authority`, `host`, or `req_host` is present.
 
@@ -662,9 +758,11 @@ PASS requires a matching event inside this time window for the exact protected h
 
 **What it proves:** Access logs confirm CSD JavaScript is being injected into responses.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
+
 ```bash
 curl -s -X POST \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{
     "start_time": "'"$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-1H +%Y-%m-%dT%H:%M:%SZ)"'",
@@ -672,10 +770,12 @@ curl -s -X POST \
     "sort": "DESCENDING",
     "limit": 20
   }' \
-  "xXCSH_API_URLx/api/data/namespaces/xXCSH_NAMESPACEx/access_logs" \
+  "<XCSH_API_URL>/api/data/namespaces/<XCSH_NAMESPACE>/access_logs" \
   | jq '[.logs[] | fromjson | select(.csd_js_injection == "true")] | length as $injected |
     {injected_count: $injected, total_sampled: 20}'
 ```
+
+</div>
 
 | Result                                | Meaning                                                                                             |
 | ------------------------------------- | --------------------------------------------------------------------------------------------------- |
@@ -692,19 +792,23 @@ curl -s -X POST \
 
 **What it proves:** HTTP redirects to the single HTTPS virtual host, HTTPS serves the application through F5 XC, and the browser emits CSD telemetry.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_DOMAINNAME">
+
 ```bash
-curl -sS -o /dev/null -D - "http://xXCSH_DOMAINNAMEx/" \
+curl -sS -o /dev/null -D - "http://<XCSH_DOMAINNAME>/" \
   | grep -E '^HTTP/|^[Ll]ocation:'
 curl -sS -o /dev/null -w 'HTTPS %{http_code}\n' \
-  "https://xXCSH_DOMAINNAMEx/"
+  "https://<XCSH_DOMAINNAME>/"
 ```
+
+</div>
 
 | Result                                                                 | Meaning                                                                 |
 | ---------------------------------------------------------------------- | ----------------------------------------------------------------------- |
 | **PASS** &mdash; HTTP `301` with an HTTPS `Location`, then HTTPS `200` | Redirect and protected application path are operational                 |
 | **FAIL** &mdash; any other result                                      | Check the one LB's redirect, certificate, route pool, and origin health |
 
-Then open `https://xXCSH_DOMAINNAMEx/` in a browser, use DevTools **Network**, filter for `dip`, and confirm a request from the page to the F5-operated CSD collection endpoint. The `dip` browser request proves client-side telemetry execution; `curl` alone cannot prove it.
+Then open `https://<XCSH_DOMAINNAME>/` in a browser, use DevTools **Network**, filter for `dip`, and confirm a request from the page to the F5-operated CSD collection endpoint. The `dip` browser request proves client-side telemetry execution; `curl` alone cannot prove it.
 
 ---
 
@@ -716,18 +820,20 @@ These commands query the same data displayed in the [CSD Console](/csd/en/csd-co
 
 **What it proves:** CSD is detecting and cataloging scripts running on the protected domain.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
+
 ```bash
 NOW=$(date +%s)
 START=$(( NOW - 604800 ))
 
 curl -s -X POST \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
   -H "Content-Type: application/json" \
   -d "{
     \"startTime\": \"${START}\",
     \"endTime\": \"${NOW}\"
   }" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/scripts" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/scripts" \
   | jq -r '
     ["SCRIPT", "RISK", "STATUS", "FIELDS", "USERS"],
     (.scripts[] | [
@@ -739,6 +845,8 @@ curl -s -X POST \
     ])
     | @tsv' | column -t
 ```
+
+</div>
 
 | Result                                           | Meaning                                                          |
 | ------------------------------------------------ | ---------------------------------------------------------------- |
@@ -754,10 +862,12 @@ curl -s -X POST \
 
 **What it proves:** CSD has detected script source domains and classified them by status.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
+
 ```bash
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/detected_domains" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/detected_domains" \
   | jq '{
     summary: {
       action_needed: .domain_summary.actionNeededCount.count,
@@ -775,6 +885,8 @@ curl -s \
   }'
 ```
 
+</div>
+
 | Result                                           | Meaning                                                                                 |
 | ------------------------------------------------ | --------------------------------------------------------------------------------------- |
 | **PASS** &mdash; `total` > 0 with domains listed | CSD is tracking script domains                                                          |
@@ -785,10 +897,12 @@ curl -s \
 
 **What it proves:** Shows the distribution of allowed vs. mitigated domains and whether policy is consistent.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
+
 ```bash
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/detected_domains" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/detected_domains" \
   | jq '{
     action_needed: .domain_summary.actionNeededCount.count,
     mitigated: .domain_summary.mitigatedDomains.count,
@@ -797,6 +911,8 @@ curl -s \
     domains_needing_action: [.domains_list[] | select(.status == "AN") | .domain]
   }'
 ```
+
+</div>
 
 | Result                               | Meaning                                                   |
 | ------------------------------------ | --------------------------------------------------------- |
@@ -807,13 +923,15 @@ curl -s \
 
 **What it proves:** CSD has detected form fields that scripts are reading, with sensitivity classification.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
+
 ```bash
 NOW=$(date +%s)
 START=$(( NOW - 604800 ))
 
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/formFields?startTime=${START}&endTime=${NOW}" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/formFields?startTime=${START}&endTime=${NOW}" \
   | jq -r '
     ["FIELD", "SENSITIVITY", "SCRIPTS"],
     (.form_fields[] | [
@@ -823,6 +941,8 @@ curl -s \
     ])
     | @tsv' | column -t
 ```
+
+</div>
 
 | Result                                               | Meaning                                                    |
 | ---------------------------------------------------- | ---------------------------------------------------------- |
@@ -835,31 +955,37 @@ curl -s \
 
 First, get a script ID from [TEL-1](#tel-1-script-inventory), then query its details:
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
+
 ```bash
 SCRIPT_ID="your-script-id"
 
 # Overview (risk level, type, source domain)
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/scripts/${SCRIPT_ID}/dashboard" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/scripts/${SCRIPT_ID}/dashboard" \
   | jq '{script_name, risk_level, type, source_domain, status}'
 
 # Behaviors over time
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/scripts/${SCRIPT_ID}/behaviors" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/scripts/${SCRIPT_ID}/behaviors" \
   | jq '.behaviors'
 
 # Network interactions (domains the script communicates with)
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/scripts/${SCRIPT_ID}/networkInteractions" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/scripts/${SCRIPT_ID}/networkInteractions" \
   | jq '.network_interactions'
 ```
+
+</div>
 
 ### TEL-6: Affected Users
 
 **What it proves:** Lists users impacted by a specific script, showing the scope of exposure.
+
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
 
 ```bash
 SCRIPT_ID="your-script-id"
@@ -867,13 +993,13 @@ NOW=$(date +%s)
 START=$(( NOW - 604800 ))
 
 curl -s -X POST \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
   -H "Content-Type: application/json" \
   -d "{
     \"startTime\": \"${START}\",
     \"endTime\": \"${NOW}\"
   }" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/scripts/${SCRIPT_ID}/affectedUsers" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/scripts/${SCRIPT_ID}/affectedUsers" \
   | jq -r '
     ["IP_ADDRESS", "DEVICE_ID", "GEO", "CHANNEL", "USER_AGENT"],
     (.affected_users[] | [
@@ -886,24 +1012,30 @@ curl -s -X POST \
     | @tsv' | column -t
 ```
 
+</div>
+
 ### TEL-7: Script Count by Risk Level
 
 **What it proves:** Aggregated risk distribution across all detected scripts.
+
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
 
 ```bash
 NOW=$(date +%s)
 START=$(( NOW - 604800 ))
 
 curl -s -X POST \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
   -H "Content-Type: application/json" \
   -d "{
     \"startTime\": \"${START}\",
     \"endTime\": \"${NOW}\"
   }" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/scripts" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/scripts" \
   | jq '[.scripts[] | .risk_level] | group_by(.) | map({risk_level: .[0], count: length}) | sort_by(-.count)'
 ```
+
+</div>
 
 | Result                                             | Meaning                                                    |
 | -------------------------------------------------- | ---------------------------------------------------------- |
@@ -914,10 +1046,12 @@ curl -s -X POST \
 
 **What it proves:** CSD telemetry data is recent, confirming active monitoring.
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
+
 ```bash
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/detected_domains" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/detected_domains" \
   | jq '{
     total_domains: .domain_summary.totalDomains.count,
     latest_update: (.domain_summary.totalDomains.lastUpdated // "unknown"),
@@ -927,6 +1061,8 @@ curl -s \
     })
   }'
 ```
+
+</div>
 
 | Result                                                     | Meaning                                               |
 | ---------------------------------------------------------- | ----------------------------------------------------- |
@@ -942,6 +1078,8 @@ Run only the subsection matching the selected cloud scenario and owner. `XCSH_CS
 ### Terraform-Owned AWS Origin and Log Evidence
 
 Use this subsection only for the Terraform-owned AWS reference stack. It observes current Terraform state plus AWS origin and delivery evidence; it does not prove the protected F5 path by itself.
+
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_ORIGIN_POOL_NAME XCSH_LB_NAME XCSH_ORIGIN_POOL">
 
 ```bash
 TF_DIR="$(git rev-parse --show-toplevel)/terraform/aws"
@@ -961,6 +1099,8 @@ ECS_SERVICE=$(printf '%s' "$TF_JSON" | jq -r '.. | objects | select(.address? ==
 APP_LOG_GROUP=$(printf '%s' "$TF_JSON" | jq -r '.. | objects | select(.address? == "module.origin.aws_cloudwatch_log_group.this") | .values.name')
 FLOW_LOG_GROUP=$(printf '%s' "$TF_JSON" | jq -r '.. | objects | select(.address? == "aws_cloudwatch_log_group.vpc_flow") | .values.name')
 ```
+
+</div>
 
 Do not copy identifiers from a prior run. The root values come from Terraform outputs; module-only runtime identifiers are read from the current state at execution time.
 
@@ -1058,22 +1198,24 @@ Azure origin health and owner evidence are not substitutes for DNS-to-current-VI
 
 Run a single read-only command that checks critical health indicators across every layer and produces a summary table:
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE XCSH_LB_NAME XCSH_DOMAINNAME XCSH_ORIGIN_POOL_NAME XCSH_ORIGIN_KIND">
+
 ```bash
 echo "=== CSD Verification Dashboard ==="
 echo ""
 
 # Layer 1: DNS evidence (display only; DNS-1 and DNS-2 define PASS)
-DNS_A=$(dig +short xXCSH_DOMAINNAMEx A | sort -u | paste -sd, -)
-DNS_ACME_CNAME=$(dig +short _acme-challenge.xXCSH_DOMAINNAMEx CNAME | paste -sd, -)
-DNS_ACME_TXT=$(dig +short _acme-challenge.xXCSH_DOMAINNAMEx TXT | paste -sd, -)
+DNS_A=$(dig +short <XCSH_DOMAINNAME> A | sort -u | paste -sd, -)
+DNS_ACME_CNAME=$(dig +short _acme-challenge.<XCSH_DOMAINNAME> CNAME | paste -sd, -)
+DNS_ACME_TXT=$(dig +short _acme-challenge.<XCSH_DOMAINNAME> TXT | paste -sd, -)
 
 # Layers 2-4: one LB, TLS, and origin
 LB=$(curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/config/namespaces/xXCSH_NAMESPACEx/http_loadbalancers/xXCSH_LB_NAMEx")
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/config/namespaces/<XCSH_NAMESPACE>/http_loadbalancers/<XCSH_LB_NAME>")
 ORIGIN_POOL=$(curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/config/namespaces/xXCSH_NAMESPACEx/origin_pools/xXCSH_ORIGIN_POOLx")
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/config/namespaces/<XCSH_NAMESPACE>/origin_pools/<XCSH_ORIGIN_POOL_NAME>")
 
 LB_STATE=$(echo "$LB" | jq -r '.spec.state // "UNKNOWN"')
 CERT_STATE=$(echo "$LB" | jq -r '.spec.cert_state // "UNKNOWN"')
@@ -1081,7 +1223,7 @@ HTTP_REDIRECT=$(echo "$LB" | jq -r '.spec.https_auto_cert.http_redirect // false
 CSD_ON_LB=$(echo "$LB" | jq -r 'if .spec.client_side_defense then "ENABLED" else "DISABLED" end')
 DOMAINS=$(echo "$LB" | jq -r '.spec.domains | join(", ")')
 ROUTE_POOL=$(echo "$LB" | jq -r '[.spec.default_route_pools[] | .pool.name] | join(", ")')
-case "xXCSH_ORIGIN_KINDx" in
+case "<XCSH_ORIGIN_KIND>" in
   public_name) ORIGIN=$(echo "$ORIGIN_POOL" | jq -r '.spec.origin_servers[0].public_name.dns_name // "MISSING"') ;;
   public_ip) ORIGIN=$(echo "$ORIGIN_POOL" | jq -r '.spec.origin_servers[0].public_ip.ip // "MISSING"') ;;
   *) ORIGIN="INVALID_ORIGIN_KIND" ;;
@@ -1089,27 +1231,27 @@ esac
 
 # Layer 6: CSD status
 CSD=$(curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/status")
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/status")
 
 CSD_CONFIGURED=$(echo "$CSD" | jq -r '.isConfigured // false')
 CSD_ENABLED=$(echo "$CSD" | jq -r '.isEnabled // false')
 
 # Layer 6: JS config
 JS_TAG=$(curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/js_configuration" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/js_configuration" \
   | jq -r 'if (.scriptTag | length) > 0 then "PRESENT" else "MISSING" end')
 
 # Layer 7: Traffic (last 24h)
 TRAFFIC=$(curl -s -X POST \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
   -H "Content-Type: application/json" \
   -d "{
     \"start_time\": \"$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)\",
     \"end_time\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
   }" \
-  "xXCSH_API_URLx/api/data/namespaces/xXCSH_NAMESPACEx/access_logs/aggregation" \
+  "<XCSH_API_URL>/api/data/namespaces/<XCSH_NAMESPACE>/access_logs/aggregation" \
   | jq -r '.total_hits // "0"')
 
 printf "%-28s %s\n" "CHECK" "STATUS"
@@ -1122,7 +1264,7 @@ printf "%-28s %s\n" "[LB] State" "$LB_STATE"
 printf "%-28s %s\n" "[LB] HTTP Redirect" "$HTTP_REDIRECT"
 printf "%-28s %s\n" "[LB] Domains" "$DOMAINS"
 printf "%-28s %s\n" "[LB] Route Pool" "$ROUTE_POOL"
-printf "%-28s %s\n" "[Origin] Kind" "xXCSH_ORIGIN_KINDx"
+printf "%-28s %s\n" "[Origin] Kind" "<XCSH_ORIGIN_KIND>"
 printf "%-28s %s\n" "[Origin] Value" "$ORIGIN"
 printf "%-28s %s\n" "[LB] CSD on LB" "$CSD_ON_LB"
 printf "%-28s %s\n" "[CSD] Configured (tenant)" "$CSD_CONFIGURED"
@@ -1130,6 +1272,8 @@ printf "%-28s %s\n" "[CSD] Enabled" "$CSD_ENABLED"
 printf "%-28s %s\n" "[CSD] JS Script Tag" "$JS_TAG"
 printf "%-28s %s\n" "[Traffic] Requests (24h)" "$TRAFFIC"
 ```
+
+</div>
 
 ---
 
@@ -1183,27 +1327,39 @@ If [TV-1](#tv-1-request-count-last-24-hours) returns `0`:
 
 1. **Check DNS resolution** &mdash; verify the domain resolves to the LB VIP:
 
+   <div data-xcsh-context="shell" data-xcsh-fields="XCSH_DOMAINNAME">
+
    ```bash
-   dig +short xXCSH_DOMAINNAMEx A
+   dig +short <XCSH_DOMAINNAME> A
    ```
+
+   </div>
 
    If empty, DNS is not configured. Follow [Phase 1 — DNS, Certificate, and Origin Recovery](/csd/en/demo/phase-1-build/#step-6-dns-certificate-and-origin-recovery).
 
 2. **Check LB state** &mdash; the unsuffixed load balancer must be `VIRTUAL_HOST_READY` and its certificate must be valid:
 
+   <div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE XCSH_LB_NAME">
+
    ```bash
    curl -s \
-     -H "Authorization: APIToken xXCSH_API_TOKENx" \
-     "xXCSH_API_URLx/api/config/namespaces/xXCSH_NAMESPACEx/http_loadbalancers/xXCSH_LB_NAMEx" \
+     -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+     "<XCSH_API_URL>/api/config/namespaces/<XCSH_NAMESPACE>/http_loadbalancers/<XCSH_LB_NAME>" \
      | jq '{state: .spec.state, cert_state: .spec.cert_state, http_redirect: .spec.https_auto_cert.http_redirect}'
    ```
 
+   </div>
+
 3. **Send protocol-specific test requests** &mdash; HTTP must redirect and HTTPS must serve the application:
 
+   <div data-xcsh-context="shell" data-xcsh-fields="XCSH_DOMAINNAME">
+
    ```bash
-   curl -sS -o /dev/null -D - "http://xXCSH_DOMAINNAMEx/" | grep -E '^HTTP/|^[Ll]ocation:'
-   curl -sS -o /dev/null -w '%{http_code}\n' "https://xXCSH_DOMAINNAMEx/"
+   curl -sS -o /dev/null -D - "http://<XCSH_DOMAINNAME>/" | grep -E '^HTTP/|^[Ll]ocation:'
+   curl -sS -o /dev/null -w '%{http_code}\n' "https://<XCSH_DOMAINNAME>/"
    ```
+
+   </div>
 
 </Steps>
 
@@ -1228,24 +1384,32 @@ For API-owned resources, follow the documented clean-recreation workflow if issu
 **External DNS:** Create a CNAME record at your DNS provider:
 
 ```text
-_acme-challenge.xXCSH_DOMAINNAMEx  CNAME  *.autocerts.ves.volterra.io
+_acme-challenge.<XCSH_DOMAINNAME>  CNAME  *.autocerts.ves.volterra.io
 ```
 
 Verify the record exists:
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_DOMAINNAME">
+
 ```bash
-dig +short _acme-challenge.xXCSH_DOMAINNAMEx CNAME
-dig +short _acme-challenge.xXCSH_DOMAINNAMEx TXT
+dig +short _acme-challenge.<XCSH_DOMAINNAME> CNAME
+dig +short _acme-challenge.<XCSH_DOMAINNAME> TXT
 ```
+
+</div>
 
 If both are empty, the ACME record is not configured. Certificate provisioning takes 5&ndash;10 minutes after the record is in place. Check the LB error status for specific ACME validation errors:
 
+<div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE XCSH_LB_NAME">
+
 ```bash
 curl -s \
-  -H "Authorization: APIToken xXCSH_API_TOKENx" \
-  "xXCSH_API_URLx/api/config/namespaces/xXCSH_NAMESPACEx/http_loadbalancers/xXCSH_LB_NAMEx" \
+  -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+  "<XCSH_API_URL>/api/config/namespaces/<XCSH_NAMESPACE>/http_loadbalancers/<XCSH_LB_NAME>" \
   | jq '[.status[]? | select(.virtual_host_status != null) | .virtual_host_status.error_description]'
 ```
+
+</div>
 
 ### CSD isConfigured is false
 
@@ -1259,18 +1423,26 @@ If [TEL-1](#tel-1-script-inventory) returns an empty array:
 
 1. **Check the protected domain** &mdash; CSD monitors scripts only on registered domains:
 
+   <div data-xcsh-context="shell" data-xcsh-fields="XCSH_API_URL XCSH_API_TOKEN XCSH_NAMESPACE">
+
    ```bash
    curl -s \
-     -H "Authorization: APIToken xXCSH_API_TOKENx" \
-     "xXCSH_API_URLx/api/shape/csd/namespaces/xXCSH_NAMESPACEx/protected_domains" \
+     -H "Authorization: APIToken <XCSH_API_TOKEN>" \
+     "<XCSH_API_URL>/api/shape/csd/namespaces/<XCSH_NAMESPACE>/protected_domains" \
      | jq '.items[] | {name, namespace}'
    ```
 
+   </div>
+
 2. **Verify JS injection** &mdash; confirm the CSD script path is injected into the protected HTTPS response:
 
+   <div data-xcsh-context="shell" data-xcsh-fields="XCSH_DOMAINNAME">
+
    ```bash
-   curl -fsS "https://xXCSH_DOMAINNAMEx/" | grep -q '__imp_apg__'
+   curl -fsS "https://<XCSH_DOMAINNAME>/" | grep -q '__imp_apg__'
    ```
+
+   </div>
 
    If there is no match, check that the LB has `client_side_defense` with `js_insert_all_pages`.
 
@@ -1340,7 +1512,7 @@ The timer must resolve to the verified `csd-continuous.service` definition.
 ```bash
 node scripts/csd-page-tamper.mjs canary \
   --browser-mode headed-xvfb --placement worker \
-  --target https://client-side-defense.f5-sales-demo.com/csd-page-tamper/payment \
+  --target https://<XCSH_DOMAINNAME>/csd-page-tamper/payment \
   --aws-profile 280469140135_Users --aws-region us-east-1 --aws-account 280469140135 \
   --terraform-dir /data/robin-GIT/csd/terraform/aws \
   --traffic-generator-terraform-dir /data/robin-GIT/traffic-generator/terraform/aws \
@@ -1831,7 +2003,7 @@ this documentation task performs no fresh live verification or infrastructure op
 ### Protected-domain visibility discrepancy: registration remains unresolved
 
 The operator subsequently reported **no domain visible** in CSD Manage Configuration.
-The supplied current native `protected_domains` GET in `client-side-defense` returned a
+The supplied current native `protected_domains` GET in `<XCSH_NAMESPACE>` returned a
 blank placeholder. A projection using `report_fields=spec.protected_domain` returned
 `get_spec.protected_domain=f5-sales-demo.com`, with `date_added=2026-09-23T01:00:56Z`,
 but metadata names and UIDs remained blank. HTTP `200` proves the returned value,

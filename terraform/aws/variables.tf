@@ -93,6 +93,6 @@ variable "tags" {
   default = {
     application = "client-side-defense"
     managed-by  = "terraform"
-    repository  = "f5-sales-demo/csd"
+    repository  = "f5-sales-demo/client-side-defense"
   }
 }
